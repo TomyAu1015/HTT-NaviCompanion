@@ -12,6 +12,7 @@
 		1003 /* AudioPlayerManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2003 /* AudioPlayerManager.swift */; };
 		1004 /* KeyConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2004 /* KeyConfig.swift */; };
 		1005 /* voice_assets.dat in Resources */ = {isa = PBXBuildFile; fileRef = 2005 /* voice_assets.dat */; };
+		1006 /* mascot_assets.dat in Resources */ = {isa = PBXBuildFile; fileRef = 2007 /* mascot_assets.dat */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -22,6 +23,7 @@
 		2004 /* KeyConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyConfig.swift; sourceTree = "<group>"; };
 		2005 /* voice_assets.dat */ = {isa = PBXFileReference; lastKnownFileType = file; path = voice_assets.dat; sourceTree = "<group>"; };
 		2006 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		2007 /* mascot_assets.dat */ = {isa = PBXFileReference; lastKnownFileType = file; path = mascot_assets.dat; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -51,6 +53,7 @@
 				2003 /* AudioPlayerManager.swift */,
 				2004 /* KeyConfig.swift */,
 				2005 /* voice_assets.dat */,
+				2007 /* mascot_assets.dat */,
 				2006 /* Info.plist */,
 			);
 			path = KOnNaviCompanion;
@@ -123,6 +126,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				1005 /* voice_assets.dat in Resources */,
+				1006 /* mascot_assets.dat in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -201,14 +205,14 @@
 				CODE_SIGN_STYLE = Manual;
 				CODE_SIGNING_ALLOWED = NO;
 				CODE_SIGNING_REQUIRED = NO;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 3;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = KOnNaviCompanion/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0.0;
+				MARKETING_VERSION = 3.0.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.kon.navicompanion;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -225,14 +229,14 @@
 				CODE_SIGN_STYLE = Manual;
 				CODE_SIGNING_ALLOWED = NO;
 				CODE_SIGNING_REQUIRED = NO;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 3;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = KOnNaviCompanion/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0.0;
+				MARKETING_VERSION = 3.0.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.kon.navicompanion;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
