@@ -51,33 +51,42 @@ struct HTTSmoothMapView: UIViewRepresentable {
                     mapView.addAnnotation(pin)
                 }
                 let rect = route.polyline.boundingMapRect
-                mapView.setVisibleMapRect(rect, edgePadding: UIEdgeInsets(top: 80, left: 40, bottom: 90, right: 40), animated: true)
-            }
-        }
-        
-        if manager.mapTrackingUser {
-            context.coordinator.isUserInteracting = false
-        }
-        
-        // Smooth camera follow without fighting user gesture
-        if manager.mapTrackingUser && !context.coordinator.isUserInteracting {
-            if manager.activeRoute != nil {
+                mapView.setVisibleMapRect(rect, edgePadding: UIEdgeInsets(top: 80, left: 40, bottom: 90, right: 40), animated: false)
+                
+                // Immediately align camera to user vehicle
                 let camera = MKMapCamera(
                     lookingAtCenter: manager.userCoordinate,
-                    fromDistance: manager.travelMode == .walking ? 400 : 650,
-                    pitch: 48,
-                    heading: manager.headingDegrees
-                )
-                mapView.setCamera(camera, animated: true)
-            } else if manager.isDemoSimulating {
-                let camera = MKMapCamera(
-                    lookingAtCenter: manager.userCoordinate,
-                    fromDistance: 550,
+                    fromDistance: manager.travelMode == .walking ? 400 : 550,
                     pitch: 45,
                     heading: manager.headingDegrees
                 )
-                mapView.setCamera(camera, animated: true)
+                UIView.animate(withDuration: 0.32, delay: 0.05, options: [.curveEaseOut]) {
+                    mapView.camera = camera
+                }
             }
+        }
+        
+        // Fast Recenter Action Triggered! (Snaps back to user in 0.28s without slow lag)
+        if context.coordinator.lastRecenterTrigger != manager.recenterTrigger {
+            context.coordinator.lastRecenterTrigger = manager.recenterTrigger
+            context.coordinator.isUserInteracting = false
+            let camera = MKMapCamera(
+                lookingAtCenter: manager.userCoordinate,
+                fromDistance: manager.travelMode == .walking ? 400 : 550,
+                pitch: 48,
+                heading: manager.headingDegrees
+            )
+            UIView.animate(withDuration: 0.28, delay: 0, options: [.curveEaseOut]) {
+                mapView.camera = camera
+            }
+        } else if manager.mapTrackingUser && !context.coordinator.isUserInteracting {
+            let camera = MKMapCamera(
+                lookingAtCenter: manager.userCoordinate,
+                fromDistance: manager.travelMode == .walking ? 400 : 650,
+                pitch: 48,
+                heading: manager.headingDegrees
+            )
+            mapView.setCamera(camera, animated: true)
         }
     }
     
@@ -85,6 +94,7 @@ struct HTTSmoothMapView: UIViewRepresentable {
         var parent: HTTSmoothMapView
         var lastRoute: MKRoute? = nil
         var isUserInteracting: Bool = false
+        var lastRecenterTrigger: Int = 0
         
         init(_ parent: HTTSmoothMapView) {
             self.parent = parent
@@ -140,8 +150,9 @@ struct HTTSmoothMapView: UIViewRepresentable {
                     renderer.strokeColor = UIColor(red: 0.92, green: 0.22, blue: 0.35, alpha: 0.92)
                     renderer.lineWidth = 8.0
                 case .ebike:
-                    renderer.strokeColor = UIColor(red: 0.20, green: 0.78, blue: 0.55, alpha: 0.92)
-                    renderer.lineWidth = 7.0
+                    // High-contrast vibrant yellow (easily distinguished from green expressway/parks)
+                    renderer.strokeColor = UIColor(red: 1.0, green: 0.82, blue: 0.10, alpha: 0.96)
+                    renderer.lineWidth = 8.0
                 case .walking:
                     renderer.strokeColor = UIColor(red: 0.25, green: 0.58, blue: 0.95, alpha: 0.92)
                     renderer.lineWidth = 6.0
@@ -325,6 +336,24 @@ struct ContentView: View {
                 .cornerRadius(8)
             }
             
+            // Transit Public Timetable Detail Button
+            if manager.travelMode == .transit {
+                Button(action: {
+                    manager.openSystemMapsForTransit()
+                }) {
+                    VStack(spacing: 1) {
+                        Image(systemName: "tram.fill")
+                            .font(.system(size: 12, weight: .bold))
+                        Text(tr("班次", "班次", "Transit"))
+                            .font(.system(size: 8, weight: .bold))
+                    }
+                    .foregroundColor(.white)
+                    .padding(5)
+                    .background(Color.purple.opacity(0.85))
+                    .cornerRadius(8)
+                }
+            }
+            
             // Exit Navigation / Minimize Button
             Button(action: {
                 withAnimation(.spring(response: 0.35, dampingFraction: 0.7)) {
@@ -384,11 +413,9 @@ struct ContentView: View {
             }
             Spacer()
             
-            // Re-center onto User Location Button
+            // Re-center onto User Location Button (Fast Instant Recenter)
             Button(action: {
-                withAnimation {
-                    manager.mapTrackingUser = true
-                }
+                manager.triggerFastRecenter()
             }) {
                 HStack(spacing: 3) {
                     Image(systemName: manager.mapTrackingUser ? "location.north.line.fill" : "location")
@@ -682,24 +709,53 @@ struct ContentView: View {
                         .overlay(RoundedRectangle(cornerRadius: 16).stroke(httGold, lineWidth: 2))
                     
                     VStack(spacing: 4) {
-                        HStack(spacing: 6) {
+                        HStack(spacing: 5) {
                             Button(action: { showSearchSheet = true }) {
-                                HStack(spacing: 5) {
+                                HStack(spacing: 4) {
                                     Image(systemName: "magnifyingglass")
                                         .foregroundColor(httGold)
                                     Text(manager.destinationName.isEmpty
-                                         ? tr("搜索目的地路线...", "搜尋目的地路線...", "Search destination...")
+                                         ? tr("搜索路线...", "搜尋路線...", "Search...")
                                          : manager.destinationName)
-                                        .font(.system(size: 11, weight: .bold))
+                                        .font(.system(size: 10, weight: .bold))
                                         .foregroundColor(.white)
                                         .lineLimit(1)
                                     Spacer()
                                 }
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 6)
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 5)
                                 .background(Color.black.opacity(0.78))
-                                .cornerRadius(8)
-                                .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold.opacity(0.7), lineWidth: 1))
+                                .cornerRadius(7)
+                                .overlay(RoundedRectangle(cornerRadius: 7).stroke(httGold.opacity(0.7), lineWidth: 1))
+                            }
+                            
+                            // Demo simulation toggle button (Accessible in compact cockpit mode!)
+                            Button(action: {
+                                manager.toggleDemoSimulation()
+                            }) {
+                                HStack(spacing: 3) {
+                                    Image(systemName: manager.isDemoSimulating ? "stop.fill" : "play.fill")
+                                    Text(manager.isDemoSimulating ? tr("停止", "停止", "Stop") : tr("模拟", "模擬", "Demo"))
+                                }
+                                .font(.system(size: 10, weight: .bold))
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 5)
+                                .background(manager.isDemoSimulating ? Color.orange : Color.purple.opacity(0.85))
+                                .foregroundColor(.white)
+                                .cornerRadius(7)
+                            }
+                            
+                            // Fast Recenter Button in compact mode!
+                            Button(action: {
+                                manager.triggerFastRecenter()
+                            }) {
+                                Image(systemName: manager.mapTrackingUser ? "location.north.line.fill" : "location")
+                                    .font(.system(size: 11, weight: .bold))
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 5)
+                                    .background(manager.mapTrackingUser ? Color.green.opacity(0.85) : Color.black.opacity(0.75))
+                                    .foregroundColor(manager.mapTrackingUser ? .black : httGold)
+                                    .cornerRadius(7)
                             }
                             
                             // Manual Enlarge Full-Screen Button!
@@ -708,20 +764,20 @@ struct ContentView: View {
                                     manager.isMapEnlarged = true
                                 }
                             }) {
-                                HStack(spacing: 3) {
+                                HStack(spacing: 2) {
                                     Image(systemName: "arrow.up.left.and.arrow.down.right")
-                                    Text(tr("放大全屏", "放大全屏", "Full"))
+                                    Text(tr("放大", "放大", "Full"))
                                 }
                                 .font(.system(size: 10, weight: .bold))
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 6)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 5)
                                 .background(httCrimson)
                                 .foregroundColor(.white)
-                                .cornerRadius(8)
+                                .cornerRadius(7)
                             }
                         }
-                        .padding(.horizontal, 8)
-                        .padding(.top, 7)
+                        .padding(.horizontal, 6)
+                        .padding(.top, 6)
                         
                         Spacer()
                         

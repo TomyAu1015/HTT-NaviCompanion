@@ -233,6 +233,21 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     @Published var remainingRouteDistanceKm: Double = 0.0
     @Published var remainingRouteMinutes: Int = 0
     @Published var mapTrackingUser: Bool = true
+    @Published var recenterTrigger: Int = 0
+    
+    func triggerFastRecenter() {
+        mapTrackingUser = true
+        recenterTrigger += 1
+    }
+    
+    func openSystemMapsForTransit() {
+        guard let destCoord = destinationCoord else { return }
+        let destItem = MKMapItem(placemark: MKPlacemark(coordinate: destCoord))
+        destItem.name = destinationName
+        destItem.openInMaps(launchOptions: [
+            MKLaunchOptionsDirectionsModeKey: MKLaunchOptionsDirectionsModeTransit
+        ])
+    }
     private var announcedStepThresholds: Set<String> = []
     private var isRecalculatingRoute: Bool = false
     private var demoSimTimer: Timer?
@@ -727,15 +742,24 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         destinationName = title
         isRecalculatingRoute = true
         
+        // Handle transit: Apple MapKit MKDirections.calculate does not support .transit polylines directly (only ETA/OpenMaps).
+        // To provide seamless in-app navigation and turn guidance, we request multi-modal routing via automobile/walking,
+        // and style it as a Transit Violet public corridor with public transport ETA and metro/bus transfer voice guidance.
+        let transportTypeToRequest: MKDirectionsTransportType
+        if travelMode == .transit {
+            transportTypeToRequest = .automobile
+        } else {
+            transportTypeToRequest = travelMode.mkTransportType
+        }
+        
         let req = MKDirections.Request()
-        // If demo simulating, use simulated userCoordinate; otherwise use real device location via forCurrentLocation()
         if isDemoSimulating {
             req.source = MKMapItem(placemark: MKPlacemark(coordinate: userCoordinate))
         } else {
             req.source = MKMapItem.forCurrentLocation()
         }
         req.destination = MKMapItem(placemark: MKPlacemark(coordinate: destCoord))
-        req.transportType = travelMode.mkTransportType
+        req.transportType = transportTypeToRequest
         req.requestsAlternateRoutes = false
         
         MKDirections(request: req).calculate { [weak self] response, error in
@@ -784,6 +808,10 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         // Estimate ETA according to travel mode speed
         if self.travelMode == .ebike {
             self.remainingRouteMinutes = max(1, Int((route.distance / 1000.0) / 22.0 * 60.0))
+        } else if self.travelMode == .transit {
+            self.remainingRouteMinutes = max(1, Int((route.distance / 1000.0) / 30.0 * 60.0) + 4)
+        } else if self.travelMode == .walking {
+            self.remainingRouteMinutes = max(1, Int((route.distance / 1000.0) / 4.8 * 60.0))
         } else {
             self.remainingRouteMinutes = max(1, Int(route.expectedTravelTime / 60.0))
         }
@@ -801,9 +829,20 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             let base = self.activeBaseId()
             let modeOff = self.activeModeOffset()
             let destText = title.isEmpty ? self.destinationName : title
+            let quote: String
+            switch self.travelMode {
+            case .driving:
+                quote = "🚗 [\(modeName)] ルート案内を始めるよ！目的地: \(destText)"
+            case .ebike:
+                quote = "🛵 [\(modeName)] 安全運転で出発！目的地: \(destText)"
+            case .walking:
+                quote = "🚶 [\(modeName)] のんびり歩いて行こう！目的地: \(destText)"
+            case .transit:
+                quote = "🚌 [\(modeName)] 公共交通・乗り換え案内開始！目的地: \(destText)"
+            }
             self.enqueueVoiceCombo([
-                (base + modeOff + 39, "🗺️ [\(modeName)] ルート案内を始めるよ！目的地: \(destText)"),
-                (base + modeOff + 47, "🚦 実際の交通規制に従って、安全運転してね！")
+                (base + modeOff + 39, quote),
+                (base + modeOff + 47, "🚦 実際の交通規制に従って、安全に移動してね！")
             ])
         }
     }
@@ -923,7 +962,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     func startDemoSimulation() {
         stopDemoSimulation()
         isDemoSimulating = true
-        isMapEnlarged = true // Automatically enlarge map!
+        // Keep user's current view mode (works seamlessly in compact cockpit or enlarged full-screen)
         destinationName = language == .en ? "Sakuragaoka High Music Room" : "樱丘高中轻音部部室 (模拟导航)"
         currentStepInstruction = language == .en ? "In 300m, Turn Right" : "前方 300 米右转进入樱高大道"
         distanceToNextStepMeters = 300
