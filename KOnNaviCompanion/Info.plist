@@ -17,14 +17,24 @@
 	<key>CFBundlePackageType</key>
 	<string>$(PRODUCT_BUNDLE_PACKAGE_TYPE)</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.0.0</string>
+	<string>2.0.0</string>
 	<key>CFBundleVersion</key>
-	<string>1</string>
+	<string>2</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>用于实时获取行车速度、行进方向并在超速时触发轻音少女语音预警</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>用于在后台与导航共存时持续监测车速并播报放课后茶会伴侣提醒</string>
+	<key>LSApplicationQueriesSchemes</key>
+	<array>
+		<string>iosamap</string>
+		<string>baidumap</string>
+	</array>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>
+		<string>location</string>
 	</array>
 	<key>UILaunchScreen</key>
 	<dict/>
