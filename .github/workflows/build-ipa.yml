@@ -22,7 +22,7 @@ jobs:
             -target KOnNaviCompanion \
             -configuration Release \
             -sdk iphoneos \
-            -derivedDataPath build \
+            SYMROOT=build \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO
@@ -30,7 +30,7 @@ jobs:
       - name: Package IPA for TrollStore
         run: |
           mkdir -p Payload
-          cp -r build/Build/Products/Release-iphoneos/KOnNaviCompanion.app Payload/
+          cp -r build/Release-iphoneos/KOnNaviCompanion.app Payload/
           zip -r -9 KOnNaviCompanion.ipa Payload
           ls -lh KOnNaviCompanion.ipa
 
