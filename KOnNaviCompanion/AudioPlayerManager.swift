@@ -2,6 +2,7 @@ import Foundation
 import AVFoundation
 import CryptoKit
 import CoreLocation
+import MapKit
 import UIKit
 import CoreGraphics
 
@@ -14,6 +15,11 @@ struct MascotVoiceEntry {
     let charId: Int
     let offset: UInt32
     let length: UInt32
+}
+
+struct QueuedVoiceItem {
+    let id: Int
+    let bubbleText: String
 }
 
 enum AppLanguage: String, CaseIterable, Identifiable {
@@ -60,18 +66,17 @@ enum MascotActionState: String, CaseIterable {
 class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLLocationManagerDelegate {
     static let shared = AudioPlayerManager()
     
-    // Language Setting (Simplified Chinese, Traditional Chinese, English)
     @Published var language: AppLanguage = .zhHans
     
-    // Playback State
+    // Playback & Voice Queue State (Supports sequential "[300m ahead] + [Turn Right]" combos!)
     @Published var isPlaying: Bool = false
     @Published var currentPlayingId: Int? = nil
     @Published var currentSpeechBubble: String = "準備OK！出発進行～！"
+    private var voiceQueue: [(id: Int, quote: String)] = []
     
     // Mascot Animation State
     @Published var mascotAction: MascotActionState = .idle
     @Published var currentSpriteFrame: UIImage? = nil
-    // All 5 characters' live frames for 5-member "全员同台" mode
     @Published var allMemberFrames: [Int: UIImage] = [:]
     @Published var deskSpriteFrame: UIImage? = nil
     @Published var mascotOffsetX: CGFloat = 0.0
@@ -80,25 +85,15 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     @Published var memberPositions: [Int: CGSize] = [:]
     @Published var isDraggingMascot: Bool = false
     @Published var draggedMemberId: Int? = nil
-    
-    func resetPositions() {
-        mascotOffsetX = 0.0
-        mascotOffsetY = 0.0
-        memberPositions.removeAll()
-    }
     private var animTick: Int = 0
     private var animTimer: Timer?
-    
-    // Decrypted Sprite Sheet Cache in RAM (Zero disk writes)
     private var spriteSheets: [String: CGImage] = [:]
     
     // Cruise & Companion State
     @Published var isCruiseModeActive: Bool = false
     @Published var cruiseIntervalMinutes: Double = 10.0 {
         didSet {
-            if isCruiseModeActive {
-                resetCruiseCountdown()
-            }
+            if isCruiseModeActive { resetCruiseCountdown() }
         }
     }
     @Published var cruiseRemainingSeconds: Int = 600
@@ -106,15 +101,14 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     @Published var enableBanter: Bool = true
     
     // GPS & HUD Speedometer State
+    @Published var userCoordinate: CLLocationCoordinate2D = CLLocationCoordinate2D(latitude: 22.3193, longitude: 114.1694)
     @Published var currentSpeedKmh: Double = 0.0
     @Published var maxSpeedKmh: Double = 0.0
     @Published var tripDistanceKm: Double = 0.0
     @Published var headingDegrees: Double = 0.0
     @Published var speedLimitKmh: Double = 80.0 {
         didSet {
-            if oldValue != speedLimitKmh {
-                triggerSpeedLimitPrompt()
-            }
+            if oldValue != speedLimitKmh { triggerSpeedLimitPrompt() }
         }
     }
     @Published var isOverspeeding: Bool = false
@@ -122,6 +116,25 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     @Published var gpsAccuracyMeters: Double = -1.0
     @Published var isHUDMirrored: Bool = false
     @Published var drivingSeconds: Int = 0
+    
+    // Built-In Real-Time Map Navigation State (AutoNavi/MapKit)
+    @Published var showMapMode: Bool = true
+    @Published var searchQuery: String = ""
+    @Published var searchResults: [MKMapItem] = []
+    @Published var isSearching: Bool = false
+    @Published var activeRoute: MKRoute? = nil
+    @Published var destinationName: String = ""
+    @Published var destinationCoord: CLLocationCoordinate2D? = nil
+    @Published var currentStepIndex: Int = 0
+    @Published var currentStepInstruction: String = ""
+    @Published var distanceToNextStepMeters: Double = 0.0
+    @Published var remainingRouteDistanceKm: Double = 0.0
+    @Published var remainingRouteMinutes: Int = 0
+    @Published var mapTrackingUser: Bool = true
+    private var announcedStepThresholds: Set<String> = []
+    private var isRecalculatingRoute: Bool = false
+    private var demoSimTimer: Timer?
+    @Published var isDemoSimulating: Bool = false
     
     enum CharacterFilter: String, CaseIterable, Identifiable {
         case all = "all"
@@ -132,7 +145,6 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         case azusa = "azusa"
         
         var id: String { self.rawValue }
-        
         static let fiveIndividuals: [CharacterFilter] = [.yui, .mio, .ritsu, .mugi, .azusa]
         
         var charId: Int {
@@ -157,11 +169,9 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             case (.mio, .en): return "Mio"
             case (.ritsu, .zhHans), (.ritsu, .zhHant): return "田井中律"
             case (.ritsu, .en): return "Ritsu"
-            case (.mugi, .zhHans): return "琴吹紬"
-            case (.mugi, .zhHant): return "琴吹紬"
+            case (.mugi, .zhHans), (.mugi, .zhHant): return "琴吹紬"
             case (.mugi, .en): return "Mugi"
-            case (.azusa, .zhHans): return "中野梓"
-            case (.azusa, .zhHant): return "中野梓"
+            case (.azusa, .zhHans), (.azusa, .zhHant): return "中野梓"
             case (.azusa, .en): return "Azusa"
             }
         }
@@ -186,24 +196,21 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             }
         }
         
-        // Exact verified RM-500HTT base ID for the 144-file navigation block (IDs 1..156 are generic non-character announcer and are excluded!)
         var navBaseId: Int {
             switch self {
-            case .yui, .all: return 157 // 157..300
-            case .mio: return 301       // 301..444
-            case .ritsu: return 445     // 445..588
-            case .mugi: return 589      // 589..732
-            case .azusa: return 733     // 733..876
+            case .yui, .all: return 157
+            case .mio: return 301
+            case .ritsu: return 445
+            case .mugi: return 589
+            case .azusa: return 733
             }
         }
         
-        // Exact verified RM-500HTT 144-file navigation range
         var navRange: ClosedRange<Int> {
             let base = navBaseId
             return base...(base + 143)
         }
         
-        // Exact verified RM-500HTT 47-file menu/touch range
         var menuRange: ClosedRange<Int> {
             switch self {
             case .yui, .all: return 877...923
@@ -214,7 +221,6 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             }
         }
         
-        // Bonus completion voice ID
         var bonusId: Int {
             switch self {
             case .yui, .all: return 1112
@@ -225,11 +231,8 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             }
         }
         
-        // All 192 verified pure character voice IDs in RM-500HTT (excludes 1..156 generic announcer!)
         var verifiedVoiceIds: [Int] {
-            if self == .all {
-                return Array(157...1122)
-            }
+            if self == .all { return Array(157...1122) }
             return Array(navRange) + Array(menuRange) + [bonusId]
         }
         
@@ -237,22 +240,22 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             switch (self, lang) {
             case (.yui, .zhHans): return "平泽唯 · 主音吉他 (CV: 丰崎爱生)"
             case (.yui, .zhHant): return "平澤唯 · 主音吉他 (CV: 豐崎愛生)"
-            case (.yui, .en): return "Yui Hirasawa · Lead Guitar (CV: Aki Toyosaki)"
+            case (.yui, .en): return "Yui Hirasawa · Lead Guitar"
             case (.mio, .zhHans): return "秋山澪 · 贝斯手 (CV: 日笠阳子)"
             case (.mio, .zhHant): return "秋山澪 · 貝斯手 (CV: 日笠陽子)"
-            case (.mio, .en): return "Mio Akiyama · Bass (CV: Yoko Hikasa)"
+            case (.mio, .en): return "Mio Akiyama · Bass"
             case (.ritsu, .zhHans): return "田井中律 · 鼓手部长 (CV: 佐藤聪美)"
             case (.ritsu, .zhHant): return "田井中律 · 鼓手部長 (CV: 佐藤聰美)"
-            case (.ritsu, .en): return "Ritsu Tainaka · Drums (CV: Satomi Sato)"
+            case (.ritsu, .en): return "Ritsu Tainaka · Drums"
             case (.mugi, .zhHans): return "琴吹紬 · 键盘手 (CV: 寿美菜子)"
             case (.mugi, .zhHant): return "琴吹紬 · 鍵盤手 (CV: 壽美菜子)"
-            case (.mugi, .en): return "Tsumugi Kotobuki · Keyboard (CV: Minako Kotobuki)"
+            case (.mugi, .en): return "Tsumugi Kotobuki · Keyboard"
             case (.azusa, .zhHans): return "中野梓 · 节奏吉他 (CV: 竹达彩奈)"
             case (.azusa, .zhHant): return "中野梓 · 節奏吉他 (CV: 竹達彩奈)"
-            case (.azusa, .en): return "Azusa Nakano · Rhythm Guitar (CV: Ayana Taketatsu)"
+            case (.azusa, .en): return "Azusa Nakano · Rhythm Guitar"
             case (.all, .zhHans): return "放课后茶会 (HTT 五人全员同台)"
             case (.all, .zhHant): return "放學後茶會 (HTT 五人全員同台)"
-            case (.all, .en): return "Houkago Tea Time (All 5 Members On Stage)"
+            case (.all, .en): return "Houkago Tea Time (All 5 Members)"
             }
         }
     }
@@ -287,6 +290,12 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         startSpriteAnimator()
     }
     
+    func resetPositions() {
+        mascotOffsetX = 0.0
+        mascotOffsetY = 0.0
+        memberPositions.removeAll()
+    }
+    
     func configureAudioSession() {
         do {
             let session = AVAudioSession.sharedInstance()
@@ -297,10 +306,9 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         }
     }
     
-    // Create an in-memory silent WAV loop so iOS never suspends the background timer during 10-minute Cruise Mode
     private func setupBackgroundKeepAliveAudio() {
         let sampleRate: Int32 = 8000
-        let numSamples: Int32 = 8000 // 1 second of silence
+        let numSamples: Int32 = 8000
         let dataSize = numSamples * 2
         let fileSize = 36 + dataSize
         
@@ -348,22 +356,22 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         }
     }
     
-    // Master 1-second clock on .common RunLoop mode (handles driving timer, Cruise Mode countdown, and GPS signal watchdog)
     private func startMasterClock() {
         let timer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
             guard let self = self else { return }
             self.drivingSeconds += 1
             
-            // 1. Fatigue Tea Time Reminder every 45 mins
             if self.drivingSeconds > 0 && self.drivingSeconds % 2700 == 0 {
                 self.triggerTeaTimeReminder()
             }
             
-            // 2. Cruise Mode Countdown & Reliable Trigger
-            if self.isCruiseModeActive {
+            if self.isCruiseModeActive || self.activeRoute != nil {
                 if self.keepAlivePlayer?.isPlaying == false {
                     self.keepAlivePlayer?.play()
                 }
+            }
+            
+            if self.isCruiseModeActive {
                 if self.cruiseRemainingSeconds > 1 {
                     self.cruiseRemainingSeconds -= 1
                 } else {
@@ -372,8 +380,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                 }
             }
             
-            // 3. GPS Signal Watchdog (if no accurate GPS fix for >18s while app active)
-            if Date().timeIntervalSince(self.lastValidGPSTime) > 18.0 {
+            if Date().timeIntervalSince(self.lastValidGPSTime) > 18.0 && !self.isDemoSimulating {
                 if !self.isGPSSignalPoor {
                     self.isGPSSignalPoor = true
                     if Date().timeIntervalSince(self.lastGPSAlertTime) > 60.0 {
@@ -466,7 +473,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         }
     }
     
-    // MARK: - 3. Real-Time Official K-ON Desktop Pet Sprite Animator (Single & All 5 Members!)
+    // MARK: - 3. Real-Time Official K-ON Desktop Pet Sprite Animator
     private func startSpriteAnimator() {
         updateAllSpriteFrames()
         let timer = Timer(timeInterval: 0.16, repeats: true) { [weak self] _ in
@@ -504,12 +511,13 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     }
     
     private func updateAllSpriteFrames() {
-        // Update all 5 members so 5-Member Group Stage has every girl animated simultaneously!
         for member in CharacterFilter.fiveIndividuals {
             let phaseTick = animTick + (member.charId * 3)
             let memberAction: MascotActionState
             if isDraggingMascot && (draggedMemberId == nil || draggedMemberId == member.charId) {
                 memberAction = .grabbed
+            } else if activeRoute != nil && currentSpeedKmh > 3.0 {
+                memberAction = .walkRight
             } else {
                 memberAction = mascotAction
             }
@@ -533,15 +541,11 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             let row: Int
             let col: Int
             switch char {
-            case .yui, .mugi, .all:
-                row = 1; col = tick % 4
-            case .ritsu:
-                row = 1; col = tick % 2
-            case .mio, .azusa:
-                row = 0; col = 0
+            case .yui, .mugi, .all: row = 1; col = tick % 4
+            case .ritsu: row = 1; col = tick % 2
+            case .mio, .azusa: row = 0; col = 0
             }
-            let rect = CGRect(x: col * fw, y: row * fh, width: fw, height: fh)
-            if let cropped = sheet.cropping(to: rect) {
+            if let cropped = sheet.cropping(to: CGRect(x: col * fw, y: row * fh, width: fw, height: fh)) {
                 return UIImage(cgImage: cropped)
             }
             return nil
@@ -555,8 +559,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         
         switch action {
         case .idle:
-            row = 0
-            col = isPlaying ? (tick % 4) : ((tick / 2) % 4)
+            row = 0; col = isPlaying ? (tick % 4) : ((tick / 2) % 4)
         case .walkLeft:
             row = 1; col = tick % 6
         case .walkRight:
@@ -568,36 +571,311 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         case .panic:
             switch char {
             case .yui, .all: row = 4; col = tick % 4
-            case .mio: row = 5; col = tick % 2 // Dizzy with halo!
+            case .mio: row = 5; col = tick % 2
             case .ritsu: row = 4; col = tick % 4
             case .mugi: row = 3; col = tick % 2
-            case .azusa: row = 3; col = tick % 6 // Panicked holding twin-tails!
+            case .azusa: row = 3; col = tick % 6
             }
         case .special, .teaCake:
             switch char {
-            case .yui, .all: row = 6; col = tick % 6 // Untan castanets!
+            case .yui, .all: row = 6; col = tick % 6
             case .mio: row = 3; col = tick % 2
-            case .ritsu: row = 5; col = tick % 4 // Cheering both hands!
-            case .mugi: row = 5; col = tick % 6 // Floating pink hearts!
+            case .ritsu: row = 5; col = tick % 4
+            case .mugi: row = 5; col = tick % 6
             case .azusa: row = 5; col = tick % 3
             }
         }
         
-        let rect = CGRect(x: col * fw, y: row * fh, width: fw, height: fh)
-        if let cropped = sheet.cropping(to: rect) {
+        if let cropped = sheet.cropping(to: CGRect(x: col * fw, y: row * fh, width: fw, height: fh)) {
             return UIImage(cgImage: cropped)
         }
         return nil
     }
     
-    // MARK: - CLLocationManagerDelegate (Speed Limit & GPS Signal Monitoring)
+    // MARK: - 4. Built-In Destination Search & Real-Time Turn-by-Turn Route Engine
+    func searchPlaces(query: String) {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            searchResults = []
+            return
+        }
+        isSearching = true
+        let req = MKLocalSearch.Request()
+        req.naturalLanguageQuery = trimmed
+        req.region = MKCoordinateRegion(center: userCoordinate, latitudinalMeters: 50000, longitudinalMeters: 50000)
+        
+        MKLocalSearch(request: req).start { [weak self] response, _ in
+            DispatchQueue.main.async {
+                self?.isSearching = false
+                self?.searchResults = response?.mapItems ?? []
+            }
+        }
+    }
+    
+    func startRouteGuidance(to item: MKMapItem) {
+        stopDemoSimulation()
+        let destCoord = item.placemark.coordinate
+        let destTitle = item.name ?? "目的地"
+        calculateAndStartRoute(to: destCoord, title: destTitle)
+    }
+    
+    func calculateAndStartRoute(to destCoord: CLLocationCoordinate2D, title: String, isReroute: Bool = false) {
+        destinationCoord = destCoord
+        destinationName = title
+        
+        let req = MKDirections.Request()
+        req.source = MKMapItem(placemark: MKPlacemark(coordinate: userCoordinate))
+        req.destination = MKMapItem(placemark: MKPlacemark(coordinate: destCoord))
+        req.transportType = .automobile
+        req.requestsAlternateRoutes = false
+        
+        MKDirections(request: req).calculate { [weak self] response, error in
+            guard let self = self else { return }
+            DispatchQueue.main.async {
+                self.isRecalculatingRoute = false
+                guard let route = response?.routes.first else {
+                    self.triggerDepartureGreeting()
+                    return
+                }
+                self.activeRoute = route
+                self.announcedStepThresholds.removeAll()
+                self.keepAlivePlayer?.play()
+                
+                // Find first meaningful step
+                let steps = route.steps
+                self.currentStepIndex = steps.count > 1 ? 1 : 0
+                if self.currentStepIndex < steps.count {
+                    let step = steps[self.currentStepIndex]
+                    self.currentStepInstruction = step.instructions.isEmpty ? title : step.instructions
+                    self.distanceToNextStepMeters = step.distance
+                }
+                self.remainingRouteDistanceKm = route.distance / 1000.0
+                self.remainingRouteMinutes = max(1, Int(route.expectedTravelTime / 60.0))
+                
+                if isReroute {
+                    let base = self.activeBaseId()
+                    let modeOff = self.activeModeOffset()
+                    self.playVoice(id: base + modeOff + 43, customQuote: "🔄 リルート完了！新しいルートで案内するよ！")
+                } else {
+                    // Play Start Route Guidance (m=39) + Traffic Rules (m=47) combo!
+                    let base = self.activeBaseId()
+                    let modeOff = self.activeModeOffset()
+                    self.enqueueVoiceCombo([
+                        (base + modeOff + 39, "🗺️ ルート案内を始めるよ！目的地: \(title)"),
+                        (base + modeOff + 47, "🚦 実際の交通規制に従って、安全運転してね！")
+                    ])
+                }
+            }
+        }
+    }
+    
+    func stopRouteGuidance() {
+        stopDemoSimulation()
+        activeRoute = nil
+        destinationCoord = nil
+        destinationName = ""
+        currentStepInstruction = ""
+        announcedStepThresholds.removeAll()
+        let base = activeBaseId()
+        let modeOff = activeModeOffset()
+        playVoice(id: base + modeOff + 38, customQuote: "🏁 これで音声案内は終了だよ！運転お疲れ様♪")
+    }
+    
+    // Real-Time Turn-by-Turn GPS Step Evaluation
+    private func updateNavigationProgress(location: CLLocation) {
+        guard let route = activeRoute, !route.steps.isEmpty else { return }
+        let steps = route.steps
+        guard currentStepIndex < steps.count else { return }
+        
+        let step = steps[currentStepIndex]
+        let stepEndCoord = step.polyline.points()[max(0, step.polyline.pointCount - 1)].coordinate
+        let stepEndLoc = CLLocation(latitude: stepEndCoord.latitude, longitude: stepEndCoord.longitude)
+        let dist = location.distance(from: stepEndLoc)
+        
+        self.distanceToNextStepMeters = dist
+        self.currentStepInstruction = step.instructions
+        
+        // Check Final Destination Arrival
+        if currentStepIndex == steps.count - 1 && dist <= 40.0 {
+            let base = activeBaseId()
+            let modeOff = activeModeOffset()
+            enqueueVoiceCombo([
+                (base + modeOff + 37, "🎉 目的地周辺に到着したよ！(\(destinationName))"),
+                (base + modeOff + 38, "✨ これで音声案内は終了だよ！お疲れ様でした♪")
+            ])
+            activeRoute = nil
+            return
+        }
+        
+        // Evaluate Distance Thresholds (1000m -> m=5, 500m -> m=10, 300m -> m=12, 100m -> m=14, 35m -> m=15)
+        let thresholds: [(limit: Double, tol: Double, distM: Int, label: String)] = [
+            (1000, 90, 5, "およそ1km先"),
+            (500, 60, 10, "およそ500m先"),
+            (300, 50, 12, "およそ300m先"),
+            (100, 35, 14, "およそ100m先"),
+            (35, 25, 15, "まもなく")
+        ]
+        
+        for th in thresholds {
+            let key = "\(currentStepIndex)_\(th.distM)"
+            if abs(dist - th.limit) <= th.tol && !announcedStepThresholds.contains(key) {
+                announcedStepThresholds.insert(key)
+                let turnM = classifyTurnOffsetM(from: step.instructions)
+                let base = activeBaseId()
+                let modeOff = activeModeOffset()
+                enqueueVoiceCombo([
+                    (base + th.distM, "📍 \(th.label) (\(Int(dist))m)"),
+                    (base + modeOff + turnM, "↪️ \(step.instructions)")
+                ])
+                break
+            }
+        }
+        
+        // Advance to next step when within 22m of maneuver point
+        if dist <= 22.0 && currentStepIndex < steps.count - 1 {
+            currentStepIndex += 1
+            let nextStep = steps[currentStepIndex]
+            currentStepInstruction = nextStep.instructions
+        }
+        
+        // Check Off-Route deviation (>110m from active step end and increasing)
+        if dist > step.distance + 140.0 && !isRecalculatingRoute, let dest = destinationCoord {
+            isRecalculatingRoute = true
+            let base = activeBaseId()
+            let modeOff = activeModeOffset()
+            playVoice(id: base + modeOff + 36, customQuote: "💦 ルートを外れちゃったよ…リルートするね！")
+            calculateAndStartRoute(to: dest, title: destinationName, isReroute: true)
+        }
+    }
+    
+    // Map step instruction string (Chinese/English/Japanese) to RM-500HTT exact turn offset m (16..35)
+    private func classifyTurnOffsetM(from text: String) -> Int {
+        let lower = text.lowercased()
+        if lower.contains("调头") || lower.contains("掉头") || lower.contains("u-turn") || lower.contains("u turn") {
+            return 21 // Uターンだよ！
+        }
+        if lower.contains("出口") || lower.contains("驶出") || lower.contains("exit") {
+            return 20 // 出口だよ！
+        }
+        if lower.contains("入口") || lower.contains("驶入") || lower.contains("匯入") || lower.contains("汇入") || lower.contains("merge") || lower.contains("ramp") {
+            return 19 // 入口だよ！
+        }
+        if lower.contains("稍向右") || lower.contains("靠右") || lower.contains("右前方") || lower.contains("slight right") || lower.contains("keep right") {
+            return 30 // 斜め右方向だよ！
+        }
+        if lower.contains("稍向左") || lower.contains("靠左") || lower.contains("左前方") || lower.contains("slight left") || lower.contains("keep left") {
+            return 31 // 斜め左方向だよ！
+        }
+        if lower.contains("右后") || lower.contains("sharp right") {
+            return 32 // 斜め右手前方向だよ！
+        }
+        if lower.contains("左后") || lower.contains("sharp left") {
+            return 33 // 斜め左手前方向だよ！
+        }
+        if lower.contains("右") || lower.contains("right") {
+            return 28 // 右方向に行きまーす！
+        }
+        if lower.contains("左") || lower.contains("left") {
+            return 29 // 左方向に行きまーす！
+        }
+        return 16 // 直進だよ！
+    }
+    
+    // MARK: - 1-Tap Live Demo Navigation Simulator (Works indoors without moving!)
+    func toggleDemoSimulation() {
+        if isDemoSimulating {
+            stopDemoSimulation()
+        } else {
+            startDemoSimulation()
+        }
+    }
+    
+    func startDemoSimulation() {
+        stopDemoSimulation()
+        isDemoSimulating = true
+        destinationName = language == .en ? "Sakuragaoka High Music Room" : "樱丘高中轻音部部室 (模拟导航)"
+        currentStepInstruction = language == .en ? "In 300m, Turn Right" : "前方 300 米右转进入樱高大道"
+        distanceToNextStepMeters = 300
+        currentSpeedKmh = 48.0
+        
+        let base = activeBaseId()
+        let modeOff = activeModeOffset()
+        
+        // Step 0: Start Route Guidance
+        enqueueVoiceCombo([
+            (base + modeOff + 39, "🚗 ルート案内を始めるよ！ドライブ楽しみだな〜"),
+            (base + 12, "📍 およそ 300m先 (前方300米)"),
+            (base + modeOff + 28, "↪️ 右方向に行きまーす！対向車に注意してね！")
+        ])
+        
+        var stepCounter = 0
+        let timer = Timer(timeInterval: 9.0, repeats: true) { [weak self] _ in
+            guard let self = self, self.isDemoSimulating else { return }
+            stepCounter += 1
+            let b = self.activeBaseId()
+            let mOff = self.activeModeOffset()
+            
+            // Move simulated coordinate slightly forward
+            self.userCoordinate = CLLocationCoordinate2D(
+                latitude: self.userCoordinate.latitude + 0.0006,
+                longitude: self.userCoordinate.longitude + 0.0006
+            )
+            self.tripDistanceKm += 0.1
+            
+            switch stepCounter {
+            case 1:
+                self.distanceToNextStepMeters = 100
+                self.currentStepInstruction = self.language == .en ? "In 100m, Turn Left" : "前方 100 米左转进入商业街"
+                self.enqueueVoiceCombo([
+                    (b + 14, "📍 およそ 100m先 (前方100米)"),
+                    (b + mOff + 29, "↩️ 左方向に行きまーす！巻き込みに注意してね！")
+                ])
+            case 2:
+                self.distanceToNextStepMeters = 30
+                self.currentStepInstruction = self.language == .en ? "Soon, Enter Expressway" : "即将驶入高速道路入口"
+                self.enqueueVoiceCombo([
+                    (b + 15, "📍 まもなく (即将到达路口)"),
+                    (b + mOff + 19, "🛣️ 入口だよ！合流に注意してね！")
+                ])
+            case 3:
+                self.distanceToNextStepMeters = 0
+                self.currentStepInstruction = self.language == .en ? "Arrived at Destination!" : "已到达终点：轻音部部室！"
+                self.enqueueVoiceCombo([
+                    (b + mOff + 37, "🎉 目的地周辺に到着したよ！"),
+                    (b + mOff + 38, "✨ これで音声案内は終了だよ！お疲れ様♪")
+                ])
+                DispatchQueue.main.asyncAfter(deadline: .now() + 8.0) {
+                    self.stopDemoSimulation()
+                }
+            default:
+                break
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        self.demoSimTimer = timer
+    }
+    
+    func stopDemoSimulation() {
+        isDemoSimulating = false
+        demoSimTimer?.invalidate()
+        demoSimTimer = nil
+        if activeRoute == nil {
+            currentStepInstruction = ""
+            distanceToNextStepMeters = 0
+            currentSpeedKmh = 0
+        }
+    }
+    
+    // MARK: - CLLocationManagerDelegate
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         guard let loc = locations.last else { return }
         
         DispatchQueue.main.async {
+            if !self.isDemoSimulating {
+                self.userCoordinate = loc.coordinate
+            }
             self.gpsAccuracyMeters = loc.horizontalAccuracy
             
-            // Check GPS Signal Quality
             if loc.horizontalAccuracy < 0 || loc.horizontalAccuracy > 65.0 {
                 if !self.isGPSSignalPoor {
                     self.isGPSSignalPoor = true
@@ -608,7 +886,6 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                 }
                 return
             } else {
-                // GPS Signal recovered!
                 if self.isGPSSignalPoor {
                     self.isGPSSignalPoor = false
                     self.triggerGPSSignalRecovered()
@@ -625,7 +902,9 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             self.lastLocation = loc
             
             let rawSpeed = max(0.0, loc.speed * 3.6)
-            self.currentSpeedKmh = rawSpeed
+            if !self.isDemoSimulating {
+                self.currentSpeedKmh = rawSpeed
+            }
             if rawSpeed > self.maxSpeedKmh {
                 self.maxSpeedKmh = rawSpeed
             }
@@ -639,12 +918,15 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             } else {
                 self.isOverspeeding = false
             }
+            
+            // Update Real-Time Turn-by-Turn Navigation
+            self.updateNavigationProgress(location: loc)
         }
     }
     
     func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
         DispatchQueue.main.async {
-            if !self.isGPSSignalPoor {
+            if !self.isGPSSignalPoor && !self.isDemoSimulating {
                 self.isGPSSignalPoor = true
                 if Date().timeIntervalSince(self.lastGPSAlertTime) > 45.0 {
                     self.lastGPSAlertTime = Date()
@@ -660,9 +942,15 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         }
     }
     
-    // MARK: - Play RM-500HTT Navigation Voice (Strictly Verified Character IDs 157..1122)
-    func playVoice(id: Int, customQuote: String? = nil) {
-        // Block IDs 1..156 (generic factory announcer) unless explicitly requested
+    // MARK: - Sequential Voice Combo Queue & Playback
+    func enqueueVoiceCombo(_ items: [(id: Int, quote: String)]) {
+        guard !items.isEmpty else { return }
+        voiceQueue = Array(items.dropFirst())
+        playVoice(id: items[0].id, customQuote: items[0].quote, clearQueue: false)
+    }
+    
+    func playVoice(id: Int, customQuote: String? = nil, clearQueue: Bool = true) {
+        if clearQueue { voiceQueue.removeAll() }
         let safeId = (id < 157) ? (157 + (id % 144)) : id
         guard safeId >= 1 && safeId <= navIndexTable.count else { return }
         guard let handle = navFileHandle else { return }
@@ -694,8 +982,8 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         }
     }
     
-    // Play Official Windows Desktop Pet Voice (137 voices)
     func playMascotVoice(for character: CharacterFilter? = nil, customQuote: String? = nil) {
+        voiceQueue.removeAll()
         guard let handle = mascotFileHandle, !mascotVoices.isEmpty else { return }
         let targetChar = character ?? selectedCharacter
         let matching: [MascotVoiceEntry]
@@ -752,26 +1040,27 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         switch (charId, language) {
         case (1, .zhHans): return "うんたん♪ 今日も楽しくドライブしようね！(平泽唯桌宠原声)"
         case (1, .zhHant): return "うんたん♪ 今日も楽しくドライブしようね！(平澤唯桌寵原聲)"
-        case (1, .en): return "Untan ♪ Let's have a fun drive today! (Yui Mascot Voice)"
+        case (1, .en): return "Untan ♪ Let's have a fun drive today! (Yui Mascot)"
         case (2, .zhHans): return "もう、急に触るなよ…安全運転で行こう！(秋山澪桌宠原声)"
         case (2, .zhHant): return "もう、急に触るなよ…安全運転で行こう！(秋山澪桌寵原聲)"
-        case (2, .en): return "H-Hey, don't poke me suddenly... Drive safely! (Mio Mascot Voice)"
+        case (2, .en): return "H-Hey, don't poke me suddenly... Drive safely! (Mio Mascot)"
         case (3, .zhHans): return "よっしゃー！ノリノリで出発だぜ～！(田井中律桌宠原声)"
         case (3, .zhHant): return "よっしゃー！ノリノリで出発だぜ～！(田井中律桌寵原聲)"
-        case (3, .en): return "Alright! Let's hit the road in high spirits! (Ritsu Mascot Voice)"
+        case (3, .en): return "Alright! Let's hit the road in high spirits! (Ritsu Mascot)"
         case (4, .zhHans): return "ふふっ、紅茶とケーキを用意しましたよ♪ (琴吹紬桌宠原声)"
         case (4, .zhHant): return "ふふっ、紅茶とケーキを用意しましたよ♪ (琴吹紬桌寵原聲)"
-        case (4, .en): return "Fufu, I've prepared tea and cake for us ♪ (Mugi Mascot Voice)"
+        case (4, .en): return "Fufu, I've prepared tea and cake for us ♪ (Mugi Mascot)"
         default:
             switch language {
             case .zhHans: return "先輩！ちゃんと前を見て運転してくださいね！(中野梓桌宠原声)"
             case .zhHant: return "先輩！ちゃんと前を見て運転してくださいね！(中野梓桌寵原聲)"
-            case .en: return "Senpai! Please keep your eyes on the road! (Azusa Mascot Voice)"
+            case .en: return "Senpai! Please keep your eyes on the road! (Azusa Mascot)"
             }
         }
     }
     
     func stop() {
+        voiceQueue.removeAll()
         audioPlayer?.stop()
         DispatchQueue.main.async {
             self.isPlaying = false
@@ -780,9 +1069,14 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     }
     
     func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
-        DispatchQueue.main.async {
-            self.isPlaying = false
-            self.currentPlayingId = nil
+        if !voiceQueue.isEmpty {
+            let nextItem = voiceQueue.removeFirst()
+            playVoice(id: nextItem.id, customQuote: nextItem.quote, clearQueue: false)
+        } else {
+            DispatchQueue.main.async {
+                self.isPlaying = false
+                self.currentPlayingId = nil
+            }
         }
     }
     
@@ -794,13 +1088,16 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         return selectedCharacter.navBaseId
     }
     
-    // 1. Tap Character / Specific Member on Stage
+    private func activeModeOffset() -> Int {
+        if selectedCharacter == .all { return 96 } // 5-Member Group mode (k=96..143)
+        return enableBanter ? 48 : 0               // Duo mode (k=48..95) or Solo mode (k=0..47)
+    }
+    
     func triggerCharacterTap(member: CharacterFilter? = nil) {
         mascotAction = .special
         playMascotVoice(for: member ?? selectedCharacter)
     }
     
-    // 2. Departure Greeting (Exact offset m = 39 or m = 94)
     func triggerDepartureGreeting() {
         mascotAction = .special
         let base = activeBaseId()
@@ -815,7 +1112,6 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         playVoice(id: chosenId, customQuote: msg)
     }
     
-    // 3. Group Banter / 掛け合い (Exact Duo k=48..95 & 5-Member Group k=96..143 + 1112..1122)
     func triggerBanter() {
         mascotAction = .special
         let base = activeBaseId()
@@ -830,7 +1126,6 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         playVoice(id: chosenId, customQuote: msg)
     }
     
-    // 4. Built-in GPS Signal Poor Alert (Exact verified offset m = 44: k = 44 Solo, k = 92 Duo, k = 140 All-5)
     func triggerGPSSignalPoorAlert() {
         let base = activeBaseId()
         let offset = (selectedCharacter == .all) ? 140 : ([44, 92, 140].randomElement()!)
@@ -843,7 +1138,6 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         playVoice(id: base + offset, customQuote: msg)
     }
     
-    // 5. Built-in GPS Signal Recovered (Exact verified offset m = 46: k = 46 Solo, k = 94 Duo, k = 142 All-5)
     func triggerGPSSignalRecovered() {
         let base = activeBaseId()
         let offset = (selectedCharacter == .all) ? 142 : 94
@@ -856,7 +1150,6 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         playVoice(id: base + offset, customQuote: msg)
     }
     
-    // 6. Built-in Speed Limit & Traffic Regulation Prompt (Exact verified offset m = 47: k = 47, 95, 143)
     func triggerSpeedLimitPrompt() {
         let base = activeBaseId()
         let offset = (selectedCharacter == .all) ? 143 : ([47, 95, 143].randomElement()!)
@@ -870,7 +1163,6 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         playVoice(id: base + offset, customQuote: msg)
     }
     
-    // 7. Overspeed Warning (Exact verified offsets m = 22 & m = 47: k = 22, 70, 118, 95, 143)
     func triggerOverspeedAlert() {
         mascotAction = .panic
         let base = activeBaseId()
@@ -885,7 +1177,6 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         playVoice(id: base + offset, customQuote: msg)
     }
     
-    // 8. Tea Time Rest Reminder (Exact verified offset m = 25/73/121)
     func triggerTeaTimeReminder() {
         mascotAction = .teaCake
         let base = activeBaseId()
@@ -908,7 +1199,6 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         }
     }
     
-    // MARK: - Background-Proof Cruise Mode
     func toggleCruiseMode() {
         if isCruiseModeActive { stopCruiseMode() } else { startCruiseMode() }
     }
@@ -923,7 +1213,9 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     
     func stopCruiseMode() {
         isCruiseModeActive = false
-        keepAlivePlayer?.stop()
+        if activeRoute == nil {
+            keepAlivePlayer?.stop()
+        }
     }
     
     func resetCruiseCountdown() {

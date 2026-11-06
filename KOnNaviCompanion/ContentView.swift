@@ -1,8 +1,97 @@
 import SwiftUI
+import MapKit
+
+// MARK: - Native AutoNavi/MapKit 3D Route & Tracking View
+struct HTTRealTimeMapView: UIViewRepresentable {
+    @ObservedObject var manager: AudioPlayerManager
+    
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+    
+    func makeUIView(context: Context) -> MKMapView {
+        let mapView = MKMapView(frame: .zero)
+        mapView.delegate = context.coordinator
+        mapView.showsUserLocation = true
+        mapView.showsCompass = true
+        mapView.showsTraffic = true
+        mapView.showsBuildings = true
+        mapView.isPitchEnabled = true
+        mapView.isRotateEnabled = true
+        
+        let region = MKCoordinateRegion(
+            center: manager.userCoordinate,
+            latitudinalMeters: 900,
+            longitudinalMeters: 900
+        )
+        mapView.setRegion(region, animated: false)
+        return mapView
+    }
+    
+    func updateUIView(_ mapView: MKMapView, context: Context) {
+        // Update route overlay when route changes
+        if context.coordinator.lastRoute !== manager.activeRoute {
+            context.coordinator.lastRoute = manager.activeRoute
+            mapView.removeOverlays(mapView.overlays)
+            mapView.removeAnnotations(mapView.annotations.filter { !($0 is MKUserLocation) })
+            
+            if let route = manager.activeRoute {
+                mapView.addOverlay(route.polyline, level: .aboveRoads)
+                if let dest = manager.destinationCoord {
+                    let pin = MKPointAnnotation()
+                    pin.coordinate = dest
+                    pin.title = manager.destinationName
+                    mapView.addAnnotation(pin)
+                }
+                let rect = route.polyline.boundingMapRect
+                mapView.setVisibleMapRect(rect, edgePadding: UIEdgeInsets(top: 50, left: 40, bottom: 60, right: 40), animated: true)
+            }
+        }
+        
+        if manager.mapTrackingUser && manager.activeRoute != nil {
+            let camera = MKMapCamera(
+                lookingAtCenter: manager.userCoordinate,
+                fromDistance: 650,
+                pitch: 45,
+                heading: manager.headingDegrees
+            )
+            mapView.setCamera(camera, animated: true)
+        } else if manager.isDemoSimulating {
+            let region = MKCoordinateRegion(
+                center: manager.userCoordinate,
+                latitudinalMeters: 700,
+                longitudinalMeters: 700
+            )
+            mapView.setRegion(region, animated: true)
+        }
+    }
+    
+    class Coordinator: NSObject, MKMapViewDelegate {
+        var parent: HTTRealTimeMapView
+        var lastRoute: MKRoute? = nil
+        
+        init(_ parent: HTTRealTimeMapView) {
+            self.parent = parent
+        }
+        
+        func mapView(_ mapView: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
+            if let polyline = overlay as? MKPolyline {
+                let renderer = MKPolylineRenderer(polyline: polyline)
+                renderer.strokeColor = UIColor(red: 0.92, green: 0.22, blue: 0.35, alpha: 0.92)
+                renderer.lineWidth = 7.0
+                renderer.lineCap = .round
+                renderer.lineJoin = .round
+                return renderer
+            }
+            return MKOverlayRenderer(overlay: overlay)
+        }
+    }
+}
 
 struct ContentView: View {
     @StateObject private var manager = AudioPlayerManager.shared
     @State private var showSoundboardSheet: Bool = false
+    @State private var showSearchSheet: Bool = false
     @State private var dragOffset: CGSize = .zero
     
     // RM-500HTT Classic Tea-Time Palette
@@ -26,22 +115,19 @@ struct ContentView: View {
                 httDarkPanel.ignoresSafeArea()
                 
                 if isLandscape {
-                    // Widescreen RM-500HTT Native Landscape Cockpit (2-Column Adaptive + Scrollable)
                     ScrollView(.vertical, showsIndicators: true) {
                         VStack(spacing: 8) {
                             topBezelBar
                             
                             HStack(alignment: .top, spacing: 12) {
-                                // Left Column: GPS Speedometer & Tactical Controls
                                 VStack(spacing: 8) {
                                     speedometerCockpit
                                     utilityControlGrid
                                 }
-                                .frame(width: geo.size.width * 0.46)
+                                .frame(width: geo.size.width * 0.45)
                                 
-                                // Right Column: Wide Interactive Mascot Stage & Character Bar
                                 VStack(spacing: 8) {
-                                    mascotInteractiveStage(stageWidth: geo.size.width * 0.48, stageHeight: 155)
+                                    mainStageOrMapSection(stageWidth: geo.size.width * 0.49, stageHeight: 195)
                                     characterSelectorStrip
                                 }
                                 .frame(maxWidth: .infinity)
@@ -53,12 +139,11 @@ struct ContentView: View {
                     .scaleEffect(x: manager.isHUDMirrored ? -1 : 1, y: 1)
                     .onAppear { manager.stageWalkBound = 95.0 }
                 } else {
-                    // Portrait Mode (Scrollable + Non-blocking Mascot Drag)
                     ScrollView(.vertical, showsIndicators: false) {
                         VStack(spacing: 8) {
                             topBezelBar
                             speedometerCockpit
-                            mascotInteractiveStage(stageWidth: geo.size.width - 24, stageHeight: 150)
+                            mainStageOrMapSection(stageWidth: geo.size.width - 24, stageHeight: 210)
                             characterSelectorStrip
                             utilityControlGrid
                             Spacer(minLength: 4)
@@ -77,30 +162,40 @@ struct ContentView: View {
         .sheet(isPresented: $showSoundboardSheet) {
             SoundboardSheetView(manager: manager)
         }
+        .sheet(isPresented: $showSearchSheet) {
+            DestinationSearchSheetView(manager: manager)
+        }
     }
     
     // MARK: - 1. Top Bezel Header
     private var topBezelBar: some View {
         HStack(spacing: 6) {
-            HStack(spacing: 5) {
-                Image(systemName: "cup.and.saucer.fill")
-                    .foregroundColor(httGold)
-                Text(tr("HTT 车载桌宠", "HTT 車載桌寵", "HTT NAVI PET"))
-                    .font(.system(size: 12, weight: .heavy, design: .rounded))
-                    .foregroundColor(httCream)
+            // Switch between Map Navigation Mode & Clubroom Stage Mode
+            Button(action: {
+                withAnimation { manager.showMapMode.toggle() }
+            }) {
+                HStack(spacing: 5) {
+                    Image(systemName: manager.showMapMode ? "map.fill" : "cup.and.saucer.fill")
+                        .foregroundColor(httGold)
+                    Text(manager.showMapMode
+                         ? tr("地图模式(点击切舞台)", "地圖模式(點擊切舞台)", "Map Mode")
+                         : tr("舞台模式(点击切地图)", "舞台模式(點擊切地圖)", "Stage Mode"))
+                        .font(.system(size: 11, weight: .heavy, design: .rounded))
+                        .foregroundColor(httCream)
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+                .background(httCrimson)
+                .cornerRadius(8)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(httGold, lineWidth: 1.5)
+                )
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 5)
-            .background(httCrimson)
-            .cornerRadius(8)
-            .overlay(
-                RoundedRectangle(cornerRadius: 8)
-                    .stroke(httGold, lineWidth: 1.5)
-            )
             
             Spacer()
             
-            // 3-Language Switcher (简体 / 繁體 / EN)
+            // 3-Language Switcher
             Menu {
                 ForEach(AppLanguage.allCases) { lang in
                     Button(action: { manager.language = lang }) {
@@ -125,7 +220,6 @@ struct ContentView: View {
                 .cornerRadius(8)
             }
             
-            // HUD Windshield Mirror Toggle
             Button(action: {
                 withAnimation { manager.isHUDMirrored.toggle() }
             }) {
@@ -141,7 +235,6 @@ struct ContentView: View {
                 .cornerRadius(8)
             }
             
-            // Full Soundboard Button
             Button(action: { showSoundboardSheet = true }) {
                 HStack(spacing: 3) {
                     Image(systemName: "music.note.list")
@@ -159,12 +252,12 @@ struct ContentView: View {
     
     // MARK: - 2. GPS Speedometer & Telemetry Cockpit
     private var speedometerCockpit: some View {
-        VStack(spacing: 7) {
+        VStack(spacing: 6) {
             HStack(alignment: .center, spacing: 10) {
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(alignment: .firstTextBaseline, spacing: 5) {
                         Text("\(Int(manager.currentSpeedKmh))")
-                            .font(.system(size: 50, weight: .black, design: .monospaced))
+                            .font(.system(size: 46, weight: .black, design: .monospaced))
                             .foregroundColor(manager.isOverspeeding ? .red : Color(red: 0.35, green: 0.98, blue: 0.65))
                             .shadow(color: (manager.isOverspeeding ? Color.red : Color.green).opacity(0.5), radius: 6)
                         
@@ -173,14 +266,12 @@ struct ContentView: View {
                             .foregroundColor(httCream.opacity(0.7))
                     }
                     
-                    HStack(spacing: 8) {
-                        Button(action: {
-                            manager.triggerGPSSignalPoorAlert()
-                        }) {
+                    HStack(spacing: 6) {
+                        Button(action: { manager.triggerGPSSignalPoorAlert() }) {
                             HStack(spacing: 3) {
                                 Image(systemName: manager.isGPSSignalPoor ? "antenna.radiowaves.left.and.right.slash" : "antenna.radiowaves.left.and.right")
                                 Text(manager.isGPSSignalPoor
-                                     ? tr("GPS信号弱(点击播报)", "GPS訊號弱(點擊播報)", "GPS Weak (Tap)")
+                                     ? tr("GPS弱(点按播报)", "GPS弱(點按播報)", "GPS Weak")
                                      : tr("GPS信号正常", "GPS訊號正常", "GPS OK"))
                             }
                             .font(.system(size: 10, weight: .bold))
@@ -268,204 +359,425 @@ struct ContentView: View {
         }
     }
     
-    // MARK: - 3. Official K-ON Windows Desktop Pet Stage (Works in both Portrait & Landscape!)
-    private func mascotInteractiveStage(stageWidth: CGFloat, stageHeight: CGFloat) -> some View {
+    // MARK: - 3. Main Map Navigation OR Clubroom Stage Section
+    private func mainStageOrMapSection(stageWidth: CGFloat, stageHeight: CGFloat) -> some View {
         VStack(spacing: 6) {
-            ZStack(alignment: .bottom) {
-                RoundedRectangle(cornerRadius: 16)
-                    .fill(
-                        LinearGradient(
-                            colors: [
-                                characterThemeColor(manager.selectedCharacter).opacity(0.35),
-                                Color.black.opacity(0.78)
-                            ],
-                            startPoint: .top,
-                            endPoint: .bottom
+            if manager.showMapMode {
+                // Real-Time 3D AutoNavi/MapKit Navigation Cockpit with Chibi Car Avatar!
+                ZStack {
+                    HTTRealTimeMapView(manager: manager)
+                        .frame(height: stageHeight)
+                        .cornerRadius(16)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 16)
+                                .stroke(httGold, lineWidth: 2)
                         )
-                    )
-                    .frame(height: stageHeight)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 16)
-                            .stroke(httGold, lineWidth: 2)
-                    )
-                
-                // Official MascotTable Tea Table & Cake Prop in Background
-                if let deskImg = manager.deskSpriteFrame {
-                    Image(uiImage: deskImg)
-                        .interpolation(.none)
-                        .resizable()
-                        .scaledToFit()
-                        .frame(height: manager.selectedCharacter == .all ? 88 : 78)
-                        .opacity(manager.selectedCharacter == .all ? 0.85 : 0.45)
-                        .padding(.bottom, 8)
-                }
-                
-                // Pose Quick Switcher Pills at Top of Stage
-                VStack {
-                    HStack(spacing: 5) {
-                        posePill(title: tr("待机", "待機", "Idle"), state: .idle)
-                        posePill(title: tr("散步", "散步", "Walk"), state: .walkRight)
-                        posePill(title: tr("招牌动作", "招牌動作", "Dance"), state: .special)
-                        posePill(title: tr("顶蛋糕", "頂蛋糕", "Cake"), state: .teaCake)
-                        Spacer()
-                        Text(manager.isDraggingMascot
-                             ? tr("提起挣扎!", "提起掙扎!", "Lifted!")
-                             : manager.mascotAction.localizedTitle(manager.language))
-                            .font(.system(size: 10, weight: .bold))
-                            .padding(.horizontal, 7)
-                            .padding(.vertical, 3)
-                            .background(httCrimson)
-                            .foregroundColor(httCream)
-                            .cornerRadius(6)
-                    }
-                    .padding(.horizontal, 10)
-                    .padding(.top, 7)
-                    Spacer()
-                }
-                
-                // Render ALL 5 HTT MEMBERS TOGETHER when .all is selected, or solo member!
-                if manager.selectedCharacter == .all {
-                    HStack(alignment: .bottom, spacing: 2) {
-                        ForEach(AudioPlayerManager.CharacterFilter.fiveIndividuals) { member in
-                            if let frame = manager.allMemberFrames[member.charId] {
-                                let isThisDragged = manager.isDraggingMascot && manager.draggedMemberId == member.charId
-                                let savedPos = manager.memberPositions[member.charId] ?? .zero
-                                VStack(spacing: 0) {
-                                    Image(uiImage: frame)
-                                        .interpolation(.none)
-                                        .resizable()
-                                        .scaledToFit()
-                                        .frame(height: 82)
-                                    Text(member.displayName(manager.language))
-                                        .font(.system(size: 9, weight: .bold))
-                                        .padding(.horizontal, 4)
-                                        .padding(.vertical, 1)
-                                        .background(characterThemeColor(member).opacity(0.85))
+                    
+                    // Top Overlay: Destination Search Bar + Demo Navi + Active Turn Banner
+                    VStack(spacing: 4) {
+                        HStack(spacing: 6) {
+                            Button(action: { showSearchSheet = true }) {
+                                HStack(spacing: 5) {
+                                    Image(systemName: "magnifyingglass")
+                                        .foregroundColor(httGold)
+                                    Text(manager.destinationName.isEmpty
+                                         ? tr("搜索目的地规划路线...", "搜尋目的地規劃路線...", "Search destination...")
+                                         : manager.destinationName)
+                                        .font(.system(size: 11, weight: .bold))
                                         .foregroundColor(.white)
-                                        .cornerRadius(4)
+                                        .lineLimit(1)
+                                    Spacer()
                                 }
-                                .offset(
-                                    x: savedPos.width + (isThisDragged ? dragOffset.width : (manager.mascotOffsetX * 0.45)),
-                                    y: savedPos.height + (isThisDragged ? dragOffset.height : 0)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 6)
+                                .background(Color.black.opacity(0.78))
+                                .cornerRadius(8)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 8)
+                                        .stroke(httGold.opacity(0.7), lineWidth: 1)
                                 )
-                                .highPriorityGesture(
-                                    DragGesture(minimumDistance: 2)
-                                        .onChanged { value in
-                                            if !manager.isDraggingMascot {
-                                                manager.isDraggingMascot = true
-                                                manager.draggedMemberId = member.charId
-                                                manager.playMascotVoice(for: member)
-                                            }
-                                            dragOffset = value.translation
-                                        }
-                                        .onEnded { value in
-                                            let oldPos = manager.memberPositions[member.charId] ?? .zero
-                                            let maxBoundX = stageWidth * 0.35
-                                            let newX = min(max(oldPos.width + value.translation.width, -maxBoundX), maxBoundX)
-                                            let newY = min(max(oldPos.height + value.translation.height, -45), 10)
-                                            withAnimation(.spring(response: 0.35, dampingFraction: 0.65)) {
-                                                manager.memberPositions[member.charId] = CGSize(width: newX, height: newY)
-                                                manager.isDraggingMascot = false
-                                                manager.draggedMemberId = nil
-                                                dragOffset = .zero
-                                                manager.mascotAction = .idle
-                                            }
-                                        }
-                                )
-                                .onTapGesture {
-                                    manager.triggerCharacterTap(member: member)
+                            }
+                            
+                            // 1-Tap Demo Navigation Simulator Button
+                            Button(action: { manager.toggleDemoSimulation() }) {
+                                HStack(spacing: 3) {
+                                    Image(systemName: manager.isDemoSimulating ? "stop.fill" : "play.fill")
+                                    Text(manager.isDemoSimulating
+                                         ? tr("停止模拟", "停止模擬", "Stop")
+                                         : tr("模拟指路", "模擬指路", "Demo"))
+                                }
+                                .font(.system(size: 10, weight: .bold))
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 6)
+                                .background(manager.isDemoSimulating ? Color.orange : httCrimson)
+                                .foregroundColor(.white)
+                                .cornerRadius(8)
+                            }
+                            
+                            if manager.activeRoute != nil {
+                                Button(action: { manager.stopRouteGuidance() }) {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .font(.title3)
+                                        .foregroundColor(.red)
+                                        .padding(4)
+                                        .background(Color.black.opacity(0.7))
+                                        .clipShape(Circle())
                                 }
                             }
                         }
-                    }
-                    .padding(.bottom, 5)
-                } else if let sprite = manager.currentSpriteFrame {
-                    Image(uiImage: sprite)
-                        .interpolation(.none)
-                        .resizable()
-                        .scaledToFit()
-                        .frame(height: 110)
-                        .offset(
-                            x: manager.mascotOffsetX + (manager.isDraggingMascot ? dragOffset.width : 0),
-                            y: manager.mascotOffsetY + (manager.isDraggingMascot ? dragOffset.height : 0)
-                        )
-                        .highPriorityGesture(
-                            DragGesture(minimumDistance: 2)
-                                .onChanged { value in
-                                    if !manager.isDraggingMascot {
-                                        manager.isDraggingMascot = true
-                                        manager.playMascotVoice()
-                                    }
-                                    dragOffset = value.translation
+                        .padding(.horizontal, 8)
+                        .padding(.top, 7)
+                        
+                        // Turn-by-Turn Instruction Banner when Navigating
+                        if !manager.currentStepInstruction.isEmpty {
+                            HStack(spacing: 8) {
+                                Image(systemName: "arrow.turn.up.right")
+                                    .font(.headline)
+                                    .foregroundColor(httGold)
+                                Text(manager.currentStepInstruction)
+                                    .font(.system(size: 12, weight: .heavy))
+                                    .foregroundColor(.white)
+                                    .lineLimit(1)
+                                Spacer()
+                                if manager.distanceToNextStepMeters > 0 {
+                                    Text("\(Int(manager.distanceToNextStepMeters))m")
+                                        .font(.system(size: 12, weight: .black, design: .monospaced))
+                                        .foregroundColor(httGold)
                                 }
-                                .onEnded { value in
-                                    let maxBoundX = stageWidth * 0.38
-                                    let newX = min(max(manager.mascotOffsetX + value.translation.width, -maxBoundX), maxBoundX)
-                                    let newY = min(max(manager.mascotOffsetY + value.translation.height, -40), 10)
-                                    withAnimation(.spring(response: 0.35, dampingFraction: 0.65)) {
-                                        manager.mascotOffsetX = newX
-                                        manager.mascotOffsetY = newY
-                                        manager.isDraggingMascot = false
-                                        dragOffset = .zero
-                                        manager.mascotAction = .idle
-                                    }
-                                }
-                        )
-                        .onTapGesture {
-                            manager.triggerCharacterTap()
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background(httCrimson.opacity(0.92))
+                            .cornerRadius(8)
+                            .padding(.horizontal, 8)
                         }
-                        .padding(.bottom, 4)
+                        
+                        Spacer()
+                        
+                        // Bottom Overlay on Map: Draggable K-ON Desktop Pet Avatar Standing on the Map!
+                        HStack(alignment: .bottom) {
+                            if manager.selectedCharacter == .all {
+                                HStack(alignment: .bottom, spacing: 1) {
+                                    ForEach(AudioPlayerManager.CharacterFilter.fiveIndividuals) { member in
+                                        if let frame = manager.allMemberFrames[member.charId] {
+                                            let isThisDragged = manager.isDraggingMascot && manager.draggedMemberId == member.charId
+                                            let savedPos = manager.memberPositions[member.charId] ?? .zero
+                                            Image(uiImage: frame)
+                                                .interpolation(.none)
+                                                .resizable()
+                                                .scaledToFit()
+                                                .frame(height: 68)
+                                                .shadow(color: .black.opacity(0.7), radius: 3)
+                                                .offset(
+                                                    x: savedPos.width + (isThisDragged ? dragOffset.width : 0),
+                                                    y: savedPos.height + (isThisDragged ? dragOffset.height : 0)
+                                                )
+                                                .highPriorityGesture(
+                                                    DragGesture(minimumDistance: 2)
+                                                        .onChanged { value in
+                                                            if !manager.isDraggingMascot {
+                                                                manager.isDraggingMascot = true
+                                                                manager.draggedMemberId = member.charId
+                                                                manager.playMascotVoice(for: member)
+                                                            }
+                                                            dragOffset = value.translation
+                                                        }
+                                                        .onEnded { value in
+                                                            let oldPos = manager.memberPositions[member.charId] ?? .zero
+                                                            let maxBoundX = stageWidth * 0.35
+                                                            let newX = min(max(oldPos.width + value.translation.width, -maxBoundX), maxBoundX)
+                                                            let newY = min(max(oldPos.height + value.translation.height, -75), 10)
+                                                            withAnimation(.spring(response: 0.35, dampingFraction: 0.65)) {
+                                                                manager.memberPositions[member.charId] = CGSize(width: newX, height: newY)
+                                                                manager.isDraggingMascot = false
+                                                                manager.draggedMemberId = nil
+                                                                dragOffset = .zero
+                                                                manager.mascotAction = .idle
+                                                            }
+                                                        }
+                                                )
+                                                .onTapGesture {
+                                                    manager.triggerCharacterTap(member: member)
+                                                }
+                                        }
+                                    }
+                                }
+                            } else if let sprite = manager.currentSpriteFrame {
+                                Image(uiImage: sprite)
+                                    .interpolation(.none)
+                                    .resizable()
+                                    .scaledToFit()
+                                    .frame(height: 88)
+                                    .shadow(color: .black.opacity(0.75), radius: 4)
+                                    .offset(
+                                        x: manager.mascotOffsetX + (manager.isDraggingMascot ? dragOffset.width : 0),
+                                        y: manager.mascotOffsetY + (manager.isDraggingMascot ? dragOffset.height : 0)
+                                    )
+                                    .highPriorityGesture(
+                                        DragGesture(minimumDistance: 2)
+                                            .onChanged { value in
+                                                if !manager.isDraggingMascot {
+                                                    manager.isDraggingMascot = true
+                                                    manager.playMascotVoice()
+                                                }
+                                                dragOffset = value.translation
+                                            }
+                                            .onEnded { value in
+                                                let maxBoundX = stageWidth * 0.38
+                                                let newX = min(max(manager.mascotOffsetX + value.translation.width, -maxBoundX), maxBoundX)
+                                                let newY = min(max(manager.mascotOffsetY + value.translation.height, -75), 10)
+                                                withAnimation(.spring(response: 0.35, dampingFraction: 0.65)) {
+                                                    manager.mascotOffsetX = newX
+                                                    manager.mascotOffsetY = newY
+                                                    manager.isDraggingMascot = false
+                                                    dragOffset = .zero
+                                                    manager.mascotAction = .idle
+                                                }
+                                            }
+                                    )
+                                    .onTapGesture {
+                                        manager.triggerCharacterTap()
+                                    }
+                            }
+                            
+                            Spacer()
+                            
+                            // Pose & Tracking Quick Buttons on Map Corner
+                            VStack(alignment: .trailing, spacing: 4) {
+                                Button(action: { manager.mapTrackingUser.toggle() }) {
+                                    HStack(spacing: 3) {
+                                        Image(systemName: manager.mapTrackingUser ? "location.north.line.fill" : "location")
+                                        Text(manager.mapTrackingUser ? tr("跟车中", "跟車中", "Follow") : tr("自由看图", "自由看圖", "Free"))
+                                    }
+                                    .font(.system(size: 9, weight: .bold))
+                                    .padding(.horizontal, 7)
+                                    .padding(.vertical, 4)
+                                    .background(Color.black.opacity(0.75))
+                                    .foregroundColor(httGold)
+                                    .cornerRadius(6)
+                                }
+                                
+                                Button(action: {
+                                    manager.mascotAction = (manager.mascotAction == .teaCake) ? .special : .teaCake
+                                    manager.playMascotVoice()
+                                }) {
+                                    Text(manager.mascotAction == .teaCake ? tr("🎸 招牌动作", "🎸 招牌動作", "🎸 Dance") : tr("🍰 顶蛋糕", "🍰 頂蛋糕", "🍰 Cake"))
+                                        .font(.system(size: 9, weight: .bold))
+                                        .padding(.horizontal, 7)
+                                        .padding(.vertical, 4)
+                                        .background(httCrimson.opacity(0.88))
+                                        .foregroundColor(.white)
+                                        .cornerRadius(6)
+                                }
+                            }
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.bottom, 6)
+                    }
                 }
+                .frame(height: stageHeight)
+                .clipped()
+            } else {
+                // Classic Clubroom Tea Table Stage Mode
+                clubroomStageView(stageWidth: stageWidth, stageHeight: stageHeight)
             }
-            .frame(height: stageHeight)
-            .clipped()
             
             // RM-500HTT Speech Bubble Box
-            HStack(spacing: 10) {
-                VStack(alignment: .leading, spacing: 3) {
-                    HStack {
-                        Text(manager.selectedCharacter.roleTag(manager.language))
-                            .font(.caption2.bold())
-                            .foregroundColor(httCrimson)
-                        Spacer()
-                        Button(action: {
-                            withAnimation {
-                                manager.resetPositions()
+            speechBubbleBox
+        }
+    }
+    
+    private func clubroomStageView(stageWidth: CGFloat, stageHeight: CGFloat) -> some View {
+        ZStack(alignment: .bottom) {
+            RoundedRectangle(cornerRadius: 16)
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            characterThemeColor(manager.selectedCharacter).opacity(0.35),
+                            Color.black.opacity(0.78)
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
+                .frame(height: stageHeight)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16)
+                        .stroke(httGold, lineWidth: 2)
+                )
+            
+            if let deskImg = manager.deskSpriteFrame {
+                Image(uiImage: deskImg)
+                    .interpolation(.none)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(height: manager.selectedCharacter == .all ? 92 : 82)
+                    .opacity(manager.selectedCharacter == .all ? 0.85 : 0.45)
+                    .padding(.bottom, 8)
+            }
+            
+            VStack {
+                HStack(spacing: 5) {
+                    posePill(title: tr("待机", "待機", "Idle"), state: .idle)
+                    posePill(title: tr("散步", "散步", "Walk"), state: .walkRight)
+                    posePill(title: tr("招牌动作", "招牌動作", "Dance"), state: .special)
+                    posePill(title: tr("顶蛋糕", "頂蛋糕", "Cake"), state: .teaCake)
+                    Spacer()
+                    Text(manager.isDraggingMascot
+                         ? tr("提起挣扎!", "提起掙扎!", "Lifted!")
+                         : manager.mascotAction.localizedTitle(manager.language))
+                        .font(.system(size: 10, weight: .bold))
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(httCrimson)
+                        .foregroundColor(httCream)
+                        .cornerRadius(6)
+                }
+                .padding(.horizontal, 10)
+                .padding(.top, 7)
+                Spacer()
+            }
+            
+            if manager.selectedCharacter == .all {
+                HStack(alignment: .bottom, spacing: 2) {
+                    ForEach(AudioPlayerManager.CharacterFilter.fiveIndividuals) { member in
+                        if let frame = manager.allMemberFrames[member.charId] {
+                            let isThisDragged = manager.isDraggingMascot && manager.draggedMemberId == member.charId
+                            let savedPos = manager.memberPositions[member.charId] ?? .zero
+                            VStack(spacing: 0) {
+                                Image(uiImage: frame)
+                                    .interpolation(.none)
+                                    .resizable()
+                                    .scaledToFit()
+                                    .frame(height: 86)
+                                Text(member.displayName(manager.language))
+                                    .font(.system(size: 9, weight: .bold))
+                                    .padding(.horizontal, 4)
+                                    .padding(.vertical, 1)
+                                    .background(characterThemeColor(member).opacity(0.85))
+                                    .foregroundColor(.white)
+                                    .cornerRadius(4)
                             }
-                        }) {
-                            Text(tr("位置归位", "位置歸位", "Reset Pos"))
-                                .font(.system(size: 9, weight: .bold))
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(httCrimson.opacity(0.15))
-                                .foregroundColor(httCrimson)
-                                .cornerRadius(4)
+                            .offset(
+                                x: savedPos.width + (isThisDragged ? dragOffset.width : (manager.mascotOffsetX * 0.45)),
+                                y: savedPos.height + (isThisDragged ? dragOffset.height : 0)
+                            )
+                            .highPriorityGesture(
+                                DragGesture(minimumDistance: 2)
+                                    .onChanged { value in
+                                        if !manager.isDraggingMascot {
+                                            manager.isDraggingMascot = true
+                                            manager.draggedMemberId = member.charId
+                                            manager.playMascotVoice(for: member)
+                                        }
+                                        dragOffset = value.translation
+                                    }
+                                    .onEnded { value in
+                                        let oldPos = manager.memberPositions[member.charId] ?? .zero
+                                        let maxBoundX = stageWidth * 0.35
+                                        let newX = min(max(oldPos.width + value.translation.width, -maxBoundX), maxBoundX)
+                                        let newY = min(max(oldPos.height + value.translation.height, -55), 10)
+                                        withAnimation(.spring(response: 0.35, dampingFraction: 0.65)) {
+                                            manager.memberPositions[member.charId] = CGSize(width: newX, height: newY)
+                                            manager.isDraggingMascot = false
+                                            manager.draggedMemberId = nil
+                                            dragOffset = .zero
+                                            manager.mascotAction = .idle
+                                        }
+                                    }
+                            )
+                            .onTapGesture {
+                                manager.triggerCharacterTap(member: member)
+                            }
                         }
                     }
-                    
-                    Text(manager.currentSpeechBubble)
-                        .font(.system(size: 12, weight: .bold))
-                        .foregroundColor(.black.opacity(0.88))
-                        .lineLimit(2)
                 }
-                
-                if manager.isPlaying {
-                    Button(action: { manager.stop() }) {
-                        Image(systemName: "stop.circle.fill")
-                            .font(.title2)
-                            .foregroundColor(.red)
+                .padding(.bottom, 5)
+            } else if let sprite = manager.currentSpriteFrame {
+                Image(uiImage: sprite)
+                    .interpolation(.none)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(height: 115)
+                    .offset(
+                        x: manager.mascotOffsetX + (manager.isDraggingMascot ? dragOffset.width : 0),
+                        y: manager.mascotOffsetY + (manager.isDraggingMascot ? dragOffset.height : 0)
+                    )
+                    .highPriorityGesture(
+                        DragGesture(minimumDistance: 2)
+                            .onChanged { value in
+                                if !manager.isDraggingMascot {
+                                    manager.isDraggingMascot = true
+                                    manager.playMascotVoice()
+                                }
+                                dragOffset = value.translation
+                            }
+                            .onEnded { value in
+                                let maxBoundX = stageWidth * 0.38
+                                let newX = min(max(manager.mascotOffsetX + value.translation.width, -maxBoundX), maxBoundX)
+                                let newY = min(max(manager.mascotOffsetY + value.translation.height, -55), 10)
+                                withAnimation(.spring(response: 0.35, dampingFraction: 0.65)) {
+                                    manager.mascotOffsetX = newX
+                                    manager.mascotOffsetY = newY
+                                    manager.isDraggingMascot = false
+                                    dragOffset = .zero
+                                    manager.mascotAction = .idle
+                                }
+                            }
+                    )
+                    .onTapGesture {
+                        manager.triggerCharacterTap()
+                    }
+                    .padding(.bottom, 4)
+            }
+        }
+        .frame(height: stageHeight)
+        .clipped()
+    }
+    
+    private var speechBubbleBox: some View {
+        HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 3) {
+                HStack {
+                    Text(manager.selectedCharacter.roleTag(manager.language))
+                        .font(.caption2.bold())
+                        .foregroundColor(httCrimson)
+                    Spacer()
+                    Button(action: {
+                        withAnimation { manager.resetPositions() }
+                    }) {
+                        Text(tr("位置归位", "位置歸位", "Reset Pos"))
+                            .font(.system(size: 9, weight: .bold))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(httCrimson.opacity(0.15))
+                            .foregroundColor(httCrimson)
+                            .cornerRadius(4)
                     }
                 }
+                
+                Text(manager.currentSpeechBubble)
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundColor(.black.opacity(0.88))
+                    .lineLimit(2)
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 7)
-            .background(httCream)
-            .cornerRadius(12)
-            .overlay(
-                RoundedRectangle(cornerRadius: 12)
-                    .stroke(httGold, lineWidth: 2)
-            )
+            
+            if manager.isPlaying {
+                Button(action: { manager.stop() }) {
+                    Image(systemName: "stop.circle.fill")
+                        .font(.title2)
+                        .foregroundColor(.red)
+                }
+            }
         }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
+        .background(httCream)
+        .cornerRadius(12)
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(httGold, lineWidth: 2)
+        )
     }
     
     private func posePill(title: String, state: MascotActionState) -> some View {
@@ -518,7 +830,7 @@ struct ContentView: View {
         }
     }
     
-    // MARK: - 5. RM-500HTT Tactical Utility Control Grid & Cruise Timer
+    // MARK: - 5. RM-500HTT Tactical Utility Control Grid
     private var utilityControlGrid: some View {
         VStack(spacing: 7) {
             HStack(spacing: 7) {
@@ -603,19 +915,16 @@ struct ContentView: View {
                         .stroke(manager.isCruiseModeActive ? Color.green : httGold.opacity(0.4), lineWidth: 1.5)
                 )
                 
-                Button(action: {
-                    if !manager.isCruiseModeActive { manager.startCruiseMode() }
-                    manager.openGaodeMap()
-                }) {
+                Button(action: { showSearchSheet = true }) {
                     HStack(spacing: 8) {
-                        Image(systemName: "location.fill.viewfinder")
+                        Image(systemName: "map.circle.fill")
                             .font(.title3)
                             .foregroundColor(.white)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(tr("联动高德导航", "聯動高德導航", "Open Amap"))
+                            Text(tr("目的地路线导航", "目的地路線導航", "Route Navi"))
                                 .font(.system(size: 12, weight: .bold))
                                 .foregroundColor(.white)
-                            Text(tr("后台伴侣+高德指路", "後台伴侶+高德指路", "Voice + Navigation"))
+                            Text(tr("真实路口触发轻音指路", "真實路口觸發輕音指路", "Turn-by-Turn Voice"))
                                 .font(.system(size: 9))
                                 .foregroundColor(.white.opacity(0.85))
                         }
@@ -673,6 +982,115 @@ struct ContentView: View {
         case .mugi: return Color(red: 0.78, green: 0.52, blue: 0.68)
         case .azusa: return Color(red: 0.22, green: 0.65, blue: 0.52)
         case .all: return httCrimson
+        }
+    }
+}
+
+// MARK: - Destination Search & Route Planner Sheet
+struct DestinationSearchSheetView: View {
+    @ObservedObject var manager: AudioPlayerManager
+    @Environment(\.dismiss) var dismiss
+    @State private var queryText: String = ""
+    
+    var body: some View {
+        NavigationView {
+            VStack(spacing: 12) {
+                HStack {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundColor(.secondary)
+                    TextField(
+                        manager.language == .en ? "Enter destination, road, or POI..." : "输入目的地、商超、大厦或路名...",
+                        text: $queryText,
+                        onCommit: { manager.searchPlaces(query: queryText) }
+                    )
+                    .textFieldStyle(.plain)
+                    
+                    if !queryText.isEmpty {
+                        Button(action: { queryText = ""; manager.searchResults = [] }) {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    
+                    Button(action: { manager.searchPlaces(query: queryText) }) {
+                        Text(manager.language == .en ? "Search" : "搜索")
+                            .font(.subheadline.bold())
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .background(Color.red)
+                            .foregroundColor(.white)
+                            .cornerRadius(8)
+                    }
+                }
+                .padding(10)
+                .background(Color(UIColor.secondarySystemBackground))
+                .cornerRadius(10)
+                .padding(.horizontal)
+                .padding(.top, 8)
+                
+                // Quick Option: Launch External Gaode Map App if needed
+                Button(action: {
+                    dismiss()
+                    manager.openGaodeMap()
+                }) {
+                    HStack {
+                        Image(systemName: "arrow.up.forward.app.fill")
+                        Text(manager.language == .en
+                             ? "Also open external Amap App (Keep HTT Voice in Background)"
+                             : "同时拉起外部《高德地图 App》（保持轻音后台伴驾）")
+                            .font(.caption.bold())
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                    }
+                    .padding(12)
+                    .background(Color.blue.opacity(0.12))
+                    .foregroundColor(.blue)
+                    .cornerRadius(10)
+                    .padding(.horizontal)
+                }
+                
+                if manager.isSearching {
+                    ProgressView("Searching...")
+                        .padding()
+                }
+                
+                List(manager.searchResults, id: \.self) { item in
+                    Button(action: {
+                        manager.showMapMode = true
+                        manager.startRouteGuidance(to: item)
+                        dismiss()
+                    }) {
+                        HStack {
+                            Image(systemName: "mappin.circle.fill")
+                                .font(.title2)
+                                .foregroundColor(.red)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(item.name ?? "未知地点")
+                                    .font(.subheadline.bold())
+                                    .foregroundColor(.primary)
+                                Text(item.placemark.title ?? "")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                            }
+                            Spacer()
+                            Text(manager.language == .en ? "Go" : "开始导航")
+                                .font(.caption.bold())
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 5)
+                                .background(Color.red)
+                                .foregroundColor(.white)
+                                .cornerRadius(6)
+                        }
+                    }
+                }
+            }
+            .navigationTitle(manager.language == .en ? "RM-500HTT Route Planner" : "RM-500HTT 目的地算路导航")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button(manager.language == .en ? "Close" : "关闭") { dismiss() }
+                }
+            }
         }
     }
 }
