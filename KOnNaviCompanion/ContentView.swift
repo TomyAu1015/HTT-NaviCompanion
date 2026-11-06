@@ -11,30 +11,38 @@ struct ContentView: View {
     private let httGold = Color(red: 0.88, green: 0.68, blue: 0.24)
     private let httDarkPanel = Color(red: 0.14, green: 0.12, blue: 0.13)
     
+    private func tr(_ hans: String, _ hant: String, _ en: String) -> String {
+        switch manager.language {
+        case .zhHans: return hans
+        case .zhHant: return hant
+        case .en: return en
+        }
+    }
+    
     var body: some View {
         ZStack {
             httDarkPanel.ignoresSafeArea()
             
-            VStack(spacing: 10) {
-                // 1. RM-500HTT Top Bezel Header
+            VStack(spacing: 8) {
+                // 1. Top Bezel Header (with Language Switcher, HUD Mirror, Soundboard)
                 topBezelBar
                 
-                // 2. Main Speedometer & GPS HUD Cockpit
+                // 2. Main Speedometer & GPS HUD Cockpit (with GPS Poor Signal & Speed Limit Broadcast)
                 speedometerCockpit
                 
-                // 3. Official K-ON Desktop Pet Interactive Stage + RM-500HTT Dialog
+                // 3. Official K-ON Desktop Pet Interactive Stage (Supports All 5 Members Together!)
                 mascotInteractiveStage
                 
-                // 4. Character Switcher Bar (5 HTT Members)
+                // 4. Character Switcher Bar (All 5 Together + 5 Individual Members)
                 characterSelectorStrip
                 
-                // 5. RM-500HTT Tactical Utility Buttons
+                // 5. RM-500HTT Tactical Utility Control Grid & Reliable Cruise Mode
                 utilityControlGrid
                 
                 Spacer(minLength: 2)
             }
-            .padding(.horizontal, 14)
-            .padding(.top, 6)
+            .padding(.horizontal, 12)
+            .padding(.top, 4)
             .scaleEffect(x: manager.isHUDMirrored ? -1 : 1, y: 1)
         }
         .sheet(isPresented: $showSoundboardSheet) {
@@ -44,15 +52,15 @@ struct ContentView: View {
     
     // MARK: - 1. Top Bezel Header
     private var topBezelBar: some View {
-        HStack {
-            HStack(spacing: 6) {
+        HStack(spacing: 6) {
+            HStack(spacing: 5) {
                 Image(systemName: "cup.and.saucer.fill")
                     .foregroundColor(httGold)
-                Text("HTT NAVI × 軽音部桌宠")
-                    .font(.system(size: 13, weight: .heavy, design: .rounded))
+                Text(tr("HTT 车载桌宠", "HTT 車載桌寵", "HTT NAVI PET"))
+                    .font(.system(size: 12, weight: .heavy, design: .rounded))
                     .foregroundColor(httCream)
             }
-            .padding(.horizontal, 10)
+            .padding(.horizontal, 8)
             .padding(.vertical, 5)
             .background(httCrimson)
             .cornerRadius(8)
@@ -63,28 +71,55 @@ struct ContentView: View {
             
             Spacer()
             
+            // 3-Language Switcher (简体 / 繁體 / EN)
+            Menu {
+                ForEach(AppLanguage.allCases) { lang in
+                    Button(action: { manager.language = lang }) {
+                        HStack {
+                            Text(lang.rawValue)
+                            if manager.language == lang {
+                                Image(systemName: "checkmark")
+                            }
+                        }
+                    }
+                }
+            } label: {
+                HStack(spacing: 3) {
+                    Image(systemName: "globe")
+                    Text(manager.language.rawValue)
+                }
+                .font(.caption2.bold())
+                .padding(.horizontal, 8)
+                .padding(.vertical, 6)
+                .background(Color.white.opacity(0.14))
+                .foregroundColor(httGold)
+                .cornerRadius(8)
+            }
+            
+            // HUD Windshield Mirror Toggle
             Button(action: {
                 withAnimation { manager.isHUDMirrored.toggle() }
             }) {
-                HStack(spacing: 4) {
+                HStack(spacing: 3) {
                     Image(systemName: "flip.horizontal.fill")
-                    Text(manager.isHUDMirrored ? "HUD镜像中" : "HUD投影")
+                    Text(manager.isHUDMirrored ? tr("镜像中", "鏡像中", "Mirrored") : "HUD")
                 }
-                .font(.caption.bold())
-                .padding(.horizontal, 9)
+                .font(.caption2.bold())
+                .padding(.horizontal, 8)
                 .padding(.vertical, 6)
                 .background(manager.isHUDMirrored ? httGold : Color.white.opacity(0.12))
                 .foregroundColor(manager.isHUDMirrored ? .black : httCream)
                 .cornerRadius(8)
             }
             
+            // Full Soundboard Button
             Button(action: { showSoundboardSheet = true }) {
-                HStack(spacing: 4) {
+                HStack(spacing: 3) {
                     Image(systemName: "music.note.list")
-                    Text("语音库")
+                    Text(tr("语音库", "語音庫", "Voices"))
                 }
-                .font(.caption.bold())
-                .padding(.horizontal, 9)
+                .font(.caption2.bold())
+                .padding(.horizontal, 8)
                 .padding(.vertical, 6)
                 .background(Color.white.opacity(0.12))
                 .foregroundColor(httCream)
@@ -95,46 +130,80 @@ struct ContentView: View {
     
     // MARK: - 2. GPS Speedometer & Telemetry Cockpit
     private var speedometerCockpit: some View {
-        VStack(spacing: 8) {
-            HStack(alignment: .center, spacing: 14) {
+        VStack(spacing: 7) {
+            HStack(alignment: .center, spacing: 10) {
                 VStack(alignment: .leading, spacing: 2) {
-                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    HStack(alignment: .firstTextBaseline, spacing: 5) {
                         Text("\(Int(manager.currentSpeedKmh))")
-                            .font(.system(size: 58, weight: .black, design: .monospaced))
+                            .font(.system(size: 52, weight: .black, design: .monospaced))
                             .foregroundColor(manager.isOverspeeding ? .red : Color(red: 0.35, green: 0.98, blue: 0.65))
-                            .shadow(color: (manager.isOverspeeding ? Color.red : Color.green).opacity(0.5), radius: 8)
+                            .shadow(color: (manager.isOverspeeding ? Color.red : Color.green).opacity(0.5), radius: 6)
                         
                         Text("km/h")
-                            .font(.system(size: 15, weight: .bold, design: .monospaced))
+                            .font(.system(size: 14, weight: .bold, design: .monospaced))
                             .foregroundColor(httCream.opacity(0.7))
                     }
                     
-                    Text(manager.isOverspeeding ? "⚠️ 超速警告 OVER SPEED" : "● GPS 实时测速正常")
-                        .font(.caption2.bold())
-                        .foregroundColor(manager.isOverspeeding ? .red : .green)
+                    // Interactive GPS & Speed Status Row
+                    HStack(spacing: 8) {
+                        Button(action: {
+                            manager.triggerGPSSignalPoorAlert()
+                        }) {
+                            HStack(spacing: 3) {
+                                Image(systemName: manager.isGPSSignalPoor ? "antenna.radiowaves.left.and.right.slash" : "antenna.radiowaves.left.and.right")
+                                Text(manager.isGPSSignalPoor
+                                     ? tr("GPS信号弱(点击播报)", "GPS訊號弱(點擊播報)", "GPS Weak (Tap)")
+                                     : tr("GPS信号正常", "GPS訊號正常", "GPS OK"))
+                            }
+                            .font(.system(size: 10, weight: .bold))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 3)
+                            .background(manager.isGPSSignalPoor ? Color.orange.opacity(0.3) : Color.green.opacity(0.18))
+                            .foregroundColor(manager.isGPSSignalPoor ? .orange : .green)
+                            .cornerRadius(5)
+                        }
+                        
+                        if manager.isOverspeeding {
+                            Text(tr("⚠️ 已超速!", "⚠️ 已超速!", "⚠️ OVERSPEED!"))
+                                .font(.system(size: 10, weight: .black))
+                                .foregroundColor(.red)
+                        }
+                    }
                 }
                 
                 Spacer()
                 
-                VStack(alignment: .trailing, spacing: 5) {
-                    telemetryBadge(icon: "location.north.circle.fill", label: "方向", value: manager.compassDirectionString)
-                    telemetryBadge(icon: "road.lanes", label: "里程", value: String(format: "%.1f km", manager.tripDistanceKm))
-                    telemetryBadge(icon: "clock.fill", label: "时长", value: manager.formattedDrivingTime)
+                VStack(alignment: .trailing, spacing: 4) {
+                    telemetryBadge(icon: "location.north.circle.fill", label: tr("方向", "方向", "DIR"), value: manager.compassDirectionString)
+                    telemetryBadge(icon: "road.lanes", label: tr("里程", "里程", "TRIP"), value: String(format: "%.1f km", manager.tripDistanceKm))
+                    telemetryBadge(icon: "clock.fill", label: tr("时长", "時長", "TIME"), value: manager.formattedDrivingTime)
                 }
             }
             
             Divider().background(Color.white.opacity(0.15))
             
-            HStack {
-                Text("限速阈值:")
-                    .font(.caption2)
-                    .foregroundColor(httCream.opacity(0.8))
+            // Speed Limit Selector (Tapping any limit sets it & broadcasts built-in traffic regulation prompt!)
+            HStack(spacing: 6) {
+                Button(action: { manager.triggerSpeedLimitPrompt() }) {
+                    HStack(spacing: 3) {
+                        Image(systemName: "speedometer")
+                        Text(tr("限速播报:", "限速播報:", "Limit:"))
+                    }
+                    .font(.caption2.bold())
+                    .foregroundColor(httGold)
+                }
                 
                 ForEach([60.0, 80.0, 100.0, 120.0], id: \.self) { limit in
-                    Button(action: { manager.speedLimitKmh = limit }) {
+                    Button(action: {
+                        if manager.speedLimitKmh == limit {
+                            manager.triggerSpeedLimitPrompt()
+                        } else {
+                            manager.speedLimitKmh = limit
+                        }
+                    }) {
                         Text("\(Int(limit))")
                             .font(.caption2.bold())
-                            .padding(.horizontal, 9)
+                            .padding(.horizontal, 8)
                             .padding(.vertical, 3)
                             .background(manager.speedLimitKmh == limit ? httCrimson : Color.white.opacity(0.1))
                             .foregroundColor(.white)
@@ -142,24 +211,24 @@ struct ContentView: View {
                     }
                 }
                 Spacer()
-                Text("最高: \(Int(manager.maxSpeedKmh)) km/h")
+                Text("\(tr("最高", "最高", "MAX")): \(Int(manager.maxSpeedKmh))")
                     .font(.caption2)
                     .foregroundColor(httGold)
             }
         }
-        .padding(12)
+        .padding(10)
         .background(
-            RoundedRectangle(cornerRadius: 16)
+            RoundedRectangle(cornerRadius: 14)
                 .fill(Color.black.opacity(0.65))
                 .overlay(
-                    RoundedRectangle(cornerRadius: 16)
+                    RoundedRectangle(cornerRadius: 14)
                         .stroke(manager.isOverspeeding ? Color.red : httGold.opacity(0.6), lineWidth: 2)
                 )
         )
     }
     
     private func telemetryBadge(icon: String, label: String, value: String) -> some View {
-        HStack(spacing: 5) {
+        HStack(spacing: 4) {
             Image(systemName: icon)
                 .font(.caption2)
                 .foregroundColor(httGold)
@@ -167,54 +236,54 @@ struct ContentView: View {
                 .font(.caption2)
                 .foregroundColor(.gray)
             Text(value)
-                .font(.system(size: 12, weight: .bold, design: .monospaced))
+                .font(.system(size: 11, weight: .bold, design: .monospaced))
                 .foregroundColor(httCream)
         }
     }
     
-    // MARK: - 3. Official K-ON Windows Desktop Pet Stage & Dialog
+    // MARK: - 3. Official K-ON Windows Desktop Pet Stage (5-Member Simultaneous or Solo!)
     private var mascotInteractiveStage: some View {
-        VStack(spacing: 8) {
-            // Top Stage: Real Animated Official K-ON Desktop Pet Sprite
+        VStack(spacing: 6) {
             ZStack(alignment: .bottom) {
-                // Retro Checkered Stage Floor
                 RoundedRectangle(cornerRadius: 16)
                     .fill(
                         LinearGradient(
                             colors: [
                                 characterThemeColor(manager.selectedCharacter).opacity(0.35),
-                                Color.black.opacity(0.75)
+                                Color.black.opacity(0.78)
                             ],
                             startPoint: .top,
                             endPoint: .bottom
                         )
                     )
-                    .frame(height: 146)
+                    .frame(height: 150)
                     .overlay(
                         RoundedRectangle(cornerRadius: 16)
                             .stroke(httGold, lineWidth: 2)
                     )
                 
-                // Tea Table background when in Tea Time or Idle
+                // Official MascotTable Tea Table & Cake Prop in Background
                 if let deskImg = manager.deskSpriteFrame {
                     Image(uiImage: deskImg)
                         .interpolation(.none)
                         .resizable()
                         .scaledToFit()
-                        .frame(height: 82)
-                        .opacity(0.45)
+                        .frame(height: manager.selectedCharacter == .all ? 90 : 80)
+                        .opacity(manager.selectedCharacter == .all ? 0.85 : 0.45)
                         .padding(.bottom, 8)
                 }
                 
-                // Pose Quick Switcher Pills (Top-Left & Top-Right of Stage)
+                // Pose Quick Switcher Pills at Top of Stage
                 VStack {
-                    HStack(spacing: 6) {
-                        posePill(title: "待机", state: .idle)
-                        posePill(title: "散步", state: .walkRight)
-                        posePill(title: "招牌动作", state: .special)
-                        posePill(title: "顶蛋糕", state: .teaCake)
+                    HStack(spacing: 5) {
+                        posePill(title: tr("待机", "待機", "Idle"), state: .idle)
+                        posePill(title: tr("散步", "散步", "Walk"), state: .walkRight)
+                        posePill(title: tr("招牌动作", "招牌動作", "Dance"), state: .special)
+                        posePill(title: tr("顶蛋糕", "頂蛋糕", "Cake"), state: .teaCake)
                         Spacer()
-                        Text(manager.isDraggingMascot ? "提起中!" : manager.mascotAction.rawValue)
+                        Text(manager.isDraggingMascot
+                             ? tr("提起挣扎!", "提起掙扎!", "Lifted!")
+                             : manager.mascotAction.localizedTitle(manager.language))
                             .font(.system(size: 10, weight: .bold))
                             .padding(.horizontal, 7)
                             .padding(.vertical, 3)
@@ -223,12 +292,61 @@ struct ContentView: View {
                             .cornerRadius(6)
                     }
                     .padding(.horizontal, 10)
-                    .padding(.top, 8)
+                    .padding(.top, 7)
                     Spacer()
                 }
                 
-                // Official Animated Desktop Pet Character Sprite (Draggable & Tappable!)
-                if let sprite = manager.currentSpriteFrame {
+                // Render ALL 5 HTT MEMBERS TOGETHER when .all is selected, or solo member!
+                if manager.selectedCharacter == .all {
+                    HStack(alignment: .bottom, spacing: 2) {
+                        ForEach(AudioPlayerManager.CharacterFilter.fiveIndividuals) { member in
+                            if let frame = manager.allMemberFrames[member.charId] {
+                                let isThisDragged = manager.isDraggingMascot && manager.draggedMemberId == member.charId
+                                VStack(spacing: 0) {
+                                    Image(uiImage: frame)
+                                        .interpolation(.none)
+                                        .resizable()
+                                        .scaledToFit()
+                                        .frame(height: 86)
+                                    Text(member.displayName(manager.language))
+                                        .font(.system(size: 9, weight: .bold))
+                                        .padding(.horizontal, 5)
+                                        .padding(.vertical, 1)
+                                        .background(characterThemeColor(member).opacity(0.85))
+                                        .foregroundColor(.white)
+                                        .cornerRadius(4)
+                                }
+                                .offset(
+                                    x: isThisDragged ? dragOffset.width : (manager.mascotOffsetX * 0.35),
+                                    y: isThisDragged ? dragOffset.height : 0
+                                )
+                                .gesture(
+                                    DragGesture()
+                                        .onChanged { value in
+                                            if !manager.isDraggingMascot {
+                                                manager.isDraggingMascot = true
+                                                manager.draggedMemberId = member.charId
+                                                manager.playMascotVoice(for: member)
+                                            }
+                                            dragOffset = value.translation
+                                        }
+                                        .onEnded { _ in
+                                            withAnimation(.spring(response: 0.35, dampingFraction: 0.6)) {
+                                                manager.isDraggingMascot = false
+                                                manager.draggedMemberId = nil
+                                                dragOffset = .zero
+                                                manager.mascotAction = .idle
+                                            }
+                                        }
+                                )
+                                .onTapGesture {
+                                    manager.triggerCharacterTap(member: member)
+                                }
+                            }
+                        }
+                    }
+                    .padding(.bottom, 5)
+                } else if let sprite = manager.currentSpriteFrame {
                     Image(uiImage: sprite)
                         .interpolation(.none)
                         .resizable()
@@ -243,7 +361,7 @@ struct ContentView: View {
                                 .onChanged { value in
                                     if !manager.isDraggingMascot {
                                         manager.isDraggingMascot = true
-                                        manager.playMascotVoice(customQuote: "わぁっ！引っ張らないでよ～！(别揪我呀~)")
+                                        manager.playMascotVoice()
                                     }
                                     dragOffset = value.translation
                                 }
@@ -261,23 +379,23 @@ struct ContentView: View {
                         .padding(.bottom, 4)
                 }
             }
-            .frame(height: 146)
+            .frame(height: 150)
             
-            // Bottom RM-500HTT Dialog Bubble Box
+            // RM-500HTT Speech Bubble Box
             HStack(spacing: 10) {
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: 3) {
                     HStack {
-                        Text(manager.selectedCharacter.roleTag)
+                        Text(manager.selectedCharacter.roleTag(manager.language))
                             .font(.caption2.bold())
                             .foregroundColor(httCrimson)
                         Spacer()
-                        Text("轻点或按住拖拽桌宠触发原版动作与语音")
+                        Text(tr("点击或拖拽任意角色互动", "點擊或拖拽任意角色互動", "Tap or drag character"))
                             .font(.system(size: 9))
                             .foregroundColor(.gray)
                     }
                     
                     Text(manager.currentSpeechBubble)
-                        .font(.system(size: 13, weight: .bold))
+                        .font(.system(size: 12, weight: .bold))
                         .foregroundColor(.black.opacity(0.88))
                         .lineLimit(2)
                 }
@@ -291,7 +409,7 @@ struct ContentView: View {
                 }
             }
             .padding(.horizontal, 12)
-            .padding(.vertical, 8)
+            .padding(.vertical, 7)
             .background(httCream)
             .cornerRadius(12)
             .overlay(
@@ -309,7 +427,7 @@ struct ContentView: View {
         }) {
             Text(title)
                 .font(.system(size: 10, weight: .bold))
-                .padding(.horizontal, 8)
+                .padding(.horizontal, 7)
                 .padding(.vertical, 4)
                 .background(manager.mascotAction == state ? httGold : Color.black.opacity(0.55))
                 .foregroundColor(manager.mascotAction == state ? .black : httCream)
@@ -317,24 +435,23 @@ struct ContentView: View {
         }
     }
     
-    // MARK: - 4. Character Switcher Bar
+    // MARK: - 4. Character Switcher Strip
     private var characterSelectorStrip: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
+            HStack(spacing: 7) {
                 ForEach(AudioPlayerManager.CharacterFilter.allCases) { char in
                     Button(action: {
                         manager.selectedCharacter = char
                         manager.mascotOffsetX = 0
-                        manager.triggerCharacterTap()
+                        manager.triggerCharacterTap(member: char)
                     }) {
-                        HStack(spacing: 5) {
-                            Circle()
-                                .fill(characterThemeColor(char))
-                                .frame(width: 8, height: 8)
-                            Text(char.rawValue)
-                                .font(.system(size: 13, weight: .bold))
+                        HStack(spacing: 4) {
+                            Image(systemName: char == .all ? "person.3.fill" : "person.fill")
+                                .font(.system(size: 10))
+                            Text(char.displayName(manager.language))
+                                .font(.system(size: 12, weight: .bold))
                         }
-                        .padding(.horizontal, 12)
+                        .padding(.horizontal, 11)
                         .padding(.vertical, 7)
                         .background(
                             manager.selectedCharacter == char
@@ -353,23 +470,23 @@ struct ContentView: View {
         }
     }
     
-    // MARK: - 5. RM-500HTT Tactical Utility Control Grid
+    // MARK: - 5. RM-500HTT Tactical Utility Control Grid & Cruise Timer
     private var utilityControlGrid: some View {
-        VStack(spacing: 8) {
-            HStack(spacing: 8) {
+        VStack(spacing: 7) {
+            // Row 1: 4 Direct Action Buttons (Departure, Banter, GPS/Speed Alert, Tea Time)
+            HStack(spacing: 7) {
                 tacticalButton(
-                    title: "出発進行",
-                    subtitle: "导航问候音",
+                    title: tr("出発進行", "出發進行", "Depart"),
+                    subtitle: tr("点火出发音", "點火出發音", "Start Guide"),
                     icon: "flag.checkered.2.crossed",
                     color: httCrimson
                 ) {
-                    let startId = manager.selectedCharacter.idRange.lowerBound
-                    manager.playVoice(id: startId, customQuote: "出発進行～！安全運転でレッツゴー！")
+                    manager.triggerDepartureGreeting()
                 }
                 
                 tacticalButton(
-                    title: "掛け合い",
-                    subtitle: "双人相声彩蛋",
+                    title: tr("掛け合い", "雙人相聲", "Banter"),
+                    subtitle: tr("多人对话彩蛋", "多人對話彩蛋", "Group Talk"),
                     icon: "bubble.left.and.bubble.right.fill",
                     color: Color(red: 0.58, green: 0.32, blue: 0.78)
                 ) {
@@ -377,8 +494,8 @@ struct ContentView: View {
                 }
                 
                 tacticalButton(
-                    title: "顶蛋糕下午茶",
-                    subtitle: "桌宠蛋糕模式",
+                    title: tr("顶蛋糕下午茶", "頂蛋糕下午茶", "Tea Time"),
+                    subtitle: tr("桌宠蛋糕休息", "桌寵蛋糕休息", "Cake Break"),
                     icon: "birthday.cake.fill",
                     color: Color(red: 0.82, green: 0.56, blue: 0.18)
                 ) {
@@ -386,31 +503,62 @@ struct ContentView: View {
                 }
             }
             
-            HStack(spacing: 8) {
-                Button(action: { manager.toggleCruiseMode() }) {
-                    HStack(spacing: 8) {
-                        Image(systemName: manager.isCruiseModeActive ? "checkmark.circle.fill" : "play.circle.fill")
-                            .font(.title3)
-                            .foregroundColor(manager.isCruiseModeActive ? .green : httGold)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(manager.isCruiseModeActive ? "巡航陪伴: 开启中" : "开启巡航陪伴")
-                                .font(.system(size: 13, weight: .bold))
-                                .foregroundColor(.white)
-                            Text("导航+桌宠双语音库混播")
-                                .font(.system(size: 9))
-                                .foregroundColor(.white.opacity(0.75))
+            // Row 2: Cruise Mode (with Live Countdown & Interval Menu) + Gaode Map Launcher
+            HStack(spacing: 7) {
+                HStack(spacing: 6) {
+                    Button(action: { manager.toggleCruiseMode() }) {
+                        HStack(spacing: 6) {
+                            Image(systemName: manager.isCruiseModeActive ? "timer" : "play.circle.fill")
+                                .font(.title3)
+                                .foregroundColor(manager.isCruiseModeActive ? .green : httGold)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(manager.isCruiseModeActive
+                                     ? "\(tr("巡航中", "巡航中", "Cruise")): \(manager.formattedCruiseCountdown)"
+                                     : tr("开启巡航陪伴", "開啟巡航陪伴", "Start Cruise"))
+                                    .font(.system(size: 12, weight: .bold, design: .monospaced))
+                                    .foregroundColor(.white)
+                                Text(tr("后台保活·定时播报", "後台保活·定時播報", "Background Active"))
+                                    .font(.system(size: 9))
+                                    .foregroundColor(.white.opacity(0.75))
+                            }
                         }
-                        Spacer()
                     }
-                    .padding(10)
-                    .background(manager.isCruiseModeActive ? Color.green.opacity(0.28) : Color.white.opacity(0.1))
-                    .cornerRadius(12)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 12)
-                            .stroke(manager.isCruiseModeActive ? Color.green : httGold.opacity(0.4), lineWidth: 1.5)
-                    )
+                    
+                    Spacer(minLength: 2)
+                    
+                    // Interval Selector Menu (1 / 3 / 5 / 10 / 15 / 30 mins)
+                    Menu {
+                        ForEach([1.0, 3.0, 5.0, 10.0, 15.0, 30.0], id: \.self) { mins in
+                            Button(action: { manager.cruiseIntervalMinutes = mins }) {
+                                HStack {
+                                    Text("\(Int(mins)) \(tr("分钟", "分鐘", "min"))")
+                                    if manager.cruiseIntervalMinutes == mins {
+                                        Image(systemName: "checkmark")
+                                    }
+                                }
+                            }
+                        }
+                    } label: {
+                        Text("\(Int(manager.cruiseIntervalMinutes))m ▾")
+                            .font(.system(size: 11, weight: .bold))
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 5)
+                            .background(Color.black.opacity(0.35))
+                            .foregroundColor(httGold)
+                            .cornerRadius(6)
+                    }
                 }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 9)
+                .frame(maxWidth: .infinity)
+                .background(manager.isCruiseModeActive ? Color.green.opacity(0.28) : Color.white.opacity(0.1))
+                .cornerRadius(12)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12)
+                        .stroke(manager.isCruiseModeActive ? Color.green : httGold.opacity(0.4), lineWidth: 1.5)
+                )
                 
+                // 1-Tap Gaode Map Companion Launch
                 Button(action: {
                     if !manager.isCruiseModeActive { manager.startCruiseMode() }
                     manager.openGaodeMap()
@@ -420,16 +568,18 @@ struct ContentView: View {
                             .font(.title3)
                             .foregroundColor(.white)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("联动高德导航")
-                                .font(.system(size: 13, weight: .bold))
+                            Text(tr("联动高德导航", "聯動高德導航", "Open Amap"))
+                                .font(.system(size: 12, weight: .bold))
                                 .foregroundColor(.white)
-                            Text("后台伴侣 + 高德指路")
+                            Text(tr("后台伴侣+高德指路", "後台伴侶+高德指路", "Voice + Navigation"))
                                 .font(.system(size: 9))
                                 .foregroundColor(.white.opacity(0.85))
                         }
                         Spacer()
                     }
-                    .padding(10)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 9)
+                    .frame(maxWidth: .infinity)
                     .background(
                         LinearGradient(
                             colors: [Color.blue, Color(red: 0.1, green: 0.4, blue: 0.9)],
@@ -449,9 +599,9 @@ struct ContentView: View {
     
     private func tacticalButton(title: String, subtitle: String, icon: String, color: Color, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            VStack(spacing: 4) {
+            VStack(spacing: 3) {
                 Image(systemName: icon)
-                    .font(.headline)
+                    .font(.subheadline)
                     .foregroundColor(httCream)
                 Text(title)
                     .font(.system(size: 12, weight: .heavy))
@@ -461,7 +611,7 @@ struct ContentView: View {
                     .foregroundColor(httCream.opacity(0.8))
             }
             .frame(maxWidth: .infinity)
-            .padding(.vertical, 8)
+            .padding(.vertical, 7)
             .background(color)
             .cornerRadius(12)
             .overlay(
@@ -483,20 +633,23 @@ struct ContentView: View {
     }
 }
 
-// MARK: - Full Encrypted Soundboard Drawer
+// MARK: - Verified Character-Matched Soundboard (Excludes IDs 1..156 Generic Announcer!)
 struct SoundboardSheetView: View {
     @ObservedObject var manager: AudioPlayerManager
     @Environment(\.dismiss) var dismiss
     @State private var selectedSection: Int = 0
     
-    private let sections: [(title: String, range: ClosedRange<Int>)] = [
-        ("平泽唯 (1-196)", 1...196),
-        ("秋山澪 (197-392)", 197...392),
-        ("田井中律 (393-588)", 393...588),
-        ("琴吹紬 (589-784)", 589...784),
-        ("中野梓 (785-980)", 785...980),
-        ("互动彩蛋 (981-1122)", 981...1122)
-    ]
+    private var sections: [(title: String, ids: [Int])] {
+        let lang = manager.language
+        return [
+            ("\(AudioPlayerManager.CharacterFilter.yui.displayName(lang)) (192)", AudioPlayerManager.CharacterFilter.yui.verifiedVoiceIds),
+            ("\(AudioPlayerManager.CharacterFilter.mio.displayName(lang)) (192)", AudioPlayerManager.CharacterFilter.mio.verifiedVoiceIds),
+            ("\(AudioPlayerManager.CharacterFilter.ritsu.displayName(lang)) (192)", AudioPlayerManager.CharacterFilter.ritsu.verifiedVoiceIds),
+            ("\(AudioPlayerManager.CharacterFilter.mugi.displayName(lang)) (192)", AudioPlayerManager.CharacterFilter.mugi.verifiedVoiceIds),
+            ("\(AudioPlayerManager.CharacterFilter.azusa.displayName(lang)) (192)", AudioPlayerManager.CharacterFilter.azusa.verifiedVoiceIds),
+            (lang == .en ? "Bonus & Birthdays (11)" : (lang == .zhHant ? "全收集與生日彩蛋 (11)" : "全收集与生日彩蛋 (11)"), Array(1112...1122))
+        ]
+    }
     
     var body: some View {
         NavigationView {
@@ -518,22 +671,22 @@ struct SoundboardSheetView: View {
                     .padding()
                 }
                 
-                List(Array(sections[selectedSection].range), id: \.self) { voiceId in
+                List(sections[selectedSection].ids, id: \.self) { voiceId in
                     Button(action: { manager.playVoice(id: voiceId) }) {
                         HStack {
                             Image(systemName: manager.currentPlayingId == voiceId && manager.isPlaying ? "waveform.circle.fill" : "play.circle.fill")
                                 .foregroundColor(.red)
                                 .font(.title3)
                             VStack(alignment: .leading) {
-                                Text("RM-500HTT 原声片段 #\(voiceId)")
+                                Text("[\(manager.characterForVoiceId(voiceId).displayName(manager.language))] #\(voiceId)")
                                     .font(.subheadline.bold())
-                                Text("加密索引: VOICE_DB-\(String(format: "%010d", voiceId))")
+                                Text("VOICE_DB-\(String(format: "%010d", voiceId))")
                                     .font(.caption2)
                                     .foregroundColor(.secondary)
                             }
                             Spacer()
                             if manager.currentPlayingId == voiceId && manager.isPlaying {
-                                Text("播放中")
+                                Text(manager.language == .en ? "Playing" : (manager.language == .zhHant ? "播放中" : "播放中"))
                                     .font(.caption.bold())
                                     .foregroundColor(.red)
                             }
@@ -541,11 +694,11 @@ struct SoundboardSheetView: View {
                     }
                 }
             }
-            .navigationTitle("RM-500HTT × 桌宠加密语音库")
+            .navigationTitle(manager.language == .en ? "Verified Character Voice DB" : (manager.language == .zhHant ? "已校準純享角色語音庫" : "已校准纯享角色语音库"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("完成") { dismiss() }
+                    Button(manager.language == .en ? "Done" : "完成") { dismiss() }
                 }
             }
         }
