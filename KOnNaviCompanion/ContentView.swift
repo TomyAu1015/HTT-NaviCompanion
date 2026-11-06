@@ -29,14 +29,15 @@ struct HTTSmoothMapView: UIViewRepresentable {
         
         let region = MKCoordinateRegion(
             center: manager.userCoordinate,
-            latitudinalMeters: 800,
-            longitudinalMeters: 800
+            latitudinalMeters: 600,
+            longitudinalMeters: 600
         )
         mapView.setRegion(region, animated: false)
         return mapView
     }
     
     func updateUIView(_ mapView: MKMapView, context: Context) {
+        // 1. Route Overlays and Destination Pins
         if context.coordinator.lastRoute !== manager.activeRoute {
             context.coordinator.lastRoute = manager.activeRoute
             mapView.removeOverlays(mapView.overlays)
@@ -50,39 +51,47 @@ struct HTTSmoothMapView: UIViewRepresentable {
                     pin.title = manager.destinationName
                     mapView.addAnnotation(pin)
                 }
-                let rect = route.polyline.boundingMapRect
-                mapView.setVisibleMapRect(rect, edgePadding: UIEdgeInsets(top: 80, left: 40, bottom: 90, right: 40), animated: false)
                 
-                // Immediately align camera to user vehicle
-                let camera = MKMapCamera(
-                    lookingAtCenter: manager.userCoordinate,
-                    fromDistance: manager.travelMode == .walking ? 400 : 550,
-                    pitch: 45,
-                    heading: manager.headingDegrees
-                )
-                UIView.animate(withDuration: 0.32, delay: 0.05, options: [.curveEaseOut]) {
-                    mapView.camera = camera
+                // When navigation starts, instantly focus first-person on user vehicle rather than distant city overview!
+                if manager.mapTrackingUser {
+                    let camera = MKMapCamera(
+                        lookingAtCenter: manager.userCoordinate,
+                        fromDistance: manager.travelMode == .walking ? 380 : 520,
+                        pitch: 48,
+                        heading: manager.headingDegrees
+                    )
+                    mapView.setCamera(camera, animated: false)
+                } else {
+                    let rect = route.polyline.boundingMapRect
+                    mapView.setVisibleMapRect(rect, edgePadding: UIEdgeInsets(top: 80, left: 40, bottom: 90, right: 40), animated: false)
                 }
             }
         }
         
-        // Fast Recenter Action Triggered! (Snaps back to user in 0.28s without slow lag)
+        // 2. Real-Time Vehicle Arrow Rotation (Points dynamically in heading direction!)
+        if let userView = mapView.view(for: mapView.userLocation) {
+            let rotationAngle = CGFloat((manager.headingDegrees - mapView.camera.heading) * .pi / 180.0)
+            userView.transform = CGAffineTransform(rotationAngle: rotationAngle)
+        }
+        
+        // 3. Fast Recenter Trigger (Snaps instantly back to car in 0.25s)
         if context.coordinator.lastRecenterTrigger != manager.recenterTrigger {
             context.coordinator.lastRecenterTrigger = manager.recenterTrigger
             context.coordinator.isUserInteracting = false
             let camera = MKMapCamera(
                 lookingAtCenter: manager.userCoordinate,
-                fromDistance: manager.travelMode == .walking ? 400 : 550,
+                fromDistance: manager.travelMode == .walking ? 380 : 520,
                 pitch: 48,
                 heading: manager.headingDegrees
             )
-            UIView.animate(withDuration: 0.28, delay: 0, options: [.curveEaseOut]) {
+            UIView.animate(withDuration: 0.25, delay: 0, options: [.curveEaseOut, .beginFromCurrentState]) {
                 mapView.camera = camera
             }
         } else if manager.mapTrackingUser && !context.coordinator.isUserInteracting {
+            // Continuous 60fps smooth vehicle follow
             let camera = MKMapCamera(
                 lookingAtCenter: manager.userCoordinate,
-                fromDistance: manager.travelMode == .walking ? 400 : 650,
+                fromDistance: manager.travelMode == .walking ? 380 : 550,
                 pitch: 48,
                 heading: manager.headingDegrees
             )
@@ -96,6 +105,11 @@ struct HTTSmoothMapView: UIViewRepresentable {
         var isUserInteracting: Bool = false
         var lastRecenterTrigger: Int = 0
         
+        // Pre-rendered high-definition 3D Navigation Arrow
+        lazy var arrowImage: UIImage = {
+            Coordinator.createNavigationArrowImage()
+        }()
+        
         init(_ parent: HTTSmoothMapView) {
             self.parent = parent
         }
@@ -105,7 +119,7 @@ struct HTTSmoothMapView: UIViewRepresentable {
         }
         
         @objc func didPanMap(_ gesture: UIPanGestureRecognizer) {
-            if gesture.state == .began || gesture.state == .changed {
+            if gesture.state == .began {
                 isUserInteracting = true
                 if parent.manager.mapTrackingUser {
                     DispatchQueue.main.async {
@@ -113,14 +127,13 @@ struct HTTSmoothMapView: UIViewRepresentable {
                     }
                 }
             } else if gesture.state == .ended || gesture.state == .cancelled {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 6.0) {
-                    self.isUserInteracting = false
-                }
+                // Instantly unblock interaction flag when finger lifts so recenter and tracking work immediately!
+                isUserInteracting = false
             }
         }
         
         @objc func didPinchMap(_ gesture: UIPinchGestureRecognizer) {
-            if gesture.state == .began || gesture.state == .changed {
+            if gesture.state == .began {
                 isUserInteracting = true
                 if parent.manager.mapTrackingUser {
                     DispatchQueue.main.async {
@@ -128,17 +141,83 @@ struct HTTSmoothMapView: UIViewRepresentable {
                     }
                 }
             } else if gesture.state == .ended || gesture.state == .cancelled {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 6.0) {
-                    self.isUserInteracting = false
-                }
+                isUserInteracting = false
             }
         }
         
         func mapView(_ mapView: MKMapView, didUpdate userLocation: MKUserLocation) {
             guard let loc = userLocation.location, !parent.manager.isDemoSimulating else { return }
             DispatchQueue.main.async {
-                // userLocation.coordinate on MKMapView in China is natively aligned with the blue dot
                 self.parent.manager.userCoordinate = userLocation.coordinate
+            }
+        }
+        
+        // MARK: - Custom 3D Directional Navigation Arrow (导航箭头标)
+        func mapView(_ mapView: MKMapView, viewFor annotation: MKAnnotation) -> MKAnnotationView? {
+            if annotation is MKUserLocation {
+                let identifier = "UserVehicleArrowView"
+                var view = mapView.dequeueReusableAnnotationView(withIdentifier: identifier)
+                if view == nil {
+                    view = MKAnnotationView(annotation: annotation, reuseIdentifier: identifier)
+                    view?.canShowCallout = false
+                } else {
+                    view?.annotation = annotation
+                }
+                view?.image = arrowImage
+                view?.centerOffset = CGPoint(x: 0, y: 0)
+                let rotationAngle = CGFloat((parent.manager.headingDegrees - mapView.camera.heading) * .pi / 180.0)
+                view?.transform = CGAffineTransform(rotationAngle: rotationAngle)
+                return view
+            } else if let pin = annotation as? MKPointAnnotation {
+                let id = "DestinationPinView"
+                var pinView = mapView.dequeueReusableAnnotationView(withIdentifier: id) as? MKMarkerAnnotationView
+                if pinView == nil {
+                    pinView = MKMarkerAnnotationView(annotation: pin, reuseIdentifier: id)
+                    pinView?.markerTintColor = UIColor(red: 0.78, green: 0.18, blue: 0.22, alpha: 1.0)
+                    pinView?.glyphImage = UIImage(systemName: "flag.checkered")
+                    pinView?.canShowCallout = true
+                } else {
+                    pinView?.annotation = pin
+                }
+                return pinView
+            }
+            return nil
+        }
+        
+        static func createNavigationArrowImage() -> UIImage {
+            let size = CGSize(width: 46, height: 46)
+            let renderer = UIGraphicsImageRenderer(size: size)
+            return renderer.image { ctx in
+                let cg = ctx.cgContext
+                
+                // Soft 3D drop shadow for elevation
+                cg.setShadow(offset: CGSize(width: 0, height: 3), blur: 5, color: UIColor.black.withAlphaComponent(0.45).cgColor)
+                
+                // 3D Navigation Arrow Path (Pointing Up)
+                let path = UIBezierPath()
+                path.move(to: CGPoint(x: 23, y: 4))      // Top apex
+                path.addLine(to: CGPoint(x: 41, y: 41))  // Bottom right wing
+                path.addLine(to: CGPoint(x: 23, y: 31))  // Inner notch
+                path.addLine(to: CGPoint(x: 5, y: 41))   // Bottom left wing
+                path.close()
+                
+                // Crisp thick white outer border (visible against any road / map style)
+                UIColor.white.setStroke()
+                path.lineWidth = 3.5
+                path.lineJoinStyle = .round
+                path.stroke()
+                
+                // Vibrant Professional Navigation Blue fill
+                UIColor(red: 0.10, green: 0.58, blue: 0.98, alpha: 1.0).setFill()
+                path.fill()
+                
+                // Inner 3D spine ridge highlight
+                let ridge = UIBezierPath()
+                ridge.move(to: CGPoint(x: 23, y: 8))
+                ridge.addLine(to: CGPoint(x: 23, y: 29))
+                UIColor.white.withAlphaComponent(0.55).setStroke()
+                ridge.lineWidth = 2.0
+                ridge.stroke()
             }
         }
         
