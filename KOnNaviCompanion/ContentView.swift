@@ -1,8 +1,8 @@
 import SwiftUI
 import MapKit
 
-// MARK: - Native AutoNavi/MapKit 3D Route & Tracking View
-struct HTTRealTimeMapView: UIViewRepresentable {
+// MARK: - Native 3D AutoNavi/MapKit Route & 60fps Smooth Tracking View
+struct HTTSmoothMapView: UIViewRepresentable {
     @ObservedObject var manager: AudioPlayerManager
     
     func makeCoordinator() -> Coordinator {
@@ -19,17 +19,24 @@ struct HTTRealTimeMapView: UIViewRepresentable {
         mapView.isPitchEnabled = true
         mapView.isRotateEnabled = true
         
+        let panGesture = UIPanGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.didPanMap(_:)))
+        panGesture.delegate = context.coordinator
+        mapView.addGestureRecognizer(panGesture)
+        
+        let pinchGesture = UIPinchGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.didPinchMap(_:)))
+        pinchGesture.delegate = context.coordinator
+        mapView.addGestureRecognizer(pinchGesture)
+        
         let region = MKCoordinateRegion(
             center: manager.userCoordinate,
-            latitudinalMeters: 900,
-            longitudinalMeters: 900
+            latitudinalMeters: 800,
+            longitudinalMeters: 800
         )
         mapView.setRegion(region, animated: false)
         return mapView
     }
     
     func updateUIView(_ mapView: MKMapView, context: Context) {
-        // Update route overlay when route changes
         if context.coordinator.lastRoute !== manager.activeRoute {
             context.coordinator.lastRoute = manager.activeRoute
             mapView.removeOverlays(mapView.overlays)
@@ -44,41 +51,93 @@ struct HTTRealTimeMapView: UIViewRepresentable {
                     mapView.addAnnotation(pin)
                 }
                 let rect = route.polyline.boundingMapRect
-                mapView.setVisibleMapRect(rect, edgePadding: UIEdgeInsets(top: 50, left: 40, bottom: 60, right: 40), animated: true)
+                mapView.setVisibleMapRect(rect, edgePadding: UIEdgeInsets(top: 80, left: 40, bottom: 90, right: 40), animated: true)
             }
         }
         
-        if manager.mapTrackingUser && manager.activeRoute != nil {
-            let camera = MKMapCamera(
-                lookingAtCenter: manager.userCoordinate,
-                fromDistance: 650,
-                pitch: 45,
-                heading: manager.headingDegrees
-            )
-            mapView.setCamera(camera, animated: true)
-        } else if manager.isDemoSimulating {
-            let region = MKCoordinateRegion(
-                center: manager.userCoordinate,
-                latitudinalMeters: 700,
-                longitudinalMeters: 700
-            )
-            mapView.setRegion(region, animated: true)
+        // Smooth camera follow without fighting user gesture
+        if manager.mapTrackingUser && !context.coordinator.isUserInteracting {
+            if manager.activeRoute != nil {
+                let camera = MKMapCamera(
+                    lookingAtCenter: manager.userCoordinate,
+                    fromDistance: manager.travelMode == .walking ? 400 : 650,
+                    pitch: 48,
+                    heading: manager.headingDegrees
+                )
+                mapView.setCamera(camera, animated: true)
+            } else if manager.isDemoSimulating {
+                let camera = MKMapCamera(
+                    lookingAtCenter: manager.userCoordinate,
+                    fromDistance: 550,
+                    pitch: 45,
+                    heading: manager.headingDegrees
+                )
+                mapView.setCamera(camera, animated: true)
+            }
         }
     }
     
-    class Coordinator: NSObject, MKMapViewDelegate {
-        var parent: HTTRealTimeMapView
+    class Coordinator: NSObject, MKMapViewDelegate, UIGestureRecognizerDelegate {
+        var parent: HTTSmoothMapView
         var lastRoute: MKRoute? = nil
+        var isUserInteracting: Bool = false
         
-        init(_ parent: HTTRealTimeMapView) {
+        init(_ parent: HTTSmoothMapView) {
             self.parent = parent
+        }
+        
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+            return true
+        }
+        
+        @objc func didPanMap(_ gesture: UIPanGestureRecognizer) {
+            if gesture.state == .began || gesture.state == .changed {
+                isUserInteracting = true
+                if parent.manager.mapTrackingUser {
+                    DispatchQueue.main.async {
+                        self.parent.manager.mapTrackingUser = false
+                    }
+                }
+            } else if gesture.state == .ended || gesture.state == .cancelled {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 6.0) {
+                    self.isUserInteracting = false
+                }
+            }
+        }
+        
+        @objc func didPinchMap(_ gesture: UIPinchGestureRecognizer) {
+            if gesture.state == .began || gesture.state == .changed {
+                isUserInteracting = true
+                if parent.manager.mapTrackingUser {
+                    DispatchQueue.main.async {
+                        self.parent.manager.mapTrackingUser = false
+                    }
+                }
+            } else if gesture.state == .ended || gesture.state == .cancelled {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 6.0) {
+                    self.isUserInteracting = false
+                }
+            }
         }
         
         func mapView(_ mapView: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
             if let polyline = overlay as? MKPolyline {
                 let renderer = MKPolylineRenderer(polyline: polyline)
-                renderer.strokeColor = UIColor(red: 0.92, green: 0.22, blue: 0.35, alpha: 0.92)
-                renderer.lineWidth = 7.0
+                switch parent.manager.travelMode {
+                case .driving:
+                    renderer.strokeColor = UIColor(red: 0.92, green: 0.22, blue: 0.35, alpha: 0.92)
+                    renderer.lineWidth = 8.0
+                case .ebike:
+                    renderer.strokeColor = UIColor(red: 0.20, green: 0.78, blue: 0.55, alpha: 0.92)
+                    renderer.lineWidth = 7.0
+                case .walking:
+                    renderer.strokeColor = UIColor(red: 0.25, green: 0.58, blue: 0.95, alpha: 0.92)
+                    renderer.lineWidth = 6.0
+                    renderer.lineDashPattern = [2, 5]
+                case .transit:
+                    renderer.strokeColor = UIColor(red: 0.65, green: 0.35, blue: 0.90, alpha: 0.92)
+                    renderer.lineWidth = 7.0
+                }
                 renderer.lineCap = .round
                 renderer.lineJoin = .round
                 return renderer
@@ -88,13 +147,13 @@ struct HTTRealTimeMapView: UIViewRepresentable {
     }
 }
 
+// MARK: - Main Content View with Dynamic Auto-Enlarging Navigation HUD
 struct ContentView: View {
     @StateObject private var manager = AudioPlayerManager.shared
     @State private var showSoundboardSheet: Bool = false
     @State private var showSearchSheet: Bool = false
     @State private var dragOffset: CGSize = .zero
     
-    // RM-500HTT Classic Tea-Time Palette
     private let httCrimson = Color(red: 0.78, green: 0.18, blue: 0.22)
     private let httCream = Color(red: 0.99, green: 0.96, blue: 0.90)
     private let httGold = Color(red: 0.88, green: 0.68, blue: 0.24)
@@ -114,45 +173,51 @@ struct ContentView: View {
             ZStack {
                 httDarkPanel.ignoresSafeArea()
                 
-                if isLandscape {
-                    ScrollView(.vertical, showsIndicators: true) {
-                        VStack(spacing: 8) {
-                            topBezelBar
-                            
-                            HStack(alignment: .top, spacing: 12) {
-                                VStack(spacing: 8) {
-                                    speedometerCockpit
-                                    utilityControlGrid
-                                }
-                                .frame(width: geo.size.width * 0.45)
-                                
-                                VStack(spacing: 8) {
-                                    mainStageOrMapSection(stageWidth: geo.size.width * 0.49, stageHeight: 195)
-                                    characterSelectorStrip
-                                }
-                                .frame(maxWidth: .infinity)
-                            }
-                        }
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 6)
-                    }
-                    .scaleEffect(x: manager.isHUDMirrored ? -1 : 1, y: 1)
-                    .onAppear { manager.stageWalkBound = 95.0 }
+                // CONDITIONAL 1: Prominent Enlarged Full-Screen Navigation View
+                if manager.isMapEnlarged {
+                    enlargedNavigationHUDView(geo: geo, isLandscape: isLandscape)
+                        .scaleEffect(x: manager.isHUDMirrored ? -1 : 1, y: 1)
                 } else {
-                    ScrollView(.vertical, showsIndicators: false) {
-                        VStack(spacing: 8) {
-                            topBezelBar
-                            speedometerCockpit
-                            mainStageOrMapSection(stageWidth: geo.size.width - 24, stageHeight: 210)
-                            characterSelectorStrip
-                            utilityControlGrid
-                            Spacer(minLength: 4)
+                    // CONDITIONAL 2: Standard Classic Cockpit View
+                    if isLandscape {
+                        ScrollView(.vertical, showsIndicators: true) {
+                            VStack(spacing: 8) {
+                                topBezelBar
+                                HStack(alignment: .top, spacing: 12) {
+                                    VStack(spacing: 8) {
+                                        speedometerCockpit
+                                        utilityControlGrid
+                                    }
+                                    .frame(width: geo.size.width * 0.45)
+                                    
+                                    VStack(spacing: 8) {
+                                        mainStageOrMapSection(stageWidth: geo.size.width * 0.49, stageHeight: 195)
+                                        characterSelectorStrip
+                                    }
+                                    .frame(maxWidth: .infinity)
+                                }
+                            }
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
                         }
-                        .padding(.horizontal, 12)
-                        .padding(.top, 4)
+                        .scaleEffect(x: manager.isHUDMirrored ? -1 : 1, y: 1)
+                        .onAppear { manager.stageWalkBound = 95.0 }
+                    } else {
+                        ScrollView(.vertical, showsIndicators: false) {
+                            VStack(spacing: 8) {
+                                topBezelBar
+                                speedometerCockpit
+                                mainStageOrMapSection(stageWidth: geo.size.width - 24, stageHeight: 210)
+                                characterSelectorStrip
+                                utilityControlGrid
+                                Spacer(minLength: 4)
+                            }
+                            .padding(.horizontal, 12)
+                            .padding(.top, 4)
+                        }
+                        .scaleEffect(x: manager.isHUDMirrored ? -1 : 1, y: 1)
+                        .onAppear { manager.stageWalkBound = 65.0 }
                     }
-                    .scaleEffect(x: manager.isHUDMirrored ? -1 : 1, y: 1)
-                    .onAppear { manager.stageWalkBound = 65.0 }
                 }
             }
             .onChange(of: isLandscape) { newVal in
@@ -167,10 +232,253 @@ struct ContentView: View {
         }
     }
     
-    // MARK: - 1. Top Bezel Header
+    // MARK: - ENLARGED FULL-SCREEN NAVIGATION HUD
+    private func enlargedNavigationHUDView(geo: GeometryProxy, isLandscape: Bool) -> some View {
+        ZStack {
+            // 1. Full Screen 3D Navigation Map
+            HTTSmoothMapView(manager: manager)
+                .ignoresSafeArea()
+            
+            // 2. Overlays
+            VStack(spacing: 6) {
+                // Top Navigation Guidance Card
+                topNavigationBannerCard
+                    .padding(.horizontal, 12)
+                    .padding(.top, isLandscape ? 4 : 44)
+                
+                // 4 Travel Modes Quick Switcher Bar (Car / e-Bike / Walk / Transit)
+                travelModeSelectorBar
+                    .padding(.horizontal, 12)
+                
+                Spacer()
+                
+                // Bottom Floating Control Island (Speedometer + Mascot Stage + Recenter + Exit)
+                bottomEnlargedFloatingIsland(isLandscape: isLandscape)
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, isLandscape ? 8 : 24)
+            }
+        }
+    }
+    
+    // Top Turn-by-Turn Instruction Card
+    private var topNavigationBannerCard: some View {
+        HStack(spacing: 12) {
+            // Maneuver Turn Arrow
+            ZStack {
+                Circle()
+                    .fill(httCrimson)
+                    .frame(width: 52, height: 52)
+                    .overlay(Circle().stroke(httGold, lineWidth: 2))
+                
+                Image(systemName: turnIconName(for: manager.currentStepInstruction))
+                    .font(.system(size: 24, weight: .bold))
+                    .foregroundColor(httCream)
+            }
+            
+            // Instruction Text & Distance
+            VStack(alignment: .leading, spacing: 3) {
+                HStack {
+                    Text(manager.destinationName.isEmpty ? tr("实时路线引导", "即時路線引導", "Route Guidance") : manager.destinationName)
+                        .font(.caption2.bold())
+                        .foregroundColor(httGold)
+                    Spacer()
+                    if manager.remainingRouteDistanceKm > 0 {
+                        Text(String(format: "%.1f km · %d %@", manager.remainingRouteDistanceKm, manager.remainingRouteMinutes, tr("分钟", "分鐘", "min")))
+                            .font(.system(size: 11, weight: .bold, design: .monospaced))
+                            .foregroundColor(httCream.opacity(0.9))
+                    }
+                }
+                
+                Text(manager.currentStepInstruction.isEmpty
+                     ? tr("沿着当前道路直行", "沿著當前道路直行", "Continue straight ahead")
+                     : manager.currentStepInstruction)
+                    .font(.system(size: 15, weight: .black))
+                    .foregroundColor(.white)
+                    .lineLimit(1)
+            }
+            
+            // Distance Countdown Badge
+            if manager.distanceToNextStepMeters > 0 {
+                VStack(spacing: 1) {
+                    Text("\(Int(manager.distanceToNextStepMeters))")
+                        .font(.system(size: 20, weight: .black, design: .monospaced))
+                        .foregroundColor(httGold)
+                    Text("米 (m)")
+                        .font(.system(size: 8, weight: .bold))
+                        .foregroundColor(httCream.opacity(0.8))
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(Color.black.opacity(0.5))
+                .cornerRadius(8)
+            }
+            
+            // Exit Navigation / Minimize Button
+            Button(action: {
+                withAnimation(.spring(response: 0.35, dampingFraction: 0.7)) {
+                    if manager.activeRoute != nil {
+                        manager.stopRouteGuidance()
+                    } else {
+                        manager.isMapEnlarged = false
+                    }
+                }
+            }) {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.title2)
+                    .foregroundColor(.red)
+                    .padding(4)
+                    .background(Color.black.opacity(0.6))
+                    .clipShape(Circle())
+            }
+        }
+        .padding(10)
+        .background(
+            RoundedRectangle(cornerRadius: 16)
+                .fill(Color.black.opacity(0.85))
+                .overlay(RoundedRectangle(cornerRadius: 16).stroke(httGold, lineWidth: 2))
+                .shadow(color: .black.opacity(0.5), radius: 8)
+        )
+    }
+    
+    // 4 Travel Modes Switcher Bar in Enlarged Navigation View
+    private var travelModeSelectorBar: some View {
+        HStack(spacing: 8) {
+            ForEach(NavigationTravelMode.allCases) { mode in
+                Button(action: {
+                    withAnimation {
+                        manager.travelMode = mode
+                    }
+                }) {
+                    HStack(spacing: 4) {
+                        Image(systemName: mode.icon)
+                            .font(.system(size: 11))
+                        Text(mode.title(manager.language))
+                            .font(.system(size: 11, weight: .bold))
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(
+                        manager.travelMode == mode
+                        ? httCrimson
+                        : Color.black.opacity(0.65)
+                    )
+                    .foregroundColor(.white)
+                    .cornerRadius(8)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8)
+                            .stroke(manager.travelMode == mode ? httGold : Color.white.opacity(0.2), lineWidth: 1)
+                    )
+                }
+            }
+            Spacer()
+            
+            // Re-center onto User Location Button
+            Button(action: {
+                withAnimation {
+                    manager.mapTrackingUser = true
+                }
+            }) {
+                HStack(spacing: 3) {
+                    Image(systemName: manager.mapTrackingUser ? "location.north.line.fill" : "location")
+                    Text(manager.mapTrackingUser ? tr("跟车中", "跟車中", "Locked") : tr("回中跟车", "回中跟車", "Recenter"))
+                }
+                .font(.system(size: 10, weight: .bold))
+                .padding(.horizontal, 9)
+                .padding(.vertical, 6)
+                .background(manager.mapTrackingUser ? Color.green.opacity(0.85) : Color.black.opacity(0.75))
+                .foregroundColor(manager.mapTrackingUser ? .black : httGold)
+                .cornerRadius(8)
+            }
+        }
+    }
+    
+    // Bottom Floating Island in Enlarged Navigation View
+    private func bottomEnlargedFloatingIsland(isLandscape: Bool) -> some View {
+        HStack(alignment: .bottom, spacing: 10) {
+            // Floating Mini Speedometer
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(alignment: .firstTextBaseline, spacing: 4) {
+                    Text("\(Int(manager.currentSpeedKmh))")
+                        .font(.system(size: 38, weight: .black, design: .monospaced))
+                        .foregroundColor(manager.isOverspeeding ? .red : Color(red: 0.35, green: 0.98, blue: 0.65))
+                    Text("km/h")
+                        .font(.system(size: 11, weight: .bold, design: .monospaced))
+                        .foregroundColor(httCream)
+                }
+                
+                HStack(spacing: 5) {
+                    Text("\(tr("限速", "限速", "Limit")): \(Int(manager.speedLimitKmh))")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundColor(httGold)
+                    Text(manager.compassDirectionString)
+                        .font(.system(size: 9))
+                        .foregroundColor(.gray)
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(Color.black.opacity(0.82))
+            .cornerRadius(12)
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(manager.isOverspeeding ? Color.red : httGold, lineWidth: 1.5))
+            
+            // Speech Bubble Box
+            VStack(alignment: .leading, spacing: 2) {
+                Text(manager.selectedCharacter.roleTag(manager.language))
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundColor(httCrimson)
+                Text(manager.currentSpeechBubble)
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundColor(.black)
+                    .lineLimit(2)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(httCream)
+            .cornerRadius(10)
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(httGold, lineWidth: 1.5))
+            .frame(maxWidth: .infinity)
+            
+            // Floating Mascot Avatar on Map
+            if manager.selectedCharacter == .all {
+                HStack(alignment: .bottom, spacing: 1) {
+                    ForEach(AudioPlayerManager.CharacterFilter.fiveIndividuals) { member in
+                        if let frame = manager.allMemberFrames[member.charId] {
+                            Image(uiImage: frame)
+                                .interpolation(.none)
+                                .resizable()
+                                .scaledToFit()
+                                .frame(height: 60)
+                                .shadow(radius: 3)
+                                .onTapGesture { manager.triggerCharacterTap(member: member) }
+                        }
+                    }
+                }
+            } else if let sprite = manager.currentSpriteFrame {
+                Image(uiImage: sprite)
+                    .interpolation(.none)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(height: 72)
+                    .shadow(radius: 4)
+                    .onTapGesture { manager.triggerCharacterTap() }
+            }
+        }
+    }
+    
+    private func turnIconName(for text: String) -> String {
+        let lower = text.lowercased()
+        if lower.contains("调头") || lower.contains("掉头") || lower.contains("u-turn") { return "arrow.uturn.left" }
+        if lower.contains("稍向右") || lower.contains("右前方") { return "arrow.up.right" }
+        if lower.contains("稍向左") || lower.contains("左前方") { return "arrow.up.left" }
+        if lower.contains("右") { return "arrow.turn.up.right" }
+        if lower.contains("左") { return "arrow.turn.up.left" }
+        if lower.contains("出口") { return "arrow.right.to.line" }
+        return "arrow.up"
+    }
+    
+    // MARK: - STANDARD COCKPIT COMPONENTS (When Not In Full Screen)
     private var topBezelBar: some View {
         HStack(spacing: 6) {
-            // Switch between Map Navigation Mode & Clubroom Stage Mode
             Button(action: {
                 withAnimation { manager.showMapMode.toggle() }
             }) {
@@ -178,8 +486,8 @@ struct ContentView: View {
                     Image(systemName: manager.showMapMode ? "map.fill" : "cup.and.saucer.fill")
                         .foregroundColor(httGold)
                     Text(manager.showMapMode
-                         ? tr("地图模式(点击切舞台)", "地圖模式(點擊切舞台)", "Map Mode")
-                         : tr("舞台模式(点击切地图)", "舞台模式(點擊切地圖)", "Stage Mode"))
+                         ? tr("地图模式(点切舞台)", "地圖模式(點切舞台)", "Map Mode")
+                         : tr("舞台模式(点切地图)", "舞台模式(點切地圖)", "Stage Mode"))
                         .font(.system(size: 11, weight: .heavy, design: .rounded))
                         .foregroundColor(httCream)
                 }
@@ -187,23 +495,17 @@ struct ContentView: View {
                 .padding(.vertical, 5)
                 .background(httCrimson)
                 .cornerRadius(8)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 8)
-                        .stroke(httGold, lineWidth: 1.5)
-                )
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold, lineWidth: 1.5))
             }
             
             Spacer()
             
-            // 3-Language Switcher
             Menu {
                 ForEach(AppLanguage.allCases) { lang in
                     Button(action: { manager.language = lang }) {
                         HStack {
                             Text(lang.rawValue)
-                            if manager.language == lang {
-                                Image(systemName: "checkmark")
-                            }
+                            if manager.language == lang { Image(systemName: "checkmark") }
                         }
                     }
                 }
@@ -250,7 +552,6 @@ struct ContentView: View {
         }
     }
     
-    // MARK: - 2. GPS Speedometer & Telemetry Cockpit
     private var speedometerCockpit: some View {
         VStack(spacing: 6) {
             HStack(alignment: .center, spacing: 10) {
@@ -359,21 +660,15 @@ struct ContentView: View {
         }
     }
     
-    // MARK: - 3. Main Map Navigation OR Clubroom Stage Section
     private func mainStageOrMapSection(stageWidth: CGFloat, stageHeight: CGFloat) -> some View {
         VStack(spacing: 6) {
             if manager.showMapMode {
-                // Real-Time 3D AutoNavi/MapKit Navigation Cockpit with Chibi Car Avatar!
                 ZStack {
-                    HTTRealTimeMapView(manager: manager)
+                    HTTSmoothMapView(manager: manager)
                         .frame(height: stageHeight)
                         .cornerRadius(16)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 16)
-                                .stroke(httGold, lineWidth: 2)
-                        )
+                        .overlay(RoundedRectangle(cornerRadius: 16).stroke(httGold, lineWidth: 2))
                     
-                    // Top Overlay: Destination Search Bar + Demo Navi + Active Turn Banner
                     VStack(spacing: 4) {
                         HStack(spacing: 6) {
                             Button(action: { showSearchSheet = true }) {
@@ -381,7 +676,7 @@ struct ContentView: View {
                                     Image(systemName: "magnifyingglass")
                                         .foregroundColor(httGold)
                                     Text(manager.destinationName.isEmpty
-                                         ? tr("搜索目的地规划路线...", "搜尋目的地規劃路線...", "Search destination...")
+                                         ? tr("搜索目的地路线...", "搜尋目的地路線...", "Search destination...")
                                          : manager.destinationName)
                                         .font(.system(size: 11, weight: .bold))
                                         .foregroundColor(.white)
@@ -392,113 +687,45 @@ struct ContentView: View {
                                 .padding(.vertical, 6)
                                 .background(Color.black.opacity(0.78))
                                 .cornerRadius(8)
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 8)
-                                        .stroke(httGold.opacity(0.7), lineWidth: 1)
-                                )
+                                .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold.opacity(0.7), lineWidth: 1))
                             }
                             
-                            // 1-Tap Demo Navigation Simulator Button
-                            Button(action: { manager.toggleDemoSimulation() }) {
+                            // Manual Enlarge Full-Screen Button!
+                            Button(action: {
+                                withAnimation(.spring(response: 0.35, dampingFraction: 0.7)) {
+                                    manager.isMapEnlarged = true
+                                }
+                            }) {
                                 HStack(spacing: 3) {
-                                    Image(systemName: manager.isDemoSimulating ? "stop.fill" : "play.fill")
-                                    Text(manager.isDemoSimulating
-                                         ? tr("停止模拟", "停止模擬", "Stop")
-                                         : tr("模拟指路", "模擬指路", "Demo"))
+                                    Image(systemName: "arrow.up.left.and.arrow.down.right")
+                                    Text(tr("放大全屏", "放大全屏", "Full"))
                                 }
                                 .font(.system(size: 10, weight: .bold))
                                 .padding(.horizontal, 8)
                                 .padding(.vertical, 6)
-                                .background(manager.isDemoSimulating ? Color.orange : httCrimson)
+                                .background(httCrimson)
                                 .foregroundColor(.white)
                                 .cornerRadius(8)
-                            }
-                            
-                            if manager.activeRoute != nil {
-                                Button(action: { manager.stopRouteGuidance() }) {
-                                    Image(systemName: "xmark.circle.fill")
-                                        .font(.title3)
-                                        .foregroundColor(.red)
-                                        .padding(4)
-                                        .background(Color.black.opacity(0.7))
-                                        .clipShape(Circle())
-                                }
                             }
                         }
                         .padding(.horizontal, 8)
                         .padding(.top, 7)
                         
-                        // Turn-by-Turn Instruction Banner when Navigating
-                        if !manager.currentStepInstruction.isEmpty {
-                            HStack(spacing: 8) {
-                                Image(systemName: "arrow.turn.up.right")
-                                    .font(.headline)
-                                    .foregroundColor(httGold)
-                                Text(manager.currentStepInstruction)
-                                    .font(.system(size: 12, weight: .heavy))
-                                    .foregroundColor(.white)
-                                    .lineLimit(1)
-                                Spacer()
-                                if manager.distanceToNextStepMeters > 0 {
-                                    Text("\(Int(manager.distanceToNextStepMeters))m")
-                                        .font(.system(size: 12, weight: .black, design: .monospaced))
-                                        .foregroundColor(httGold)
-                                }
-                            }
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 5)
-                            .background(httCrimson.opacity(0.92))
-                            .cornerRadius(8)
-                            .padding(.horizontal, 8)
-                        }
-                        
                         Spacer()
                         
-                        // Bottom Overlay on Map: Draggable K-ON Desktop Pet Avatar Standing on the Map!
+                        // Mascot on map
                         HStack(alignment: .bottom) {
                             if manager.selectedCharacter == .all {
                                 HStack(alignment: .bottom, spacing: 1) {
                                     ForEach(AudioPlayerManager.CharacterFilter.fiveIndividuals) { member in
                                         if let frame = manager.allMemberFrames[member.charId] {
-                                            let isThisDragged = manager.isDraggingMascot && manager.draggedMemberId == member.charId
-                                            let savedPos = manager.memberPositions[member.charId] ?? .zero
                                             Image(uiImage: frame)
                                                 .interpolation(.none)
                                                 .resizable()
                                                 .scaledToFit()
-                                                .frame(height: 68)
-                                                .shadow(color: .black.opacity(0.7), radius: 3)
-                                                .offset(
-                                                    x: savedPos.width + (isThisDragged ? dragOffset.width : 0),
-                                                    y: savedPos.height + (isThisDragged ? dragOffset.height : 0)
-                                                )
-                                                .highPriorityGesture(
-                                                    DragGesture(minimumDistance: 2)
-                                                        .onChanged { value in
-                                                            if !manager.isDraggingMascot {
-                                                                manager.isDraggingMascot = true
-                                                                manager.draggedMemberId = member.charId
-                                                                manager.playMascotVoice(for: member)
-                                                            }
-                                                            dragOffset = value.translation
-                                                        }
-                                                        .onEnded { value in
-                                                            let oldPos = manager.memberPositions[member.charId] ?? .zero
-                                                            let maxBoundX = stageWidth * 0.35
-                                                            let newX = min(max(oldPos.width + value.translation.width, -maxBoundX), maxBoundX)
-                                                            let newY = min(max(oldPos.height + value.translation.height, -75), 10)
-                                                            withAnimation(.spring(response: 0.35, dampingFraction: 0.65)) {
-                                                                manager.memberPositions[member.charId] = CGSize(width: newX, height: newY)
-                                                                manager.isDraggingMascot = false
-                                                                manager.draggedMemberId = nil
-                                                                dragOffset = .zero
-                                                                manager.mascotAction = .idle
-                                                            }
-                                                        }
-                                                )
-                                                .onTapGesture {
-                                                    manager.triggerCharacterTap(member: member)
-                                                }
+                                                .frame(height: 64)
+                                                .shadow(radius: 3)
+                                                .onTapGesture { manager.triggerCharacterTap(member: member) }
                                         }
                                     }
                                 }
@@ -507,69 +734,11 @@ struct ContentView: View {
                                     .interpolation(.none)
                                     .resizable()
                                     .scaledToFit()
-                                    .frame(height: 88)
-                                    .shadow(color: .black.opacity(0.75), radius: 4)
-                                    .offset(
-                                        x: manager.mascotOffsetX + (manager.isDraggingMascot ? dragOffset.width : 0),
-                                        y: manager.mascotOffsetY + (manager.isDraggingMascot ? dragOffset.height : 0)
-                                    )
-                                    .highPriorityGesture(
-                                        DragGesture(minimumDistance: 2)
-                                            .onChanged { value in
-                                                if !manager.isDraggingMascot {
-                                                    manager.isDraggingMascot = true
-                                                    manager.playMascotVoice()
-                                                }
-                                                dragOffset = value.translation
-                                            }
-                                            .onEnded { value in
-                                                let maxBoundX = stageWidth * 0.38
-                                                let newX = min(max(manager.mascotOffsetX + value.translation.width, -maxBoundX), maxBoundX)
-                                                let newY = min(max(manager.mascotOffsetY + value.translation.height, -75), 10)
-                                                withAnimation(.spring(response: 0.35, dampingFraction: 0.65)) {
-                                                    manager.mascotOffsetX = newX
-                                                    manager.mascotOffsetY = newY
-                                                    manager.isDraggingMascot = false
-                                                    dragOffset = .zero
-                                                    manager.mascotAction = .idle
-                                                }
-                                            }
-                                    )
-                                    .onTapGesture {
-                                        manager.triggerCharacterTap()
-                                    }
+                                    .frame(height: 78)
+                                    .shadow(radius: 4)
+                                    .onTapGesture { manager.triggerCharacterTap() }
                             }
-                            
                             Spacer()
-                            
-                            // Pose & Tracking Quick Buttons on Map Corner
-                            VStack(alignment: .trailing, spacing: 4) {
-                                Button(action: { manager.mapTrackingUser.toggle() }) {
-                                    HStack(spacing: 3) {
-                                        Image(systemName: manager.mapTrackingUser ? "location.north.line.fill" : "location")
-                                        Text(manager.mapTrackingUser ? tr("跟车中", "跟車中", "Follow") : tr("自由看图", "自由看圖", "Free"))
-                                    }
-                                    .font(.system(size: 9, weight: .bold))
-                                    .padding(.horizontal, 7)
-                                    .padding(.vertical, 4)
-                                    .background(Color.black.opacity(0.75))
-                                    .foregroundColor(httGold)
-                                    .cornerRadius(6)
-                                }
-                                
-                                Button(action: {
-                                    manager.mascotAction = (manager.mascotAction == .teaCake) ? .special : .teaCake
-                                    manager.playMascotVoice()
-                                }) {
-                                    Text(manager.mascotAction == .teaCake ? tr("🎸 招牌动作", "🎸 招牌動作", "🎸 Dance") : tr("🍰 顶蛋糕", "🍰 頂蛋糕", "🍰 Cake"))
-                                        .font(.system(size: 9, weight: .bold))
-                                        .padding(.horizontal, 7)
-                                        .padding(.vertical, 4)
-                                        .background(httCrimson.opacity(0.88))
-                                        .foregroundColor(.white)
-                                        .cornerRadius(6)
-                                }
-                            }
                         }
                         .padding(.horizontal, 10)
                         .padding(.bottom, 6)
@@ -578,11 +747,9 @@ struct ContentView: View {
                 .frame(height: stageHeight)
                 .clipped()
             } else {
-                // Classic Clubroom Tea Table Stage Mode
                 clubroomStageView(stageWidth: stageWidth, stageHeight: stageHeight)
             }
             
-            // RM-500HTT Speech Bubble Box
             speechBubbleBox
         }
     }
@@ -601,10 +768,7 @@ struct ContentView: View {
                     )
                 )
                 .frame(height: stageHeight)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 16)
-                        .stroke(httGold, lineWidth: 2)
-                )
+                .overlay(RoundedRectangle(cornerRadius: 16).stroke(httGold, lineWidth: 2))
             
             if let deskImg = manager.deskSpriteFrame {
                 Image(uiImage: deskImg)
@@ -774,10 +938,7 @@ struct ContentView: View {
         .padding(.vertical, 7)
         .background(httCream)
         .cornerRadius(12)
-        .overlay(
-            RoundedRectangle(cornerRadius: 12)
-                .stroke(httGold, lineWidth: 2)
-        )
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(httGold, lineWidth: 2))
     }
     
     private func posePill(title: String, state: MascotActionState) -> some View {
@@ -795,7 +956,6 @@ struct ContentView: View {
         }
     }
     
-    // MARK: - 4. Character Switcher Strip
     private var characterSelectorStrip: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 7) {
@@ -830,7 +990,6 @@ struct ContentView: View {
         }
     }
     
-    // MARK: - 5. RM-500HTT Tactical Utility Control Grid
     private var utilityControlGrid: some View {
         VStack(spacing: 7) {
             HStack(spacing: 7) {
@@ -986,7 +1145,7 @@ struct ContentView: View {
     }
 }
 
-// MARK: - Destination Search & Route Planner Sheet
+// MARK: - Multi-Modal Destination Search & Route Sheet
 struct DestinationSearchSheetView: View {
     @ObservedObject var manager: AudioPlayerManager
     @Environment(\.dismiss) var dismiss
@@ -994,12 +1153,32 @@ struct DestinationSearchSheetView: View {
     
     var body: some View {
         NavigationView {
-            VStack(spacing: 12) {
+            VStack(spacing: 10) {
+                // 4 Travel Modes Switcher at Top of Search Sheet
+                HStack(spacing: 8) {
+                    ForEach(NavigationTravelMode.allCases) { mode in
+                        Button(action: { manager.travelMode = mode }) {
+                            HStack(spacing: 4) {
+                                Image(systemName: mode.icon)
+                                Text(mode.title(manager.language))
+                            }
+                            .font(.system(size: 12, weight: .bold))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 7)
+                            .background(manager.travelMode == mode ? Color.red : Color(UIColor.tertiarySystemFill))
+                            .foregroundColor(manager.travelMode == mode ? .white : .primary)
+                            .cornerRadius(8)
+                        }
+                    }
+                }
+                .padding(.horizontal)
+                .padding(.top, 6)
+                
                 HStack {
                     Image(systemName: "magnifyingglass")
                         .foregroundColor(.secondary)
                     TextField(
-                        manager.language == .en ? "Enter destination, road, or POI..." : "输入目的地、商超、大厦或路名...",
+                        manager.language == .en ? "Enter destination, station or road..." : "输入目的地、口岸、商圈或路名...",
                         text: $queryText,
                         onCommit: { manager.searchPlaces(query: queryText) }
                     )
@@ -1026,26 +1205,27 @@ struct DestinationSearchSheetView: View {
                 .background(Color(UIColor.secondarySystemBackground))
                 .cornerRadius(10)
                 .padding(.horizontal)
-                .padding(.top, 8)
                 
-                // Quick Option: Launch External Gaode Map App if needed
+                // Demo Navigation Test Button
                 Button(action: {
                     dismiss()
-                    manager.openGaodeMap()
+                    manager.showMapMode = true
+                    manager.startDemoSimulation()
                 }) {
                     HStack {
-                        Image(systemName: "arrow.up.forward.app.fill")
+                        Image(systemName: "play.circle.fill")
+                            .foregroundColor(.orange)
                         Text(manager.language == .en
-                             ? "Also open external Amap App (Keep HTT Voice in Background)"
-                             : "同时拉起外部《高德地图 App》（保持轻音后台伴驾）")
+                             ? "Test 1-Click Simulation (Listen to Full Turn Guidance Indoors)"
+                             : "室内一键测试：模拟路线指路（完整听转向原声）")
                             .font(.caption.bold())
                         Spacer()
                         Image(systemName: "chevron.right")
                     }
-                    .padding(12)
-                    .background(Color.blue.opacity(0.12))
-                    .foregroundColor(.blue)
-                    .cornerRadius(10)
+                    .padding(10)
+                    .background(Color.orange.opacity(0.12))
+                    .foregroundColor(.orange)
+                    .cornerRadius(8)
                     .padding(.horizontal)
                 }
                 
@@ -1061,9 +1241,10 @@ struct DestinationSearchSheetView: View {
                         dismiss()
                     }) {
                         HStack {
-                            Image(systemName: "mappin.circle.fill")
-                                .font(.title2)
+                            Image(systemName: manager.travelMode.icon)
+                                .font(.title3)
                                 .foregroundColor(.red)
+                                .frame(width: 28)
                             VStack(alignment: .leading, spacing: 3) {
                                 Text(item.name ?? "未知地点")
                                     .font(.subheadline.bold())
@@ -1084,7 +1265,7 @@ struct DestinationSearchSheetView: View {
                     }
                 }
             }
-            .navigationTitle(manager.language == .en ? "RM-500HTT Route Planner" : "RM-500HTT 目的地算路导航")
+            .navigationTitle(manager.language == .en ? "Route Planner" : "出行路线规划")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
@@ -1095,7 +1276,7 @@ struct DestinationSearchSheetView: View {
     }
 }
 
-// MARK: - Verified Character-Matched Soundboard
+// MARK: - Verified Character Soundboard
 struct SoundboardSheetView: View {
     @ObservedObject var manager = AudioPlayerManager.shared
     @Environment(\.dismiss) var dismiss
@@ -1109,7 +1290,7 @@ struct SoundboardSheetView: View {
             ("\(AudioPlayerManager.CharacterFilter.ritsu.displayName(lang)) (192)", AudioPlayerManager.CharacterFilter.ritsu.verifiedVoiceIds),
             ("\(AudioPlayerManager.CharacterFilter.mugi.displayName(lang)) (192)", AudioPlayerManager.CharacterFilter.mugi.verifiedVoiceIds),
             ("\(AudioPlayerManager.CharacterFilter.azusa.displayName(lang)) (192)", AudioPlayerManager.CharacterFilter.azusa.verifiedVoiceIds),
-            (lang == .en ? "Bonus & Birthdays (11)" : (lang == .zhHant ? "全收集與生日彩蛋 (11)" : "全收集与生日彩蛋 (11)"), Array(1112...1122))
+            (lang == .en ? "Bonus & Birthdays (11)" : "全收集与生日彩蛋 (11)", Array(1112...1122))
         ]
     }
     
@@ -1156,7 +1337,7 @@ struct SoundboardSheetView: View {
                     }
                 }
             }
-            .navigationTitle(manager.language == .en ? "Verified Character Voice DB" : (manager.language == .zhHant ? "已校準純享角色語音庫" : "已校准纯享角色语音库"))
+            .navigationTitle(manager.language == .en ? "Voice DB" : "已校准纯享角色语音库")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
