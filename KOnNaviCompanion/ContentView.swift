@@ -55,6 +55,10 @@ struct HTTSmoothMapView: UIViewRepresentable {
             }
         }
         
+        if manager.mapTrackingUser {
+            context.coordinator.isUserInteracting = false
+        }
+        
         // Smooth camera follow without fighting user gesture
         if manager.mapTrackingUser && !context.coordinator.isUserInteracting {
             if manager.activeRoute != nil {
@@ -117,6 +121,14 @@ struct HTTSmoothMapView: UIViewRepresentable {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 6.0) {
                     self.isUserInteracting = false
                 }
+            }
+        }
+        
+        func mapView(_ mapView: MKMapView, didUpdate userLocation: MKUserLocation) {
+            guard let loc = userLocation.location, !parent.manager.isDemoSimulating else { return }
+            DispatchQueue.main.async {
+                // userLocation.coordinate on MKMapView in China is natively aligned with the blue dot
+                self.parent.manager.userCoordinate = userLocation.coordinate
             }
         }
         

@@ -17,6 +17,50 @@ struct MascotVoiceEntry {
     let length: UInt32
 }
 
+// MARK: - WGS-84 to GCJ-02 (China Mars Coordinate System) Converter
+struct CoordinateConverter {
+    static func wgs84ToGCJ02(_ coord: CLLocationCoordinate2D) -> CLLocationCoordinate2D {
+        if isOutOfChina(coord) {
+            return coord
+        }
+        let a = 6378245.0
+        let ee = 0.00669342162296594323
+        let pi = Double.pi
+        
+        var dLat = transformLat(x: coord.longitude - 105.0, y: coord.latitude - 35.0)
+        var dLon = transformLon(x: coord.longitude - 105.0, y: coord.latitude - 35.0)
+        let radLat = coord.latitude / 180.0 * pi
+        var magic = sin(radLat)
+        magic = 1.0 - ee * magic * magic
+        let sqrtMagic = sqrt(magic)
+        dLat = (dLat * 180.0) / ((a * (1.0 - ee)) / (magic * sqrtMagic) * pi)
+        dLon = (dLon * 180.0) / (a / sqrtMagic * cos(radLat) * pi)
+        return CLLocationCoordinate2D(latitude: coord.latitude + dLat, longitude: coord.longitude + dLon)
+    }
+    
+    private static func isOutOfChina(_ coord: CLLocationCoordinate2D) -> Bool {
+        if coord.longitude < 72.004 || coord.longitude > 137.8347 { return true }
+        if coord.latitude < 0.8293 || coord.latitude > 55.8271 { return true }
+        return false
+    }
+    
+    private static func transformLat(x: Double, y: Double) -> Double {
+        var ret = -100.0 + 2.0 * x + 3.0 * y + 0.2 * y * y + 0.1 * x * y + 0.2 * sqrt(abs(x))
+        ret += (20.0 * sin(6.0 * x * Double.pi) + 20.0 * sin(2.0 * x * Double.pi)) * 2.0 / 3.0
+        ret += (20.0 * sin(y * Double.pi) + 40.0 * sin(y / 3.0 * Double.pi)) * 2.0 / 3.0
+        ret += (160.0 * sin(y / 12.0 * Double.pi) + 320.0 * sin(y * Double.pi / 30.0)) * 2.0 / 3.0
+        return ret
+    }
+    
+    private static func transformLon(x: Double, y: Double) -> Double {
+        var ret = 300.0 + x + 2.0 * y + 0.1 * x * x + 0.1 * x * y + 0.1 * sqrt(abs(x))
+        ret += (20.0 * sin(6.0 * x * Double.pi) + 20.0 * sin(2.0 * x * Double.pi)) * 2.0 / 3.0
+        ret += (20.0 * sin(x * Double.pi) + 40.0 * sin(x / 3.0 * Double.pi)) * 2.0 / 3.0
+        ret += (150.0 * sin(x / 12.0 * Double.pi) + 300.0 * sin(x / 30.0 * Double.pi)) * 2.0 / 3.0
+        return ret
+    }
+}
+
 enum AppLanguage: String, CaseIterable, Identifiable {
     case zhHans = "简体"
     case zhHant = "繁體"
@@ -681,9 +725,15 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     func calculateAndStartRoute(to destCoord: CLLocationCoordinate2D, title: String, isReroute: Bool = false) {
         destinationCoord = destCoord
         destinationName = title
+        isRecalculatingRoute = true
         
         let req = MKDirections.Request()
-        req.source = MKMapItem(placemark: MKPlacemark(coordinate: userCoordinate))
+        // If demo simulating, use simulated userCoordinate; otherwise use real device location via forCurrentLocation()
+        if isDemoSimulating {
+            req.source = MKMapItem(placemark: MKPlacemark(coordinate: userCoordinate))
+        } else {
+            req.source = MKMapItem.forCurrentLocation()
+        }
         req.destination = MKMapItem(placemark: MKPlacemark(coordinate: destCoord))
         req.transportType = travelMode.mkTransportType
         req.requestsAlternateRoutes = false
@@ -692,45 +742,69 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             guard let self = self else { return }
             DispatchQueue.main.async {
                 self.isRecalculatingRoute = false
-                guard let route = response?.routes.first else {
-                    self.triggerDepartureGreeting()
-                    return
-                }
-                self.activeRoute = route
-                self.isMapEnlarged = true // Automatically enlarge map to prominent navigation HUD!
-                self.announcedStepThresholds.removeAll()
-                self.keepAlivePlayer?.play()
-                
-                let steps = route.steps
-                self.currentStepIndex = steps.count > 1 ? 1 : 0
-                if self.currentStepIndex < steps.count {
-                    let step = steps[self.currentStepIndex]
-                    self.currentStepInstruction = step.instructions.isEmpty ? title : step.instructions
-                    self.distanceToNextStepMeters = step.distance
-                }
-                self.remainingRouteDistanceKm = route.distance / 1000.0
-                
-                // Estimate ETA according to travel mode speed
-                if self.travelMode == .ebike {
-                    self.remainingRouteMinutes = max(1, Int((route.distance / 1000.0) / 22.0 * 60.0))
+                if let route = response?.routes.first {
+                    self.applyCalculatedRoute(route, title: title, isReroute: isReroute)
                 } else {
-                    self.remainingRouteMinutes = max(1, Int(route.expectedTravelTime / 60.0))
-                }
-                
-                let modeName = self.travelMode.title(self.language)
-                if isReroute {
-                    let base = self.activeBaseId()
-                    let modeOff = self.activeModeOffset()
-                    self.playVoice(id: base + modeOff + 43, customQuote: "🔄 [\(modeName)] リルート完了！新しいルートで案内するよ！")
-                } else {
-                    let base = self.activeBaseId()
-                    let modeOff = self.activeModeOffset()
-                    self.enqueueVoiceCombo([
-                        (base + modeOff + 39, "🗺️ [\(modeName)] ルート案内を始めるよ！目的地: \(title)"),
-                        (base + modeOff + 47, "🚦 実際の交通規制に従って、安全運転してね！")
-                    ])
+                    // Fallback using GCJ-02 converted userCoordinate if forCurrentLocation is nil or fails
+                    let fallbackReq = MKDirections.Request()
+                    fallbackReq.source = MKMapItem(placemark: MKPlacemark(coordinate: self.userCoordinate))
+                    fallbackReq.destination = MKMapItem(placemark: MKPlacemark(coordinate: destCoord))
+                    fallbackReq.transportType = self.travelMode.mkTransportType
+                    fallbackReq.requestsAlternateRoutes = false
+                    MKDirections(request: fallbackReq).calculate { [weak self] fallbackResp, _ in
+                        DispatchQueue.main.async {
+                            guard let self = self else { return }
+                            if let fbRoute = fallbackResp?.routes.first {
+                                self.applyCalculatedRoute(fbRoute, title: title, isReroute: isReroute)
+                            } else {
+                                self.triggerDepartureGreeting(title: title, isReroute: isReroute)
+                            }
+                        }
+                    }
                 }
             }
+        }
+    }
+    
+    private func applyCalculatedRoute(_ route: MKRoute, title: String, isReroute: Bool) {
+        self.activeRoute = route
+        self.isMapEnlarged = true // Automatically enlarge map to prominent navigation HUD!
+        self.announcedStepThresholds.removeAll()
+        self.keepAlivePlayer?.play()
+        
+        let steps = route.steps
+        self.currentStepIndex = steps.count > 1 ? 1 : 0
+        if self.currentStepIndex < steps.count {
+            let step = steps[self.currentStepIndex]
+            self.currentStepInstruction = step.instructions.isEmpty ? title : step.instructions
+            self.distanceToNextStepMeters = step.distance
+        }
+        self.remainingRouteDistanceKm = route.distance / 1000.0
+        
+        // Estimate ETA according to travel mode speed
+        if self.travelMode == .ebike {
+            self.remainingRouteMinutes = max(1, Int((route.distance / 1000.0) / 22.0 * 60.0))
+        } else {
+            self.remainingRouteMinutes = max(1, Int(route.expectedTravelTime / 60.0))
+        }
+        
+        self.triggerDepartureGreeting(title: title, isReroute: isReroute)
+    }
+    
+    private func triggerDepartureGreeting(title: String = "", isReroute: Bool = false) {
+        let modeName = self.travelMode.title(self.language)
+        if isReroute {
+            let base = self.activeBaseId()
+            let modeOff = self.activeModeOffset()
+            self.playVoice(id: base + modeOff + 43, customQuote: "🔄 [\(modeName)] リルート完了！新しいルートで案内するよ！")
+        } else {
+            let base = self.activeBaseId()
+            let modeOff = self.activeModeOffset()
+            let destText = title.isEmpty ? self.destinationName : title
+            self.enqueueVoiceCombo([
+                (base + modeOff + 39, "🗺️ [\(modeName)] ルート案内を始めるよ！目的地: \(destText)"),
+                (base + modeOff + 47, "🚦 実際の交通規制に従って、安全運転してね！")
+            ])
         }
     }
     
@@ -756,7 +830,9 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         let step = steps[currentStepIndex]
         let stepEndCoord = step.polyline.points()[max(0, step.polyline.pointCount - 1)].coordinate
         let stepEndLoc = CLLocation(latitude: stepEndCoord.latitude, longitude: stepEndCoord.longitude)
-        let dist = location.distance(from: stepEndLoc)
+        // Compare GCJ-02 userCoordinate with GCJ-02 step coordinates for accurate distance
+        let currentLoc = CLLocation(latitude: userCoordinate.latitude, longitude: userCoordinate.longitude)
+        let dist = currentLoc.distance(from: stepEndLoc)
         
         self.distanceToNextStepMeters = dist
         self.currentStepInstruction = step.instructions
@@ -926,7 +1002,8 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         
         DispatchQueue.main.async {
             if !self.isDemoSimulating {
-                self.userCoordinate = loc.coordinate
+                // Convert WGS-84 GPS coordinate to GCJ-02 Mars coordinate for China MapKit alignment
+                self.userCoordinate = CoordinateConverter.wgs84ToGCJ02(loc.coordinate)
             }
             self.gpsAccuracyMeters = loc.horizontalAccuracy
             
