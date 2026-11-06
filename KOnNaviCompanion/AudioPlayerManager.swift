@@ -75,8 +75,17 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     @Published var allMemberFrames: [Int: UIImage] = [:]
     @Published var deskSpriteFrame: UIImage? = nil
     @Published var mascotOffsetX: CGFloat = 0.0
+    @Published var mascotOffsetY: CGFloat = 0.0
+    @Published var stageWalkBound: CGFloat = 65.0
+    @Published var memberPositions: [Int: CGSize] = [:]
     @Published var isDraggingMascot: Bool = false
     @Published var draggedMemberId: Int? = nil
+    
+    func resetPositions() {
+        mascotOffsetX = 0.0
+        mascotOffsetY = 0.0
+        memberPositions.removeAll()
+    }
     private var animTick: Int = 0
     private var animTimer: Timer?
     
@@ -482,10 +491,10 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         
         if mascotAction == .walkLeft {
             mascotOffsetX -= 4.5
-            if mascotOffsetX < -55.0 { mascotAction = .walkRight }
+            if mascotOffsetX < -stageWalkBound { mascotAction = .walkRight }
         } else if mascotAction == .walkRight {
             mascotOffsetX += 4.5
-            if mascotOffsetX > 55.0 { mascotAction = .walkLeft }
+            if mascotOffsetX > stageWalkBound { mascotAction = .walkLeft }
         }
         
         if animTick % 36 == 0 && mascotAction != .teaCake {

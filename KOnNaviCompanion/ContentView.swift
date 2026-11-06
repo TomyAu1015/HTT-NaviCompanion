@@ -20,30 +20,59 @@ struct ContentView: View {
     }
     
     var body: some View {
-        ZStack {
-            httDarkPanel.ignoresSafeArea()
-            
-            VStack(spacing: 8) {
-                // 1. Top Bezel Header (with Language Switcher, HUD Mirror, Soundboard)
-                topBezelBar
+        GeometryReader { geo in
+            let isLandscape = geo.size.width > geo.size.height
+            ZStack {
+                httDarkPanel.ignoresSafeArea()
                 
-                // 2. Main Speedometer & GPS HUD Cockpit (with GPS Poor Signal & Speed Limit Broadcast)
-                speedometerCockpit
-                
-                // 3. Official K-ON Desktop Pet Interactive Stage (Supports All 5 Members Together!)
-                mascotInteractiveStage
-                
-                // 4. Character Switcher Bar (All 5 Together + 5 Individual Members)
-                characterSelectorStrip
-                
-                // 5. RM-500HTT Tactical Utility Control Grid & Reliable Cruise Mode
-                utilityControlGrid
-                
-                Spacer(minLength: 2)
+                if isLandscape {
+                    // Widescreen RM-500HTT Native Landscape Cockpit (2-Column Adaptive + Scrollable)
+                    ScrollView(.vertical, showsIndicators: true) {
+                        VStack(spacing: 8) {
+                            topBezelBar
+                            
+                            HStack(alignment: .top, spacing: 12) {
+                                // Left Column: GPS Speedometer & Tactical Controls
+                                VStack(spacing: 8) {
+                                    speedometerCockpit
+                                    utilityControlGrid
+                                }
+                                .frame(width: geo.size.width * 0.46)
+                                
+                                // Right Column: Wide Interactive Mascot Stage & Character Bar
+                                VStack(spacing: 8) {
+                                    mascotInteractiveStage(stageWidth: geo.size.width * 0.48, stageHeight: 155)
+                                    characterSelectorStrip
+                                }
+                                .frame(maxWidth: .infinity)
+                            }
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                    }
+                    .scaleEffect(x: manager.isHUDMirrored ? -1 : 1, y: 1)
+                    .onAppear { manager.stageWalkBound = 95.0 }
+                } else {
+                    // Portrait Mode (Scrollable + Non-blocking Mascot Drag)
+                    ScrollView(.vertical, showsIndicators: false) {
+                        VStack(spacing: 8) {
+                            topBezelBar
+                            speedometerCockpit
+                            mascotInteractiveStage(stageWidth: geo.size.width - 24, stageHeight: 150)
+                            characterSelectorStrip
+                            utilityControlGrid
+                            Spacer(minLength: 4)
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.top, 4)
+                    }
+                    .scaleEffect(x: manager.isHUDMirrored ? -1 : 1, y: 1)
+                    .onAppear { manager.stageWalkBound = 65.0 }
+                }
             }
-            .padding(.horizontal, 12)
-            .padding(.top, 4)
-            .scaleEffect(x: manager.isHUDMirrored ? -1 : 1, y: 1)
+            .onChange(of: isLandscape) { newVal in
+                manager.stageWalkBound = newVal ? 95.0 : 65.0
+            }
         }
         .sheet(isPresented: $showSoundboardSheet) {
             SoundboardSheetView(manager: manager)
@@ -135,16 +164,15 @@ struct ContentView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(alignment: .firstTextBaseline, spacing: 5) {
                         Text("\(Int(manager.currentSpeedKmh))")
-                            .font(.system(size: 52, weight: .black, design: .monospaced))
+                            .font(.system(size: 50, weight: .black, design: .monospaced))
                             .foregroundColor(manager.isOverspeeding ? .red : Color(red: 0.35, green: 0.98, blue: 0.65))
                             .shadow(color: (manager.isOverspeeding ? Color.red : Color.green).opacity(0.5), radius: 6)
                         
                         Text("km/h")
-                            .font(.system(size: 14, weight: .bold, design: .monospaced))
+                            .font(.system(size: 13, weight: .bold, design: .monospaced))
                             .foregroundColor(httCream.opacity(0.7))
                     }
                     
-                    // Interactive GPS & Speed Status Row
                     HStack(spacing: 8) {
                         Button(action: {
                             manager.triggerGPSSignalPoorAlert()
@@ -182,8 +210,7 @@ struct ContentView: View {
             
             Divider().background(Color.white.opacity(0.15))
             
-            // Speed Limit Selector (Tapping any limit sets it & broadcasts built-in traffic regulation prompt!)
-            HStack(spacing: 6) {
+            HStack(spacing: 5) {
                 Button(action: { manager.triggerSpeedLimitPrompt() }) {
                     HStack(spacing: 3) {
                         Image(systemName: "speedometer")
@@ -203,7 +230,7 @@ struct ContentView: View {
                     }) {
                         Text("\(Int(limit))")
                             .font(.caption2.bold())
-                            .padding(.horizontal, 8)
+                            .padding(.horizontal, 7)
                             .padding(.vertical, 3)
                             .background(manager.speedLimitKmh == limit ? httCrimson : Color.white.opacity(0.1))
                             .foregroundColor(.white)
@@ -241,8 +268,8 @@ struct ContentView: View {
         }
     }
     
-    // MARK: - 3. Official K-ON Windows Desktop Pet Stage (5-Member Simultaneous or Solo!)
-    private var mascotInteractiveStage: some View {
+    // MARK: - 3. Official K-ON Windows Desktop Pet Stage (Works in both Portrait & Landscape!)
+    private func mascotInteractiveStage(stageWidth: CGFloat, stageHeight: CGFloat) -> some View {
         VStack(spacing: 6) {
             ZStack(alignment: .bottom) {
                 RoundedRectangle(cornerRadius: 16)
@@ -256,7 +283,7 @@ struct ContentView: View {
                             endPoint: .bottom
                         )
                     )
-                    .frame(height: 150)
+                    .frame(height: stageHeight)
                     .overlay(
                         RoundedRectangle(cornerRadius: 16)
                             .stroke(httGold, lineWidth: 2)
@@ -268,7 +295,7 @@ struct ContentView: View {
                         .interpolation(.none)
                         .resizable()
                         .scaledToFit()
-                        .frame(height: manager.selectedCharacter == .all ? 90 : 80)
+                        .frame(height: manager.selectedCharacter == .all ? 88 : 78)
                         .opacity(manager.selectedCharacter == .all ? 0.85 : 0.45)
                         .padding(.bottom, 8)
                 }
@@ -302,26 +329,27 @@ struct ContentView: View {
                         ForEach(AudioPlayerManager.CharacterFilter.fiveIndividuals) { member in
                             if let frame = manager.allMemberFrames[member.charId] {
                                 let isThisDragged = manager.isDraggingMascot && manager.draggedMemberId == member.charId
+                                let savedPos = manager.memberPositions[member.charId] ?? .zero
                                 VStack(spacing: 0) {
                                     Image(uiImage: frame)
                                         .interpolation(.none)
                                         .resizable()
                                         .scaledToFit()
-                                        .frame(height: 86)
+                                        .frame(height: 82)
                                     Text(member.displayName(manager.language))
                                         .font(.system(size: 9, weight: .bold))
-                                        .padding(.horizontal, 5)
+                                        .padding(.horizontal, 4)
                                         .padding(.vertical, 1)
                                         .background(characterThemeColor(member).opacity(0.85))
                                         .foregroundColor(.white)
                                         .cornerRadius(4)
                                 }
                                 .offset(
-                                    x: isThisDragged ? dragOffset.width : (manager.mascotOffsetX * 0.35),
-                                    y: isThisDragged ? dragOffset.height : 0
+                                    x: savedPos.width + (isThisDragged ? dragOffset.width : (manager.mascotOffsetX * 0.45)),
+                                    y: savedPos.height + (isThisDragged ? dragOffset.height : 0)
                                 )
-                                .gesture(
-                                    DragGesture()
+                                .highPriorityGesture(
+                                    DragGesture(minimumDistance: 2)
                                         .onChanged { value in
                                             if !manager.isDraggingMascot {
                                                 manager.isDraggingMascot = true
@@ -330,8 +358,13 @@ struct ContentView: View {
                                             }
                                             dragOffset = value.translation
                                         }
-                                        .onEnded { _ in
-                                            withAnimation(.spring(response: 0.35, dampingFraction: 0.6)) {
+                                        .onEnded { value in
+                                            let oldPos = manager.memberPositions[member.charId] ?? .zero
+                                            let maxBoundX = stageWidth * 0.35
+                                            let newX = min(max(oldPos.width + value.translation.width, -maxBoundX), maxBoundX)
+                                            let newY = min(max(oldPos.height + value.translation.height, -45), 10)
+                                            withAnimation(.spring(response: 0.35, dampingFraction: 0.65)) {
+                                                manager.memberPositions[member.charId] = CGSize(width: newX, height: newY)
                                                 manager.isDraggingMascot = false
                                                 manager.draggedMemberId = nil
                                                 dragOffset = .zero
@@ -351,13 +384,13 @@ struct ContentView: View {
                         .interpolation(.none)
                         .resizable()
                         .scaledToFit()
-                        .frame(height: 112)
+                        .frame(height: 110)
                         .offset(
-                            x: manager.isDraggingMascot ? dragOffset.width : manager.mascotOffsetX,
-                            y: manager.isDraggingMascot ? dragOffset.height : 0
+                            x: manager.mascotOffsetX + (manager.isDraggingMascot ? dragOffset.width : 0),
+                            y: manager.mascotOffsetY + (manager.isDraggingMascot ? dragOffset.height : 0)
                         )
-                        .gesture(
-                            DragGesture()
+                        .highPriorityGesture(
+                            DragGesture(minimumDistance: 2)
                                 .onChanged { value in
                                     if !manager.isDraggingMascot {
                                         manager.isDraggingMascot = true
@@ -365,8 +398,13 @@ struct ContentView: View {
                                     }
                                     dragOffset = value.translation
                                 }
-                                .onEnded { _ in
-                                    withAnimation(.spring(response: 0.35, dampingFraction: 0.6)) {
+                                .onEnded { value in
+                                    let maxBoundX = stageWidth * 0.38
+                                    let newX = min(max(manager.mascotOffsetX + value.translation.width, -maxBoundX), maxBoundX)
+                                    let newY = min(max(manager.mascotOffsetY + value.translation.height, -40), 10)
+                                    withAnimation(.spring(response: 0.35, dampingFraction: 0.65)) {
+                                        manager.mascotOffsetX = newX
+                                        manager.mascotOffsetY = newY
                                         manager.isDraggingMascot = false
                                         dragOffset = .zero
                                         manager.mascotAction = .idle
@@ -379,7 +417,8 @@ struct ContentView: View {
                         .padding(.bottom, 4)
                 }
             }
-            .frame(height: 150)
+            .frame(height: stageHeight)
+            .clipped()
             
             // RM-500HTT Speech Bubble Box
             HStack(spacing: 10) {
@@ -389,9 +428,19 @@ struct ContentView: View {
                             .font(.caption2.bold())
                             .foregroundColor(httCrimson)
                         Spacer()
-                        Text(tr("点击或拖拽任意角色互动", "點擊或拖拽任意角色互動", "Tap or drag character"))
-                            .font(.system(size: 9))
-                            .foregroundColor(.gray)
+                        Button(action: {
+                            withAnimation {
+                                manager.resetPositions()
+                            }
+                        }) {
+                            Text(tr("位置归位", "位置歸位", "Reset Pos"))
+                                .font(.system(size: 9, weight: .bold))
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(httCrimson.opacity(0.15))
+                                .foregroundColor(httCrimson)
+                                .cornerRadius(4)
+                        }
                     }
                     
                     Text(manager.currentSpeechBubble)
@@ -421,7 +470,6 @@ struct ContentView: View {
     
     private func posePill(title: String, state: MascotActionState) -> some View {
         Button(action: {
-            manager.mascotOffsetX = 0
             manager.mascotAction = state
             manager.playMascotVoice()
         }) {
@@ -442,7 +490,7 @@ struct ContentView: View {
                 ForEach(AudioPlayerManager.CharacterFilter.allCases) { char in
                     Button(action: {
                         manager.selectedCharacter = char
-                        manager.mascotOffsetX = 0
+                        manager.resetPositions()
                         manager.triggerCharacterTap(member: char)
                     }) {
                         HStack(spacing: 4) {
@@ -473,7 +521,6 @@ struct ContentView: View {
     // MARK: - 5. RM-500HTT Tactical Utility Control Grid & Cruise Timer
     private var utilityControlGrid: some View {
         VStack(spacing: 7) {
-            // Row 1: 4 Direct Action Buttons (Departure, Banter, GPS/Speed Alert, Tea Time)
             HStack(spacing: 7) {
                 tacticalButton(
                     title: tr("出発進行", "出發進行", "Depart"),
@@ -503,7 +550,6 @@ struct ContentView: View {
                 }
             }
             
-            // Row 2: Cruise Mode (with Live Countdown & Interval Menu) + Gaode Map Launcher
             HStack(spacing: 7) {
                 HStack(spacing: 6) {
                     Button(action: { manager.toggleCruiseMode() }) {
@@ -526,7 +572,6 @@ struct ContentView: View {
                     
                     Spacer(minLength: 2)
                     
-                    // Interval Selector Menu (1 / 3 / 5 / 10 / 15 / 30 mins)
                     Menu {
                         ForEach([1.0, 3.0, 5.0, 10.0, 15.0, 30.0], id: \.self) { mins in
                             Button(action: { manager.cruiseIntervalMinutes = mins }) {
@@ -558,7 +603,6 @@ struct ContentView: View {
                         .stroke(manager.isCruiseModeActive ? Color.green : httGold.opacity(0.4), lineWidth: 1.5)
                 )
                 
-                // 1-Tap Gaode Map Companion Launch
                 Button(action: {
                     if !manager.isCruiseModeActive { manager.startCruiseMode() }
                     manager.openGaodeMap()
@@ -633,9 +677,9 @@ struct ContentView: View {
     }
 }
 
-// MARK: - Verified Character-Matched Soundboard (Excludes IDs 1..156 Generic Announcer!)
+// MARK: - Verified Character-Matched Soundboard
 struct SoundboardSheetView: View {
-    @ObservedObject var manager: AudioPlayerManager
+    @ObservedObject var manager = AudioPlayerManager.shared
     @Environment(\.dismiss) var dismiss
     @State private var selectedSection: Int = 0
     
@@ -686,7 +730,7 @@ struct SoundboardSheetView: View {
                             }
                             Spacer()
                             if manager.currentPlayingId == voiceId && manager.isPlaying {
-                                Text(manager.language == .en ? "Playing" : (manager.language == .zhHant ? "播放中" : "播放中"))
+                                Text(manager.language == .en ? "Playing" : "播放中")
                                     .font(.caption.bold())
                                     .foregroundColor(.red)
                             }
