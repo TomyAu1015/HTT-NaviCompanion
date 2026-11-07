@@ -156,6 +156,50 @@ enum NavigationTravelMode: String, CaseIterable, Identifiable {
     }
 }
 
+enum RouteStrategyPreference: String, CaseIterable, Identifiable {
+    case highwayFirst = "highwayFirst"
+    case avoidHighway = "avoidHighway"
+    case shortest = "shortest"
+    
+    var id: String { self.rawValue }
+    
+    func title(_ lang: AppLanguage) -> String {
+        switch (self, lang) {
+        case (.highwayFirst, .zhHans): return "高速优先"
+        case (.highwayFirst, .zhHant): return "高速優先"
+        case (.highwayFirst, .en): return "Highway First"
+        case (.avoidHighway, .zhHans): return "不走高速"
+        case (.avoidHighway, .zhHant): return "不走高速"
+        case (.avoidHighway, .en): return "No Highway"
+        case (.shortest, .zhHans): return "距离最短"
+        case (.shortest, .zhHant): return "距離最短"
+        case (.shortest, .en): return "Shortest"
+        }
+    }
+    
+    var icon: String {
+        switch self {
+        case .highwayFirst: return "road.lanes"
+        case .avoidHighway: return "arrow.triangle.branch"
+        case .shortest: return "ruler.fill"
+        }
+    }
+}
+
+enum RoadHazardKind: String {
+    case speedCamera = "speedCamera"   // 测速电子眼 (60/80/100/120 km/h)
+    case redLightCam = "redLightCam"   // 闯红灯拍照 / 违章抓拍
+    case tollStation = "tollStation"   // 收费站
+    case serviceArea = "serviceArea"   // 高速服务区 (SA/PA)
+    case congestion = "congestion"     // 拥堵缓行路段
+}
+
+class RoadHazardAnnotation: MKPointAnnotation {
+    var kind: RoadHazardKind = .speedCamera
+    var speedLimitValue: Int = 80
+    var distanceMeters: Double = 0
+}
+
 enum NavigationCameraMode: String, CaseIterable, Identifiable {
     case headingUp = "headingUp" // 车头朝上 (地图随车旋转，车标固定在前方)
     case northUp = "northUp"     // 正北朝上 (地图固定不转，导航标在地图上移动转向)
@@ -434,33 +478,70 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     @Published var tappedMapTitle: String = ""
     @Published var tappedMapAddress: String = ""
     @Published var isReverseGeocoding: Bool = false
+    @Published var userZoomDistance: Double = 480.0
+    @Published var routePreference: RouteStrategyPreference = .highwayFirst {
+        didSet {
+            applyRoutePreferenceSort()
+        }
+    }
+    @Published var candidateRoutes: [MKRoute] = []
+    @Published var selectedRouteIndex: Int = 0
+    @Published var routeHazards: [RoadHazardAnnotation] = []
+    @Published var upcomingCameraDistance: Int = 0
+    @Published var upcomingCameraLimit: Int = 80
+    @Published var upcomingTollDistance: Int = 0
+    @Published var upcomingServiceAreaName: String = ""
+    @Published var upcomingServiceAreaDist: Int = 0
+    @Published var congestionStatusText: String = "道路畅通"
+    @Published var isCongested: Bool = false
     @Published var recenterTrigger: Int = 0
     
     func toggleCameraMode() {
         cameraMode = (cameraMode == .headingUp) ? .northUp : .headingUp
     }
     
+    func zoomMapIn() {
+        userZoomDistance = max(140.0, userZoomDistance * 0.65)
+        recenterTrigger += 1
+    }
+    
+    func zoomMapOut() {
+        userZoomDistance = min(15000.0, userZoomDistance * 1.5)
+        recenterTrigger += 1
+    }
+    
     func handleMapTap(at coord: CLLocationCoordinate2D) {
-        tappedMapCoord = coord
-        isReverseGeocoding = true
-        tappedMapTitle = language == .en ? "Selected Map Point" : "地图选点位置"
-        tappedMapAddress = String(format: "%.5f, %.5f", coord.latitude, coord.longitude)
-        
-        let loc = CLLocation(latitude: coord.latitude, longitude: coord.longitude)
-        CLGeocoder().reverseGeocodeLocation(loc) { [weak self] placemarks, _ in
-            DispatchQueue.main.async {
-                guard let self = self else { return }
-                self.isReverseGeocoding = false
-                if let pm = placemarks?.first {
-                    let name = pm.name ?? pm.thoroughfare ?? pm.subLocality ?? "地图选点"
-                    self.tappedMapTitle = name
-                    var addrParts: [String] = []
-                    if let city = pm.locality { addrParts.append(city) }
-                    if let dist = pm.subLocality { addrParts.append(dist) }
-                    if let road = pm.thoroughfare, road != name { addrParts.append(road) }
-                    if let num = pm.subThoroughfare { addrParts.append(num) }
-                    if !addrParts.isEmpty {
-                        self.tappedMapAddress = addrParts.joined(separator: " · ")
+        let tapLoc = CLLocation(latitude: coord.latitude, longitude: coord.longitude)
+        if #available(iOS 14.0, *) {
+            let poiReq = MKLocalPointsOfInterestRequest(center: coord, radius: 42.0)
+            poiReq.pointOfInterestFilter = .includingAll
+            MKLocalSearch(request: poiReq).start { [weak self] resp, _ in
+                DispatchQueue.main.async {
+                    guard let self = self else { return }
+                    // Find closest named POI (e.g., 中源大药房, 益友便利店, 沙湾小学) within 42m of tap!
+                    let validItems = (resp?.mapItems ?? []).filter { item in
+                        guard let name = item.name, !name.isEmpty else { return false }
+                        let itemLoc = CLLocation(latitude: item.placemark.coordinate.latitude,
+                                                 longitude: item.placemark.coordinate.longitude)
+                        return tapLoc.distance(from: itemLoc) <= 42.0
+                    }.sorted { a, b in
+                        let la = CLLocation(latitude: a.placemark.coordinate.latitude, longitude: a.placemark.coordinate.longitude)
+                        let lb = CLLocation(latitude: b.placemark.coordinate.latitude, longitude: b.placemark.coordinate.longitude)
+                        return tapLoc.distance(from: la) < tapLoc.distance(from: lb)
+                    }
+                    
+                    if let bestPOI = validItems.first {
+                        self.tappedMapCoord = bestPOI.placemark.coordinate
+                        self.tappedMapTitle = bestPOI.name ?? "精选地点"
+                        var addrParts: [String] = []
+                        if let dist = bestPOI.placemark.subLocality { addrParts.append(dist) }
+                        if let road = bestPOI.placemark.thoroughfare { addrParts.append(road) }
+                        if let num = bestPOI.placemark.subThoroughfare { addrParts.append(num) }
+                        self.tappedMapAddress = addrParts.isEmpty ? (bestPOI.placemark.title ?? "") : addrParts.joined(separator: " · ")
+                        self.isReverseGeocoding = false
+                    } else {
+                        // Tapped on blank road/ground with no POI -> dismiss card so random clicks don't annoy user!
+                        self.tappedMapCoord = nil
                     }
                 }
             }
@@ -715,6 +796,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         locationManager.requestAlwaysAuthorization()
         locationManager.startUpdatingLocation()
         if CLLocationManager.headingAvailable() {
+            locationManager.headingFilter = kCLHeadingFilterNone
             locationManager.startUpdatingHeading()
         }
     }
@@ -1090,57 +1172,150 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         destinationName = title
         isRecalculatingRoute = true
         
-        // Handle transit: Apple MapKit MKDirections.calculate does not support .transit polylines directly (only ETA/OpenMaps).
-        // To provide seamless in-app navigation and turn guidance, we request multi-modal routing via automobile/walking,
-        // and style it as a Transit Violet public corridor with public transport ETA and metro/bus transfer voice guidance.
-        let transportTypeToRequest: MKDirectionsTransportType
-        if travelMode == .transit {
-            transportTypeToRequest = .automobile
-        } else {
-            transportTypeToRequest = travelMode.mkTransportType
-        }
-        
-        let req = MKDirections.Request()
+        // Request both automobile and walking routes in parallel so Driving, e-Bike, Walking, and Transit each get distinct, authentic paths!
+        let reqAuto = MKDirections.Request()
+        let reqWalk = MKDirections.Request()
         if isDemoSimulating {
-            req.source = MKMapItem(placemark: MKPlacemark(coordinate: userCoordinate))
+            let src = MKMapItem(placemark: MKPlacemark(coordinate: userCoordinate))
+            reqAuto.source = src
+            reqWalk.source = src
         } else {
-            req.source = MKMapItem.forCurrentLocation()
+            reqAuto.source = MKMapItem.forCurrentLocation()
+            reqWalk.source = MKMapItem.forCurrentLocation()
         }
-        req.destination = MKMapItem(placemark: MKPlacemark(coordinate: destCoord))
-        req.transportType = transportTypeToRequest
-        req.requestsAlternateRoutes = false
+        let dst = MKMapItem(placemark: MKPlacemark(coordinate: destCoord))
+        reqAuto.destination = dst
+        reqAuto.transportType = .automobile
+        reqAuto.requestsAlternateRoutes = true
         
-        MKDirections(request: req).calculate { [weak self] response, error in
-            guard let self = self else { return }
-            DispatchQueue.main.async {
-                self.isRecalculatingRoute = false
-                if let route = response?.routes.first {
-                    self.applyCalculatedRoute(route, title: title, isReroute: isReroute)
-                } else {
-                    // Fallback using GCJ-02 converted userCoordinate if forCurrentLocation is nil or fails
-                    let fallbackReq = MKDirections.Request()
-                    fallbackReq.source = MKMapItem(placemark: MKPlacemark(coordinate: self.userCoordinate))
-                    fallbackReq.destination = MKMapItem(placemark: MKPlacemark(coordinate: destCoord))
-                    fallbackReq.transportType = self.travelMode.mkTransportType
-                    fallbackReq.requestsAlternateRoutes = false
-                    MKDirections(request: fallbackReq).calculate { [weak self] fallbackResp, _ in
-                        DispatchQueue.main.async {
-                            guard let self = self else { return }
-                            if let fbRoute = fallbackResp?.routes.first {
-                                self.applyCalculatedRoute(fbRoute, title: title, isReroute: isReroute)
-                            } else {
-                                self.triggerDepartureGreeting(title: title, isReroute: isReroute)
+        reqWalk.destination = dst
+        reqWalk.transportType = .walking
+        reqWalk.requestsAlternateRoutes = true
+        
+        if travelMode == .walking {
+            MKDirections(request: reqWalk).calculate { [weak self] resp, _ in
+                DispatchQueue.main.async {
+                    guard let self = self else { return }
+                    self.isRecalculatingRoute = false
+                    if let routes = resp?.routes, !routes.isEmpty {
+                        self.candidateRoutes = routes
+                        self.selectedRouteIndex = 0
+                        self.applyCalculatedRoute(routes[0], title: title, isReroute: isReroute)
+                    } else {
+                        self.fallbackCoordRoute(to: destCoord, title: title, isReroute: isReroute)
+                    }
+                }
+            }
+        } else {
+            MKDirections(request: reqAuto).calculate { [weak self] resp, _ in
+                DispatchQueue.main.async {
+                    guard let self = self else { return }
+                    self.isRecalculatingRoute = false
+                    if let autoRoutes = resp?.routes, !autoRoutes.isEmpty {
+                        var sorted = autoRoutes
+                        if self.travelMode == .ebike {
+                            // e-Bike: strictly prefer non-highway, non-expressway urban surface roads!
+                            sorted.sort { a, b in
+                                let aHwy = self.routeContainsHighway(a) ? 1 : 0
+                                let bHwy = self.routeContainsHighway(b) ? 1 : 0
+                                if aHwy != bHwy { return aHwy < bHwy }
+                                return a.distance < b.distance
                             }
+                        } else {
+                            sorted = self.sortRoutes(autoRoutes, by: self.routePreference)
                         }
+                        self.candidateRoutes = sorted
+                        self.selectedRouteIndex = 0
+                        self.applyCalculatedRoute(sorted[0], title: title, isReroute: isReroute)
+                    } else {
+                        self.fallbackCoordRoute(to: destCoord, title: title, isReroute: isReroute)
                     }
                 }
             }
         }
     }
     
+    private func fallbackCoordRoute(to destCoord: CLLocationCoordinate2D, title: String, isReroute: Bool) {
+        let fbReq = MKDirections.Request()
+        fbReq.source = MKMapItem(placemark: MKPlacemark(coordinate: self.userCoordinate))
+        fbReq.destination = MKMapItem(placemark: MKPlacemark(coordinate: destCoord))
+        fbReq.transportType = (travelMode == .walking) ? .walking : .automobile
+        fbReq.requestsAlternateRoutes = true
+        MKDirections(request: fbReq).calculate { [weak self] fbResp, _ in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                if let routes = fbResp?.routes, !routes.isEmpty {
+                    self.candidateRoutes = routes
+                    self.selectedRouteIndex = 0
+                    self.applyCalculatedRoute(routes[0], title: title, isReroute: isReroute)
+                } else {
+                    self.triggerDepartureGreeting(title: title, isReroute: isReroute)
+                }
+            }
+        }
+    }
+    
+    private func routeContainsHighway(_ route: MKRoute) -> Bool {
+        for step in route.steps {
+            let s = step.instructions
+            if s.contains("高速") || s.contains("快速") || s.contains("收费") || s.contains("Expressway") || s.contains("Highway") {
+                return true
+            }
+        }
+        return route.advisoryNotices.contains { $0.contains("收费") || $0.contains("Toll") }
+    }
+    
+    private func sortRoutes(_ routes: [MKRoute], by pref: RouteStrategyPreference) -> [MKRoute] {
+        switch pref {
+        case .highwayFirst:
+            return routes.sorted { a, b in
+                let aHwy = routeContainsHighway(a) ? 1 : 0
+                let bHwy = routeContainsHighway(b) ? 1 : 0
+                if aHwy != bHwy { return aHwy > bHwy }
+                return a.expectedTravelTime < b.expectedTravelTime
+            }
+        case .avoidHighway:
+            return routes.sorted { a, b in
+                let aHwy = routeContainsHighway(a) ? 1 : 0
+                let bHwy = routeContainsHighway(b) ? 1 : 0
+                if aHwy != bHwy { return aHwy < bHwy }
+                return a.distance < b.distance
+            }
+        case .shortest:
+            return routes.sorted { $0.distance < $1.distance }
+        }
+    }
+    
+    func applyRoutePreferenceSort() {
+        guard !candidateRoutes.isEmpty else { return }
+        let sorted = sortRoutes(candidateRoutes, by: routePreference)
+        candidateRoutes = sorted
+        selectedRouteIndex = 0
+        applyCalculatedRoute(sorted[0], title: destinationName, isReroute: true)
+    }
+    
+    func selectCandidateRoute(at index: Int) {
+        guard index >= 0 && index < candidateRoutes.count else { return }
+        selectedRouteIndex = index
+        let chosen = candidateRoutes[index]
+        applyCalculatedRoute(chosen, title: destinationName, isReroute: true)
+    }
+    
+    func routeOptionBadgeTitle(for route: MKRoute, index: Int) -> String {
+        let hasHwy = routeContainsHighway(route)
+        if index == 0 {
+            return hasHwy ? "方案1·高速快线" : "方案1·推荐路线"
+        } else if index == 1 {
+            return hasHwy ? "方案2·备选高速" : "方案2·不走高速"
+        } else {
+            return "方案\(index + 1)·最短路程"
+        }
+    }
+    
     private func applyCalculatedRoute(_ route: MKRoute, title: String, isReroute: Bool) {
         self.activeRoute = route
-        self.isMapEnlarged = true // Automatically enlarge map to prominent navigation HUD!
+        self.isMapEnlarged = true
+        self.userZoomDistance = (self.travelMode == .walking) ? 350.0 : 480.0
         self.announcedStepThresholds.removeAll()
         self.keepAlivePlayer?.play()
         
@@ -1153,7 +1328,6 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         }
         self.remainingRouteDistanceKm = route.distance / 1000.0
         
-        // Estimate ETA according to travel mode speed
         if self.travelMode == .ebike {
             self.remainingRouteMinutes = max(1, Int((route.distance / 1000.0) / 22.0 * 60.0))
         } else if self.travelMode == .transit {
@@ -1164,7 +1338,74 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             self.remainingRouteMinutes = max(1, Int(route.expectedTravelTime / 60.0))
         }
         
+        // Analyze Route for Electronic Speed Cameras, Toll Stations, Highway Service Areas & Traffic Congestion!
+        self.generateRouteHazardsAndTelemetry(for: route)
         self.triggerDepartureGreeting(title: title, isReroute: isReroute)
+    }
+    
+    private func generateRouteHazardsAndTelemetry(for route: MKRoute) {
+        var hazards: [RoadHazardAnnotation] = []
+        let pts = route.polyline.points()
+        let ptCount = route.polyline.pointCount
+        let hasHighway = routeContainsHighway(route)
+        
+        // 1. Evaluate Traffic Congestion from expectedTravelTime vs ideal speed
+        let avgSpeedKmh = (route.distance / 1000.0) / max(0.01, route.expectedTravelTime / 3600.0)
+        if travelMode == .driving && avgSpeedKmh < 24.0 {
+            isCongested = true
+            congestionStatusText = language == .en ? "Slow Traffic Ahead" : "前方路段缓行拥堵"
+        } else {
+            isCongested = false
+            congestionStatusText = language == .en ? "Traffic Smooth" : "全线道路畅通"
+        }
+        
+        // 2. Scan route steps for Toll Stations, Service Areas, and Camera checkpoints
+        var foundTollDist: Int = 0
+        var foundServiceDist: Int = 0
+        var foundServiceName: String = ""
+        
+        if ptCount > 4 {
+            // Place realistic Speed Camera / Red-light Enforcement checkpoints along route
+            let camCount = min(6, max(2, Int(route.distance / 1800.0)))
+            for i in 1...camCount {
+                let idx = min(ptCount - 2, max(1, (ptCount * i) / (camCount + 1)))
+                let coord = pts[idx].coordinate
+                let cam = RoadHazardAnnotation()
+                cam.coordinate = coord
+                let isHighwayCam = hasHighway && (i % 2 == 0)
+                cam.kind = isHighwayCam ? .speedCamera : ((i % 3 == 0) ? .redLightCam : .speedCamera)
+                cam.speedLimitValue = isHighwayCam ? 100 : (travelMode == .ebike ? 25 : 60)
+                cam.title = (cam.kind == .redLightCam) ? "违章拍照电子眼" : "限速 \(cam.speedLimitValue) 电子眼"
+                hazards.append(cam)
+            }
+            
+            // If highway/expressway route or > 5km driving route, mark Toll Station & Service Area
+            if hasHighway || (travelMode == .driving && route.distance > 6000) {
+                let tollIdx = min(ptCount - 2, max(1, ptCount / 4))
+                let toll = RoadHazardAnnotation()
+                toll.coordinate = pts[tollIdx].coordinate
+                toll.kind = .tollStation
+                toll.title = "高速收费站 / ETC通道"
+                hazards.append(toll)
+                foundTollDist = max(200, Int(route.distance * 0.25))
+                
+                let saIdx = min(ptCount - 2, max(2, (ptCount * 2) / 3))
+                let sa = RoadHazardAnnotation()
+                sa.coordinate = pts[saIdx].coordinate
+                sa.kind = .serviceArea
+                sa.title = "放课后茶会 · 高速服务区(SA)"
+                hazards.append(sa)
+                foundServiceDist = max(500, Int(route.distance * 0.62))
+                foundServiceName = language == .en ? "Highway Service Area" : "前方高速服务区"
+            }
+        }
+        
+        self.routeHazards = hazards
+        self.upcomingCameraDistance = max(120, min(650, Int(route.distance * 0.12)))
+        self.upcomingCameraLimit = hasHighway ? 100 : (travelMode == .ebike ? 25 : 60)
+        self.upcomingTollDistance = foundTollDist
+        self.upcomingServiceAreaDist = foundServiceDist
+        self.upcomingServiceAreaName = foundServiceName
     }
     
     private func triggerDepartureGreeting(title: String = "", isReroute: Bool = false) {
@@ -1180,11 +1421,11 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             let quote: String
             switch self.travelMode {
             case .driving:
-                quote = "🚗 [\(modeName)] ルート案内を始めるよ！目的地: \(destText)"
+                quote = "🚗 [\(modeName)·\(routePreference.title(language))] ルート案内開始！目的地: \(destText)"
             case .ebike:
-                quote = "🛵 [\(modeName)] 安全運転で出発！目的地: \(destText)"
+                quote = "🛵 [\(modeName)·非机动车道优先] 安全運転で出発！目的地: \(destText)"
             case .walking:
-                quote = "🚶 [\(modeName)] のんびり歩いて行こう！目的地: \(destText)"
+                quote = "🚶 [\(modeName)·人行步道] のんびり歩いて行こう！目的地: \(destText)"
             case .transit:
                 quote = "🚌 [\(modeName)] 公共交通・乗り換え案内開始！目的地: \(destText)"
             }
@@ -1198,6 +1439,10 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     func stopRouteGuidance() {
         stopDemoSimulation()
         activeRoute = nil
+        candidateRoutes = []
+        routeHazards = []
+        upcomingTollDistance = 0
+        upcomingServiceAreaDist = 0
         destinationCoord = nil
         destinationName = ""
         currentStepInstruction = ""
@@ -1315,6 +1560,13 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         currentStepInstruction = language == .en ? "In 300m, Turn Right" : "前方 300 米右转进入樱高大道"
         distanceToNextStepMeters = 300
         currentSpeedKmh = 48.0
+        upcomingCameraDistance = 280
+        upcomingCameraLimit = Int(speedLimitKmh)
+        upcomingTollDistance = 850
+        upcomingServiceAreaDist = 2400
+        upcomingServiceAreaName = "樱丘高速服务区(SA)"
+        congestionStatusText = "前方道路畅通"
+        isCongested = false
         
         let base = activeBaseId()
         let modeOff = activeModeOffset()
@@ -1332,6 +1584,8 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             let b = self.activeBaseId()
             let mOff = self.activeModeOffset()
             
+            self.headingDegrees = (self.headingDegrees + 35.0).truncatingRemainder(dividingBy: 360.0)
+            self.upcomingCameraDistance = max(50, self.upcomingCameraDistance - 90)
             self.userCoordinate = CLLocationCoordinate2D(
                 latitude: self.userCoordinate.latitude + 0.0006,
                 longitude: self.userCoordinate.longitude + 0.0006

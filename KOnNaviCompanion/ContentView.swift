@@ -79,7 +79,7 @@ struct HTTSmoothMapView: UIViewRepresentable {
         let mapView = MKMapView(frame: .zero)
         mapView.delegate = context.coordinator
         mapView.showsUserLocation = true
-        mapView.showsCompass = false // Replaced by custom unobstructed HTT compass!
+        mapView.showsCompass = false
         mapView.showsTraffic = true
         mapView.showsBuildings = true
         mapView.isPitchEnabled = true
@@ -96,15 +96,15 @@ struct HTTSmoothMapView: UIViewRepresentable {
         pinchGesture.delegate = context.coordinator
         mapView.addGestureRecognizer(pinchGesture)
         
-        // Tap Gesture to pick any address/POI directly on the map!
+        // Tap Gesture to pick named POIs (like Pharmacies, Convenience Stores, Stations) directly on the map!
         let tapGesture = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.didTapMap(_:)))
         tapGesture.delegate = context.coordinator
         mapView.addGestureRecognizer(tapGesture)
         
         let region = MKCoordinateRegion(
             center: manager.userCoordinate,
-            latitudinalMeters: 500,
-            longitudinalMeters: 500
+            latitudinalMeters: 350,
+            longitudinalMeters: 350
         )
         mapView.setRegion(region, animated: false)
         return mapView
@@ -112,19 +112,24 @@ struct HTTSmoothMapView: UIViewRepresentable {
     
     func updateUIView(_ mapView: MKMapView, context: Context) {
         let camHeading = (manager.cameraMode == .headingUp) ? manager.headingDegrees : 0.0
-        let camPitch: CGFloat = (manager.cameraMode == .headingUp) ? 48.0 : 0.0
+        let camPitch: CGFloat = (manager.cameraMode == .headingUp) ? 45.0 : 0.0
         
-        // 1. Route Overlays & Destination/Tapped Pins
+        // 1. Route Overlays, Candidate Alternate Routes, Electronic Speed Cameras & Tapped POI Pins
         let tappedChanged = (context.coordinator.lastTappedLat != manager.tappedMapCoord?.latitude) ||
                             (context.coordinator.lastTappedLon != manager.tappedMapCoord?.longitude)
-        if context.coordinator.lastRoute !== manager.activeRoute || tappedChanged {
+        let routeChanged = (context.coordinator.lastRoute !== manager.activeRoute) ||
+                           (context.coordinator.lastCandidateCount != manager.candidateRoutes.count)
+        
+        if routeChanged || tappedChanged {
             context.coordinator.lastRoute = manager.activeRoute
+            context.coordinator.lastCandidateCount = manager.candidateRoutes.count
             context.coordinator.lastTappedLat = manager.tappedMapCoord?.latitude
             context.coordinator.lastTappedLon = manager.tappedMapCoord?.longitude
             
             mapView.removeOverlays(mapView.overlays)
             mapView.removeAnnotations(mapView.annotations.filter { !($0 is MKUserLocation) })
             
+            // Add active route polyline
             if let route = manager.activeRoute {
                 mapView.addOverlay(route.polyline, level: .aboveRoads)
                 if let dest = manager.destinationCoord {
@@ -132,6 +137,10 @@ struct HTTSmoothMapView: UIViewRepresentable {
                     pin.coordinate = dest
                     pin.title = manager.destinationName
                     mapView.addAnnotation(pin)
+                }
+                // Add Electronic Speed Cameras, Toll Stations & Highway Service Areas along the route!
+                for hazard in manager.routeHazards {
+                    mapView.addAnnotation(hazard)
                 }
             }
             
@@ -143,13 +152,13 @@ struct HTTSmoothMapView: UIViewRepresentable {
                 mapView.addAnnotation(tappedPin)
             }
             
-            if context.coordinator.lastRoute !== nil && !tappedChanged {
+            if routeChanged && manager.activeRoute != nil {
                 let targetCoord = (!manager.isDemoSimulating && mapView.userLocation.location != nil)
                     ? mapView.userLocation.coordinate
                     : manager.userCoordinate
                 let camera = MKMapCamera(
                     lookingAtCenter: targetCoord,
-                    fromDistance: manager.travelMode == .walking ? 380 : 520,
+                    fromDistance: manager.userZoomDistance,
                     pitch: camPitch,
                     heading: camHeading
                 )
@@ -173,7 +182,7 @@ struct HTTSmoothMapView: UIViewRepresentable {
             }
         }
         
-        // 3. Instant Zero-Lag Recenter (Snaps immediately to user vehicle!)
+        // 3. Instant Zero-Lag Recenter & Camera Rotation (Preserves user's zoom distance!)
         if context.coordinator.lastRecenterTrigger != manager.recenterTrigger {
             context.coordinator.lastRecenterTrigger = manager.recenterTrigger
             context.coordinator.isUserInteracting = false
@@ -185,33 +194,39 @@ struct HTTSmoothMapView: UIViewRepresentable {
             mapView.layer.removeAllAnimations()
             let camera = MKMapCamera(
                 lookingAtCenter: targetCoord,
-                fromDistance: manager.travelMode == .walking ? 380 : 500,
+                fromDistance: manager.userZoomDistance,
                 pitch: camPitch,
                 heading: camHeading
             )
             mapView.setCamera(camera, animated: false)
+            if !manager.isDemoSimulating && manager.cameraMode == .headingUp {
+                mapView.setUserTrackingMode(.followWithHeading, animated: false)
+            }
             
         } else if manager.mapTrackingUser && !context.coordinator.isUserInteracting {
             let targetCoord = (!manager.isDemoSimulating && mapView.userLocation.location != nil)
                 ? mapView.userLocation.coordinate
                 : manager.userCoordinate
             
+            // If real GPS and HeadingUp mode, also synchronize camera heading & userZoomDistance smoothly!
+            let headingDiff = abs(mapView.camera.heading - camHeading)
             let camLoc = CLLocation(latitude: mapView.camera.centerCoordinate.latitude,
                                     longitude: mapView.camera.centerCoordinate.longitude)
             let usrLoc = CLLocation(latitude: targetCoord.latitude, longitude: targetCoord.longitude)
             let distDelta = camLoc.distance(from: usrLoc)
-            let altDelta = abs(mapView.camera.centerCoordinateDistance - 520.0)
             
-            let camera = MKMapCamera(
-                lookingAtCenter: targetCoord,
-                fromDistance: manager.travelMode == .walking ? 380 : 520,
-                pitch: camPitch,
-                heading: camHeading
-            )
-            if distDelta > 150.0 || altDelta > 400.0 {
-                mapView.setCamera(camera, animated: false)
-            } else {
-                mapView.setCamera(camera, animated: true)
+            if distDelta > 2.0 || headingDiff > 1.5 {
+                let camera = MKMapCamera(
+                    lookingAtCenter: targetCoord,
+                    fromDistance: manager.userZoomDistance,
+                    pitch: camPitch,
+                    heading: camHeading
+                )
+                if distDelta > 150.0 {
+                    mapView.setCamera(camera, animated: false)
+                } else {
+                    mapView.setCamera(camera, animated: true)
+                }
             }
         }
     }
@@ -219,6 +234,7 @@ struct HTTSmoothMapView: UIViewRepresentable {
     class Coordinator: NSObject, MKMapViewDelegate, UIGestureRecognizerDelegate {
         var parent: HTTSmoothMapView
         var lastRoute: MKRoute? = nil
+        var lastCandidateCount: Int = 0
         var lastTappedLat: Double? = nil
         var lastTappedLon: Double? = nil
         var isUserInteracting: Bool = false
@@ -252,13 +268,15 @@ struct HTTSmoothMapView: UIViewRepresentable {
         @objc func didPinchMap(_ gesture: UIPinchGestureRecognizer) {
             if gesture.state == .began || gesture.state == .changed {
                 isUserInteracting = true
-                if parent.manager.mapTrackingUser {
-                    DispatchQueue.main.async {
-                        self.parent.manager.mapTrackingUser = false
-                    }
-                }
             } else if gesture.state == .ended || gesture.state == .cancelled {
                 isUserInteracting = false
+                if let mapView = gesture.view as? MKMapView {
+                    let currentAlt = max(120.0, min(15000.0, mapView.camera.centerCoordinateDistance))
+                    DispatchQueue.main.async {
+                        // Remember the user's chosen zoom distance so pressing "跟车中" never shrinks it back!
+                        self.parent.manager.userZoomDistance = currentAlt
+                    }
+                }
             }
         }
         
@@ -267,7 +285,6 @@ struct HTTSmoothMapView: UIViewRepresentable {
             let point = gesture.location(in: mapView)
             let coord = mapView.convert(point, toCoordinateFrom: mapView)
             DispatchQueue.main.async {
-                self.parent.manager.mapTrackingUser = false
                 self.parent.manager.handleMapTap(at: coord)
             }
         }
@@ -303,6 +320,33 @@ struct HTTSmoothMapView: UIViewRepresentable {
                     view?.transform = CGAffineTransform(rotationAngle: rotationAngle)
                 }
                 return view
+            } else if let hazard = annotation as? RoadHazardAnnotation {
+                let id = "RoadHazardPinView_\(hazard.kind.rawValue)"
+                var hView = mapView.dequeueReusableAnnotationView(withIdentifier: id) as? MKMarkerAnnotationView
+                if hView == nil {
+                    hView = MKMarkerAnnotationView(annotation: hazard, reuseIdentifier: id)
+                    hView?.canShowCallout = true
+                } else {
+                    hView?.annotation = hazard
+                }
+                switch hazard.kind {
+                case .speedCamera:
+                    hView?.markerTintColor = .systemRed
+                    hView?.glyphText = "\(hazard.speedLimitValue)"
+                case .redLightCam:
+                    hView?.markerTintColor = .systemPink
+                    hView?.glyphImage = UIImage(systemName: "camera.fill")
+                case .tollStation:
+                    hView?.markerTintColor = .systemOrange
+                    hView?.glyphText = "¥"
+                case .serviceArea:
+                    hView?.markerTintColor = .systemBlue
+                    hView?.glyphImage = UIImage(systemName: "cup.and.saucer.fill")
+                case .congestion:
+                    hView?.markerTintColor = .systemYellow
+                    hView?.glyphImage = UIImage(systemName: "exclamationmark.triangle.fill")
+                }
+                return hView
             } else if let pin = annotation as? MKPointAnnotation {
                 let isTapPin = (pin.subtitle == "TAP_PIN")
                 let id = isTapPin ? "TappedPinView" : "DestinationPinView"
@@ -316,7 +360,7 @@ struct HTTSmoothMapView: UIViewRepresentable {
                 pinView?.markerTintColor = isTapPin
                     ? UIColor.systemOrange
                     : UIColor(red: 0.78, green: 0.18, blue: 0.22, alpha: 1.0)
-                pinView?.glyphImage = UIImage(systemName: isTapPin ? "hand.point.up.left.fill" : "flag.checkered")
+                pinView?.glyphImage = UIImage(systemName: isTapPin ? "mappin.and.ellipse" : "flag.checkered")
                 return pinView
             }
             return nil
@@ -426,14 +470,15 @@ struct ContentView: View {
                 } else {
                     // CONDITIONAL 2: Standard Classic Cockpit View
                     if isLandscape {
-                        // GeometryReader inside safe area automatically respects iPhone notch on left/right!
-                        let usableW = geo.size.width - 20
-                        let leftColW = usableW * 0.46
+                        // Generous horizontal padding (24pt each side) ensures zero right-edge clipping and full iPhone Notch clearance!
+                        let usableW = max(320, geo.size.width - 48)
+                        let leftColW = usableW * 0.45
                         let rightColW = usableW * 0.52
                         ScrollView(.vertical, showsIndicators: false) {
                             VStack(spacing: 6) {
                                 topBezelBar
-                                HStack(alignment: .top, spacing: usableW * 0.02) {
+                                    .frame(width: usableW)
+                                HStack(alignment: .top, spacing: usableW * 0.03) {
                                     VStack(spacing: 6) {
                                         speedometerCockpit
                                         utilityControlGrid
@@ -442,18 +487,19 @@ struct ContentView: View {
                                     .frame(width: leftColW)
                                     
                                     VStack(spacing: 6) {
-                                        mainStageOrMapSection(stageWidth: rightColW, stageHeight: 215)
+                                        mainStageOrMapSection(stageWidth: rightColW, stageHeight: 205)
                                         characterSelectorStrip
                                             .frame(width: rightColW)
                                     }
                                     .frame(width: rightColW)
                                 }
+                                .frame(width: usableW)
                             }
-                            .padding(.horizontal, 10)
+                            .padding(.horizontal, 24)
                             .padding(.vertical, 4)
                         }
                         .scaleEffect(x: manager.isHUDMirrored ? -1 : 1, y: 1)
-                        .onAppear { manager.stageWalkBound = 95.0 }
+                        .onAppear { manager.stageWalkBound = 85.0 }
                     } else {
                         let portraitStageH = max(210, min(255, geo.size.height * 0.27))
                         ScrollView(.vertical, showsIndicators: false) {
@@ -503,69 +549,86 @@ struct ContentView: View {
                 .ignoresSafeArea()
             
             // 2. Overlays
-            VStack(spacing: 6) {
+            VStack(spacing: 5) {
                 // Top Navigation Guidance Card
                 topNavigationBannerCard
                     .padding(.horizontal, 12)
                     .padding(.top, isLandscape ? 6 : 8)
                 
-                // 4 Travel Modes Quick Switcher Bar (Single-line Scrollable, Never Wraps Vertically!)
+                // 4 Travel Modes + Camera Mode + Outfit + Recenter Bar
                 travelModeSelectorBar
                     .padding(.horizontal, 12)
                 
-                // Unobstructed Custom Compass + Camera Mode Switcher Row (Right aligned, clear of top banner!)
-                HStack {
-                    // Hint badge: Tap map anywhere to navigate
-                    HStack(spacing: 4) {
-                        Image(systemName: "hand.tap.fill")
-                            .foregroundColor(httGold)
-                        Text(tr("点击地图任意位置可直接导航", "點擊地圖任意位置可直接導航", "Tap anywhere on map to navigate"))
-                            .font(.system(size: 10, weight: .bold))
-                            .foregroundColor(httCream)
-                    }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 5)
-                    .background(Color.black.opacity(0.68))
-                    .cornerRadius(8)
+                // Highway Strategy & Multi-Route Selector Bar (高速优先 / 不走高速 / 备选方案切换)
+                routeStrategyAndAlternatesBar
+                    .padding(.horizontal, 12)
+                
+                // Electronic Speed Camera + Traffic Congestion + Toll + Service Area HUD Strip + Unobstructed Compass!
+                HStack(alignment: .top, spacing: 6) {
+                    electronicEyeAndHighwayHUDStrip
                     
-                    Spacer()
+                    Spacer(minLength: 4)
                     
-                    // Unobstructed Rotating HTT Compass Badge
-                    Button(action: {
-                        manager.toggleCameraMode()
-                    }) {
-                        HStack(spacing: 5) {
-                            ZStack {
-                                Circle()
-                                    .fill(Color.black.opacity(0.85))
-                                    .frame(width: 30, height: 30)
-                                    .overlay(Circle().stroke(httGold, lineWidth: 1.5))
-                                Image(systemName: "location.north.fill")
-                                    .font(.system(size: 13, weight: .bold))
-                                    .foregroundColor(.red)
-                                    .rotationEffect(.degrees(manager.cameraMode == .headingUp ? -manager.headingDegrees : 0))
+                    // Right Side Stack: Unobstructed Rotating HTT Compass + Zoom [+] / [-] Buttons!
+                    VStack(alignment: .trailing, spacing: 8) {
+                        Button(action: {
+                            manager.toggleCameraMode()
+                        }) {
+                            HStack(spacing: 5) {
+                                ZStack {
+                                    Circle()
+                                        .fill(Color.black.opacity(0.85))
+                                        .frame(width: 28, height: 28)
+                                        .overlay(Circle().stroke(httGold, lineWidth: 1.5))
+                                    Image(systemName: "location.north.fill")
+                                        .font(.system(size: 12, weight: .bold))
+                                        .foregroundColor(.red)
+                                        .rotationEffect(.degrees(manager.cameraMode == .headingUp ? -manager.headingDegrees : 0))
+                                }
+                                VStack(alignment: .leading, spacing: 0) {
+                                    Text(manager.compassDirectionString)
+                                        .font(.system(size: 10, weight: .black))
+                                        .foregroundColor(.white)
+                                    Text(manager.cameraMode.shortTitle(manager.language))
+                                        .font(.system(size: 8, weight: .bold))
+                                        .foregroundColor(httGold)
+                                }
                             }
-                            VStack(alignment: .leading, spacing: 0) {
-                                Text(manager.compassDirectionString)
-                                    .font(.system(size: 11, weight: .black))
-                                    .foregroundColor(.white)
-                                Text(manager.cameraMode.shortTitle(manager.language))
-                                    .font(.system(size: 9, weight: .bold))
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 4)
+                            .background(Color.black.opacity(0.82))
+                            .cornerRadius(16)
+                            .overlay(RoundedRectangle(cornerRadius: 16).stroke(httGold.opacity(0.75), lineWidth: 1))
+                        }
+                        
+                        // Explicit Zoom In [+] / Zoom Out [-] Buttons (So map can always be zoomed clearly!)
+                        VStack(spacing: 4) {
+                            Button(action: { manager.zoomMapIn() }) {
+                                Image(systemName: "plus.magnifyingglass")
+                                    .font(.system(size: 15, weight: .bold))
                                     .foregroundColor(httGold)
+                                    .frame(width: 34, height: 34)
+                                    .background(Color.black.opacity(0.82))
+                                    .cornerRadius(8)
+                                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold.opacity(0.6), lineWidth: 1))
+                            }
+                            Button(action: { manager.zoomMapOut() }) {
+                                Image(systemName: "minus.magnifyingglass")
+                                    .font(.system(size: 15, weight: .bold))
+                                    .foregroundColor(httCream)
+                                    .frame(width: 34, height: 34)
+                                    .background(Color.black.opacity(0.82))
+                                    .cornerRadius(8)
+                                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.25), lineWidth: 1))
                             }
                         }
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(Color.black.opacity(0.78))
-                        .cornerRadius(18)
-                        .overlay(RoundedRectangle(cornerRadius: 18).stroke(httGold.opacity(0.7), lineWidth: 1))
                     }
                 }
                 .padding(.horizontal, 12)
                 
                 Spacer()
                 
-                // Interactive Tapped Map Point Navigation Card (Appears when user taps anywhere on map!)
+                // Interactive Tapped Named POI Card (Appears only when user taps a real shop/place on map!)
                 if manager.tappedMapCoord != nil {
                     tappedMapPointNavigationCard
                         .padding(.horizontal, 12)
@@ -576,6 +639,147 @@ struct ContentView: View {
                 bottomEnlargedFloatingIsland(isLandscape: isLandscape)
                     .padding(.horizontal, 12)
                     .padding(.bottom, isLandscape ? 8 : 20)
+            }
+        }
+    }
+    
+    // Highway Preference & Multi-Route Selector Bar
+    private var routeStrategyAndAlternatesBar: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                if manager.travelMode == .driving {
+                    ForEach(RouteStrategyPreference.allCases) { pref in
+                        Button(action: {
+                            manager.routePreference = pref
+                        }) {
+                            HStack(spacing: 3) {
+                                Image(systemName: pref.icon)
+                                    .font(.system(size: 9, weight: .bold))
+                                Text(pref.title(manager.language))
+                                    .font(.system(size: 10, weight: .bold))
+                                    .fixedSize(horizontal: true, vertical: false)
+                            }
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 5)
+                            .background(manager.routePreference == pref ? httGold : Color.black.opacity(0.75))
+                            .foregroundColor(manager.routePreference == pref ? .black : httCream)
+                            .cornerRadius(7)
+                        }
+                    }
+                }
+                
+                // Candidate Routes Switcher (方案1 / 方案2 / 方案3)
+                if manager.candidateRoutes.count > 1 {
+                    ForEach(0..<manager.candidateRoutes.count, id: \.self) { idx in
+                        let r = manager.candidateRoutes[idx]
+                        let isSel = (manager.selectedRouteIndex == idx)
+                        Button(action: {
+                            manager.selectCandidateRoute(at: idx)
+                        }) {
+                            HStack(spacing: 4) {
+                                Image(systemName: isSel ? "checkmark.circle.fill" : "arrow.triangle.swap")
+                                    .font(.system(size: 9))
+                                Text("\(manager.routeOptionBadgeTitle(for: r, index: idx)) (\(String(format: "%.1fkm", r.distance / 1000.0)))")
+                                    .font(.system(size: 10, weight: .heavy))
+                                    .fixedSize(horizontal: true, vertical: false)
+                            }
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 5)
+                            .background(isSel ? httCrimson : Color.black.opacity(0.75))
+                            .foregroundColor(.white)
+                            .cornerRadius(7)
+                            .overlay(RoundedRectangle(cornerRadius: 7).stroke(isSel ? httGold : Color.white.opacity(0.25), lineWidth: 1))
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    // Electronic Speed Camera (测速电子眼) + Congestion (路况拥堵) + Service Area (服务区) + Toll Station (收费站) HUD Strip
+    private var electronicEyeAndHighwayHUDStrip: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 6) {
+                // 1. Electronic Speed Camera Badge (测速电子眼)
+                HStack(spacing: 5) {
+                    ZStack {
+                        Circle()
+                            .fill(Color.white)
+                            .frame(width: 24, height: 24)
+                            .overlay(Circle().stroke(Color.red, lineWidth: 3))
+                        Text("\(manager.upcomingCameraLimit > 0 ? manager.upcomingCameraLimit : Int(manager.speedLimitKmh))")
+                            .font(.system(size: 9, weight: .black))
+                            .foregroundColor(.black)
+                    }
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text(tr("测速电子眼", "測速電子眼", "Speed Cam"))
+                            .font(.system(size: 9, weight: .heavy))
+                            .foregroundColor(.white)
+                        Text(manager.upcomingCameraDistance > 0 ? "\(manager.upcomingCameraDistance)m" : tr("全程监控中", "全程監控中", "Active"))
+                            .font(.system(size: 9, weight: .bold, design: .monospaced))
+                            .foregroundColor(httGold)
+                    }
+                }
+                .padding(.horizontal, 7)
+                .padding(.vertical, 4)
+                .background(Color.black.opacity(0.82))
+                .cornerRadius(9)
+                .overlay(RoundedRectangle(cornerRadius: 9).stroke(Color.red.opacity(0.8), lineWidth: 1.2))
+                
+                // 2. Traffic Congestion Indicator (拥堵/畅通状态)
+                HStack(spacing: 4) {
+                    Circle()
+                        .fill(manager.isCongested ? Color.orange : Color.green)
+                        .frame(width: 8, height: 8)
+                    Text(manager.congestionStatusText)
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundColor(manager.isCongested ? .orange : Color(red: 0.4, green: 0.98, blue: 0.65))
+                        .fixedSize(horizontal: true, vertical: false)
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 6)
+                .background(Color.black.opacity(0.82))
+                .cornerRadius(9)
+                .overlay(RoundedRectangle(cornerRadius: 9).stroke(manager.isCongested ? Color.orange : Color.green.opacity(0.6), lineWidth: 1))
+            }
+            
+            // 3. Highway Service Area (服务区) & Toll Station (收费站) Badges
+            if manager.travelMode == .driving && (manager.upcomingTollDistance > 0 || manager.upcomingServiceAreaDist > 0 || manager.activeRoute != nil || manager.isDemoSimulating) {
+                HStack(spacing: 6) {
+                    // Service Area (服务区)
+                    HStack(spacing: 4) {
+                        Image(systemName: "cup.and.saucer.fill")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundColor(.cyan)
+                        Text(manager.upcomingServiceAreaDist > 0
+                             ? "\(tr("服务区", "服務區", "SA")) \(String(format: "%.1fkm", Double(manager.upcomingServiceAreaDist)/1000.0))"
+                             : tr("服务区: 沿途开放", "服務區: 沿途開放", "SA Open"))
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundColor(.white)
+                            .fixedSize(horizontal: true, vertical: false)
+                    }
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 4)
+                    .background(Color.blue.opacity(0.78))
+                    .cornerRadius(7)
+                    
+                    // Toll Station (收费站)
+                    HStack(spacing: 4) {
+                        Image(systemName: "yensign.circle.fill")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundColor(httGold)
+                        Text(manager.upcomingTollDistance > 0
+                             ? "\(tr("收费站", "收費站", "Toll")) \(manager.upcomingTollDistance)m"
+                             : (manager.routePreference == .avoidHighway ? tr("免收费路段", "免收費路段", "No Toll") : tr("收费站/ETC", "收費站/ETC", "Toll/ETC")))
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundColor(.white)
+                            .fixedSize(horizontal: true, vertical: false)
+                    }
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 4)
+                    .background(Color.orange.opacity(0.82))
+                    .cornerRadius(7)
+                }
             }
         }
     }
@@ -859,7 +1063,7 @@ struct ContentView: View {
     
     // MARK: - STANDARD COCKPIT COMPONENTS (When Not In Full Screen)
     private var topBezelBar: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 5) {
             Button(action: {
                 withAnimation { manager.showMapMode.toggle() }
             }) {
@@ -873,17 +1077,17 @@ struct ContentView: View {
                         .font(.system(size: 11, weight: .heavy, design: .rounded))
                         .foregroundColor(httCream)
                         .lineLimit(1)
-                        .minimumScaleFactor(0.75)
+                        .minimumScaleFactor(0.72)
                         .fixedSize(horizontal: true, vertical: false)
                 }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 7)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 6)
                 .background(httCrimson)
                 .cornerRadius(8)
                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold, lineWidth: 1.5))
             }
             
-            Spacer(minLength: 4)
+            Spacer(minLength: 2)
             
             Menu {
                 ForEach(AppLanguage.allCases) { lang in
@@ -895,13 +1099,15 @@ struct ContentView: View {
                     }
                 }
             } label: {
-                HStack(spacing: 3) {
+                HStack(spacing: 2) {
                     Image(systemName: "globe")
                     Text(manager.language.rawValue)
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
                 }
-                .font(.caption.bold())
-                .padding(.horizontal, 9)
-                .padding(.vertical, 7)
+                .font(.system(size: 11, weight: .bold))
+                .padding(.horizontal, 7)
+                .padding(.vertical, 6)
                 .background(Color.white.opacity(0.14))
                 .foregroundColor(httGold)
                 .cornerRadius(8)
@@ -910,35 +1116,38 @@ struct ContentView: View {
             Button(action: {
                 withAnimation { manager.isHUDMirrored.toggle() }
             }) {
-                HStack(spacing: 3) {
+                HStack(spacing: 2) {
                     Image(systemName: "flip.horizontal.fill")
-                    Text(manager.isHUDMirrored ? tr("镜像中", "鏡像中", "Mirrored") : "HUD")
+                    Text(manager.isHUDMirrored ? tr("镜像", "鏡像", "Flip") : "HUD")
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
                 }
-                .font(.caption.bold())
-                .padding(.horizontal, 9)
-                .padding(.vertical, 7)
+                .font(.system(size: 11, weight: .bold))
+                .padding(.horizontal, 7)
+                .padding(.vertical, 6)
                 .background(manager.isHUDMirrored ? httGold : Color.white.opacity(0.12))
                 .foregroundColor(manager.isHUDMirrored ? .black : httCream)
                 .cornerRadius(8)
             }
             
-            // RM-500HTT Official Album & Arrow Outfit Button (Soundboard button removed as requested!)
+            // RM-500HTT Official Album & Arrow Outfit Button (Never truncates!)
             Button(action: { showAlbumSheet = true }) {
-                HStack(spacing: 4) {
+                HStack(spacing: 3) {
                     if let iconImg = manager.getRM500UIImage("rm_btn_icon_on") {
                         Image(uiImage: iconImg)
                             .resizable()
                             .scaledToFit()
-                            .frame(width: 18, height: 18)
+                            .frame(width: 16, height: 16)
                     } else {
                         Image(systemName: "photo.on.rectangle.angled")
                     }
-                    Text(tr("相册/车标", "相冊/車標", "HTT Album"))
+                    Text(tr("相册/车标", "相冊/車標", "Album"))
+                        .font(.system(size: 11, weight: .heavy))
                         .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
                 }
-                .font(.caption.bold())
-                .padding(.horizontal, 10)
-                .padding(.vertical, 7)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 6)
                 .background(Color.pink.opacity(0.88))
                 .foregroundColor(.white)
                 .cornerRadius(8)
@@ -1099,6 +1308,27 @@ struct ContentView: View {
                                 .background(manager.isDemoSimulating ? Color.orange : Color.purple.opacity(0.85))
                                 .foregroundColor(.white)
                                 .cornerRadius(7)
+                            }
+                            
+                            // Zoom In [+] / Out [-] in compact mode!
+                            Button(action: { manager.zoomMapIn() }) {
+                                Image(systemName: "plus.magnifyingglass")
+                                    .font(.system(size: 10, weight: .bold))
+                                    .padding(.horizontal, 5)
+                                    .padding(.vertical, 5)
+                                    .background(Color.black.opacity(0.78))
+                                    .foregroundColor(httGold)
+                                    .cornerRadius(7)
+                            }
+                            
+                            Button(action: { manager.zoomMapOut() }) {
+                                Image(systemName: "minus.magnifyingglass")
+                                    .font(.system(size: 10, weight: .bold))
+                                    .padding(.horizontal, 5)
+                                    .padding(.vertical, 5)
+                                    .background(Color.black.opacity(0.78))
+                                    .foregroundColor(httCream)
+                                    .cornerRadius(7)
                             }
                             
                             // Fast Recenter Button in compact mode!
@@ -1938,6 +2168,29 @@ struct DestinationSearchSheetView: View {
                 }
                 .padding(.horizontal)
                 .padding(.top, 6)
+                
+                // Driving Highway Preference Selector in Search Sheet
+                if selectedMode == .driving {
+                    HStack(spacing: 8) {
+                        ForEach(RouteStrategyPreference.allCases) { pref in
+                            Button(action: {
+                                manager.routePreference = pref
+                            }) {
+                                HStack(spacing: 4) {
+                                    Image(systemName: pref.icon)
+                                    Text(pref.title(manager.language))
+                                }
+                                .font(.system(size: 11, weight: .bold))
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 5)
+                                .background(manager.routePreference == pref ? Color.orange : Color(UIColor.tertiarySystemFill))
+                                .foregroundColor(manager.routePreference == pref ? .white : .primary)
+                                .cornerRadius(7)
+                            }
+                        }
+                    }
+                    .padding(.horizontal)
+                }
                 
                 // Pinyin-Safe Native Search Bar + Search Button
                 HStack(spacing: 4) {
