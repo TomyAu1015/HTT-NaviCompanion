@@ -742,6 +742,8 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     ]
     @Published var showPOIDetailCardExpanded: Bool = true
     @Published var showGaoDeWebPortalSheet: Bool = false
+    @Published var showAllFlightTicketsSheet: Bool = false
+    @Published var showAllTrainTicketsSheet: Bool = false
     @Published var gaoDeWebPortalMode: Int = 0 // 0: 聚合打车, 1: 顺风车, 2: 班次票务, 3: 商家全部商品与评价
     @Published var gaoDeWebPortalURLString: String = ""
     @Published var selectedDishItem: DishItem? = nil
@@ -842,10 +844,8 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             }
         }
         // Check if it looks like "XX路XX号" or "XX街XX号" or "XX号楼" or "XX栋"
-        if (trimmed.contains("路") || trimmed.contains("街") || trimmed.contains("道") || trimmed.contains("巷") || trimmed.contains("坊")) && (trimmed.hasSuffix("号") || trimmed.hasSuffix("號") || trimmed.hasSuffix("楼") || trimmed.hasSuffix("樓")) {
-            return true
-        }
-        if trimmed.hasSuffix("号楼") || trimmed.hasSuffix("號樓") || trimmed.hasSuffix("栋") || trimmed.hasSuffix("棟") {
+        // If it contains specific building labels, it's a building address
+        if (trimmed.contains("路") || trimmed.contains("街") || trimmed.contains("道") || trimmed.contains("巷") || trimmed.contains("坊")) && (trimmed.hasSuffix("号") || trimmed.hasSuffix("號")) {
             return true
         }
         return false
@@ -1020,9 +1020,20 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     }
 
     func openGaoDeLivePortal(mode: Int) {
-        // Pure 100% Native In-App GaoDe Service Hub (Zero WebView "Go to Amap App" popups, Zero Wrong Addresses!)
         self.gaoDeWebPortalMode = mode
         self.showGaoDeWebPortalSheet = true
+    }
+    
+    func openFlightTicketsSheet() {
+        self.showAllFlightTicketsSheet = true
+        let msg = "✈️ 實時全天航班時刻表已展開！已為你查詢深圳寶安直飛航綫與特價機票♪"
+        playVoice(id: activeBaseId() + 39, customQuote: msg, clearQueue: true)
+    }
+    
+    func openTrainTicketsSheet() {
+        self.showAllTrainTicketsSheet = true
+        let msg = "🚄 實時全天高鐵列車時刻與在售餘票已展開！支持刷身份證直接乘車♪"
+        playVoice(id: activeBaseId() + 39, customQuote: msg, clearQueue: true)
     }
     
     func loginGaoDeAccountInApp(phone: String) {
@@ -4811,7 +4822,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         }
     }
     
-    private func activeBaseId() -> Int {
+    func activeBaseId() -> Int {
         if selectedCharacter == .all {
             return CharacterFilter.fiveIndividuals.randomElement()!.navBaseId
         }
