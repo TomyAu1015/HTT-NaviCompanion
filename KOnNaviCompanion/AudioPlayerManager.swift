@@ -326,6 +326,8 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     @Published var useRM500ThemeSkin: Bool = true
     @Published var walkStepFrame: Int = 0
     @Published var currentNavArrowImage: UIImage? = nil
+    @Published var activeAllMemberChar: CharacterFilter = CharacterFilter.fiveIndividuals.randomElement() ?? .yui
+    @Published var unlockedBirthdayId: Int = 1112
     @Published var mascotOffsetX: CGFloat = 0.0
     @Published var mascotOffsetY: CGFloat = 0.0
     @Published var stageWalkBound: CGFloat = 65.0
@@ -790,8 +792,9 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     
     func getCurrentThemeBackground() -> UIImage? {
         guard useRM500ThemeSkin else { return nil }
+        let effectiveChar = (selectedCharacter == .all) ? activeAllMemberChar : selectedCharacter
         let name: String
-        switch selectedCharacter {
+        switch effectiveChar {
         case .yui, .all: name = "rm_bg_yui"
         case .mio: name = "rm_bg_mio"
         case .ritsu: name = "rm_bg_ritsu"
@@ -802,8 +805,9 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     }
     
     func getRM500StageIcon(for char: CharacterFilter) -> UIImage? {
+        let effectiveChar = (char == .all) ? activeAllMemberChar : char
         let prefix: String
-        switch char {
+        switch effectiveChar {
         case .yui, .all: prefix = "rm_stg_yui"
         case .mio: prefix = "rm_stg_mio"
         case .ritsu: prefix = "rm_stg_ritsu"
@@ -837,8 +841,14 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             case .mugi: charBlock = 31
             case .azusa: charBlock = 41
             case .all:
-                // In all-members mode, cycle or use Yui/active speaker
-                charBlock = 1
+                // In all-members mode, use the dynamic active/random member instead of always Yui!
+                switch activeAllMemberChar {
+                case .yui, .all: charBlock = 1
+                case .mio: charBlock = 11
+                case .ritsu: charBlock = 21
+                case .mugi: charBlock = 31
+                case .azusa: charBlock = 41
+                }
             }
             let outfitOffset = arrowOutfit.rawValue * 2
             let stepOffset = (currentSpeedKmh > 1.5 || isDemoSimulating) ? (walkStepFrame % 2) : 0
@@ -889,7 +899,11 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             }
         }
         if selectedCharacter == .all {
-            currentSpriteFrame = allMemberFrames[1]
+            // Every ~10 seconds (60 ticks), rotate to a random member if not currently speaking
+            if animTick % 60 == 0 && !isPlaying {
+                activeAllMemberChar = CharacterFilter.fiveIndividuals.randomElement() ?? .yui
+            }
+            currentSpriteFrame = allMemberFrames[activeAllMemberChar.charId] ?? allMemberFrames[1]
         }
         walkStepFrame = (animTick / 2) % 2
         currentNavArrowImage = getRM500NavigationArrowFrame(mapCameraHeading: mapTrackingUser ? headingDegrees : 0.0)
@@ -1384,9 +1398,15 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             audioPlayer?.prepareToPlay()
             audioPlayer?.play()
             
-            let speaker = characterForVoiceId(safeId).displayName(language)
+            let spkFilter = characterForVoiceId(safeId)
+            let speaker = spkFilter.displayName(language)
             let text = customQuote ?? defaultQuoteForVoiceId(safeId)
             DispatchQueue.main.async {
+                if spkFilter != .all {
+                    self.activeAllMemberChar = spkFilter
+                } else {
+                    self.activeAllMemberChar = CharacterFilter.fiveIndividuals.randomElement() ?? .yui
+                }
                 self.isPlaying = true
                 self.currentPlayingId = safeId
                 self.currentSpeechBubble = "[\(speaker)] \(text) (#\(safeId))"
@@ -1420,9 +1440,13 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             audioPlayer?.prepareToPlay()
             audioPlayer?.play()
             
-            let speakerName = CharacterFilter.fiveIndividuals.first(where: { $0.charId == chosen.charId })?.displayName(language) ?? targetChar.displayName(language)
+            let matchedMember = CharacterFilter.fiveIndividuals.first(where: { $0.charId == chosen.charId })
+            let speakerName = matchedMember?.displayName(language) ?? targetChar.displayName(language)
             let quote = customQuote ?? localizedMascotQuote(for: chosen.charId)
             DispatchQueue.main.async {
+                if let m = matchedMember {
+                    self.activeAllMemberChar = m
+                }
                 self.isPlaying = true
                 self.currentSpeechBubble = "[\(speakerName)] \(quote)"
             }
@@ -1592,6 +1616,36 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         case .en: msg = "⚠️ OVERSPEED (> \(limitInt) km/h)! Please slow down!"
         }
         playVoice(id: base + offset, customQuote: msg)
+    }
+    
+    func triggerBirthdaySpecialVoice() {
+        mascotAction = .special
+        let specialIds = Array(1112...1122)
+        let chosenId = specialIds.randomElement() ?? 1112
+        let msg: String
+        switch language {
+        case .zhHans: msg = "🎂 【RM-500HTT 生日与全员纪念特典】放课后茶会特别祝福原声♪"
+        case .zhHant: msg = "🎂 【RM-500HTT 生日與全員紀念特典】放學後茶會特別祝福原聲♪"
+        case .en: msg = "🎂 [RM-500HTT Special Event] K-ON! Birthday & Celebration Voice ♪"
+        }
+        playVoice(id: chosenId, customQuote: msg)
+    }
+    
+    func cycleNextArrowOutfit() {
+        let all = RM500ArrowOutfit.allCases
+        if let idx = all.firstIndex(of: arrowOutfit) {
+            arrowOutfit = all[(idx + 1) % all.count]
+        } else {
+            arrowOutfit = .winterUniform
+        }
+        playMascotVoice()
+    }
+    
+    func resetTripStats() {
+        tripDistanceKm = 0.0
+        maxSpeedKmh = 0.0
+        drivingSeconds = 0
+        playRandomCharacterGreeting()
     }
     
     func triggerTeaTimeReminder() {

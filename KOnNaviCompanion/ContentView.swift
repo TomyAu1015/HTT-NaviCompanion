@@ -389,40 +389,47 @@ struct ContentView: View {
                 } else {
                     // CONDITIONAL 2: Standard Classic Cockpit View
                     if isLandscape {
+                        let safeW = geo.size.width - 28
+                        let leftColW = safeW * 0.44
+                        let rightColW = safeW * 0.54
                         ScrollView(.vertical, showsIndicators: true) {
-                            VStack(spacing: 8) {
+                            VStack(spacing: 7) {
                                 topBezelBar
-                                HStack(alignment: .top, spacing: 12) {
-                                    VStack(spacing: 8) {
+                                HStack(alignment: .top, spacing: safeW * 0.02) {
+                                    VStack(spacing: 7) {
                                         speedometerCockpit
                                         utilityControlGrid
                                     }
-                                    .frame(width: geo.size.width * 0.45)
+                                    .frame(width: leftColW)
                                     
-                                    VStack(spacing: 8) {
-                                        mainStageOrMapSection(stageWidth: geo.size.width * 0.49, stageHeight: 195)
+                                    VStack(spacing: 7) {
+                                        mainStageOrMapSection(stageWidth: rightColW, stageHeight: 185)
                                         characterSelectorStrip
+                                            .frame(width: rightColW)
                                     }
-                                    .frame(maxWidth: .infinity)
+                                    .frame(width: rightColW)
                                 }
                             }
-                            .padding(.horizontal, 12)
+                            .padding(.horizontal, 14)
                             .padding(.vertical, 6)
+                            .frame(width: geo.size.width)
                         }
                         .scaleEffect(x: manager.isHUDMirrored ? -1 : 1, y: 1)
                         .onAppear { manager.stageWalkBound = 95.0 }
                     } else {
+                        let portraitStageH = max(210, min(255, geo.size.height * 0.27))
                         ScrollView(.vertical, showsIndicators: false) {
-                            VStack(spacing: 8) {
+                            VStack(spacing: 9) {
                                 topBezelBar
                                 speedometerCockpit
-                                mainStageOrMapSection(stageWidth: geo.size.width - 24, stageHeight: 210)
+                                mainStageOrMapSection(stageWidth: geo.size.width - 24, stageHeight: portraitStageH)
                                 characterSelectorStrip
                                 utilityControlGrid
-                                Spacer(minLength: 4)
+                                portraitBottomCompanionDock
                             }
                             .padding(.horizontal, 12)
                             .padding(.top, 4)
+                            .padding(.bottom, 12)
                         }
                         .scaleEffect(x: manager.isHUDMirrored ? -1 : 1, y: 1)
                         .onAppear { manager.stageWalkBound = 65.0 }
@@ -731,7 +738,7 @@ struct ContentView: View {
     
     // MARK: - STANDARD COCKPIT COMPONENTS (When Not In Full Screen)
     private var topBezelBar: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 8) {
             Button(action: {
                 withAnimation { manager.showMapMode.toggle() }
             }) {
@@ -739,19 +746,20 @@ struct ContentView: View {
                     Image(systemName: manager.showMapMode ? "map.fill" : "cup.and.saucer.fill")
                         .foregroundColor(httGold)
                     Text(manager.showMapMode
-                         ? tr("地图模式(点切舞台)", "地圖模式(點切舞台)", "Map Mode")
-                         : tr("舞台模式(点切地图)", "舞台模式(點切地圖)", "Stage Mode"))
-                        .font(.system(size: 11, weight: .heavy, design: .rounded))
+                         ? tr("地图模式 (点切舞台)", "地圖模式 (點切舞台)", "Map Mode")
+                         : tr("舞台模式 (点切地图)", "舞台模式 (點切地圖)", "Stage Mode"))
+                        .font(.system(size: 12, weight: .heavy, design: .rounded))
                         .foregroundColor(httCream)
+                        .lineLimit(1)
                 }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 5)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
                 .background(httCrimson)
                 .cornerRadius(8)
                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold, lineWidth: 1.5))
             }
             
-            Spacer()
+            Spacer(minLength: 4)
             
             Menu {
                 ForEach(AppLanguage.allCases) { lang in
@@ -767,9 +775,9 @@ struct ContentView: View {
                     Image(systemName: "globe")
                     Text(manager.language.rawValue)
                 }
-                .font(.caption2.bold())
-                .padding(.horizontal, 8)
-                .padding(.vertical, 6)
+                .font(.caption.bold())
+                .padding(.horizontal, 9)
+                .padding(.vertical, 7)
                 .background(Color.white.opacity(0.14))
                 .foregroundColor(httGold)
                 .cornerRadius(8)
@@ -782,17 +790,17 @@ struct ContentView: View {
                     Image(systemName: "flip.horizontal.fill")
                     Text(manager.isHUDMirrored ? tr("镜像中", "鏡像中", "Mirrored") : "HUD")
                 }
-                .font(.caption2.bold())
-                .padding(.horizontal, 8)
-                .padding(.vertical, 6)
+                .font(.caption.bold())
+                .padding(.horizontal, 9)
+                .padding(.vertical, 7)
                 .background(manager.isHUDMirrored ? httGold : Color.white.opacity(0.12))
                 .foregroundColor(manager.isHUDMirrored ? .black : httCream)
                 .cornerRadius(8)
             }
             
-            // RM-500HTT Official Album & Arrow Outfit Button
+            // RM-500HTT Official Album & Arrow Outfit Button (Soundboard button removed as requested!)
             Button(action: { showAlbumSheet = true }) {
-                HStack(spacing: 3) {
+                HStack(spacing: 4) {
                     if let iconImg = manager.getRM500UIImage("rm_btn_icon_on") {
                         Image(uiImage: iconImg)
                             .resizable()
@@ -802,27 +810,15 @@ struct ContentView: View {
                         Image(systemName: "photo.on.rectangle.angled")
                     }
                     Text(tr("相册/车标", "相冊/車標", "HTT Album"))
+                        .lineLimit(1)
                 }
-                .font(.caption2.bold())
-                .padding(.horizontal, 8)
-                .padding(.vertical, 6)
-                .background(Color.pink.opacity(0.85))
+                .font(.caption.bold())
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .background(Color.pink.opacity(0.88))
                 .foregroundColor(.white)
                 .cornerRadius(8)
                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold, lineWidth: 1))
-            }
-            
-            Button(action: { showSoundboardSheet = true }) {
-                HStack(spacing: 3) {
-                    Image(systemName: "music.note.list")
-                    Text(tr("语音库", "語音庫", "Voices"))
-                }
-                .font(.caption2.bold())
-                .padding(.horizontal, 8)
-                .padding(.vertical, 6)
-                .background(Color.white.opacity(0.12))
-                .foregroundColor(httCream)
-                .cornerRadius(8)
             }
         }
     }
@@ -1298,7 +1294,7 @@ struct ContentView: View {
         VStack(spacing: 7) {
             HStack(spacing: 7) {
                 tacticalButton(
-                    title: tr("出発進行", "出發進行", "Depart"),
+                    title: tr("出发进行", "出發進行", "Depart"),
                     subtitle: tr("点火出发音", "點火出發音", "Start Guide"),
                     icon: "flag.checkered.2.crossed",
                     color: httCrimson
@@ -1307,7 +1303,7 @@ struct ContentView: View {
                 }
                 
                 tacticalButton(
-                    title: tr("掛け合い", "雙人相聲", "Banter"),
+                    title: tr("多人相声", "雙人相聲", "Banter"),
                     subtitle: tr("多人对话彩蛋", "多人對話彩蛋", "Group Talk"),
                     icon: "bubble.left.and.bubble.right.fill",
                     color: Color(red: 0.58, green: 0.32, blue: 0.78)
@@ -1413,6 +1409,115 @@ struct ContentView: View {
         }
     }
     
+    // MARK: - Portrait Bottom RM-500HTT Quick Feature Dock (Fills Bottom Space with Rich Controls!)
+    private var portraitBottomCompanionDock: some View {
+        VStack(spacing: 8) {
+            // Row 1: 4 Travel Modes Direct Switcher (Car / e-Bike / Walk / Transit)
+            HStack(spacing: 6) {
+                ForEach(NavigationTravelMode.allCases) { mode in
+                    Button(action: {
+                        manager.travelMode = mode
+                    }) {
+                        HStack(spacing: 4) {
+                            Image(systemName: mode.icon)
+                                .font(.system(size: 11, weight: .bold))
+                            Text(mode.title(manager.language))
+                                .font(.system(size: 11, weight: .bold))
+                                .lineLimit(1)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 8)
+                        .background(manager.travelMode == mode ? httCrimson : Color.black.opacity(0.65))
+                        .foregroundColor(manager.travelMode == mode ? .white : httCream)
+                        .cornerRadius(9)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 9)
+                                .stroke(manager.travelMode == mode ? httGold : Color.white.opacity(0.18), lineWidth: 1.2)
+                        )
+                    }
+                }
+            }
+            
+            // Row 2: RM-500HTT Quick Outfit Cycle + Birthday Special + Memorial Album + Trip Reset
+            HStack(spacing: 7) {
+                Button(action: {
+                    manager.cycleNextArrowOutfit()
+                }) {
+                    HStack(spacing: 5) {
+                        Image(systemName: manager.arrowOutfit.icon)
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundColor(httGold)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(tr("车标一键换装", "車標一鍵換裝", "Arrow Outfit"))
+                                .font(.system(size: 11, weight: .heavy))
+                                .foregroundColor(.white)
+                            Text(manager.arrowOutfit.title(manager.language))
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundColor(httGold)
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 8)
+                    .frame(maxWidth: .infinity)
+                    .background(Color.black.opacity(0.72))
+                    .cornerRadius(10)
+                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(httGold.opacity(0.65), lineWidth: 1.2))
+                }
+                
+                Button(action: {
+                    manager.triggerBirthdaySpecialVoice()
+                }) {
+                    HStack(spacing: 5) {
+                        if let giftImg = manager.getRM500UIImage("rm_gift_yui") {
+                            Image(uiImage: giftImg)
+                                .resizable()
+                                .scaledToFit()
+                                .frame(width: 24, height: 24)
+                        } else {
+                            Image(systemName: "gift.fill")
+                                .font(.system(size: 13, weight: .bold))
+                                .foregroundColor(.pink)
+                        }
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(tr("生日/全员特典", "生日/全員特典", "Special Gift"))
+                                .font(.system(size: 11, weight: .heavy))
+                                .foregroundColor(.white)
+                            Text(tr("原机隐藏纪念音", "原機隱藏紀念音", "Secret Voice"))
+                                .font(.system(size: 9))
+                                .foregroundColor(httCream.opacity(0.85))
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 8)
+                    .frame(maxWidth: .infinity)
+                    .background(Color(red: 0.72, green: 0.22, blue: 0.48).opacity(0.85))
+                    .cornerRadius(10)
+                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(httGold.opacity(0.65), lineWidth: 1.2))
+                }
+                
+                Button(action: {
+                    manager.resetTripStats()
+                }) {
+                    VStack(spacing: 2) {
+                        Image(systemName: "arrow.counterclockwise.circle.fill")
+                            .font(.system(size: 14, weight: .bold))
+                            .foregroundColor(httGold)
+                        Text(tr("里程清零", "里程清零", "Reset Trip"))
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundColor(.white)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .background(Color.black.opacity(0.72))
+                    .cornerRadius(10)
+                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.white.opacity(0.25), lineWidth: 1))
+                }
+            }
+        }
+    }
+
     private func tacticalButton(title: String, subtitle: String, icon: String, color: Color, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             VStack(spacing: 3) {
