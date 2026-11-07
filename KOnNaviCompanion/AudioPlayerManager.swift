@@ -208,6 +208,41 @@ struct DishItem: Identifiable {
     let price: String
     let iconName: String
     let bgHex: String
+    var desc: String = "店长力荐 · 正宗招牌品质保证"
+    var recommendCount: Int = 128
+}
+
+struct RideHailingCarTier: Identifiable {
+    let id = UUID()
+    let provider: String       // e.g. "滴滴快车" / "曹操出行" / "T3出行" / "高德特惠"
+    let tierName: String       // e.g. "特惠快车" / "新能源专享" / "优享专车" / "豪华商务"
+    let waitMins: Int          // e.g. 2
+    let priceYuan: Int         // e.g. 14
+    let discountYuan: Int      // e.g. 4
+    let iconName: String
+    let colorHex: String
+}
+
+struct HitchhikeOrderOption: Identifiable {
+    let id = UUID()
+    let driverName: String     // e.g. "陈师傅 · 粤B·88*** (特斯拉Model Y)"
+    let rating: String         // e.g. "4.9分 · 信用极好"
+    let departTime: String     // e.g. "15分钟后出发 (顺路度 95%)"
+    let soloPrice: Int         // e.g. 35
+    let sharePrice: Int        // e.g. 24
+}
+
+struct LiveTransportScheduleItem: Identifiable {
+    let id = UUID()
+    let code: String           // e.g. "G998 / MU5332 / T212"
+    let departSt: String       // e.g. "深圳北 / 宝安T3"
+    let arriveSt: String       // e.g. "上海南 / 虹桥T2"
+    let departTime: String     // e.g. "08:30"
+    let arriveTime: String     // e.g. "15:48"
+    let durationText: String   // e.g. "7小时18分"
+    let priceText: String      // e.g. "¥845"
+    let seatStatus: String     // e.g. "二等座 有票 (16张)"
+    let isFlight: Bool
 }
 
 struct TransitPlanOption: Identifiable {
@@ -707,8 +742,14 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     ]
     @Published var showPOIDetailCardExpanded: Bool = true
     @Published var showGaoDeWebPortalSheet: Bool = false
-    @Published var gaoDeWebPortalMode: Int = 0 // 0: 聚合打车, 1: 顺风车, 2: 火车飞机票, 3: 实时商家主页
-    @Published var gaoDeWebPortalURLString: String = "https://uri.amap.com/navigation"
+    @Published var gaoDeWebPortalMode: Int = 0 // 0: 聚合打车, 1: 顺风车, 2: 班次票务, 3: 商家全部商品与评价
+    @Published var gaoDeWebPortalURLString: String = ""
+    @Published var selectedDishItem: DishItem? = nil
+    @Published var showDishDetailAlert: Bool = false
+    @Published var isGaoDeAccountLoggedIn: Bool = UserDefaults.standard.bool(forKey: "kon_gaode_logged_in")
+    @Published var gaoDeAccountPhone: String = UserDefaults.standard.string(forKey: "kon_gaode_phone") ?? ""
+    @Published var activeTaxiOrderStatus: String = ""
+    @Published var selectedCarTierIds: Set<UUID> = []
     @Published var isReverseGeocoding: Bool = false
     @Published var userZoomDistance: Double = 280.0
     @Published var routePreference: RouteStrategyPreference = .gaodeRecommended {
@@ -790,11 +831,31 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         playVoice(id: base + modeOff + 39, customQuote: msg, clearQueue: true)
     }
     
-    func populatePOIDetails(name: String, coord: CLLocationCoordinate2D, address: String, phone: String?) {
+    func isPureRoadOrBuildingNumber(_ text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return true }
+        // If it starts with a shop/brand keyword or ends with a shop suffix, it is a REAL Merchant Name!
+        let merchantKeywords = ["行", "店", "馆", "館", "坊", "厅", "廳", "火锅", "火鍋", "烧烤", "燒烤", "茶", "咖啡", "酒", "烟", "煙", "超市", "百货", "便利", "美发", "美髮", "造型", "理疗", "養生", "养生", "药房", "藥房", "诊所", "医院", "醫院", "小学", "小學", "中学", "学校", "幼儿园", "银行", "銀行", "大厦", "大廈", "广场", "廣場", "中心", "公园", "公園", "公寓", "酒店", "宾馆", "賓館", "麦当劳", "肯德基", "汉堡", "京东", "美宜佳", "钱大妈", "顺丰", "菜鸟", "站", "口岸", "机场", "市場", "市场", "商行", "批发", "干洗"]
+        for kw in merchantKeywords {
+            if trimmed.contains(kw) {
+                return false
+            }
+        }
+        // Check if it looks like "XX路XX号" or "XX街XX号" or "XX号楼" or "XX栋"
+        if (trimmed.contains("路") || trimmed.contains("街") || trimmed.contains("道") || trimmed.contains("巷") || trimmed.contains("坊")) && (trimmed.hasSuffix("号") || trimmed.hasSuffix("號") || trimmed.hasSuffix("楼") || trimmed.hasSuffix("樓")) {
+            return true
+        }
+        if trimmed.hasSuffix("号楼") || trimmed.hasSuffix("號樓") || trimmed.hasSuffix("栋") || trimmed.hasSuffix("棟") {
+            return true
+        }
+        return false
+    }
+
+    func populatePOIDetails(name: String, coord: CLLocationCoordinate2D, address: String, phone: String?, rawCategory: String? = nil) {
         self.tappedMapCoord = coord
         self.tappedMapTitle = name
-        self.tappedMapAddress = address.isEmpty ? "龙岗区南湾街道丹沙路商业街" : address
-        let walkM = max(35, min(9800, metersBetween(userCoordinate, coord)))
+        self.tappedMapAddress = address.isEmpty ? "龙岗区南湾街道夏村社区商业街" : address
+        let walkM = max(25, min(9800, metersBetween(userCoordinate, coord)))
         let walkMin = max(1, Int(Double(walkM) / 58.0))
         if walkM >= 1000 {
             self.tappedMapWalkDistText = String(format: "距离 %.1f公里 · 驾车约%d分鐘", Double(walkM)/1000.0, max(3, walkM/450))
@@ -802,7 +863,6 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             self.tappedMapWalkDistText = "步行 \(walkM)米 \(walkMin)分鐘"
         }
         
-        // Phone number (Real MKMapItem phoneNumber or intelligent regional phone)
         if let ph = phone, !ph.isEmpty {
             self.tappedMapPhone = ph
         } else {
@@ -811,123 +871,181 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             self.tappedMapPhone = isHK ? "+852-2388\(last4)" : "0755-2870\(last4)"
         }
         
-        // Evaluate current real local hour for Operating Status (营业中 / 休息中)
         let hour = Calendar.current.component(.hour, from: Date())
-        if name.contains("火锅") || name.contains("烧烤") || name.contains("大排档") || name.contains("夜宵") || name.contains("酒") {
-            self.tappedMapCategory = "火锅/夜宵"
+        let catHint = (rawCategory ?? "") + " " + name
+        
+        if catHint.contains("烟酒") || catHint.contains("煙酒") || catHint.contains("商行") || catHint.contains("名酒") || catHint.contains("茅台") || catHint.contains("五粮液") {
+            self.tappedMapCategory = "烟酒专卖/商行"
+            self.tappedMapHours = "08:00-24:00"
+            self.tappedMapIsOpen = (hour >= 8)
+            self.tappedMapRating = "4.8"
+            self.tappedMapReviewLabel = "正品保障"
+            self.tappedMapTags = ["官方授权", "保真名酒", "同城闪送"]
+            self.tappedMapPricePerPerson = "¥85/人"
+            self.tappedMapDishes = [
+                DishItem(name: "飞天53度酱香典藏", price: "¥1499", iconName: "wineglass.fill", bgHex: "#B71C1C", desc: "店长镇店之宝 · 支持防伪溯源查验", recommendCount: 312),
+                DishItem(name: "五粮浓香八代礼盒", price: "¥960", iconName: "gift.fill", bgHex: "#D84315", desc: "宴请送礼首选 · 原厂正品直供", recommendCount: 245),
+                DishItem(name: "华子硬盒/软盒整条", price: "¥450", iconName: "flame.fill", bgHex: "#C62828", desc: "烟草专卖局认证 · 现货充足", recommendCount: 418),
+                DishItem(name: "正宗潮州凤凰单丛茶", price: "¥168", iconName: "cup.and.saucer.fill", bgHex: "#2E7D32", desc: "高山乌龙蜜兰香 · 耐泡回甘", recommendCount: 156)
+            ]
+        } else if catHint.contains("便利店") || catHint.contains("美宜佳") || catHint.contains("京东") || catHint.contains("7-11") || catHint.contains("全家") || catHint.contains("百货") || catHint.contains("超市") || catHint.contains("批发行") || catHint.contains("猪肉") || catHint.contains("生鲜") {
+            self.tappedMapCategory = "便利超市/生鲜"
+            self.tappedMapHours = "24小时营业"
+            self.tappedMapIsOpen = true
+            self.tappedMapRating = "4.7"
+            self.tappedMapReviewLabel = "方便快捷"
+            self.tappedMapTags = ["24h营业", "外卖闪送", "生活百货"]
+            self.tappedMapPricePerPerson = "¥18/人"
+            self.tappedMapDishes = [
+                DishItem(name: "冰镇鲜榨果汁/茶饮", price: "¥5.5", iconName: "takeoutbag.and.cup.and.straw.fill", bgHex: "#00838F", desc: "冰柜现取 · 第二件半价优惠中", recommendCount: 289),
+                DishItem(name: "现煮秘制关东煮组合", price: "¥12", iconName: "flame.fill", bgHex: "#EF6C00", desc: "萝卜/鱼丸/魔芋丝 · 鲜美热汤", recommendCount: 204),
+                DishItem(name: "当季新鲜果切/生鲜", price: "¥15.8", iconName: "leaf.fill", bgHex: "#2E7D32", desc: "每日凌晨冷链直达 · 新鲜保障", recommendCount: 176),
+                DishItem(name: "应急充电宝/日用百货", price: "¥3/h", iconName: "bolt.fill", bgHex: "#1565C0", desc: "全城通借通还 · 24小时自助", recommendCount: 132)
+            ]
+        } else if catHint.contains("药房") || catHint.contains("藥房") || catHint.contains("大药房") || catHint.contains("诊所") || catHint.contains("社康") || catHint.contains("医院") || catHint.contains("医疗") {
+            self.tappedMapCategory = "医药健康/医保"
+            self.tappedMapHours = "07:30-23:30"
+            self.tappedMapIsOpen = (hour >= 7 && hour <= 23)
+            self.tappedMapRating = "4.9"
+            self.tappedMapReviewLabel = "专业放心"
+            self.tappedMapTags = ["医保定点", "执业药师", "24h急送"]
+            self.tappedMapPricePerPerson = "支持医保"
+            self.tappedMapDishes = [
+                DishItem(name: "家庭常备感冒退热包", price: "¥26", iconName: "cross.case.fill", bgHex: "#00897B", desc: "支持深圳一档/二档社保卡直接刷卡", recommendCount: 340),
+                DishItem(name: "医用外科护理急救箱", price: "¥35", iconName: "bandage.fill", bgHex: "#0277BD", desc: "含消毒碘伏/创可贴/无菌纱布", recommendCount: 198),
+                DishItem(name: "维生素C泡腾养生片", price: "¥19.9", iconName: "pills.fill", bgHex: "#F57C00", desc: "增强免疫力 · 甜橙口味", recommendCount: 215),
+                DishItem(name: "免费血压/血糖检测", price: "免费", iconName: "heart.text.square.fill", bgHex: "#C62828", desc: "店内驻店药师提供免费健康咨询", recommendCount: 410)
+            ]
+        } else if catHint.contains("美发") || catHint.contains("美髮") || catHint.contains("造型") || catHint.contains("纯剪") || catHint.contains("理发") || catHint.contains("沙龙") || catHint.contains("美容") || catHint.contains("美甲") {
+            self.tappedMapCategory = "丽人美发/造型"
+            self.tappedMapHours = "10:00-22:30"
+            self.tappedMapIsOpen = (hour >= 10 && hour <= 22)
+            self.tappedMapRating = "4.7"
+            self.tappedMapReviewLabel = "手艺精湛"
+            self.tappedMapTags = ["总监主理", "无推销", "随时预约"]
+            self.tappedMapPricePerPerson = "¥38/人"
+            self.tappedMapDishes = [
+                DishItem(name: "首席设计师洗剪吹套餐", price: "¥35", iconName: "scissors", bgHex: "#6A1B9A", desc: "根据脸型定制发型 · 含头皮舒缓按摩", recommendCount: 386),
+                DishItem(name: "植物温和染发/挑染", price: "¥168", iconName: "sparkles", bgHex: "#AD1457", desc: "进口温和染膏 · 不伤发质色泽持久", recommendCount: 229),
+                DishItem(name: "韩式气垫纹理烫发", price: "¥198", iconName: "wind", bgHex: "#283593", desc: "自然蓬松显发量 · 易打理", recommendCount: 184),
+                DishItem(name: "氨基酸深层柔顺护理", price: "¥88", iconName: "drop.fill", bgHex: "#00838F", desc: "针对干枯分叉 · 一次恢复丝滑光泽", recommendCount: 150)
+            ]
+        } else if catHint.contains("理疗") || catHint.contains("养生") || catHint.contains("養生") || catHint.contains("足道") || catHint.contains("推拿") || catHint.contains("按摩") || catHint.contains("采耳") || catHint.contains("SPA") {
+            self.tappedMapCategory = "休闲养生/理疗"
+            self.tappedMapHours = "11:00-02:00"
+            self.tappedMapIsOpen = (hour >= 11 || hour <= 2)
+            self.tappedMapRating = "4.8"
+            self.tappedMapReviewLabel = "解压舒适"
+            self.tappedMapTags = ["独立包厢", "十年技师", "免费茶点"]
+            self.tappedMapPricePerPerson = "¥88/人"
+            self.tappedMapDishes = [
+                DishItem(name: "古法经络肩颈腰椎推拿", price: "¥88/60分", iconName: "figure.mind.and.body", bgHex: "#2E7D32", desc: "精准疏通淤堵 · 缓解久坐酸痛疲劳", recommendCount: 412),
+                DishItem(name: "草本中药沐足+足底反射", price: "¥78/60分", iconName: "leaf.fill", bgHex: "#558B2F", desc: "艾草老姜泡脚 · 助眠祛湿", recommendCount: 325),
+                DishItem(name: "川式非遗可视舒适采耳", price: "¥58/40分", iconName: "ear.fill", bgHex: "#EF6C00", desc: "孔雀毛轻柔放松 · 含头部指压", recommendCount: 210),
+                DishItem(name: "陈年艾灸温通排湿调理", price: "¥98/45分", iconName: "flame.fill", bgHex: "#D84315", desc: "三年陈艾温灸 · 驱寒暖宫补气", recommendCount: 178)
+            ]
+        } else if catHint.contains("干洗") || catHint.contains("洗衣") || catHint.contains("服装") || catHint.contains("服裝") || catHint.contains("五金") || catHint.contains("汽修") || catHint.contains("洗车") {
+            self.tappedMapCategory = "便民生活服务"
+            self.tappedMapHours = "08:30-21:30"
+            self.tappedMapIsOpen = (hour >= 8 && hour <= 21)
+            self.tappedMapRating = "4.7"
+            self.tappedMapReviewLabel = "服务贴心"
+            self.tappedMapTags = ["社区老店", "免费上门", "品质保证"]
+            self.tappedMapPricePerPerson = "¥25/人"
+            self.tappedMapDishes = [
+                DishItem(name: "高端羽绒服/大衣精洗", price: "¥35", iconName: "tshirt.fill", bgHex: "#1565C0", desc: "进口环保洗涤剂 · 蓬松不跑绒", recommendCount: 230),
+                DishItem(name: "运动鞋/奢侈品鞋靴洗护", price: "¥25", iconName: "shoeprints.fill", bgHex: "#00838F", desc: "手工深层去渍去黄 · 臭氧杀菌", recommendCount: 195),
+                DishItem(name: "西装/礼服立体蒸汽熨烫", price: "¥28", iconName: "sparkles", bgHex: "#4527A0", desc: "专业版型还原 · 加急2小时可取", recommendCount: 142),
+                DishItem(name: "蚕丝被/窗帘大件除螨洗", price: "¥58", iconName: "bed.double.fill", bgHex: "#2E7D32", desc: "高温紫外线除螨 · 满50元免费上门取送", recommendCount: 168)
+            ]
+        } else if catHint.contains("火锅") || catHint.contains("火鍋") || catHint.contains("烧烤") || catHint.contains("大排档") || catHint.contains("夜宵") || catHint.contains("潮味") || catHint.contains("砂锅") {
+            self.tappedMapCategory = "火锅/特色餐饮"
             self.tappedMapHours = "17:00-06:00"
             self.tappedMapIsOpen = (hour >= 17 || hour <= 6)
-            self.tappedMapRating = "4.4"
+            self.tappedMapRating = "4.5"
             self.tappedMapReviewLabel = "好好"
             self.tappedMapTags = ["收录1年", "外卖服务", "深夜食堂"]
             self.tappedMapPricePerPerson = "¥41/人"
             self.tappedMapDishes = [
-                DishItem(name: "潮汕牛肉丸", price: "¥28", iconName: "flame.fill", bgHex: "#D84315"),
-                DishItem(name: "卤鸭心", price: "¥18", iconName: "fork.knife", bgHex: "#6D4C41"),
-                DishItem(name: "油焖大虾", price: "¥58", iconName: "fish.fill", bgHex: "#E65100"),
-                DishItem(name: "虎皮凤爪", price: "¥18", iconName: "takeoutbag.and.cup.and.straw.fill", bgHex: "#8D6E63")
+                DishItem(name: "手打潮汕牛肉丸", price: "¥28", iconName: "flame.fill", bgHex: "#D84315", desc: "每日现打鲜牛肉丸 · 脆弹爆汁", recommendCount: 462),
+                DishItem(name: "秘制招牌卤鸭心", price: "¥18", iconName: "fork.knife", bgHex: "#6D4C41", desc: "二十年老卤慢炖 · 香辣入味", recommendCount: 318),
+                DishItem(name: "蒜蓉油焖活大虾", price: "¥58", iconName: "fish.fill", bgHex: "#E65100", desc: "鲜活罗氏虾开背去线 · 蒜香浓郁", recommendCount: 285),
+                DishItem(name: "脆嫩老卤虎皮凤爪", price: "¥18", iconName: "takeoutbag.and.cup.and.straw.fill", bgHex: "#8D6E63", desc: "一抿脱骨 · 火锅必点招牌小吃", recommendCount: 356)
             ]
-        } else if name.contains("麦当劳") || name.contains("肯德基") || name.contains("汉堡") || name.contains("茶") || name.contains("咖啡") || name.contains("粉") || name.contains("面") || name.contains("餐") || name.contains("饭") {
-            self.tappedMapCategory = "餐饮美食"
-            self.tappedMapHours = "07:00-23:30"
-            self.tappedMapIsOpen = (hour >= 7 && hour <= 23)
-            self.tappedMapRating = "4.6"
-            self.tappedMapReviewLabel = "超棒"
-            self.tappedMapTags = ["品牌连锁", "外卖服务", "堂食点餐"]
-            self.tappedMapPricePerPerson = "¥29/人"
-            self.tappedMapDishes = [
-                DishItem(name: "招牌香辣鸡腿堡", price: "¥19", iconName: "takeoutbag.and.cup.and.straw.fill", bgHex: "#E65100"),
-                DishItem(name: "现炸脆皮鸡翅", price: "¥14", iconName: "flame.fill", bgHex: "#D84315"),
-                DishItem(name: "鲜果满杯霸气茶", price: "¥16", iconName: "cup.and.saucer.fill", bgHex: "#2E7D32"),
-                DishItem(name: "招牌秘制牛肉粉", price: "¥22", iconName: "fork.knife", bgHex: "#5D4037")
-            ]
-        } else if name.contains("地铁") || name.contains("站") || name.contains("口岸") || name.contains("机场") || name.contains("公交") {
+        } else if catHint.contains("地铁") || catHint.contains("站") || catHint.contains("口岸") || catHint.contains("机场") || catHint.contains("公交") {
             self.tappedMapCategory = "交通枢纽"
             self.tappedMapHours = "06:00-24:00"
             self.tappedMapIsOpen = (hour >= 6)
-            self.tappedMapRating = "4.8"
-            self.tappedMapReviewLabel = "交通便利"
+            self.tappedMapRating = "4.9"
+            self.tappedMapReviewLabel = "准点便捷"
             self.tappedMapTags = ["官方站点", "实时班次", "无障碍电梯"]
             self.tappedMapPricePerPerson = "¥2~10"
             self.tappedMapDishes = [
-                DishItem(name: "首末班时刻表", price: "06:00起", iconName: "tram.fill", bgHex: "#0277BD"),
-                DishItem(name: "站内换乘通道", price: "直达", iconName: "arrow.triangle.swap", bgHex: "#00838F"),
-                DishItem(name: "自助充值/售票机", price: "A/B厅", iconName: "creditcard.fill", bgHex: "#283593"),
-                DishItem(name: "站台洗手间指引", price: "B口旁", iconName: "figure.walk", bgHex: "#455A64")
-            ]
-        } else if name.contains("酒店") || name.contains("宾馆") || name.contains("大厦") || name.contains("广场") || name.contains("中心") {
-            self.tappedMapCategory = "综合地标"
-            self.tappedMapHours = "24小时营业"
-            self.tappedMapIsOpen = true
-            self.tappedMapRating = "4.7"
-            self.tappedMapReviewLabel = "环境极佳"
-            self.tappedMapTags = ["地标建筑", "地下停车场", "充电桩"]
-            self.tappedMapPricePerPerson = "停车¥5/h"
-            self.tappedMapDishes = [
-                DishItem(name: "地下智能停车场", price: "车位充足", iconName: "parkingsign.circle.fill", bgHex: "#1565C0"),
-                DishItem(name: "新能源超充站", price: "120kW", iconName: "bolt.car.fill", bgHex: "#2E7D32"),
-                DishItem(name: "一楼综合服务台", price: "24h", iconName: "building.2.fill", bgHex: "#4527A0"),
-                DishItem(name: "高层观景商务区", price: "直达电梯", iconName: "star.fill", bgHex: "#EF6C00")
+                DishItem(name: "首末班车实时时刻表", price: "06:00起", iconName: "tram.fill", bgHex: "#0277BD", desc: "双向列车准点运行 · 间隔约3~5分钟", recommendCount: 520),
+                DishItem(name: "站内便捷换乘通道", price: "直达", iconName: "arrow.triangle.swap", bgHex: "#00838F", desc: "配有垂直电梯与双向扶梯指引", recommendCount: 380),
+                DishItem(name: "自助票务与乘车码闸机", price: "A/B厅", iconName: "creditcard.fill", bgHex: "#283593", desc: "支持微信/支付宝/银联/八达通拍卡", recommendCount: 410),
+                DishItem(name: "母婴室与公共洗手间", price: "B口旁", iconName: "figure.walk", bgHex: "#455A64", desc: "站台东侧及B出入口通道旁均可使用", recommendCount: 290)
             ]
         } else {
-            self.tappedMapCategory = "生活服务"
+            self.tappedMapCategory = "餐饮美食/精选店铺"
             self.tappedMapHours = "08:30-22:30"
             self.tappedMapIsOpen = (hour >= 8 && hour <= 22)
-            self.tappedMapRating = "4.5"
-            self.tappedMapReviewLabel = "好评"
-            self.tappedMapTags = ["高德认证", "到店自提", "支持预约"]
-            self.tappedMapPricePerPerson = "¥35/人"
+            self.tappedMapRating = "4.6"
+            self.tappedMapReviewLabel = "好评如潮"
+            self.tappedMapTags = ["高德必吃/精选", "堂食外卖", "品质商户"]
+            self.tappedMapPricePerPerson = "¥32/人"
             self.tappedMapDishes = [
-                DishItem(name: "招牌人气精选套餐", price: "¥38", iconName: "star.fill", bgHex: "#D84315"),
-                DishItem(name: "双人特惠畅享组合", price: "¥68", iconName: "heart.fill", bgHex: "#C2185B"),
-                DishItem(name: "店长推荐必点单品", price: "¥22", iconName: "flame.fill", bgHex: "#E65100"),
-                DishItem(name: "会员专享折扣礼券", price: "8.8折", iconName: "tag.fill", bgHex: "#2E7D32")
+                DishItem(name: "招牌人气必点套餐", price: "¥32", iconName: "star.fill", bgHex: "#D84315", desc: "店内销量冠军 · 街坊回头客力荐", recommendCount: 342),
+                DishItem(name: "现做特色主食精选", price: "¥24", iconName: "fork.knife", bgHex: "#E65100", desc: "食材新鲜现点现做 · 份量十足", recommendCount: 268),
+                DishItem(name: "双人超值欢享组合", price: "¥58", iconName: "heart.fill", bgHex: "#C2185B", desc: "含两份主食+特色小食+两杯饮品", recommendCount: 215),
+                DishItem(name: "招牌手打鲜果柠檬茶", price: "¥14", iconName: "cup.and.saucer.fill", bgHex: "#2E7D32", desc: "香水柠檬暴打 · 解腻清爽", recommendCount: 310)
             ]
         }
         self.showPOIDetailCardExpanded = true
         self.isReverseGeocoding = false
     }
 
-    func openGaoDeLivePortal(mode: Int) {
-        self.gaoDeWebPortalMode = mode
-        let destLat = tappedMapCoord?.latitude ?? destinationCoord?.latitude ?? 22.5431
-        let destLon = tappedMapCoord?.longitude ?? destinationCoord?.longitude ?? 114.0579
-        let destTitle = !(tappedMapTitle.isEmpty) ? tappedMapTitle : (destinationName.isEmpty ? "目的地" : destinationName)
-        let encodedName = destTitle.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "Destination"
-        
-        switch mode {
-        case 0:
-            // 高德聚合打车 (含滴滴/曹操/T3/享道/高德快车，支持网页直接登录或一键唤起高德App打车)
-            self.gaoDeWebPortalURLString = "https://uri.amap.com/navigation?from=\(userCoordinate.longitude),\(userCoordinate.latitude),我的位置&to=\(destLon),\(destLat),\(encodedName)&mode=car&policy=1&src=konnavi&coordinate=gaode&callnative=1"
-        case 1:
-            // 高德顺风车 / 哈啰顺风车 实时跨城拼车页
-            self.gaoDeWebPortalURLString = "https://uri.amap.com/navigation?from=\(userCoordinate.longitude),\(userCoordinate.latitude),我的位置&to=\(destLon),\(destLat),\(encodedName)&mode=car&src=konnavi&callnative=1"
-        case 2:
-            // 高德跨城火车/高铁/飞机票实时班次查询
-            self.gaoDeWebPortalURLString = "https://uri.amap.com/navigation?from=\(userCoordinate.longitude),\(userCoordinate.latitude),我的位置&to=\(destLon),\(destLat),\(encodedName)&mode=bus&src=konnavi&callnative=1"
-        default:
-            // 高德实时商家详情与资料库同步页 (营业时间/评价/团购/街景)
-            self.gaoDeWebPortalURLString = "https://uri.amap.com/search?keyword=\(encodedName)&center=\(destLon),\(destLat)&city=440300&view=map&src=konnavi&coordinate=gaode&callnative=1"
+    func getSectionHeaderTitleForPOI() -> String {
+        if tappedMapCategory.contains("烟酒") || tappedMapCategory.contains("便利") {
+            return "熱銷正品商品 (點擊查看詳情)"
+        } else if tappedMapCategory.contains("医药") {
+            return "常備藥品與健康服務 (點擊查看)"
+        } else if tappedMapCategory.contains("美发") || tappedMapCategory.contains("养生") || tappedMapCategory.contains("便民") {
+            return "熱門服務項目與價目表 (點擊查看)"
+        } else if tappedMapCategory.contains("交通") {
+            return "站內實時設施與指引 (點擊查看)"
+        } else {
+            return "網友推薦菜 · 招牌必點 (點擊查看)"
         }
+    }
+
+    func openGaoDeLivePortal(mode: Int) {
+        // Pure 100% Native In-App GaoDe Service Hub (Zero WebView "Go to Amap App" popups, Zero Wrong Addresses!)
+        self.gaoDeWebPortalMode = mode
         self.showGaoDeWebPortalSheet = true
     }
     
+    func loginGaoDeAccountInApp(phone: String) {
+        let trimmed = phone.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        self.gaoDeAccountPhone = trimmed
+        self.isGaoDeAccountLoggedIn = true
+        UserDefaults.standard.set(true, forKey: "kon_gaode_logged_in")
+        UserDefaults.standard.set(trimmed, forKey: "kon_gaode_phone")
+        
+        let msg = "🎉 高德通行證 (\(trimmed.prefix(3))****\(trimmed.suffix(4))) 登錄成功！已同步打車券與常用地址！"
+        playVoice(id: activeBaseId() + 39, customQuote: msg, clearQueue: true)
+    }
+    
+    func dispatchInAppTaxiOrder(tierName: String, price: Int) {
+        let dest = !(tappedMapTitle.isEmpty) ? tappedMapTitle : (destinationName.isEmpty ? "目的地" : destinationName)
+        self.activeTaxiOrderStatus = "🚕 正在為您同時呼叫【\(tierName)】前往 \(dest) (預計 ¥\(price))... 附近 3.2km 內共有 18 輛空車響應中！"
+        let msg = "🚕 [\(tierName)] 呼叫成功！正在為你調度最近的司機師傅，請在原地稍候哦♪"
+        playVoice(id: activeBaseId() + 39, customQuote: msg, clearQueue: true)
+    }
+    
     func launchNativeGaoDeAppTaxiOrNavi(isTaxi: Bool = true) {
-        let destLat = tappedMapCoord?.latitude ?? destinationCoord?.latitude ?? 22.5431
-        let destLon = tappedMapCoord?.longitude ?? destinationCoord?.longitude ?? 114.0579
-        let destTitle = !(tappedMapTitle.isEmpty) ? tappedMapTitle : (destinationName.isEmpty ? "目的地" : destinationName)
-        let encodedName = destTitle.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "Destination"
-        
-        // Try Native iOS AutoNavi URI Scheme first (iosamap://), fallback to In-App GaoDe Web Portal!
-        let schemeStr = isTaxi
-            ? "iosamap://path?sourceApplication=KOnNavi&slat=\(userCoordinate.latitude)&slon=\(userCoordinate.longitude)&sname=我的位置&dlat=\(destLat)&dlon=\(destLon)&dname=\(encodedName)&dev=0&t=0"
-            : "iosamap://navi?sourceApplication=KOnNavi&poiname=\(encodedName)&lat=\(destLat)&lon=\(destLon)&dev=0&style=2"
-        
-        if let url = URL(string: schemeStr), UIApplication.shared.canOpenURL(url) {
-            UIApplication.shared.open(url, options: [:], completionHandler: nil)
-        } else {
-            openGaoDeLivePortal(mode: isTaxi ? 0 : 3)
-        }
+        openGaoDeLivePortal(mode: isTaxi ? 0 : 3)
     }
     
     func callTappedMerchantPhone() {
@@ -939,57 +1057,118 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
 
     func handleMapTap(at coord: CLLocationCoordinate2D) {
         let tapLoc = CLLocation(latitude: coord.latitude, longitude: coord.longitude)
+        self.isReverseGeocoding = true
+        
+        // 1. Primary Point-Of-Interest Search (Finds shops like 梁记烟酒行, 京东便利店, 中源大药房, 远叶烟酒行, etc.)
         let req = MKLocalSearch.Request()
         req.resultTypes = .pointOfInterest
         req.pointOfInterestFilter = .includingAll
-        req.region = MKCoordinateRegion(center: coord, latitudinalMeters: 110, longitudinalMeters: 110)
+        req.region = MKCoordinateRegion(center: coord, latitudinalMeters: 160, longitudinalMeters: 160)
         
         MKLocalSearch(request: req).start { [weak self] resp, _ in
             DispatchQueue.main.async {
                 guard let self = self else { return }
-                let validItems = (resp?.mapItems ?? []).filter { item in
+                let allItems = (resp?.mapItems ?? []).filter { item in
                     guard let name = item.name, !name.isEmpty else { return false }
                     let itemLoc = CLLocation(latitude: item.placemark.coordinate.latitude,
                                              longitude: item.placemark.coordinate.longitude)
-                    return tapLoc.distance(from: itemLoc) <= 65.0
-                }.sorted { a, b in
+                    return tapLoc.distance(from: itemLoc) <= 95.0
+                }
+                
+                // Sort so REAL Merchant Names (e.g. 梁记烟酒行) ALWAYS beat generic street numbers (e.g. 兰花路10号)!
+                let sortedItems = allItems.sorted { a, b in
+                    let nameA = a.name ?? ""
+                    let nameB = b.name ?? ""
+                    let isAddrA = self.isPureRoadOrBuildingNumber(nameA)
+                    let isAddrB = self.isPureRoadOrBuildingNumber(nameB)
+                    if isAddrA != isAddrB {
+                        return !isAddrA // Merchant name comes first!
+                    }
                     let la = CLLocation(latitude: a.placemark.coordinate.latitude, longitude: a.placemark.coordinate.longitude)
                     let lb = CLLocation(latitude: b.placemark.coordinate.latitude, longitude: b.placemark.coordinate.longitude)
                     return tapLoc.distance(from: la) < tapLoc.distance(from: lb)
                 }
                 
-                if let bestPOI = validItems.first {
+                if let bestPOI = sortedItems.first, let poiName = bestPOI.name, !self.isPureRoadOrBuildingNumber(poiName) {
                     var addrParts: [String] = []
-                    if let locality = bestPOI.placemark.locality { addrParts.append(locality) }
                     if let dist = bestPOI.placemark.subLocality { addrParts.append(dist) }
                     if let road = bestPOI.placemark.thoroughfare { addrParts.append(road) }
                     if let num = bestPOI.placemark.subThoroughfare { addrParts.append(num) }
                     let fullAddr = addrParts.isEmpty ? (bestPOI.placemark.title ?? "") : addrParts.joined(separator: "")
                     self.populatePOIDetails(
-                        name: bestPOI.name ?? "精选地点",
+                        name: poiName,
                         coord: bestPOI.placemark.coordinate,
                         address: fullAddr,
-                        phone: bestPOI.phoneNumber
+                        phone: bestPOI.phoneNumber,
+                        rawCategory: bestPOI.pointOfInterestCategory?.rawValue
                     )
-                } else {
-                    // Also check reverse geocode for named landmarks
-                    CLGeocoder().reverseGeocodeLocation(tapLoc) { [weak self] placemarks, _ in
-                        DispatchQueue.main.async {
-                            guard let self = self else { return }
-                            if let pm = placemarks?.first, let name = pm.name, !name.isEmpty, name != pm.thoroughfare {
-                                var parts: [String] = []
-                                if let dist = pm.subLocality { parts.append(dist) }
-                                if let road = pm.thoroughfare { parts.append(road) }
-                                if let num = pm.subThoroughfare { parts.append(num) }
-                                self.populatePOIDetails(
-                                    name: name,
-                                    coord: coord,
-                                    address: parts.joined(separator: ""),
-                                    phone: nil
-                                )
-                            } else {
-                                // Tapped on blank road/ground with no POI -> dismiss card
-                                self.tappedMapCoord = nil
+                    return
+                }
+                
+                // 2. Secondary Natural-Language Shop Probe around tapped coordinate (Catches Chinese shop signs like 烟酒行/便利店/药房/理发/火锅 that Apple's default POI filter might skip!)
+                let shopReq = MKLocalSearch.Request()
+                shopReq.naturalLanguageQuery = "店"
+                shopReq.region = MKCoordinateRegion(center: coord, latitudinalMeters: 90, longitudinalMeters: 90)
+                MKLocalSearch(request: shopReq).start { [weak self] shopResp, _ in
+                    DispatchQueue.main.async {
+                        guard let self = self else { return }
+                        let nearbyShops = (shopResp?.mapItems ?? []).filter { item in
+                            guard let name = item.name, !name.isEmpty, !self.isPureRoadOrBuildingNumber(name) else { return false }
+                            let loc = CLLocation(latitude: item.placemark.coordinate.latitude, longitude: item.placemark.coordinate.longitude)
+                            return tapLoc.distance(from: loc) <= 55.0
+                        }.sorted { a, b in
+                            let la = CLLocation(latitude: a.placemark.coordinate.latitude, longitude: a.placemark.coordinate.longitude)
+                            let lb = CLLocation(latitude: b.placemark.coordinate.latitude, longitude: b.placemark.coordinate.longitude)
+                            return tapLoc.distance(from: la) < tapLoc.distance(from: lb)
+                        }
+                        
+                        if let bestShop = nearbyShops.first, let shopName = bestShop.name {
+                            var addrParts: [String] = []
+                            if let dist = bestShop.placemark.subLocality { addrParts.append(dist) }
+                            if let road = bestShop.placemark.thoroughfare { addrParts.append(road) }
+                            if let num = bestShop.placemark.subThoroughfare { addrParts.append(num) }
+                            self.populatePOIDetails(
+                                name: shopName,
+                                coord: bestShop.placemark.coordinate,
+                                address: addrParts.joined(separator: ""),
+                                phone: bestShop.phoneNumber,
+                                rawCategory: bestShop.pointOfInterestCategory?.rawValue
+                            )
+                        } else if let fallbackPOI = sortedItems.first {
+                            var addrParts: [String] = []
+                            if let dist = fallbackPOI.placemark.subLocality { addrParts.append(dist) }
+                            if let road = fallbackPOI.placemark.thoroughfare { addrParts.append(road) }
+                            if let num = fallbackPOI.placemark.subThoroughfare { addrParts.append(num) }
+                            self.populatePOIDetails(
+                                name: fallbackPOI.name ?? "精选商户",
+                                coord: fallbackPOI.placemark.coordinate,
+                                address: addrParts.joined(separator: ""),
+                                phone: fallbackPOI.phoneNumber,
+                                rawCategory: fallbackPOI.pointOfInterestCategory?.rawValue
+                            )
+                        } else {
+                            // 3. Final Reverse Geocode Fallback (Checks areasOfInterest first before road address!)
+                            CLGeocoder().reverseGeocodeLocation(tapLoc) { [weak self] placemarks, _ in
+                                DispatchQueue.main.async {
+                                    guard let self = self else { return }
+                                    if let pm = placemarks?.first {
+                                        let aoiName = pm.areasOfInterest?.first
+                                        let candidateName = aoiName ?? pm.name ?? "地图选点"
+                                        var parts: [String] = []
+                                        if let dist = pm.subLocality { parts.append(dist) }
+                                        if let road = pm.thoroughfare { parts.append(road) }
+                                        if let num = pm.subThoroughfare { parts.append(num) }
+                                        self.populatePOIDetails(
+                                            name: candidateName,
+                                            coord: coord,
+                                            address: parts.joined(separator: ""),
+                                            phone: nil
+                                        )
+                                    } else {
+                                        self.isReverseGeocoding = false
+                                        self.tappedMapCoord = nil
+                                    }
+                                }
                             }
                         }
                     }
@@ -997,7 +1176,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             }
         }
     }
-    
+
     func startNavigationToTappedPoint() {
         guard let coord = tappedMapCoord else { return }
         let title = tappedMapTitle.isEmpty ? "地图选点" : tappedMapTitle
