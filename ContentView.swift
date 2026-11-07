@@ -1123,6 +1123,30 @@ struct ContentView: View {
     }
     
     // Compact Landscape Pre-Navigation Card (Fits in bottom-right of Landscape screen without any vertical overflow!)
+        private func landscapeRouteButton(route: MKRoute, index: Int) -> some View {
+        let isSel = (manager.selectedRouteIndex == index)
+        let estMins = max(1, Int(route.expectedTravelTime / 60.0))
+        let distStr = String(format: "%.1fkm", route.distance / 1000.0)
+        let badge = manager.routeOptionBadgeTitle(for: route, index: index)
+        return Button(action: {
+            manager.selectCandidateRoute(at: index)
+        }) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text("\(estMins)分 · \(distStr)")
+                    .font(.system(size: 11, weight: .black))
+                    .foregroundColor(isSel ? .white : httGold)
+                Text(badge)
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundColor(isSel ? httCream : .cyan)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(isSel ? httCrimson : Color.white.opacity(0.14))
+            .cornerRadius(7)
+            .overlay(RoundedRectangle(cornerRadius: 7).stroke(isSel ? httGold : Color.clear, lineWidth: 1.2))
+        }
+    }
+    
     private var landscapeCompactPreNavCard: some View {
         VStack(spacing: 6) {
             if manager.travelMode == .driving {
@@ -1173,26 +1197,7 @@ struct ContentView: View {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 6) {
                             ForEach(0..<manager.candidateRoutes.count, id: \.self) { idx in
-                                let r = manager.candidateRoutes[idx]
-                                let isSel = (manager.selectedRouteIndex == idx)
-                                let estMins = max(1, Int(r.expectedTravelTime / 60.0))
-                                Button(action: {
-                                    manager.selectCandidateRoute(at: idx)
-                                }) {
-                                    VStack(alignment: .leading, spacing: 1) {
-                                        Text("\(estMins)分 · \(String(format: "%.1fkm", r.distance / 1000.0))")
-                                            .font(.system(size: 11, weight: .black))
-                                            .foregroundColor(isSel ? .white : httGold)
-                                        Text(manager.routeOptionBadgeTitle(for: r, index: idx))
-                                            .font(.system(size: 9, weight: .bold))
-                                            .foregroundColor(isSel ? httCream : .cyan)
-                                    }
-                                    .padding(.horizontal, 8)
-                                    .padding(.vertical, 4)
-                                    .background(isSel ? httCrimson : Color.white.opacity(0.14))
-                                    .cornerRadius(7)
-                                    .overlay(RoundedRectangle(cornerRadius: 7).stroke(isSel ? httGold : Color.clear, lineWidth: 1.2))
-                                }
+                                landscapeRouteButton(route: manager.candidateRoutes[idx], index: idx)
                             }
                         }
                     }
@@ -1411,211 +1416,236 @@ struct ContentView: View {
         }
     }
     
+    // MARK: - Subviews for Pre-Navigation Card (Split to Guarantee Instant Swift Compilation!)
+    private var highwayPreferenceButtonRow: some View {
+        HStack(spacing: 8) {
+            ForEach(RouteStrategyPreference.allCases) { pref in
+                let isSel = (manager.routePreference == pref)
+                Button(action: {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        manager.routePreference = pref
+                    }
+                }) {
+                    HStack(spacing: 5) {
+                        Image(systemName: pref.icon)
+                            .font(.system(size: 13, weight: .bold))
+                        Text(pref.title(manager.language))
+                            .font(.system(size: 13, weight: .heavy))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.8)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 38)
+                    .padding(.vertical, 4)
+                    .background(isSel ? httGold : Color.white.opacity(0.14))
+                    .foregroundColor(isSel ? .black : httCream)
+                    .cornerRadius(10)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10)
+                            .stroke(isSel ? Color.white : httGold.opacity(0.45), lineWidth: isSel ? 2 : 1)
+                    )
+                }
+            }
+        }
+    }
+    
+    private func transitPlanTabButton(plan: TransitPlanOption, index: Int) -> some View {
+        let isSel = (manager.selectedTransitPlanIndex == index)
+        return Button(action: {
+            withAnimation(.easeInOut(duration: 0.2)) {
+                manager.selectTransitPlan(at: index)
+            }
+        }) {
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 5) {
+                    Image(systemName: "tram.fill")
+                        .font(.system(size: 11, weight: .bold))
+                    Text(plan.badge)
+                        .font(.system(size: 12, weight: .black))
+                }
+                Text(plan.subtitleSummary)
+                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                    .opacity(0.9)
+            }
+            .padding(.horizontal, 11)
+            .padding(.vertical, 7)
+            .background(isSel ? Color.purple : Color.white.opacity(0.14))
+            .foregroundColor(.white)
+            .cornerRadius(10)
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke(isSel ? httGold : Color.white.opacity(0.2), lineWidth: isSel ? 2 : 1)
+            )
+        }
+    }
+    
+    private var transitPreNavSection: some View {
+        VStack(spacing: 8) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(Array(manager.transitPlans.enumerated()), id: \.element.id) { idx, plan in
+                        transitPlanTabButton(plan: plan, index: idx)
+                    }
+                }
+            }
+            
+            Button(action: {
+                manager.showTransitPlanSheet = true
+            }) {
+                HStack(spacing: 6) {
+                    Image(systemName: "list.bullet.rectangle.portrait.fill")
+                        .font(.system(size: 12, weight: .bold))
+                    Text(tr("查看完整公交地铁换乘时间轴与车站", "查看完整公交地鐵換乘時間軸與車站", "View Full Transit Timeline & Stations"))
+                        .font(.system(size: 12, weight: .bold))
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.caption.bold())
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(Color.purple.opacity(0.3))
+                .foregroundColor(Color(red: 0.85, green: 0.65, blue: 1.0))
+                .cornerRadius(8)
+            }
+        }
+    }
+    
+    private func candidateRouteTabButton(route: MKRoute, index: Int) -> some View {
+        let isSel = (manager.selectedRouteIndex == index)
+        let estMins: Int = manager.estimatedMinutes(for: route)
+        let distKmStr: String = String(format: "%.1f公里", route.distance / 1000.0)
+        let lightCount: Int = max(1, Int(route.distance / 450.0))
+        let badgeTitle: String = manager.routeOptionBadgeTitle(for: route, index: index)
+        
+        return Button(action: {
+            withAnimation(.easeInOut(duration: 0.2)) {
+                manager.selectCandidateRoute(at: index)
+            }
+        }) {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 4) {
+                    Text("\(estMins)分钟")
+                        .font(.system(size: 14, weight: .black))
+                        .foregroundColor(isSel ? .white : httGold)
+                    Text(distKmStr)
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundColor(.white.opacity(0.9))
+                    HStack(spacing: 1) {
+                        Image(systemName: "light.beacon.max.fill")
+                            .font(.system(size: 8))
+                        Text("\(lightCount)")
+                            .font(.system(size: 10, weight: .bold))
+                    }
+                    .foregroundColor(.green)
+                }
+                Text(badgeTitle)
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundColor(isSel ? httCream : Color.cyan)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            .background(isSel ? httCrimson : Color.white.opacity(0.14))
+            .cornerRadius(10)
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke(isSel ? httGold : Color.white.opacity(0.25), lineWidth: isSel ? 1.8 : 1)
+            )
+        }
+    }
+    
+    private var candidateRoutesScrollRow: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(0..<manager.candidateRoutes.count, id: \.self) { idx in
+                    candidateRouteTabButton(route: manager.candidateRoutes[idx], index: idx)
+                }
+            }
+        }
+    }
+    
+    private var bottomPreNavActionRow: some View {
+        HStack(spacing: 8) {
+            Button(action: {
+                manager.openGaoDeLivePortal(mode: 0)
+            }) {
+                VStack(spacing: 1) {
+                    Image(systemName: "figure.wave")
+                        .font(.system(size: 13, weight: .bold))
+                    Text(tr("高德打车", "高德打車", "Taxi"))
+                        .font(.system(size: 9, weight: .black))
+                }
+                .foregroundColor(.white)
+                .frame(width: 54, minHeight: 42)
+                .background(Color.orange.opacity(0.28))
+                .cornerRadius(11)
+                .overlay(RoundedRectangle(cornerRadius: 11).stroke(Color.orange, lineWidth: 1.2))
+            }
+            
+            Button(action: {
+                manager.openGaoDeLivePortal(mode: 1)
+            }) {
+                VStack(spacing: 1) {
+                    Image(systemName: "car.2.fill")
+                        .font(.system(size: 12, weight: .bold))
+                    Text(tr("顺风车", "順風車", "Hitch"))
+                        .font(.system(size: 9, weight: .black))
+                }
+                .foregroundColor(httCream)
+                .frame(width: 50, minHeight: 42)
+                .background(Color.white.opacity(0.14))
+                .cornerRadius(11)
+                .overlay(RoundedRectangle(cornerRadius: 11).stroke(Color.white.opacity(0.3), lineWidth: 1))
+            }
+            
+            Button(action: {
+                withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) {
+                    manager.startFocusedNavigation()
+                }
+            }) {
+                HStack(spacing: 6) {
+                    Image(systemName: "location.north.circle.fill")
+                        .font(.title3)
+                    Text(tr("开始导航 · 专注驾驶", "開始導航 · 專注駕駛", "Start Navigation"))
+                        .font(.system(size: 15, weight: .black))
+                        .lineLimit(1)
+                }
+                .frame(maxWidth: .infinity, minHeight: 42)
+                .padding(.vertical, 4)
+                .background(
+                    LinearGradient(
+                        colors: [httCrimson, Color(red: 0.92, green: 0.25, blue: 0.30)],
+                        startPoint: .leading,
+                        endPoint: .trailing
+                    )
+                )
+                .foregroundColor(.white)
+                .cornerRadius(11)
+                .overlay(RoundedRectangle(cornerRadius: 11).stroke(httGold, lineWidth: 1.5))
+            }
+        }
+    }
+    
     // Bottom Pre-Navigation Card: Enlarged Highway Strategy (高速优先/不走高速/距离最短) + Separate Candidate Routes Row + Anti-Mistouch [🚀 开始导航] Button!
     private var bottomPreNavRouteSelectionCard: some View {
         VStack(spacing: 11) {
             // Row 1: Enlarged Full-Width 3-Grid Highway Strategy (Driving) OR Built-In Transit Plans (Transit)
             if manager.travelMode == .driving {
-                HStack(spacing: 8) {
-                    ForEach(RouteStrategyPreference.allCases) { pref in
-                        let isSelPref = (manager.routePreference == pref)
-                        Button(action: {
-                            withAnimation(.easeInOut(duration: 0.2)) {
-                                manager.routePreference = pref
-                            }
-                        }) {
-                            HStack(spacing: 5) {
-                                Image(systemName: pref.icon)
-                                    .font(.system(size: 13, weight: .bold))
-                                Text(pref.title(manager.language))
-                                    .font(.system(size: 13, weight: .heavy))
-                                    .lineLimit(1)
-                                    .minimumScaleFactor(0.8)
-                            }
-                            .frame(maxWidth: .infinity, minHeight: 38)
-                            .padding(.vertical, 4)
-                            .background(isSelPref ? httGold : Color.white.opacity(0.14))
-                            .foregroundColor(isSelPref ? .black : httCream)
-                            .cornerRadius(10)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 10)
-                                    .stroke(isSelPref ? Color.white : httGold.opacity(0.45), lineWidth: isSelPref ? 2 : 1)
-                            )
-                        }
-                    }
-                }
+                highwayPreferenceButtonRow
             } else if manager.travelMode == .transit {
-                // Built-In Transit Multi-Plan Quick Selector Cards
-                VStack(spacing: 8) {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 8) {
-                            ForEach(Array(manager.transitPlans.enumerated()), id: \.element.id) { idx, plan in
-                                let isSel = (manager.selectedTransitPlanIndex == idx)
-                                Button(action: {
-                                    withAnimation(.easeInOut(duration: 0.2)) {
-                                        manager.selectTransitPlan(at: idx)
-                                    }
-                                }) {
-                                    VStack(alignment: .leading, spacing: 3) {
-                                        HStack(spacing: 5) {
-                                            Image(systemName: "tram.fill")
-                                                .font(.system(size: 11, weight: .bold))
-                                            Text(plan.badge)
-                                                .font(.system(size: 12, weight: .black))
-                                        }
-                                        Text(plan.subtitleSummary)
-                                            .font(.system(size: 10, weight: .bold, design: .monospaced))
-                                            .opacity(0.9)
-                                    }
-                                    .padding(.horizontal, 11)
-                                    .padding(.vertical, 7)
-                                    .background(isSel ? Color.purple : Color.white.opacity(0.14))
-                                    .foregroundColor(.white)
-                                    .cornerRadius(10)
-                                    .overlay(
-                                        RoundedRectangle(cornerRadius: 10)
-                                            .stroke(isSel ? httGold : Color.white.opacity(0.2), lineWidth: isSel ? 2 : 1)
-                                    )
-                                }
-                            }
-                        }
-                    }
-                    
-                    // Button to open Full Timeline Sheet
-                    Button(action: {
-                        manager.showTransitPlanSheet = true
-                    }) {
-                        HStack(spacing: 6) {
-                            Image(systemName: "list.bullet.rectangle.portrait.fill")
-                                .font(.system(size: 12, weight: .bold))
-                            Text(tr("查看完整公交地铁换乘时间轴与车站", "查看完整公交地鐵換乘時間軸與車站", "View Full Transit Timeline & Stations"))
-                                .font(.system(size: 12, weight: .bold))
-                            Spacer()
-                            Image(systemName: "chevron.right")
-                                .font(.caption.bold())
-                        }
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .background(Color.purple.opacity(0.3))
-                        .foregroundColor(Color(red: 0.85, green: 0.65, blue: 1.0))
-                        .cornerRadius(8)
-                    }
-                }
+                transitPreNavSection
             }
             
             // Row 2: GaoDe-Style Multi-Route Comparison Cards (Shows time, km, traffic lights & lighting % for Driving, e-Bike & Walking!)
             if manager.travelMode != .transit && !manager.candidateRoutes.isEmpty {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
-                        ForEach(0..<manager.candidateRoutes.count, id: \.self) { idx in
-                            let r = manager.candidateRoutes[idx]
-                            let isSel = (manager.selectedRouteIndex == idx)
-                            let estMins: Int = manager.estimatedMinutes(for: r)
-                            let lightCount = max(1, Int(r.distance / 450.0))
-                            Button(action: {
-                                withAnimation(.easeInOut(duration: 0.2)) {
-                                    manager.selectCandidateRoute(at: idx)
-                                }
-                            }) {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    HStack(spacing: 4) {
-                                        Text("\(estMins)分钟")
-                                            .font(.system(size: 14, weight: .black))
-                                            .foregroundColor(isSel ? .white : httGold)
-                                        Text(String(format: "%.1f公里", r.distance / 1000.0))
-                                            .font(.system(size: 11, weight: .bold))
-                                            .foregroundColor(.white.opacity(0.9))
-                                        HStack(spacing: 1) {
-                                            Image(systemName: "light.beacon.max.fill")
-                                                .font(.system(size: 8))
-                                            Text("\(lightCount)")
-                                                .font(.system(size: 10, weight: .bold))
-                                        }
-                                        .foregroundColor(.green)
-                                    }
-                                    Text(manager.routeOptionBadgeTitle(for: r, index: idx))
-                                        .font(.system(size: 10, weight: .bold))
-                                        .foregroundColor(isSel ? httCream : Color.cyan)
-                                }
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 7)
-                                .background(isSel ? httCrimson : Color.white.opacity(0.14))
-                                .cornerRadius(10)
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 10)
-                                        .stroke(isSel ? httGold : Color.white.opacity(0.25), lineWidth: isSel ? 1.8 : 1)
-                                )
-                            }
-                        }
-                    }
-                }
+                candidateRoutesScrollRow
             }
             
-            // Safety Divider Cushion to prevent accidental mistouch on [开始导航] when tapping highway options
+            // Safety Divider Cushion
             Divider()
                 .background(httGold.opacity(0.35))
                 .padding(.vertical, 1)
             
             // Row 3: GaoDe Aggregated Ride-Hailing [🚕 高德打车] + [🚗 顺风车] + Prominent [🚀 开始导航] Button!
-            HStack(spacing: 8) {
-                Button(action: {
-                    manager.openGaoDeLivePortal(mode: 0)
-                }) {
-                    VStack(spacing: 1) {
-                        Image(systemName: "figure.wave")
-                            .font(.system(size: 13, weight: .bold))
-                        Text(tr("高德打车", "高德打車", "Taxi"))
-                            .font(.system(size: 9, weight: .black))
-                    }
-                    .foregroundColor(.white)
-                    .frame(width: 54, minHeight: 42)
-                    .background(Color.orange.opacity(0.28))
-                    .cornerRadius(11)
-                    .overlay(RoundedRectangle(cornerRadius: 11).stroke(Color.orange, lineWidth: 1.2))
-                }
-                
-                Button(action: {
-                    manager.openGaoDeLivePortal(mode: 1)
-                }) {
-                    VStack(spacing: 1) {
-                        Image(systemName: "car.2.fill")
-                            .font(.system(size: 12, weight: .bold))
-                        Text(tr("顺风车", "順風車", "Hitch"))
-                            .font(.system(size: 9, weight: .black))
-                    }
-                    .foregroundColor(httCream)
-                    .frame(width: 50, minHeight: 42)
-                    .background(Color.white.opacity(0.14))
-                    .cornerRadius(11)
-                    .overlay(RoundedRectangle(cornerRadius: 11).stroke(Color.white.opacity(0.3), lineWidth: 1))
-                }
-                
-                Button(action: {
-                    withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) {
-                        manager.startFocusedNavigation()
-                    }
-                }) {
-                    HStack(spacing: 6) {
-                        Image(systemName: "location.north.circle.fill")
-                            .font(.title3)
-                        Text(tr("开始导航 · 专注驾驶", "開始導航 · 專注駕駛", "Start Navigation"))
-                            .font(.system(size: 15, weight: .black))
-                            .lineLimit(1)
-                    }
-                    .frame(maxWidth: .infinity, minHeight: 42)
-                    .padding(.vertical, 4)
-                    .background(
-                        LinearGradient(
-                            colors: [httCrimson, Color(red: 0.92, green: 0.25, blue: 0.30)],
-                            startPoint: .leading,
-                            endPoint: .trailing
-                        )
-                    )
-                    .foregroundColor(.white)
-                    .cornerRadius(11)
-                    .overlay(RoundedRectangle(cornerRadius: 11).stroke(httGold, lineWidth: 1.5))
-                }
-            }
+            bottomPreNavActionRow
         }
         .padding(12)
         .background(Color.black.opacity(0.90))
@@ -3759,6 +3789,34 @@ struct InAppTransitPlanSheetView: View {
     private let httCrimson = Color(red: 0.78, green: 0.18, blue: 0.22)
     private let httCream = Color(red: 0.99, green: 0.96, blue: 0.90)
     
+        private func sheetPlanTabButton(plan: TransitPlanOption, index: Int) -> some View {
+        let isSel = (manager.selectedTransitPlanIndex == index)
+        return Button(action: {
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
+                manager.selectTransitPlan(at: index)
+            }
+        }) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(plan.badge)
+                    .font(.system(size: 12, weight: .black))
+                Text(plan.shortPriceSummary)
+                    .font(.system(size: 14, weight: .heavy, design: .rounded))
+                Text(plan.transferAndWalkSummary)
+                    .font(.system(size: 10, weight: .bold))
+                    .opacity(0.85)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .background(isSel ? Color.purple : Color.white.opacity(0.10))
+            .foregroundColor(.white)
+            .cornerRadius(12)
+            .overlay(
+                RoundedRectangle(cornerRadius: 12)
+                    .stroke(isSel ? httGold : Color.clear, lineWidth: 2)
+            )
+        }
+    }
+
     var body: some View {
         NavigationView {
             ZStack {
@@ -3769,31 +3827,7 @@ struct InAppTransitPlanSheetView: View {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 10) {
                             ForEach(Array(manager.transitPlans.enumerated()), id: \.element.id) { idx, plan in
-                                let isSel = (manager.selectedTransitPlanIndex == idx)
-                                Button(action: {
-                                    withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
-                                        manager.selectTransitPlan(at: idx)
-                                    }
-                                }) {
-                                    VStack(alignment: .leading, spacing: 3) {
-                                        Text(plan.badge)
-                                            .font(.system(size: 12, weight: .black))
-                                        Text(plan.shortPriceSummary)
-                                            .font(.system(size: 14, weight: .heavy, design: .rounded))
-                                        Text(plan.transferAndWalkSummary)
-                                            .font(.system(size: 10, weight: .bold))
-                                            .opacity(0.85)
-                                    }
-                                    .padding(.horizontal, 14)
-                                    .padding(.vertical, 8)
-                                    .background(isSel ? Color.purple : Color.white.opacity(0.10))
-                                    .foregroundColor(.white)
-                                    .cornerRadius(12)
-                                    .overlay(
-                                        RoundedRectangle(cornerRadius: 12)
-                                            .stroke(isSel ? httGold : Color.clear, lineWidth: 2)
-                                    )
-                                }
+                                sheetPlanTabButton(plan: plan, index: idx)
                             }
                         }
                         .padding(.horizontal)
