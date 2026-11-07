@@ -1463,7 +1463,7 @@ struct ContentView: View {
                                             Text(plan.badge)
                                                 .font(.system(size: 12, weight: .black))
                                         }
-                                        Text("\(plan.formattedDuration) · ¥\(plan.priceYuan) · \(plan.transferCount)次换乘")
+                                        Text(plan.subtitleSummary)
                                             .font(.system(size: 10, weight: .bold, design: .monospaced))
                                             .opacity(0.9)
                                     }
@@ -3778,9 +3778,9 @@ struct InAppTransitPlanSheetView: View {
                                     VStack(alignment: .leading, spacing: 3) {
                                         Text(plan.badge)
                                             .font(.system(size: 12, weight: .black))
-                                        Text("\(plan.formattedDuration) · ¥\(plan.priceYuan)")
+                                        Text(plan.shortPriceSummary)
                                             .font(.system(size: 14, weight: .heavy, design: .rounded))
-                                        Text("\(plan.transferCount)次换乘 · \(plan.formattedWalk)")
+                                        Text(plan.transferAndWalkSummary)
                                             .font(.system(size: 10, weight: .bold))
                                             .opacity(0.85)
                                     }

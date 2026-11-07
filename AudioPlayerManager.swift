@@ -240,6 +240,18 @@ struct TransitPlanOption: Identifiable {
         }
         return "步行 \(walkMeters)米"
     }
+    
+    var subtitleSummary: String {
+        return "\(formattedDuration) · ¥\(priceYuan) · \(transferCount)次换乘"
+    }
+    
+    var shortPriceSummary: String {
+        return "\(formattedDuration) · ¥\(priceYuan)"
+    }
+    
+    var transferAndWalkSummary: String {
+        return "\(transferCount)次换乘 · \(formattedWalk)"
+    }
 }
 
 struct TransitStepItem: Identifiable {
