@@ -2499,12 +2499,12 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             pins.append(destPin)
         }
         
-        var totalMeters: Double = 0
+        var totalMeters: Int = 0
         for i in 0..<(coords.count - 1) {
             totalMeters += metersBetween(coords[i], coords[i+1])
         }
         
-        self.remainingRouteDistanceKm = max(1.0, totalMeters / 1000.0)
+        self.remainingRouteDistanceKm = max(1.0, Double(totalMeters) / 1000.0)
         self.remainingRouteMinutes = plan.totalMinutes
         
         if let first = plan.steps.first {
@@ -3507,7 +3507,6 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         }
         
         // 2. Scan route steps for Toll Stations, Service Areas, and Camera checkpoints
-        var foundTollDist: Int = 0
         var foundServiceDist: Int = 0
         var foundServiceName: String = ""
         
