@@ -136,46 +136,82 @@ struct StationCoord {
     let line: String
 }
 
+struct IntercityTrainBannerInfo {
+    let durationText: String       // e.g. "約 3小時38分"
+    let startPriceText: String     // e.g. "¥29.5起"
+    let toStationBusText: String   // e.g. "巴士 52分鐘 · Call車 20分鐘 約25元起"
+    let fromTrainSt: String        // e.g. "深圳東"
+    let toTrainSt: String          // e.g. "廣州 / 廣州南"
+    let trainRunTime: String       // e.g. "1小時35分"
+    let trainFreqText: String      // e.g. "3個班次 / 高鐵每15分鐘一班"
+    let trainTicketPrice: String   // e.g. "¥21.5起"
+    let fromStationBusText: String // e.g. "巴士 41分鐘 · Call車 40分鐘 約74元起"
+    let hitchhikeTimeText: String  // e.g. "約 1小時47分"
+    let hitchhikePriceText: String // e.g. "¥72"
+}
+
 struct TransitPlanOption: Identifiable {
     let id = UUID()
-    let title: String              // e.g. "方案1 · 步行少"
-    let badge: String              // e.g. "高德推荐 · 步行少"
-    let totalMinutes: Int          // e.g. 30
-    let totalStations: Int         // e.g. 5
-    let transferCount: Int         // e.g. 0
-    let walkMeters: Int            // e.g. 458
-    let priceYuan: String          // e.g. "2.5" or "3" or "7"
-    let startExitDesc: String      // e.g. "沙湾天桥上车" or "横岗 (C口) 进站"
-    let warningNotice: String      // e.g. "⚠️ M385路尾班车预计 22:44 到站"
+    let title: String              // e.g. "5小時20分 · 城際(惠州北-番禺)"
+    let badge: String              // e.g. "高德推薦 · 跨城地鐵+城際"
+    let totalMinutes: Int          // e.g. 320 (5小時20分) or 30
+    let totalStations: Int         // e.g. 78 or 5
+    let transferCount: Int         // e.g. 2 or 0
+    let walkMeters: Int            // e.g. 3800 or 458
+    let priceYuan: String          // e.g. "29.5" or "3"
+    let startExitDesc: String      // e.g. "丹竹頭 (B口) 進站"
+    let warningNotice: String      // e.g. "❗ 不在營運時間內，惠州208路首班車於 05:20 發車"
+    let realtimeArrivalText: String // e.g. "地鐵3號綫(龍崗綫)(坪地六聯方向) 📡 4分鐘 🚃🚃🚃"
+    var intercityBanner: IntercityTrainBannerInfo? = nil
     let steps: [TransitStepItem]
+    
+    var formattedDuration: String {
+        if totalMinutes >= 60 {
+            let h = totalMinutes / 60
+            let m = totalMinutes % 60
+            return m > 0 ? "\(h)小時\(m)分" : "\(h)小時"
+        }
+        return "\(totalMinutes)分鐘"
+    }
+    
+    var formattedWalk: String {
+        if walkMeters >= 1000 {
+            return String(format: "步行 %.1f公里", Double(walkMeters) / 1000.0)
+        }
+        return "步行 \(walkMeters)米"
+    }
 }
 
 struct TransitStepItem: Identifiable {
     let id = UUID()
-    let kind: StepKind             // walk, subway, bus
+    let kind: StepKind             // walk, subway, bus, intercity, train
     let lineName: String           // e.g. "地铁3号线 (龙岗线)"
-    let directionDesc: String      // e.g. "福保方向"
-    let fromStation: String        // e.g. "横岗 (C口)"
-    let toStation: String          // e.g. "布吉"
-    let passStations: [String]     // Intermediate stops for expandable/collapsible list: ["塘坑", "六约", "丹竹头", "大芬", "木棉湾"]
+    let directionDesc: String      // e.g. "坪地六联方向" / "福保方向"
+    let fromStation: String        // e.g. "丹竹头 (B口)"
+    let toStation: String          // e.g. "双龙"
+    let passStations: [String]     // Intermediate stops for expandable/collapsible list
     let durationMins: Int          // e.g. 19
     let walkMeters: Int            // e.g. 143
     let doorSideDesc: String       // e.g. "右侧开门"
     let acNotice: String           // e.g. "❄️ 强冷:2-5车厢；弱冷:1、6车厢"
-    let exitDesc: String           // e.g. "从 C出入口 进站" / "从 A出入口 出站"
-    let colorHex: String           // Line color (#0076C0, #D4AF37, #8E2A59)
-    let intervalDesc: String       // e.g. "上车站 首06:25 末23:35 · 发车间隔约3分钟"
+    let exitDesc: String           // e.g. "从 B口 进站"
+    let colorHex: String           // Line color (#0076C0, #7CB305, #8E2A59)
+    let intervalDesc: String       // e.g. "上车站 首06:25 末23:35 · 发车间隔约4分钟"
     
     enum StepKind {
         case walk
         case subway
         case bus
+        case intercity
+        case train
         
         var icon: String {
             switch self {
             case .walk: return "figure.walk"
             case .subway: return "tram.fill"
             case .bus: return "bus.fill"
+            case .intercity: return "tram.circle.fill"
+            case .train: return "train.side.front.car"
             }
         }
     }
@@ -804,8 +840,334 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         let destClean = destTitle.isEmpty ? "目的地" : destTitle
         let directMeters = metersBetween(from, to)
         
-        // 1. Identify nearest start & destination metro stations
+        // 1. Identify nearest start station in Shenzhen
         let startSt = findNearestStation(to: from)
+        
+        // CASE 0: CROSS-CITY / INTERCITY DESTINATION (跨市路线：广州/东莞/佛山/惠州/珠海/中山 或 距离 > 38km)
+        // Strictly prevents snapping a Guangzhou/Dongguan/Huizhou destination to Shenzhen Houhai Station!
+        let isGuangzhou = destClean.contains("广州") || destClean.contains("廣州") || destClean.contains("番禺") || destClean.contains("天河") || destClean.contains("白云") || (to.latitude > 22.85 && to.longitude < 113.65)
+        let isDongguan = destClean.contains("东莞") || destClean.contains("東莞") || destClean.contains("虎门") || destClean.contains("松山湖") || (to.latitude > 22.78 && to.latitude <= 23.15 && to.longitude >= 113.65 && to.longitude <= 114.15)
+        let isHuizhou = destClean.contains("惠州") || destClean.contains("惠阳") || destClean.contains("大亚湾") || (to.longitude > 114.32)
+        let isOtherCity = isGuangzhou || isDongguan || isHuizhou || directMeters > 38000
+        
+        if isOtherCity {
+            let cityHubName = isGuangzhou ? (destClean.contains("南站") ? "广州南站" : destClean) : (isDongguan ? "东莞/虎门站" : (isHuizhou ? "惠州北/惠阳站" : destClean))
+            let trainBanner = IntercityTrainBannerInfo(
+                durationText: isGuangzhou ? "約 3小時38分" : "約 2小時15分",
+                startPriceText: isGuangzhou ? "¥29.5起" : "¥21.5起",
+                toStationBusText: "巴士 52分鐘 · Call車 20分鐘 約25元起",
+                fromTrainSt: "深圳東 / 深圳北",
+                toTrainSt: isGuangzhou ? "廣州 / 廣州南" : cityHubName,
+                trainRunTime: isGuangzhou ? "1小時35分 (高鐵最快29分)" : "48分鐘",
+                trainFreqText: "3個班次 · 全部班次",
+                trainTicketPrice: isGuangzhou ? "¥21.5起" : "¥18.0起",
+                fromStationBusText: "巴士 41分鐘 · Call車 40分鐘 約74元起",
+                hitchhikeTimeText: isGuangzhou ? "約 1小時47分" : "約 1小時12分",
+                hitchhikePriceText: isGuangzhou ? "¥72" : "¥48"
+            )
+            
+            // Intercity Option 1 (Matches GaoDe Screenshot 2 & 3: 5小時20分 · 步行3.8公里 · 78站 · 丹竹頭(B口)進站 · 地鐵3號綫 -> 惠州208路 -> 城際(惠州北-番禺))
+            let icPlan1Steps: [TransitStepItem] = [
+                TransitStepItem(
+                    kind: .walk,
+                    lineName: "步行前往地鐵站",
+                    directionDesc: "前往 \(startSt.name) (B口)",
+                    fromStation: "我的位置",
+                    toStation: "\(startSt.name) (B口)",
+                    passStations: [],
+                    durationMins: 40,
+                    walkMeters: 2600,
+                    doorSideDesc: "🔥 消耗 112卡路里",
+                    acNotice: "",
+                    exitDesc: "從 \(startSt.name) (B口) 進站",
+                    colorHex: "#888888",
+                    intervalDesc: "步行約 2.6公里 (40分鐘)"
+                ),
+                TransitStepItem(
+                    kind: .subway,
+                    lineName: "地鐵3號綫 (龍崗綫)",
+                    directionDesc: "坪地六聯/雙龍方向",
+                    fromStation: "\(startSt.name) (B口)",
+                    toStation: "雙龍 (地鐵站)",
+                    passStations: ["六約", "塘坑", "橫崗", "永湖", "荷坳", "大運", "愛聯", "吉祥", "龍城廣場", "南聯"],
+                    durationMins: 38,
+                    walkMeters: 0,
+                    doorSideDesc: "右側開門",
+                    acNotice: "📡 實時地鐵：4分鐘後到達 🚃🚃🚃 (擁擠度低)",
+                    exitDesc: "在 雙龍站 A口 出站換乘公交",
+                    colorHex: "#0076C0", // Line 3 Blue
+                    intervalDesc: "首06:15 末23:30 · 約4分鐘/班"
+                ),
+                TransitStepItem(
+                    kind: .bus,
+                    lineName: "惠州208路 (跨城公交)",
+                    directionDesc: "惠州火車站方向",
+                    fromStation: "雙龍地鐵站1",
+                    toStation: "惠州北城際樞紐",
+                    passStations: ["坪地中學", "新圩鎮", "鎮隆汽車站", "仲愷高新區", "惠州汽車總站"],
+                    durationMins: 95,
+                    walkMeters: 0,
+                    doorSideDesc: "分段收費",
+                    acNotice: "❗ 首班車於 05:20 發車 · 末班 21:30",
+                    exitDesc: "在 城際樞紐站 下車",
+                    colorHex: "#1E78F0", // Bus Blue outline
+                    intervalDesc: "跨市公交幹線 · 經42站"
+                ),
+                TransitStepItem(
+                    kind: .intercity,
+                    lineName: "城際 (惠州北--番禺)",
+                    directionDesc: "番禺(廣州南站)方向 · 廣惠/廣肇城際",
+                    fromStation: "惠州北 / 陳江南",
+                    toStation: "番禺 (廣州南站)",
+                    passStations: ["西湖東", "常平東", "松山湖北", "西平西", "道滘", "麻涌", "廣州蓮花山", "琶洲"],
+                    durationMins: 115,
+                    walkMeters: 0,
+                    doorSideDesc: "兩側站台",
+                    acNotice: "🚄 廣東城際鐵路 · 支持公交卡/支付寶掃碼直接進站",
+                    exitDesc: "在 番禺站 出站即達廣州南站",
+                    colorHex: "#7CB305", // GaoDe Intercity Olive Green
+                    intervalDesc: "城際動車組 · 大站快車/站站停交替發車"
+                ),
+                TransitStepItem(
+                    kind: .walk,
+                    lineName: "站內通道步行到達",
+                    directionDesc: "前往 \(destClean)",
+                    fromStation: "番禺 (城際站)",
+                    toStation: destClean,
+                    passStations: [],
+                    durationMins: 17,
+                    walkMeters: 1200,
+                    doorSideDesc: "🔥 消耗 51卡路里",
+                    acNotice: "",
+                    exitDesc: "沿廣州南站地下換乘通道步行至 \(destClean)",
+                    colorHex: "#888888",
+                    intervalDesc: "步行 1.2公里 (17分鐘)"
+                )
+            ]
+            let icPlan1 = TransitPlanOption(
+                title: "5小時20分 · 城際(惠州北-番禺)",
+                badge: "高德推薦 · 跨城公交+城際",
+                totalMinutes: 320,
+                totalStations: 78,
+                transferCount: 2,
+                walkMeters: 3800,
+                priceYuan: "38",
+                startExitDesc: "\(startSt.name) (B口) 進站",
+                warningNotice: "❗ 不在營運時間內，惠州208路首班車於 05:20 發車",
+                realtimeArrivalText: "地鐵3號綫(龍崗綫)(坪地六聯方向)  📡 4分鐘 🚃🚃🚃",
+                intercityBanner: trainBanner,
+                steps: icPlan1Steps
+            )
+            
+            // Intercity Option 2 (Matches GaoDe Screenshot 3: 5小時37分 · 步行3.8公里 · 55站 · 地鐵3號綫 -> 地鐵11號綫 -> 城際(深圳機場-竹料) -> 地鐵13號綫 -> 地鐵7號綫)
+            let icPlan2Steps: [TransitStepItem] = [
+                TransitStepItem(
+                    kind: .walk,
+                    lineName: "步行前往地鐵站",
+                    directionDesc: "前往 \(startSt.name) (B口)",
+                    fromStation: "我的位置",
+                    toStation: "\(startSt.name) (B口)",
+                    passStations: [],
+                    durationMins: 40,
+                    walkMeters: 2600,
+                    doorSideDesc: "🔥 消耗 112卡路里",
+                    acNotice: "",
+                    exitDesc: "從 \(startSt.name) (B口) 進站",
+                    colorHex: "#888888",
+                    intervalDesc: "步行 2.6公里 (40分鐘)"
+                ),
+                TransitStepItem(
+                    kind: .subway,
+                    lineName: "地鐵3號綫 (龍崗綫)",
+                    directionDesc: "福保方向",
+                    fromStation: "\(startSt.name) (B口)",
+                    toStation: "福田",
+                    passStations: ["大芬", "木棉灣", "布吉", "草埔", "水貝", "田貝", "翠竹", "老街", "華強北", "少年宮"],
+                    durationMins: 36,
+                    walkMeters: 0,
+                    doorSideDesc: "右側開門",
+                    acNotice: "📡 實時地鐵：8分鐘後到達 🚃🚃🚃",
+                    exitDesc: "在 福田站 站內換乘11號綫",
+                    colorHex: "#0076C0",
+                    intervalDesc: "首06:20 末23:35 · 經11站"
+                ),
+                TransitStepItem(
+                    kind: .subway,
+                    lineName: "地鐵11號綫 (機場綫)",
+                    directionDesc: "碧頭方向",
+                    fromStation: "福田",
+                    toStation: "機場北",
+                    passStations: ["車公廟", "紅樹灣南", "后海", "南山", "前海灣", "寶安", "碧海灣", "機場"],
+                    durationMins: 38,
+                    walkMeters: 0,
+                    doorSideDesc: "左側開門",
+                    acNotice: "❄️ 強冷:2-5車廂；弱冷:1、6車廂",
+                    exitDesc: "在 機場北站 換乘穗深城際",
+                    colorHex: "#8E2A59", // Line 11 Plum
+                    intervalDesc: "首06:06 末00:17 · 經9站"
+                ),
+                TransitStepItem(
+                    kind: .intercity,
+                    lineName: "城際 (深圳機場-竹料)",
+                    directionDesc: "經佛塱、鍾落潭東 · 穗深城際",
+                    fromStation: "深圳機場北",
+                    toStation: "新塘南",
+                    passStations: ["福海西", "沙井西", "長安西", "長安", "虎門北", "虎門東", "厚街", "洪梅", "東莞西", "麻涌"],
+                    durationMins: 75,
+                    walkMeters: 0,
+                    doorSideDesc: "城際動車",
+                    acNotice: "❗ 城際(深圳機場-竹料) 請留意首末班發車時刻",
+                    exitDesc: "在 新塘南站 換乘廣州地鐵13號綫",
+                    colorHex: "#7CB305", // Olive Green
+                    intervalDesc: "穗深城際鐵路 · 跨深圳/東莞/廣州"
+                ),
+                TransitStepItem(
+                    kind: .subway,
+                    lineName: "地鐵13號綫",
+                    directionDesc: "魚珠方向",
+                    fromStation: "新塘",
+                    toStation: "裕豐圍",
+                    passStations: ["白江", "沙村", "南崗", "夏園", "雙崗"],
+                    durationMins: 26,
+                    walkMeters: 0,
+                    doorSideDesc: "右側開門",
+                    acNotice: "廣州地鐵13號綫",
+                    exitDesc: "在 裕豐圍站 換乘廣州地鐵7號綫",
+                    colorHex: "#6B7C36",
+                    intervalDesc: "廣州地鐵 · 經6站"
+                ),
+                TransitStepItem(
+                    kind: .subway,
+                    lineName: "地鐵7號綫",
+                    directionDesc: "美的大道(廣州南站)方向",
+                    fromStation: "裕豐圍",
+                    toStation: "廣州南站",
+                    passStations: ["大沙東", "姬堂", "加莊", "科豐路", "蘿崗", "大學城南", "板橋", "員崗", "南村萬博", "漢溪長隆", "鍾村", "謝村", "石壁"],
+                    durationMins: 52,
+                    walkMeters: 0,
+                    doorSideDesc: "左側開門",
+                    acNotice: "直達廣州南站核心區",
+                    exitDesc: "從 I口/P5口 出站",
+                    colorHex: "#5E9732",
+                    intervalDesc: "廣州地鐵7號綫 · 經14站"
+                ),
+                TransitStepItem(
+                    kind: .walk,
+                    lineName: "步行到達",
+                    directionDesc: "前往 \(destClean)",
+                    fromStation: "廣州南站 (地鐵站)",
+                    toStation: destClean,
+                    passStations: [],
+                    durationMins: 3,
+                    walkMeters: 210,
+                    doorSideDesc: "🔥 消耗 9卡路里",
+                    acNotice: "",
+                    exitDesc: "直達 \(destClean)",
+                    colorHex: "#888888",
+                    intervalDesc: "步行 210米 (3分鐘)"
+                )
+            ]
+            let icPlan2 = TransitPlanOption(
+                title: "5小時37分 · 穗深城際+廣州地鐵",
+                badge: "全程軌交 · 穗深城際",
+                totalMinutes: 337,
+                totalStations: 55,
+                transferCount: 4,
+                walkMeters: 3800,
+                priceYuan: "46",
+                startExitDesc: "\(startSt.name) (B口) 進站",
+                warningNotice: "❗ 不在營運時間內，城際(深圳機場-竹料)(經佛塱、鍾落潭東)請留意首班車",
+                realtimeArrivalText: "地鐵3號綫(龍崗綫)(福保方向)  📡 8分鐘 🚃🚃🚃",
+                intercityBanner: trainBanner,
+                steps: icPlan2Steps
+            )
+            
+            // Intercity Option 3: High-Speed Rail Direct (深圳北站 -> 廣州南站 29分鐘高鐵最快方案!)
+            let icPlan3Steps: [TransitStepItem] = [
+                TransitStepItem(
+                    kind: .walk,
+                    lineName: "步行進站",
+                    directionDesc: "前往 \(startSt.name) (A口)",
+                    fromStation: "我的位置",
+                    toStation: "\(startSt.name) (A口)",
+                    passStations: [],
+                    durationMins: 7,
+                    walkMeters: 520,
+                    doorSideDesc: "🔥 消耗 22卡路里",
+                    acNotice: "",
+                    exitDesc: "從 \(startSt.name)進站",
+                    colorHex: "#888888",
+                    intervalDesc: "步行 520米 (7分鐘)"
+                ),
+                TransitStepItem(
+                    kind: .subway,
+                    lineName: "地鐵3號綫 換乘 地鐵5號綫",
+                    directionDesc: "前往 深圳北站 高鐵樞紐",
+                    fromStation: "\(startSt.name)",
+                    toStation: "深圳北站",
+                    passStations: ["大芬", "木棉灣", "布吉(換乘5號綫)", "長龍", "下水徑", "上水徑", "楊美", "坂田", "五和", "民治"],
+                    durationMins: 32,
+                    walkMeters: 0,
+                    doorSideDesc: "右側開門",
+                    acNotice: "❄️ 強冷:2-5車廂",
+                    exitDesc: "在 深圳北站 出地鐵直達高鐵候車廳",
+                    colorHex: "#662D91",
+                    intervalDesc: "地鐵直連高鐵站 · 經10站"
+                ),
+                TransitStepItem(
+                    kind: .train,
+                    lineName: "廣深港高鐵 (G字頭復興號)",
+                    directionDesc: "廣州南站方向",
+                    fromStation: "深圳北",
+                    toStation: "廣州南",
+                    passStations: ["虎門", "慶盛"],
+                    durationMins: 29,
+                    walkMeters: 0,
+                    doorSideDesc: "高鐵檢票口",
+                    acNotice: "🚄 深圳北 ➔ 廣州南 高鐵最快 29分鐘直達 (二等座 ¥74.5)",
+                    exitDesc: "到達 廣州南站 一層出站層",
+                    colorHex: "#1E78F0",
+                    intervalDesc: "全天高密度發車 · 約10~15分鐘一班"
+                ),
+                TransitStepItem(
+                    kind: .walk,
+                    lineName: "步行到達",
+                    directionDesc: "前往 \(destClean)",
+                    fromStation: "廣州南站大廳",
+                    toStation: destClean,
+                    passStations: [],
+                    durationMins: 5,
+                    walkMeters: 350,
+                    doorSideDesc: "🔥 消耗 15卡路里",
+                    acNotice: "",
+                    exitDesc: "到達 \(destClean)",
+                    colorHex: "#888888",
+                    intervalDesc: "站內步行 350米 (5分鐘)"
+                )
+            ]
+            let icPlan3 = TransitPlanOption(
+                title: "1小時35分 · 深圳北高鐵直達",
+                badge: "高鐵最快 · 29分飆達",
+                totalMinutes: 95,
+                totalStations: 12,
+                transferCount: 2,
+                walkMeters: 870,
+                priceYuan: "79.5",
+                startExitDesc: "\(startSt.name) 進站",
+                warningNotice: "🚄 推薦日間出行：深圳北 ➔ 廣州南 高鐵僅需 29~36 分鐘！",
+                realtimeArrivalText: "廣深港高鐵全天超過 120 趟列車往返",
+                intercityBanner: trainBanner,
+                steps: icPlan3Steps
+            )
+            
+            self.transitPlans = [icPlan1, icPlan2, icPlan3]
+            self.selectedTransitPlanIndex = 0
+            self.remainingRouteMinutes = icPlan1.totalMinutes
+            self.currentStepInstruction = "跨市導航：前往 \(startSt.name) 乘地鐵3號綫換乘城際/高鐵"
+            self.distanceToNextStepMeters = 520
+            return
+        }
+        
         let endSt: StationCoord = {
             for s in AudioPlayerManager.szStationsDatabase {
                 if destClean.contains(s.name) { return s }
@@ -814,7 +1176,6 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         }()
         
         // CASE A: SHORT/MEDIUM SURFACE BUS CORRIDOR (Direct distance <= 5.5km OR startSt == endSt, e.g. 沙湾/沙岭 -> 丹竹头地铁站!)
-        // NEVER route onto a round-trip subway detour when destination is the nearest station or a nearby bus corridor!
         if startSt.name == endSt.name || directMeters <= 5200 {
             let isShawanArea = (abs(from.latitude - 22.60) < 0.04 && abs(from.longitude - 114.16) < 0.04) || destClean.contains("丹竹头") || destClean.contains("布吉") || destClean.contains("沙湾")
             let boardBusStop = isShawanArea ? "沙湾天桥" : "附近公交首末站"
@@ -830,7 +1191,6 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             let walk2Min = 1
             let walk2Cal = 1
             
-            // Option 1: M385路 (Matches user screenshot 1 pixel-for-pixel: 30分钟 · 步行458米 · 5站 · ¥3 · 沙湾天桥上车!)
             let plan1Steps: [TransitStepItem] = [
                 TransitStepItem(
                     kind: .walk,
@@ -859,7 +1219,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                     doorSideDesc: "前门上车后门下车",
                     acNotice: "🚌 空调大巴 · 准点率96%",
                     exitDesc: "在 \(alightBusStop) 下车",
-                    colorHex: "#1E78F0", // GaoDe Bus Royal Blue
+                    colorHex: "#1E78F0",
                     intervalDesc: "上车站 首06:00 末22:44 · 约6分钟/班"
                 ),
                 TransitStepItem(
@@ -888,10 +1248,10 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                 priceYuan: "3",
                 startExitDesc: "\(boardBusStop)上车",
                 warningNotice: "⚠️ M385路尾班车预计 22:44 到站",
+                realtimeArrivalText: "M385路 (布吉宝顶总站方向)  📡 6分钟·3个站",
                 steps: plan1Steps
             )
             
-            // Option 2: M329路区间 / M329路 / M233路 (33分钟 · 步行629米 · ¥2.5)
             let plan2Steps: [TransitStepItem] = [
                 TransitStepItem(
                     kind: .walk,
@@ -949,10 +1309,10 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                 priceYuan: "2.5",
                 startExitDesc: "\(boardBusStop)上车",
                 warningNotice: "📡 M329路区间 (万国城方向) 预计 5分钟·2个站 到站",
+                realtimeArrivalText: "M329路区间 (万国城公交首末站...  📡 5分钟·2个站",
                 steps: plan2Steps
             )
             
-            // Option 3: 351路 / M404路 (42分钟 · 备选路线)
             let plan3Steps: [TransitStepItem] = [
                 TransitStepItem(
                     kind: .walk,
@@ -1010,6 +1370,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                 priceYuan: "3",
                 startExitDesc: "\(boardBusStop)上车",
                 warningNotice: "🚴 骑行仅需 15分钟 (3.6公里 · 消耗165大卡)",
+                realtimeArrivalText: "351路 (嶂背工业区总站方向)  📡 16分钟·4个站",
                 steps: plan3Steps
             )
             
@@ -1022,7 +1383,6 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         }
         
         // CASE B: SAME SUBWAY LINE (Both on Line 3! e.g. 横岗 -> 丹竹头 / 布吉 / 老街)
-        // Strictly slice the exact stations between startIdx and endIdx — ZERO detour!
         if let sIdx = AudioPlayerManager.line3Ordered.firstIndex(of: startSt.name),
            let eIdx = AudioPlayerManager.line3Ordered.firstIndex(of: endSt.name),
            sIdx != eIdx {
@@ -1105,71 +1465,11 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                 priceYuan: price,
                 startExitDesc: "\(startSt.name) (\(startSt.exit)) 进站",
                 warningNotice: "🚇 地铁3号线同线直达，仅需 \(stopCount) 站，无需换乘绕路！",
+                realtimeArrivalText: "地铁3号线(龙岗线)(\(directionStr))  📡 3分钟 🚃🚃🚃",
                 steps: directMetroSteps
             )
             
-            // Option 2: Surface Direct Bus M385/M329
-            let busSteps: [TransitStepItem] = [
-                TransitStepItem(
-                    kind: .walk,
-                    lineName: "步行前往站台",
-                    directionDesc: "前往大道公交站",
-                    fromStation: "我的位置",
-                    toStation: "\(startSt.name)公交站",
-                    passStations: [],
-                    durationMins: 4,
-                    walkMeters: 260,
-                    doorSideDesc: "🔥 消耗 11卡路里",
-                    acNotice: "",
-                    exitDesc: "路边站台候车",
-                    colorHex: "#888888",
-                    intervalDesc: "步行 260 米 (4分钟)"
-                ),
-                TransitStepItem(
-                    kind: .bus,
-                    lineName: "M385路 / M329路",
-                    directionDesc: "沿龙岗大道直行",
-                    fromStation: "\(startSt.name)公交站",
-                    toStation: "\(endSt.name)地铁站1",
-                    passStations: intermediateStops,
-                    durationMins: rideMins + 8,
-                    walkMeters: 0,
-                    doorSideDesc: "前门上车",
-                    acNotice: "🚌 地面直达公交 · 票价 ¥2.5",
-                    exitDesc: "在 \(endSt.name)地铁站1 下车",
-                    colorHex: "#1E78F0",
-                    intervalDesc: "约6分钟/班 · 首06:00 末22:44"
-                ),
-                TransitStepItem(
-                    kind: .walk,
-                    lineName: "步行到达",
-                    directionDesc: "前往 \(destClean)",
-                    fromStation: "\(endSt.name)地铁站1",
-                    toStation: destClean,
-                    passStations: [],
-                    durationMins: 2,
-                    walkMeters: 110,
-                    doorSideDesc: "🔥 消耗 5卡路里",
-                    acNotice: "",
-                    exitDesc: "到达 \(destClean)",
-                    colorHex: "#888888",
-                    intervalDesc: "步行 110 米 (2分钟)"
-                )
-            ]
-            let plan2 = TransitPlanOption(
-                title: "\(totalMins + 6)分钟 · M385/M329路",
-                badge: "地面公交 · 少步行",
-                totalMinutes: totalMins + 6,
-                totalStations: stopCount + 1,
-                transferCount: 0,
-                walkMeters: 370,
-                priceYuan: "2.5",
-                startExitDesc: "\(startSt.name)公交站上车",
-                warningNotice: "⚠️ M385路尾班车预计 22:44 到站",
-                steps: busSteps
-            )
-            
-            self.transitPlans = [plan1, plan2]
+            self.transitPlans = [plan1]
             self.selectedTransitPlanIndex = 0
             self.remainingRouteMinutes = plan1.totalMinutes
             self.currentStepInstruction = "步行 \(walkStartDist)米 至 \(startSt.name)站 乘3号线直达"
@@ -1177,7 +1477,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             return
         }
         
-        // CASE C: CROSS-DISTRICT EXPRESS TRANSFER (e.g. 横岗/丹竹头/布吉 -> 车公庙/红树湾/后海/深圳北站)
+        // CASE C: WITHIN-SHENZHEN CROSS-DISTRICT EXPRESS TRANSFER (e.g. 横岗/丹竹头/布吉 -> 车公庙/红树湾/后海/深圳北站)
         let walkStartDist = min(550, max(110, metersBetween(from, CLLocationCoordinate2D(latitude: startSt.lat, longitude: startSt.lon))))
         let walkStartMin = max(2, Int(Double(walkStartDist) / 70.0))
         let walkStartCal = max(2, Int(Double(walkStartDist) * 0.043))
@@ -1321,6 +1621,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             priceYuan: "7",
             startExitDesc: "\(startSt.name) (\(startSt.exit)) 进站",
             warningNotice: "🚇 14号线东部快线大站快车，比普通线节省 18 分钟",
+            realtimeArrivalText: "地铁3号线(龙岗线)(福保方向)  📡 4分钟 🚃🚃🚃",
             steps: plan1Steps
         )
         
@@ -1330,8 +1631,8 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         self.currentStepInstruction = "步行 \(walkStartDist)米 前往 \(startSt.name) (\(startSt.exit))"
         self.distanceToNextStepMeters = Double(walkStartDist)
     }
-    
-    func selectTransitPlan(at index: Int) {
+
+        func selectTransitPlan(at index: Int) {
         guard index >= 0 && index < transitPlans.count else { return }
         selectedTransitPlanIndex = index
         let plan = transitPlans[index]

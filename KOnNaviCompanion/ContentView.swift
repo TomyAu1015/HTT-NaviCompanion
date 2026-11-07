@@ -1141,7 +1141,7 @@ struct ContentView: View {
                                             Text(plan.badge)
                                                 .font(.system(size: 12, weight: .black))
                                         }
-                                        Text("\(plan.totalMinutes)分钟 · ¥\(plan.priceYuan) · \(plan.transferCount)次换乘")
+                                        Text("\(plan.formattedDuration) · ¥\(plan.priceYuan) · \(plan.transferCount)次换乘")
                                             .font(.system(size: 10, weight: .bold, design: .monospaced))
                                             .opacity(0.9)
                                     }
@@ -3161,7 +3161,7 @@ struct RM500AlbumAndOutfitSheetView: View {
 }
 
 
-// MARK: - Native Built-In GaoDe-Style Transit & Subway Plan Modal Sheet (高德同款内置换乘时间轴与开合车站列表)
+// MARK: - Native Built-In GaoDe-Style Transit, Intercity Rail & High-Speed Train Modal Sheet (高德同款跨城火车/城际/地铁公交全能面板)
 struct InAppTransitPlanSheetView: View {
     @ObservedObject var manager: AudioPlayerManager
     @Environment(\.dismiss) private var dismiss
@@ -3190,9 +3190,9 @@ struct InAppTransitPlanSheetView: View {
                                     VStack(alignment: .leading, spacing: 3) {
                                         Text(plan.badge)
                                             .font(.system(size: 12, weight: .black))
-                                        Text("\(plan.totalMinutes)分钟 · ¥\(plan.priceYuan)")
+                                        Text("\(plan.formattedDuration) · ¥\(plan.priceYuan)")
                                             .font(.system(size: 14, weight: .heavy, design: .rounded))
-                                        Text("\(plan.transferCount)次换乘 · 步行\(plan.walkMeters)米")
+                                        Text("\(plan.transferCount)次换乘 · \(plan.formattedWalk)")
                                             .font(.system(size: 10, weight: .bold))
                                             .opacity(0.85)
                                     }
@@ -3215,19 +3215,135 @@ struct InAppTransitPlanSheetView: View {
                     
                     Divider().background(Color.white.opacity(0.15))
                     
-                    // 2. Active Plan Detailed Station & Transfer Timeline (高德同款)
+                    // 2. Active Plan Detailed Station & Transfer Timeline (高德同款：支持跨城火车卡片、顺风车卡片、城际铁路与市内地铁公交)
                     if manager.selectedTransitPlanIndex < manager.transitPlans.count {
                         let activePlan = manager.transitPlans[manager.selectedTransitPlanIndex]
                         
                         ScrollView(.vertical, showsIndicators: true) {
-                            VStack(alignment: .leading, spacing: 0) {
-                                // GaoDe Summary strip (Matches Screenshot 1: 30分钟 步行458米 + 🚶8 [M385路] 🚶1 + 5站·¥3·沙湾天桥上车 + 尾班车提醒!)
+                            VStack(alignment: .leading, spacing: 10) {
+                                // IF CROSS-CITY: Show GaoDe Intercity Train Card (🚆 火車) & Hitchhike Card (順 順風車) matching Screenshot 2!
+                                if let ic = activePlan.intercityBanner {
+                                    VStack(spacing: 10) {
+                                        // Card A: 🚆 火車 (Train / High-Speed Rail Overview Card)
+                                        VStack(alignment: .leading, spacing: 10) {
+                                            HStack {
+                                                Image(systemName: "train.side.front.car")
+                                                    .font(.system(size: 14, weight: .bold))
+                                                    .foregroundColor(.white)
+                                                    .padding(5)
+                                                    .background(Color.blue)
+                                                    .cornerRadius(6)
+                                                Text("火車 / 高鐵跨城方案")
+                                                    .font(.system(size: 16, weight: .black))
+                                                    .foregroundColor(.white)
+                                                Spacer()
+                                                Text("\(ic.durationText)  \(ic.startPriceText)")
+                                                    .font(.system(size: 15, weight: .black))
+                                                    .foregroundColor(httGold)
+                                            }
+                                            
+                                            HStack(spacing: 6) {
+                                                Circle().stroke(Color.green, lineWidth: 2).frame(width: 8, height: 8)
+                                                Text("去火車站")
+                                                    .foregroundColor(.gray)
+                                                Text(ic.toStationBusText)
+                                                    .foregroundColor(Color(red: 0.4, green: 0.78, blue: 1.0))
+                                            }
+                                            .font(.system(size: 12, weight: .bold))
+                                            
+                                            // Train Ticket Box (深圳東 ➔ 廣州 ¥21.5起 [全部班次])
+                                            HStack {
+                                                Image(systemName: "tram.fill")
+                                                    .foregroundColor(.blue)
+                                                Text(ic.fromTrainSt)
+                                                    .font(.system(size: 15, weight: .black))
+                                                    .foregroundColor(.white)
+                                                Spacer()
+                                                VStack(spacing: 2) {
+                                                    Text(ic.trainRunTime)
+                                                        .font(.system(size: 10, weight: .bold))
+                                                        .foregroundColor(.gray)
+                                                    Rectangle().fill(Color.gray.opacity(0.5)).frame(width: 60, height: 1)
+                                                    Text(ic.trainFreqText)
+                                                        .font(.system(size: 10, weight: .bold))
+                                                        .foregroundColor(.gray)
+                                                }
+                                                Spacer()
+                                                Text(ic.toTrainSt)
+                                                    .font(.system(size: 15, weight: .black))
+                                                    .foregroundColor(.white)
+                                                Text(ic.trainTicketPrice)
+                                                    .font(.system(size: 15, weight: .black))
+                                                    .foregroundColor(.orange)
+                                            }
+                                            .padding(10)
+                                            .background(Color.white.opacity(0.08))
+                                            .cornerRadius(8)
+                                            
+                                            HStack(spacing: 6) {
+                                                Circle().stroke(Color.red, lineWidth: 2).frame(width: 8, height: 8)
+                                                Text("去終點")
+                                                    .foregroundColor(.gray)
+                                                Text(ic.fromStationBusText)
+                                                    .foregroundColor(Color(red: 0.4, green: 0.78, blue: 1.0))
+                                            }
+                                            .font(.system(size: 12, weight: .bold))
+                                        }
+                                        .padding(12)
+                                        .background(Color.black.opacity(0.55))
+                                        .cornerRadius(12)
+                                        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.blue.opacity(0.45), lineWidth: 1))
+                                        
+                                        // Card B: 順 順風車 (Cross-City Hitchhike Reference Card)
+                                        HStack {
+                                            Text("順")
+                                                .font(.system(size: 12, weight: .black))
+                                                .foregroundColor(.white)
+                                                .padding(5)
+                                                .background(Color.blue)
+                                                .cornerRadius(6)
+                                            Text("順風車跨城直達")
+                                                .font(.system(size: 15, weight: .black))
+                                                .foregroundColor(.white)
+                                            Text("一口價 \(ic.hitchhikePriceText)")
+                                                .font(.system(size: 11, weight: .black))
+                                                .padding(.horizontal, 7)
+                                                .padding(.vertical, 3)
+                                                .background(Color.green.opacity(0.25))
+                                                .foregroundColor(.green)
+                                                .cornerRadius(5)
+                                            Spacer()
+                                            Text("\(ic.hitchhikeTimeText)  \(ic.hitchhikePriceText)")
+                                                .font(.system(size: 14, weight: .black))
+                                                .foregroundColor(httGold)
+                                        }
+                                        .padding(12)
+                                        .background(Color.black.opacity(0.55))
+                                        .cornerRadius(12)
+                                        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.white.opacity(0.12), lineWidth: 1))
+                                    }
+                                    .padding(.horizontal)
+                                    .padding(.top, 8)
+                                }
+                                
+                                // GaoDe Summary strip (5小時20分 步行3.8公里 + 🚶40 [地鐵3號綫] [惠州208路] [城際(惠州北-番禺)] 🚶17 + 首班車提醒!)
                                 VStack(alignment: .leading, spacing: 9) {
+                                    if !activePlan.warningNotice.isEmpty {
+                                        Text(activePlan.warningNotice)
+                                            .font(.system(size: 11, weight: .bold))
+                                            .foregroundColor(Color(red: 1.0, green: 0.42, blue: 0.38))
+                                            .padding(.horizontal, 10)
+                                            .padding(.vertical, 6)
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                            .background(Color.red.opacity(0.16))
+                                            .cornerRadius(6)
+                                    }
+                                    
                                     HStack(alignment: .firstTextBaseline, spacing: 8) {
-                                        Text("\(activePlan.totalMinutes) 分钟")
+                                        Text(activePlan.formattedDuration)
                                             .font(.system(size: 24, weight: .black))
                                             .foregroundColor(.white)
-                                        Text("步行 \(activePlan.walkMeters)米")
+                                        Text(activePlan.formattedWalk)
                                             .font(.system(size: 14, weight: .bold))
                                             .foregroundColor(.gray)
                                         Spacer()
@@ -3236,40 +3352,10 @@ struct InAppTransitPlanSheetView: View {
                                             .foregroundColor(httGold)
                                     }
                                     
-                                    // GaoDe Step Overview Pill Bar (🚶8 -> [M385路] -> 🚶1)
-                                    ScrollView(.horizontal, showsIndicators: false) {
-                                        HStack(spacing: 6) {
-                                            ForEach(Array(activePlan.steps.enumerated()), id: \.element.id) { idx, st in
-                                                if st.kind == .walk {
-                                                    HStack(spacing: 2) {
-                                                        Image(systemName: "figure.walk")
-                                                            .font(.system(size: 10, weight: .bold))
-                                                        Text("\(st.durationMins)")
-                                                            .font(.system(size: 11, weight: .bold))
-                                                    }
-                                                    .padding(.horizontal, 6)
-                                                    .padding(.vertical, 3)
-                                                    .background(Color.white.opacity(0.12))
-                                                    .foregroundColor(httCream)
-                                                    .cornerRadius(5)
-                                                } else {
-                                                    Text(st.lineName)
-                                                        .font(.system(size: 11, weight: .black))
-                                                        .padding(.horizontal, 8)
-                                                        .padding(.vertical, 3)
-                                                        .background(stepColor(for: st).opacity(0.22))
-                                                        .foregroundColor(Color(red: 0.35, green: 0.75, blue: 1.0))
-                                                        .cornerRadius(5)
-                                                        .overlay(RoundedRectangle(cornerRadius: 5).stroke(stepColor(for: st), lineWidth: 1))
-                                                }
-                                            }
-                                        }
-                                    }
-                                    
                                     HStack(spacing: 6) {
-                                        Text("\(activePlan.totalStations) 站")
+                                        Text(activePlan.formattedWalk)
                                         Text("·")
-                                        Text("¥\(activePlan.priceYuan)")
+                                        Text("\(activePlan.totalStations) 站")
                                         Text("·")
                                         Text(activePlan.startExitDesc)
                                             .foregroundColor(Color(red: 0.45, green: 0.85, blue: 1.0))
@@ -3277,15 +3363,64 @@ struct InAppTransitPlanSheetView: View {
                                     .font(.system(size: 12, weight: .bold))
                                     .foregroundColor(httCream.opacity(0.85))
                                     
-                                    if !activePlan.warningNotice.isEmpty {
-                                        Text(activePlan.warningNotice)
-                                            .font(.system(size: 11, weight: .bold))
-                                            .foregroundColor(Color.orange)
-                                            .padding(.horizontal, 10)
-                                            .padding(.vertical, 5)
-                                            .frame(maxWidth: .infinity, alignment: .leading)
-                                            .background(Color.orange.opacity(0.14))
-                                            .cornerRadius(6)
+                                    // GaoDe Step Overview Pill Bar (🚶40 -> [地鐵3號綫] -> [惠州208路] -> [城際(惠州北--番禺)] -> 🚶17)
+                                    ScrollView(.horizontal, showsIndicators: false) {
+                                        HStack(spacing: 6) {
+                                            ForEach(Array(activePlan.steps.enumerated()), id: \.element.id) { idx, st in
+                                                if st.kind == .walk {
+                                                    HStack(spacing: 2) {
+                                                        Image(systemName: "figure.walk")
+                                                            .font(.system(size: 10, weight: .bold))
+                                                        Text("\(st.durationMins)分鐘")
+                                                            .font(.system(size: 11, weight: .bold))
+                                                    }
+                                                    .padding(.horizontal, 6)
+                                                    .padding(.vertical, 4)
+                                                    .background(Color.white.opacity(0.12))
+                                                    .foregroundColor(httCream)
+                                                    .cornerRadius(5)
+                                                } else if st.kind == .bus {
+                                                    Text(st.lineName)
+                                                        .font(.system(size: 11, weight: .black))
+                                                        .padding(.horizontal, 8)
+                                                        .padding(.vertical, 4)
+                                                        .background(Color.blue.opacity(0.12))
+                                                        .foregroundColor(Color(red: 0.35, green: 0.75, blue: 1.0))
+                                                        .cornerRadius(5)
+                                                        .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.blue, lineWidth: 1.2))
+                                                } else {
+                                                    HStack(spacing: 3) {
+                                                        if st.kind == .intercity || st.kind == .train {
+                                                            Image(systemName: "tram.fill")
+                                                                .font(.system(size: 10))
+                                                        }
+                                                        Text(st.lineName)
+                                                            .font(.system(size: 11, weight: .black))
+                                                    }
+                                                    .padding(.horizontal, 8)
+                                                    .padding(.vertical, 4)
+                                                    .background(stepColor(for: st))
+                                                    .foregroundColor(.white)
+                                                    .cornerRadius(5)
+                                                }
+                                            }
+                                        }
+                                    }
+                                    
+                                    if !activePlan.realtimeArrivalText.isEmpty {
+                                        HStack {
+                                            Text(activePlan.realtimeArrivalText)
+                                                .font(.system(size: 11, weight: .bold))
+                                                .foregroundColor(Color.green)
+                                            Spacer()
+                                            Image(systemName: "chevron.right")
+                                                .font(.caption2)
+                                                .foregroundColor(.gray)
+                                        }
+                                        .padding(.horizontal, 10)
+                                        .padding(.vertical, 6)
+                                        .background(Color.white.opacity(0.06))
+                                        .cornerRadius(6)
                                     }
                                 }
                                 .padding()
@@ -3329,7 +3464,7 @@ struct InAppTransitPlanSheetView: View {
                                                     }
                                                 }
                                                 
-                                                if step.kind == .subway || step.kind == .bus {
+                                                if step.kind != .walk {
                                                     // Line Name Badge & Direction
                                                     HStack(spacing: 6) {
                                                         Text(step.lineName)
@@ -3345,7 +3480,7 @@ struct InAppTransitPlanSheetView: View {
                                                             .foregroundColor(.gray)
                                                     }
                                                     
-                                                    // Air-conditioning & Carriage Notice
+                                                    // Air-conditioning / Realtime Notice
                                                     if !step.acNotice.isEmpty {
                                                         Text(step.acNotice)
                                                             .font(.system(size: 10, weight: .medium))
@@ -3468,7 +3603,7 @@ struct InAppTransitPlanSheetView: View {
                             ProgressView()
                                 .progressViewStyle(CircularProgressViewStyle(tint: httGold))
                                 .scaleEffect(1.4)
-                            Text("正在根据您当前位置匹配最近地铁/公交路线...")
+                            Text("正在根据您当前位置匹配最佳跨城/市内公共交通路线...")
                                 .font(.subheadline.bold())
                                 .foregroundColor(httCream)
                             Spacer()
@@ -3525,7 +3660,11 @@ struct InAppTransitPlanSheetView: View {
         case .subway:
             return Color(hex: step.colorHex) ?? Color.purple
         case .bus:
-            return Color(red: 0.95, green: 0.55, blue: 0.20)
+            return Color(hex: step.colorHex) ?? Color(red: 0.12, green: 0.47, blue: 0.94)
+        case .intercity:
+            return Color(hex: step.colorHex) ?? Color(red: 0.48, green: 0.70, blue: 0.02)
+        case .train:
+            return Color(hex: step.colorHex) ?? Color.blue
         }
     }
 }
