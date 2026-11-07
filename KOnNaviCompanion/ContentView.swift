@@ -1087,42 +1087,43 @@ struct ContentView: View {
                 .overlay(RoundedRectangle(cornerRadius: 9).stroke(manager.isCongested ? Color.orange : Color.green.opacity(0.6), lineWidth: 1))
             }
             
-            // 3. Highway Service Area (服务区) & Toll Station (收费站) Badges (Auto converts >=1000m to km, <1000m to m!)
-            if manager.travelMode == .driving && (manager.upcomingTollDistance > 0 || manager.upcomingServiceAreaDist > 0 || manager.activeRoute != nil || manager.isDemoSimulating) {
+            // 3. Highway Service Area (服务区) & Toll Station (收费站) Badges
+            // STRICT RULE: Only show when driving on highway AND upcoming distance > 0! NEVER show if no highway or no service area/toll!
+            if manager.travelMode == .driving && (manager.upcomingServiceAreaDist > 0 || manager.upcomingTollDistance > 0) {
                 HStack(spacing: 6) {
-                    // Service Area (服务区)
-                    HStack(spacing: 4) {
-                        Image(systemName: "cup.and.saucer.fill")
-                            .font(.system(size: 9, weight: .bold))
-                            .foregroundColor(.cyan)
-                        Text(manager.upcomingServiceAreaDist > 0
-                             ? "\(tr("服务区", "服務區", "SA")): \(manager.formatSmartDistance(manager.upcomingServiceAreaDist))"
-                             : tr("服务区: 沿途开放", "服務區: 沿途開放", "SA Open"))
-                            .font(.system(size: 9, weight: .bold))
-                            .foregroundColor(.white)
-                            .fixedSize(horizontal: true, vertical: false)
+                    // Service Area: Displays exact name (e.g. 沙湾服务区) and refreshes sequentially after passing!
+                    if manager.upcomingServiceAreaDist > 0 {
+                        HStack(spacing: 4) {
+                            Image(systemName: "cup.and.saucer.fill")
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundColor(.cyan)
+                            Text("\(manager.upcomingServiceAreaName.isEmpty ? tr("服务区", "服務區", "SA") : manager.upcomingServiceAreaName): \(manager.formatSmartDistance(manager.upcomingServiceAreaDist))")
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundColor(.white)
+                                .fixedSize(horizontal: true, vertical: false)
+                        }
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 4)
+                        .background(Color.blue.opacity(0.85))
+                        .cornerRadius(7)
                     }
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 4)
-                    .background(Color.blue.opacity(0.78))
-                    .cornerRadius(7)
                     
-                    // Toll Station (收费站: >=1000m displays km, <1000m displays m!)
-                    HStack(spacing: 4) {
-                        Image(systemName: "yensign.circle.fill")
-                            .font(.system(size: 10, weight: .bold))
-                            .foregroundColor(httGold)
-                        Text(manager.upcomingTollDistance > 0
-                             ? "\(tr("收费站", "收費站", "Toll")): \(manager.formatSmartDistance(manager.upcomingTollDistance))"
-                             : (manager.routePreference == .avoidHighway ? tr("免收费路段", "免收費路段", "No Toll") : tr("收费站/ETC", "收費站/ETC", "Toll/ETC")))
-                            .font(.system(size: 9, weight: .bold))
-                            .foregroundColor(.white)
-                            .fixedSize(horizontal: true, vertical: false)
+                    // Toll Station: Only displays if highway toll station is ahead!
+                    if manager.upcomingTollDistance > 0 {
+                        HStack(spacing: 4) {
+                            Image(systemName: "yensign.circle.fill")
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundColor(httGold)
+                            Text("\(manager.upcomingTollName.isEmpty ? tr("收费站", "收費站", "Toll") : manager.upcomingTollName): \(manager.formatSmartDistance(manager.upcomingTollDistance))")
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundColor(.white)
+                                .fixedSize(horizontal: true, vertical: false)
+                        }
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 4)
+                        .background(Color.orange.opacity(0.85))
+                        .cornerRadius(7)
                     }
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 4)
-                    .background(Color.orange.opacity(0.82))
-                    .cornerRadius(7)
                 }
             }
         }
@@ -2924,10 +2925,11 @@ struct RM500AlbumAndOutfitSheetView: View {
 }
 
 
-// MARK: - Native Built-In GaoDe-Style Transit & Subway Plan Modal Sheet (完全内置公交地铁换乘时间轴)
+// MARK: - Native Built-In GaoDe-Style Transit & Subway Plan Modal Sheet (高德同款内置换乘时间轴与开合车站列表)
 struct InAppTransitPlanSheetView: View {
     @ObservedObject var manager: AudioPlayerManager
     @Environment(\.dismiss) private var dismiss
+    @State private var expandedStepIds: Set<UUID> = []
     
     private let httGold = Color(red: 0.88, green: 0.68, blue: 0.24)
     private let httCrimson = Color(red: 0.78, green: 0.18, blue: 0.22)
@@ -2977,26 +2979,41 @@ struct InAppTransitPlanSheetView: View {
                     
                     Divider().background(Color.white.opacity(0.15))
                     
-                    // 2. Active Plan Detailed Station & Transfer Timeline
+                    // 2. Active Plan Detailed Station & Transfer Timeline (高德同款)
                     if manager.selectedTransitPlanIndex < manager.transitPlans.count {
                         let activePlan = manager.transitPlans[manager.selectedTransitPlanIndex]
                         
                         ScrollView(.vertical, showsIndicators: true) {
                             VStack(alignment: .leading, spacing: 0) {
-                                // Summary strip
-                                HStack(spacing: 12) {
-                                    Label("\(activePlan.totalMinutes) 分钟", systemImage: "clock.fill")
-                                    Label("¥\(activePlan.priceYuan)", systemImage: "yensign.circle.fill")
-                                    Label("步行 \(activePlan.walkMeters)m", systemImage: "figure.walk")
-                                    Label("\(activePlan.totalStations) 站", systemImage: "tram.fill")
+                                // GaoDe Summary strip
+                                VStack(alignment: .leading, spacing: 6) {
+                                    HStack(alignment: .firstTextBaseline) {
+                                        Text("\(activePlan.totalMinutes) 分钟")
+                                            .font(.system(size: 24, weight: .black))
+                                            .foregroundColor(.white)
+                                        Text("步行 \(activePlan.walkMeters)米")
+                                            .font(.system(size: 14, weight: .bold))
+                                            .foregroundColor(.gray)
+                                        Spacer()
+                                        Text("¥\(activePlan.priceYuan)")
+                                            .font(.system(size: 18, weight: .black))
+                                            .foregroundColor(httGold)
+                                    }
+                                    
+                                    HStack(spacing: 8) {
+                                        Text("\(activePlan.totalStations) 站")
+                                        Text("·")
+                                        Text(activePlan.startExitDesc)
+                                            .foregroundColor(Color(red: 0.45, green: 0.85, blue: 1.0))
+                                    }
+                                    .font(.system(size: 12, weight: .bold))
+                                    .foregroundColor(httCream.opacity(0.8))
                                 }
-                                .font(.system(size: 12, weight: .bold))
-                                .foregroundColor(httGold)
                                 .padding()
                                 .frame(maxWidth: .infinity, alignment: .leading)
-                                .background(Color.black.opacity(0.4))
+                                .background(Color.black.opacity(0.45))
                                 
-                                // Vertical Step-by-Step Timeline
+                                // Vertical Step-by-Step Timeline (含可开合站台与车厢强冷/弱冷)
                                 VStack(alignment: .leading, spacing: 0) {
                                     ForEach(Array(activePlan.steps.enumerated()), id: \.element.id) { stepIdx, step in
                                         HStack(alignment: .top, spacing: 14) {
@@ -3015,52 +3032,148 @@ struct InAppTransitPlanSheetView: View {
                                                     Rectangle()
                                                         .fill(stepColor(for: step).opacity(0.6))
                                                         .frame(width: 3)
-                                                        .frame(minHeight: 46)
+                                                        .frame(minHeight: 52)
                                                 }
                                             }
                                             
                                             // Right Step Info
-                                            VStack(alignment: .leading, spacing: 4) {
+                                            VStack(alignment: .leading, spacing: 6) {
                                                 HStack {
-                                                    Text(step.lineName)
-                                                        .font(.system(size: 15, weight: .black))
+                                                    Text(step.fromStation)
+                                                        .font(.system(size: 16, weight: .black))
                                                         .foregroundColor(.white)
                                                     
-                                                    if step.durationMins > 0 {
-                                                        Text("约 \(step.durationMins) 分钟")
-                                                            .font(.system(size: 11, weight: .bold, design: .monospaced))
-                                                            .foregroundColor(httGold)
-                                                    }
-                                                }
-                                                
-                                                if !step.fromStation.isEmpty && !step.toStation.isEmpty {
-                                                    Text("\(step.fromStation) ➔ \(step.toStation)")
-                                                        .font(.system(size: 13, weight: .bold))
-                                                        .foregroundColor(httCream.opacity(0.92))
-                                                }
-                                                
-                                                if step.passStationCount > 0 {
-                                                    Text("乘坐 \(step.passStationCount) 站 · \(step.intervalDesc)")
-                                                        .font(.system(size: 11, weight: .medium))
-                                                        .foregroundColor(.gray)
-                                                } else if !step.intervalDesc.isEmpty {
-                                                    Text(step.intervalDesc)
-                                                        .font(.system(size: 11, weight: .medium))
-                                                        .foregroundColor(.gray)
-                                                }
-                                                
-                                                if !step.exitDesc.isEmpty {
-                                                    HStack(spacing: 4) {
-                                                        Image(systemName: "arrow.right.circle.fill")
-                                                            .font(.caption2)
+                                                    if !step.exitDesc.isEmpty && step.kind == .walk {
                                                         Text(step.exitDesc)
                                                             .font(.system(size: 11, weight: .bold))
+                                                            .foregroundColor(Color(red: 0.45, green: 0.85, blue: 1.0))
                                                     }
-                                                    .foregroundColor(Color(red: 0.45, green: 0.85, blue: 1.0))
-                                                    .padding(.vertical, 2)
+                                                }
+                                                
+                                                if step.kind == .subway || step.kind == .bus {
+                                                    // Line Name Badge & Direction
+                                                    HStack(spacing: 6) {
+                                                        Text(step.lineName)
+                                                            .font(.system(size: 12, weight: .black))
+                                                            .padding(.horizontal, 6)
+                                                            .padding(.vertical, 3)
+                                                            .background(stepColor(for: step))
+                                                            .foregroundColor(.white)
+                                                            .cornerRadius(5)
+                                                        
+                                                        Text(step.directionDesc)
+                                                            .font(.system(size: 12, weight: .bold))
+                                                            .foregroundColor(.gray)
+                                                    }
+                                                    
+                                                    // Air-conditioning & Carriage Notice
+                                                    if !step.acNotice.isEmpty {
+                                                        Text(step.acNotice)
+                                                            .font(.system(size: 10, weight: .medium))
+                                                            .foregroundColor(Color(red: 0.4, green: 0.8, blue: 1.0))
+                                                    }
+                                                    
+                                                    // Expandable / Collapsible Stations Badge (^ X站 (X分钟)) - 可开合！
+                                                    if !step.passStations.isEmpty {
+                                                        VStack(alignment: .leading, spacing: 5) {
+                                                            Button(action: {
+                                                                withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) {
+                                                                    if expandedStepIds.contains(step.id) {
+                                                                        expandedStepIds.remove(step.id)
+                                                                    } else {
+                                                                        expandedStepIds.insert(step.id)
+                                                                    }
+                                                                }
+                                                            }) {
+                                                                HStack(spacing: 5) {
+                                                                    Image(systemName: expandedStepIds.contains(step.id) ? "chevron.up" : "chevron.down")
+                                                                        .font(.system(size: 10, weight: .bold))
+                                                                    Text("\(step.passStations.count + 1) 站 (\(step.durationMins) 分钟)")
+                                                                        .font(.system(size: 12, weight: .heavy))
+                                                                    Text(expandedStepIds.contains(step.id) ? "点击收起站台" : "点击展开经停车站")
+                                                                        .font(.system(size: 10, weight: .medium))
+                                                                        .opacity(0.8)
+                                                                }
+                                                                .foregroundColor(Color.cyan)
+                                                                .padding(.horizontal, 8)
+                                                                .padding(.vertical, 4)
+                                                                .background(Color.cyan.opacity(0.12))
+                                                                .cornerRadius(6)
+                                                            }
+                                                            
+                                                            // Expanded Station Sub-List (垂直站点连线)
+                                                            if expandedStepIds.contains(step.id) {
+                                                                VStack(alignment: .leading, spacing: 6) {
+                                                                    ForEach(step.passStations, id: \.self) { stName in
+                                                                        HStack(spacing: 8) {
+                                                                            Circle()
+                                                                                .fill(Color.gray.opacity(0.7))
+                                                                                .frame(width: 5, height: 5)
+                                                                            Text(stName)
+                                                                                .font(.system(size: 12, weight: .medium))
+                                                                                .foregroundColor(.white.opacity(0.9))
+                                                                        }
+                                                                        .padding(.leading, 8)
+                                                                    }
+                                                                }
+                                                                .padding(.vertical, 4)
+                                                                .transition(.opacity.combined(with: .move(edge: .top)))
+                                                            }
+                                                        }
+                                                    }
+                                                    
+                                                    // Interval & First/Last Train Desc
+                                                    if !step.intervalDesc.isEmpty {
+                                                        Text(step.intervalDesc)
+                                                            .font(.system(size: 10, weight: .medium))
+                                                            .foregroundColor(.gray)
+                                                    }
+                                                    
+                                                    // Target Destination Station & Door Side
+                                                    HStack {
+                                                        Text(step.toStation)
+                                                            .font(.system(size: 15, weight: .black))
+                                                            .foregroundColor(.white)
+                                                        
+                                                        if !step.doorSideDesc.isEmpty {
+                                                            Text(step.doorSideDesc)
+                                                                .font(.system(size: 11, weight: .bold))
+                                                                .foregroundColor(httGold)
+                                                                .padding(.horizontal, 5)
+                                                                .padding(.vertical, 2)
+                                                                .background(Color.black.opacity(0.6))
+                                                                .cornerRadius(4)
+                                                        }
+                                                    }
+                                                    .padding(.top, 2)
+                                                } else if step.kind == .walk {
+                                                    // Walking segment description & duration
+                                                    Text(step.intervalDesc)
+                                                        .font(.system(size: 12, weight: .bold))
+                                                        .foregroundColor(httCream.opacity(0.85))
+                                                    
+                                                    // One-click Walking Navigation Button
+                                                    if stepIdx == 0 {
+                                                        Button(action: {
+                                                            dismiss()
+                                                            manager.startTransitWalkingNavigation()
+                                                        }) {
+                                                            HStack(spacing: 5) {
+                                                                Image(systemName: "figure.walk.circle.fill")
+                                                                    .font(.system(size: 13, weight: .bold))
+                                                                Text("开启第一段步行实景导航 (前往 \(step.toStation))")
+                                                                    .font(.system(size: 11, weight: .bold))
+                                                            }
+                                                            .padding(.horizontal, 8)
+                                                            .padding(.vertical, 5)
+                                                            .background(Color.green.opacity(0.2))
+                                                            .foregroundColor(Color.green)
+                                                            .cornerRadius(6)
+                                                        }
+                                                    }
                                                 }
                                             }
-                                            .padding(.bottom, 16)
+                                            .padding(.bottom, 18)
                                             
                                             Spacer()
                                         }
@@ -3069,19 +3182,30 @@ struct InAppTransitPlanSheetView: View {
                                 .padding()
                             }
                         }
+                    } else {
+                        // Loading fallback
+                        VStack(spacing: 12) {
+                            Spacer()
+                            ProgressView()
+                                .progressViewStyle(CircularProgressViewStyle(tint: httGold))
+                                .scaleEffect(1.4)
+                            Text("正在根据您当前位置匹配最近地铁/公交路线...")
+                                .font(.subheadline.bold())
+                                .foregroundColor(httCream)
+                            Spacer()
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
                     
                     // 3. Bottom One-Click Start Guidance in App (Zero External Jump!)
                     Button(action: {
                         dismiss()
-                        withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) {
-                            manager.startFocusedNavigation()
-                        }
+                        manager.startTransitWalkingNavigation()
                     }) {
                         HStack(spacing: 8) {
                             Image(systemName: "tram.circle.fill")
                                 .font(.title3)
-                            Text("开始按此方案乘车指引 (内置专注模式)")
+                            Text("开始全流程乘车指引 (含步行导航)")
                                 .font(.system(size: 15, weight: .black))
                         }
                         .frame(maxWidth: .infinity, minHeight: 46)
@@ -3110,11 +3234,7 @@ struct InAppTransitPlanSheetView: View {
                 }
             }
             .onAppear {
-                if manager.transitPlans.isEmpty {
-                    let dest = manager.destinationCoord ?? CLLocationCoordinate2D(latitude: 22.61, longitude: 114.15)
-                    let title = manager.destinationName.isEmpty ? "丹竹头地铁站" : manager.destinationName
-                    manager.generateBuiltInTransitPlans(from: manager.userCoordinate, to: dest, destTitle: title)
-                }
+                manager.refreshTransitPlansForCurrentLocation(force: true)
             }
         }
     }
@@ -3130,6 +3250,7 @@ struct InAppTransitPlanSheetView: View {
         }
     }
 }
+
 
 extension Color {
     init?(hex: String) {

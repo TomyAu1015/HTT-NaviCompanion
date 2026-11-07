@@ -24,6 +24,10 @@ class PhoneSceneDelegate: UIResponder, UIWindowSceneDelegate {
         guard let firstURLContext = URLContexts.first else { return }
         AudioPlayerManager.shared.handleIncomingNavigationURL(firstURLContext.url)
     }
+
+    func sceneDidBecomeActive(_ scene: UIScene) {
+        AudioPlayerManager.shared.refreshTransitPlansForCurrentLocation(force: true)
+    }
 }
 
 class AppDelegate: NSObject, UIApplicationDelegate {
@@ -31,6 +35,10 @@ class AppDelegate: NSObject, UIApplicationDelegate {
                      didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey : Any]? = nil) -> Bool {
         AudioPlayerManager.shared.configureAudioSession()
         return true
+    }
+
+    func applicationDidBecomeActive(_ application: UIApplication) {
+        AudioPlayerManager.shared.refreshTransitPlansForCurrentLocation(force: true)
     }
     
     func application(_ application: UIApplication,
