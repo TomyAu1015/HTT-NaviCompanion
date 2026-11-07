@@ -162,9 +162,9 @@ class CarPlayMapViewController: UIViewController, MKMapViewDelegate {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] img in
                 self?.mascotImageView.image = img
-                if let userView = self?.mapView.view(for: self?.mapView.userLocation ?? MKUserLocation()) {
+                if let mapView = self?.mapView, let userView = mapView.view(for: mapView.userLocation) {
                     userView.image = mgr.getRM500NavigationArrowFrame(mapCameraHeading: self?.mapView.camera.heading ?? 0)
-                        ?? HTTSmoothMapView.Coordinator.createNavigationArrowImage()
+                        ?? CarPlayMapViewController.createNavigationArrowImage()
                 }
             }
             .store(in: &cancellables)
@@ -216,13 +216,37 @@ class CarPlayMapViewController: UIViewController, MKMapViewDelegate {
                 v?.canShowCallout = false
             }
             v?.image = AudioPlayerManager.shared.getRM500NavigationArrowFrame(mapCameraHeading: mapView.camera.heading)
-                ?? HTTSmoothMapView.Coordinator.createNavigationArrowImage()
+                ?? CarPlayMapViewController.createNavigationArrowImage()
             v?.centerOffset = CGPoint(x: 0, y: -18)
             return v
         }
         return nil
     }
     
+
+    static func createNavigationArrowImage() -> UIImage {
+        let size = CGSize(width: 46, height: 46)
+        let renderer = UIGraphicsImageRenderer(size: size)
+        return renderer.image { ctx in
+            let cg = ctx.cgContext
+            cg.setShadow(offset: CGSize(width: 0, height: 3), blur: 5, color: UIColor.black.withAlphaComponent(0.45).cgColor)
+            
+            let path = UIBezierPath()
+            path.move(to: CGPoint(x: 23, y: 3))
+            path.addLine(to: CGPoint(x: 41, y: 41))
+            path.addLine(to: CGPoint(x: 23, y: 31))
+            path.addLine(to: CGPoint(x: 5, y: 41))
+            path.close()
+            
+            UIColor(red: 0.98, green: 0.28, blue: 0.28, alpha: 1.0).setFill()
+            path.fill()
+            
+            UIColor.white.setStroke()
+            path.lineWidth = 2.5
+            path.stroke()
+        }
+    }
+
     func mapView(_ mapView: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
         if let poly = overlay as? MKPolyline {
             let r = MKPolylineRenderer(polyline: poly)
