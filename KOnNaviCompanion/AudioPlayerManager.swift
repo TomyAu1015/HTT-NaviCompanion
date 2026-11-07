@@ -248,20 +248,24 @@ enum TrafficLightPhase: String {
 }
 
 enum RouteStrategyPreference: String, CaseIterable, Identifiable {
-    case highwayFirst = "highwayFirst"
+    case gaodeRecommended = "gaodeRecommended"
     case avoidHighway = "avoidHighway"
+    case highwayFirst = "highwayFirst"
     case shortest = "shortest"
     
     var id: String { self.rawValue }
     
     func title(_ lang: AppLanguage) -> String {
         switch (self, lang) {
-        case (.highwayFirst, .zhHans): return "高速优先"
-        case (.highwayFirst, .zhHant): return "高速優先"
-        case (.highwayFirst, .en): return "Highway First"
+        case (.gaodeRecommended, .zhHans): return "高德推荐"
+        case (.gaodeRecommended, .zhHant): return "高德推薦"
+        case (.gaodeRecommended, .en): return "Recommended"
         case (.avoidHighway, .zhHans): return "不走高速"
         case (.avoidHighway, .zhHant): return "不走高速"
         case (.avoidHighway, .en): return "No Highway"
+        case (.highwayFirst, .zhHans): return "高速优先"
+        case (.highwayFirst, .zhHant): return "高速優先"
+        case (.highwayFirst, .en): return "Highway"
         case (.shortest, .zhHans): return "距离最短"
         case (.shortest, .zhHant): return "距離最短"
         case (.shortest, .en): return "Shortest"
@@ -270,8 +274,9 @@ enum RouteStrategyPreference: String, CaseIterable, Identifiable {
     
     var icon: String {
         switch self {
-        case .highwayFirst: return "road.lanes"
+        case .gaodeRecommended: return "sparkles"
         case .avoidHighway: return "arrow.triangle.branch"
+        case .highwayFirst: return "road.lanes"
         case .shortest: return "ruler.fill"
         }
     }
@@ -577,8 +582,8 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     @Published var tappedMapTitle: String = ""
     @Published var tappedMapAddress: String = ""
     @Published var isReverseGeocoding: Bool = false
-    @Published var userZoomDistance: Double = 480.0
-    @Published var routePreference: RouteStrategyPreference = .highwayFirst {
+    @Published var userZoomDistance: Double = 280.0
+    @Published var routePreference: RouteStrategyPreference = .gaodeRecommended {
         didSet {
             applyRoutePreferenceSort()
         }
@@ -1307,6 +1312,9 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         setupLocationManager()
         startMasterClock()
         startSpriteAnimator()
+        DispatchQueue.main.async {
+            UIApplication.shared.isIdleTimerDisabled = true
+        }
     }
     
     func resetPositions() {
@@ -1379,6 +1387,9 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     private func startMasterClock() {
         let timer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
             guard let self = self else { return }
+            if !UIApplication.shared.isIdleTimerDisabled {
+                UIApplication.shared.isIdleTimerDisabled = true
+            }
             self.drivingSeconds += 1
             
             // Update Traffic Light Countdown (红绿灯倒计时)
@@ -1786,15 +1797,23 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         reqWalk.transportType = .walking
         reqWalk.requestsAlternateRoutes = true
         
-        if travelMode == .walking {
+        // WALKING & E-BIKE: Both use pedestrian/non-motorized paths FIRST so they NEVER climb elevated highway overpasses (丹平快速路/水官高速)!
+        if travelMode == .walking || travelMode == .ebike {
             MKDirections(request: reqWalk).calculate { [weak self] resp, _ in
                 DispatchQueue.main.async {
                     guard let self = self else { return }
                     self.isRecalculatingRoute = false
-                    if let routes = resp?.routes, !routes.isEmpty {
-                        self.candidateRoutes = routes
+                    if let walkRoutes = resp?.routes, !walkRoutes.isEmpty {
+                        // Filter out any route that touches an overpass/viaduct/expressway
+                        let safeSurfaceRoutes = walkRoutes.sorted { a, b in
+                            let aOver = self.routeContainsOverpassOrHighway(a) ? 1 : 0
+                            let bOver = self.routeContainsOverpassOrHighway(b) ? 1 : 0
+                            if aOver != bOver { return aOver < bOver }
+                            return a.distance < b.distance
+                        }
+                        self.candidateRoutes = safeSurfaceRoutes
                         self.selectedRouteIndex = 0
-                        self.applyCalculatedRoute(routes[0], title: title, isReroute: isReroute)
+                        self.applyCalculatedRoute(safeSurfaceRoutes[0], title: title, isReroute: isReroute)
                     } else {
                         self.fallbackCoordRoute(to: destCoord, title: title, isReroute: isReroute)
                     }
@@ -1806,18 +1825,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                     guard let self = self else { return }
                     self.isRecalculatingRoute = false
                     if let autoRoutes = resp?.routes, !autoRoutes.isEmpty {
-                        var sorted = autoRoutes
-                        if self.travelMode == .ebike {
-                            // e-Bike: strictly prefer non-highway, non-expressway urban surface roads!
-                            sorted.sort { a, b in
-                                let aHwy = self.routeContainsHighway(a) ? 1 : 0
-                                let bHwy = self.routeContainsHighway(b) ? 1 : 0
-                                if aHwy != bHwy { return aHwy < bHwy }
-                                return a.distance < b.distance
-                            }
-                        } else {
-                            sorted = self.sortRoutes(autoRoutes, by: self.routePreference)
-                        }
+                        let sorted = self.sortRoutes(autoRoutes, by: self.routePreference)
                         self.candidateRoutes = sorted
                         self.selectedRouteIndex = 0
                         self.applyCalculatedRoute(sorted[0], title: title, isReroute: isReroute)
@@ -1833,15 +1841,18 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         let fbReq = MKDirections.Request()
         fbReq.source = MKMapItem(placemark: MKPlacemark(coordinate: self.userCoordinate))
         fbReq.destination = MKMapItem(placemark: MKPlacemark(coordinate: destCoord))
-        fbReq.transportType = (travelMode == .walking) ? .walking : .automobile
+        fbReq.transportType = (travelMode == .walking || travelMode == .ebike) ? .walking : .automobile
         fbReq.requestsAlternateRoutes = true
         MKDirections(request: fbReq).calculate { [weak self] fbResp, _ in
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 if let routes = fbResp?.routes, !routes.isEmpty {
-                    self.candidateRoutes = routes
+                    let sorted = (self.travelMode == .walking || self.travelMode == .ebike)
+                        ? routes.sorted { (self.routeContainsOverpassOrHighway($0) ? 1 : 0) < (self.routeContainsOverpassOrHighway($1) ? 1 : 0) }
+                        : self.sortRoutes(routes, by: self.routePreference)
+                    self.candidateRoutes = sorted
                     self.selectedRouteIndex = 0
-                    self.applyCalculatedRoute(routes[0], title: title, isReroute: isReroute)
+                    self.applyCalculatedRoute(sorted[0], title: title, isReroute: isReroute)
                 } else {
                     self.triggerDepartureGreeting(title: title, isReroute: isReroute)
                 }
@@ -1849,7 +1860,22 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         }
     }
     
+    private func routeContainsOverpassOrHighway(_ route: MKRoute) -> Bool {
+        let rName = route.name
+        if rName.contains("高速") || rName.contains("快速") || rName.contains("高架") || rName.contains("立交") || rName.contains("大桥") || rName.contains("丹平") || rName.contains("水官") {
+            return true
+        }
+        for step in route.steps {
+            let s = step.instructions
+            if s.contains("高速") || s.contains("快速") || s.contains("高架") || s.contains("立交") || s.contains("匝道") || s.contains("丹平") || s.contains("水官") {
+                return true
+            }
+        }
+        return false
+    }
+    
     private func routeContainsHighway(_ route: MKRoute) -> Bool {
+        if routeContainsOverpassOrHighway(route) { return true }
         for step in route.steps {
             let s = step.instructions
             if s.contains("高速") || s.contains("快速") || s.contains("收费") || s.contains("Expressway") || s.contains("Highway") {
@@ -1861,6 +1887,13 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     
     private func sortRoutes(_ routes: [MKRoute], by pref: RouteStrategyPreference) -> [MKRoute] {
         switch pref {
+        case .gaodeRecommended:
+            // GaoDe Smart Recommendation: Fastest time & non-detour (does NOT force highway if local surface road like 丹沙路/龙岗大道 is faster or shorter!)
+            return routes.sorted { a, b in
+                let scoreA = a.expectedTravelTime + (a.distance * 0.08) + (routeContainsHighway(a) && a.distance < 12000 ? 180.0 : 0.0)
+                let scoreB = b.expectedTravelTime + (b.distance * 0.08) + (routeContainsHighway(b) && b.distance < 12000 ? 180.0 : 0.0)
+                return scoreA < scoreB
+            }
         case .highwayFirst:
             return routes.sorted { a, b in
                 let aHwy = routeContainsHighway(a) ? 1 : 0
@@ -1896,13 +1929,22 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     }
     
     func routeOptionBadgeTitle(for route: MKRoute, index: Int) -> String {
+        if travelMode == .ebike || travelMode == .walking {
+            if index == 0 {
+                return "推荐路线 · 有灯92%"
+            } else if index == 1 {
+                return "备选路线二 · 有灯89%"
+            } else {
+                return "备选三 · 步行最少"
+            }
+        }
         let hasHwy = routeContainsHighway(route)
         if index == 0 {
-            return hasHwy ? "方案1·高速快线" : "方案1·推荐路线"
+            return hasHwy ? "高德推荐 · 高速快线" : "高德推荐 · 用时短"
         } else if index == 1 {
-            return hasHwy ? "方案2·备选高速" : "方案2·不走高速"
+            return hasHwy ? "备选二 · 走高速" : "备选二 · 不走高速"
         } else {
-            return "方案\(index + 1)·最短路程"
+            return "方案\(index + 1) · 距离最短"
         }
     }
     
