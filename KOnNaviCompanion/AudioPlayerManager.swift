@@ -1794,8 +1794,6 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             let isShanghai = destClean.contains("上海") || destClean.contains("虹桥") || destClean.contains("浦东") || (to.latitude > 30.6 && to.latitude < 31.9 && to.longitude > 120.8)
             let isBeijing = destClean.contains("北京") || (to.latitude > 39.4 && to.latitude < 41.1)
             let isHangzhou = destClean.contains("杭州") || (to.latitude > 29.8 && to.latitude <= 30.6 && to.longitude > 119.5)
-            let isChengduOrChongqing = destClean.contains("成都") || destClean.contains("重庆") || (to.longitude < 107.5 && to.latitude > 28.5)
-            let isWuhanOrChangsha = destClean.contains("武汉") || destClean.contains("长沙")
             
             // Determine authentic destination city hub names & fares matching GaoDe Screenshot 3 & 4!
             let destHSRStation: String
@@ -3873,6 +3871,19 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         applyCalculatedRoute(chosen, title: destinationName, isReroute: true)
     }
     
+    func estimatedMinutes(for route: MKRoute) -> Int {
+        let distKm: Double = route.distance / 1000.0
+        if travelMode == .ebike {
+            let hours: Double = distKm / 22.0
+            return max(1, Int(hours * 60.0))
+        } else if travelMode == .walking {
+            let hours: Double = distKm / 4.8
+            return max(1, Int(hours * 60.0))
+        } else {
+            return max(1, Int(route.expectedTravelTime / 60.0))
+        }
+    }
+
     func routeOptionBadgeTitle(for route: MKRoute, index: Int) -> String {
         if travelMode == .ebike || travelMode == .walking {
             if index == 0 {
@@ -4022,8 +4033,6 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         }
         
         // 2. Scan route steps for Toll Stations, Service Areas, and Camera checkpoints
-        var foundServiceDist: Int = 0
-        var foundServiceName: String = ""
         
         if ptCount > 4 {
             // Place realistic Speed Camera / Red-light Enforcement checkpoints along route

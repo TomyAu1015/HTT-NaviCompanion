@@ -1510,15 +1510,7 @@ struct ContentView: View {
                         ForEach(0..<manager.candidateRoutes.count, id: \.self) { idx in
                             let r = manager.candidateRoutes[idx]
                             let isSel = (manager.selectedRouteIndex == idx)
-                            let estMins: Int = {
-                                if manager.travelMode == .ebike {
-                                    return max(1, Int((r.distance / 1000.0) / 22.0 * 60.0))
-                                } else if manager.travelMode == .walking {
-                                    return max(1, Int((r.distance / 1000.0) / 4.8 * 60.0))
-                                } else {
-                                    return max(1, Int(r.expectedTravelTime / 60.0))
-                                }
-                            }()
+                            let estMins: Int = manager.estimatedMinutes(for: r)
                             let lightCount = max(1, Int(r.distance / 450.0))
                             Button(action: {
                                 withAnimation(.easeInOut(duration: 0.2)) {
