@@ -156,6 +156,42 @@ enum NavigationTravelMode: String, CaseIterable, Identifiable {
     }
 }
 
+enum NavigationCameraMode: String, CaseIterable, Identifiable {
+    case headingUp = "headingUp" // 车头朝上 (地图随车旋转，车标固定在前方)
+    case northUp = "northUp"     // 正北朝上 (地图固定不转，导航标在地图上移动转向)
+    
+    var id: String { self.rawValue }
+    
+    func title(_ lang: AppLanguage) -> String {
+        switch (self, lang) {
+        case (.headingUp, .zhHans): return "车头朝上(地图动)"
+        case (.headingUp, .zhHant): return "車頭朝上(地圖動)"
+        case (.headingUp, .en): return "Heading Up"
+        case (.northUp, .zhHans): return "正北朝上(车标动)"
+        case (.northUp, .zhHant): return "正北朝上(車標動)"
+        case (.northUp, .en): return "North Up"
+        }
+    }
+    
+    func shortTitle(_ lang: AppLanguage) -> String {
+        switch (self, lang) {
+        case (.headingUp, .zhHans): return "地图动"
+        case (.headingUp, .zhHant): return "地圖動"
+        case (.headingUp, .en): return "Map Rot"
+        case (.northUp, .zhHans): return "车标动"
+        case (.northUp, .zhHant): return "車標動"
+        case (.northUp, .en): return "Icon Mov"
+        }
+    }
+    
+    var icon: String {
+        switch self {
+        case .headingUp: return "location.north.line.fill"
+        case .northUp: return "safari.fill"
+        }
+    }
+}
+
 enum RM500ArrowOutfit: Int, CaseIterable, Identifiable {
     case winterUniform = 0
     case summerUniform = 1
@@ -389,7 +425,59 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     @Published var remainingRouteDistanceKm: Double = 0.0
     @Published var remainingRouteMinutes: Int = 0
     @Published var mapTrackingUser: Bool = true
+    @Published var cameraMode: NavigationCameraMode = .headingUp {
+        didSet {
+            triggerFastRecenter()
+        }
+    }
+    @Published var tappedMapCoord: CLLocationCoordinate2D? = nil
+    @Published var tappedMapTitle: String = ""
+    @Published var tappedMapAddress: String = ""
+    @Published var isReverseGeocoding: Bool = false
     @Published var recenterTrigger: Int = 0
+    
+    func toggleCameraMode() {
+        cameraMode = (cameraMode == .headingUp) ? .northUp : .headingUp
+    }
+    
+    func handleMapTap(at coord: CLLocationCoordinate2D) {
+        tappedMapCoord = coord
+        isReverseGeocoding = true
+        tappedMapTitle = language == .en ? "Selected Map Point" : "地图选点位置"
+        tappedMapAddress = String(format: "%.5f, %.5f", coord.latitude, coord.longitude)
+        
+        let loc = CLLocation(latitude: coord.latitude, longitude: coord.longitude)
+        CLGeocoder().reverseGeocodeLocation(loc) { [weak self] placemarks, _ in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                self.isReverseGeocoding = false
+                if let pm = placemarks?.first {
+                    let name = pm.name ?? pm.thoroughfare ?? pm.subLocality ?? "地图选点"
+                    self.tappedMapTitle = name
+                    var addrParts: [String] = []
+                    if let city = pm.locality { addrParts.append(city) }
+                    if let dist = pm.subLocality { addrParts.append(dist) }
+                    if let road = pm.thoroughfare, road != name { addrParts.append(road) }
+                    if let num = pm.subThoroughfare { addrParts.append(num) }
+                    if !addrParts.isEmpty {
+                        self.tappedMapAddress = addrParts.joined(separator: " · ")
+                    }
+                }
+            }
+        }
+    }
+    
+    func startNavigationToTappedPoint() {
+        guard let coord = tappedMapCoord else { return }
+        let title = tappedMapTitle.isEmpty ? "地图选点" : tappedMapTitle
+        tappedMapCoord = nil
+        stopDemoSimulation()
+        calculateAndStartRoute(to: coord, title: title)
+    }
+    
+    func dismissTappedPoint() {
+        tappedMapCoord = nil
+    }
     
     func triggerFastRecenter() {
         mapTrackingUser = true
@@ -906,7 +994,8 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             currentSpriteFrame = allMemberFrames[activeAllMemberChar.charId] ?? allMemberFrames[1]
         }
         walkStepFrame = (animTick / 2) % 2
-        currentNavArrowImage = getRM500NavigationArrowFrame(mapCameraHeading: mapTrackingUser ? headingDegrees : 0.0)
+        let effectiveCamHeading = (mapTrackingUser && cameraMode == .headingUp) ? headingDegrees : 0.0
+        currentNavArrowImage = getRM500NavigationArrowFrame(mapCameraHeading: effectiveCamHeading)
     }
     
     private func sliceFrame(for char: CharacterFilter, action: MascotActionState, tick: Int) -> UIImage? {

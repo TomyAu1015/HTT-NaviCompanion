@@ -79,11 +79,14 @@ struct HTTSmoothMapView: UIViewRepresentable {
         let mapView = MKMapView(frame: .zero)
         mapView.delegate = context.coordinator
         mapView.showsUserLocation = true
-        mapView.showsCompass = true
+        mapView.showsCompass = false // Replaced by custom unobstructed HTT compass!
         mapView.showsTraffic = true
         mapView.showsBuildings = true
         mapView.isPitchEnabled = true
         mapView.isRotateEnabled = true
+        if #available(iOS 13.0, *) {
+            mapView.pointOfInterestFilter = .includingAll
+        }
         
         let panGesture = UIPanGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.didPanMap(_:)))
         panGesture.delegate = context.coordinator
@@ -92,6 +95,11 @@ struct HTTSmoothMapView: UIViewRepresentable {
         let pinchGesture = UIPinchGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.didPinchMap(_:)))
         pinchGesture.delegate = context.coordinator
         mapView.addGestureRecognizer(pinchGesture)
+        
+        // Tap Gesture to pick any address/POI directly on the map!
+        let tapGesture = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.didTapMap(_:)))
+        tapGesture.delegate = context.coordinator
+        mapView.addGestureRecognizer(tapGesture)
         
         let region = MKCoordinateRegion(
             center: manager.userCoordinate,
@@ -103,9 +111,17 @@ struct HTTSmoothMapView: UIViewRepresentable {
     }
     
     func updateUIView(_ mapView: MKMapView, context: Context) {
-        // 1. Route Overlays and Destination Pins
-        if context.coordinator.lastRoute !== manager.activeRoute {
+        let camHeading = (manager.cameraMode == .headingUp) ? manager.headingDegrees : 0.0
+        let camPitch: CGFloat = (manager.cameraMode == .headingUp) ? 48.0 : 0.0
+        
+        // 1. Route Overlays & Destination/Tapped Pins
+        let tappedChanged = (context.coordinator.lastTappedLat != manager.tappedMapCoord?.latitude) ||
+                            (context.coordinator.lastTappedLon != manager.tappedMapCoord?.longitude)
+        if context.coordinator.lastRoute !== manager.activeRoute || tappedChanged {
             context.coordinator.lastRoute = manager.activeRoute
+            context.coordinator.lastTappedLat = manager.tappedMapCoord?.latitude
+            context.coordinator.lastTappedLon = manager.tappedMapCoord?.longitude
+            
             mapView.removeOverlays(mapView.overlays)
             mapView.removeAnnotations(mapView.annotations.filter { !($0 is MKUserLocation) })
             
@@ -117,16 +133,25 @@ struct HTTSmoothMapView: UIViewRepresentable {
                     pin.title = manager.destinationName
                     mapView.addAnnotation(pin)
                 }
-                
-                // Instantly snap to user vehicle on route start
+            }
+            
+            if let tapped = manager.tappedMapCoord {
+                let tappedPin = MKPointAnnotation()
+                tappedPin.coordinate = tapped
+                tappedPin.title = manager.tappedMapTitle
+                tappedPin.subtitle = "TAP_PIN"
+                mapView.addAnnotation(tappedPin)
+            }
+            
+            if context.coordinator.lastRoute !== nil && !tappedChanged {
                 let targetCoord = (!manager.isDemoSimulating && mapView.userLocation.location != nil)
                     ? mapView.userLocation.coordinate
                     : manager.userCoordinate
                 let camera = MKMapCamera(
                     lookingAtCenter: targetCoord,
                     fromDistance: manager.travelMode == .walking ? 380 : 520,
-                    pitch: 48,
-                    heading: manager.headingDegrees
+                    pitch: camPitch,
+                    heading: camHeading
                 )
                 mapView.setCamera(camera, animated: false)
             }
@@ -148,7 +173,7 @@ struct HTTSmoothMapView: UIViewRepresentable {
             }
         }
         
-        // 3. Instant Zero-Lag Recenter (Fixes slow return after zooming out or panning!)
+        // 3. Instant Zero-Lag Recenter (Snaps immediately to user vehicle!)
         if context.coordinator.lastRecenterTrigger != manager.recenterTrigger {
             context.coordinator.lastRecenterTrigger = manager.recenterTrigger
             context.coordinator.isUserInteracting = false
@@ -157,13 +182,12 @@ struct HTTSmoothMapView: UIViewRepresentable {
                 ? mapView.userLocation.coordinate
                 : manager.userCoordinate
             
-            // Cancel any ongoing MapKit zoom/pan inertia and jump immediately to vehicle!
             mapView.layer.removeAllAnimations()
             let camera = MKMapCamera(
                 lookingAtCenter: targetCoord,
                 fromDistance: manager.travelMode == .walking ? 380 : 500,
-                pitch: 48,
-                heading: manager.headingDegrees
+                pitch: camPitch,
+                heading: camHeading
             )
             mapView.setCamera(camera, animated: false)
             
@@ -172,7 +196,6 @@ struct HTTSmoothMapView: UIViewRepresentable {
                 ? mapView.userLocation.coordinate
                 : manager.userCoordinate
             
-            // Check if current camera center or zoom distance is far away (e.g. user zoomed out)
             let camLoc = CLLocation(latitude: mapView.camera.centerCoordinate.latitude,
                                     longitude: mapView.camera.centerCoordinate.longitude)
             let usrLoc = CLLocation(latitude: targetCoord.latitude, longitude: targetCoord.longitude)
@@ -182,10 +205,9 @@ struct HTTSmoothMapView: UIViewRepresentable {
             let camera = MKMapCamera(
                 lookingAtCenter: targetCoord,
                 fromDistance: manager.travelMode == .walking ? 380 : 520,
-                pitch: 48,
-                heading: manager.headingDegrees
+                pitch: camPitch,
+                heading: camHeading
             )
-            // If far away or zoomed out, jump immediately without slow multi-second flyover!
             if distDelta > 150.0 || altDelta > 400.0 {
                 mapView.setCamera(camera, animated: false)
             } else {
@@ -197,6 +219,8 @@ struct HTTSmoothMapView: UIViewRepresentable {
     class Coordinator: NSObject, MKMapViewDelegate, UIGestureRecognizerDelegate {
         var parent: HTTSmoothMapView
         var lastRoute: MKRoute? = nil
+        var lastTappedLat: Double? = nil
+        var lastTappedLon: Double? = nil
         var isUserInteracting: Bool = false
         var lastRecenterTrigger: Int = 0
         
@@ -238,6 +262,16 @@ struct HTTSmoothMapView: UIViewRepresentable {
             }
         }
         
+        @objc func didTapMap(_ gesture: UITapGestureRecognizer) {
+            guard gesture.state == .ended, let mapView = gesture.view as? MKMapView else { return }
+            let point = gesture.location(in: mapView)
+            let coord = mapView.convert(point, toCoordinateFrom: mapView)
+            DispatchQueue.main.async {
+                self.parent.manager.mapTrackingUser = false
+                self.parent.manager.handleMapTap(at: coord)
+            }
+        }
+        
         func mapView(_ mapView: MKMapView, didUpdate userLocation: MKUserLocation) {
             guard let loc = userLocation.location, !parent.manager.isDemoSimulating else { return }
             DispatchQueue.main.async {
@@ -245,7 +279,6 @@ struct HTTSmoothMapView: UIViewRepresentable {
             }
         }
         
-        // MARK: - RM-500HTT Authentic Character Vehicle Arrow & 3D Arrow
         func mapView(_ mapView: MKMapView, viewFor annotation: MKAnnotation) -> MKAnnotationView? {
             if annotation is MKUserLocation {
                 let identifier = "UserVehicleArrowView"
@@ -271,16 +304,19 @@ struct HTTSmoothMapView: UIViewRepresentable {
                 }
                 return view
             } else if let pin = annotation as? MKPointAnnotation {
-                let id = "DestinationPinView"
+                let isTapPin = (pin.subtitle == "TAP_PIN")
+                let id = isTapPin ? "TappedPinView" : "DestinationPinView"
                 var pinView = mapView.dequeueReusableAnnotationView(withIdentifier: id) as? MKMarkerAnnotationView
                 if pinView == nil {
                     pinView = MKMarkerAnnotationView(annotation: pin, reuseIdentifier: id)
-                    pinView?.markerTintColor = UIColor(red: 0.78, green: 0.18, blue: 0.22, alpha: 1.0)
-                    pinView?.glyphImage = UIImage(systemName: "flag.checkered")
-                    pinView?.canShowCallout = true
+                    pinView?.canShowCallout = false
                 } else {
                     pinView?.annotation = pin
                 }
+                pinView?.markerTintColor = isTapPin
+                    ? UIColor.systemOrange
+                    : UIColor(red: 0.78, green: 0.18, blue: 0.22, alpha: 1.0)
+                pinView?.glyphImage = UIImage(systemName: isTapPin ? "hand.point.up.left.fill" : "flag.checkered")
                 return pinView
             }
             return nil
@@ -346,6 +382,7 @@ struct ContentView: View {
     @State private var showSoundboardSheet: Bool = false
     @State private var showSearchSheet: Bool = false
     @State private var showAlbumSheet: Bool = false
+    @State private var showOutfitPopup: Bool = false
     @State private var showCautionSplash: Bool = false
     @State private var dragOffset: CGSize = .zero
     
@@ -389,30 +426,31 @@ struct ContentView: View {
                 } else {
                     // CONDITIONAL 2: Standard Classic Cockpit View
                     if isLandscape {
-                        let safeW = geo.size.width - 28
-                        let leftColW = safeW * 0.44
-                        let rightColW = safeW * 0.54
-                        ScrollView(.vertical, showsIndicators: true) {
-                            VStack(spacing: 7) {
+                        // GeometryReader inside safe area automatically respects iPhone notch on left/right!
+                        let usableW = geo.size.width - 20
+                        let leftColW = usableW * 0.46
+                        let rightColW = usableW * 0.52
+                        ScrollView(.vertical, showsIndicators: false) {
+                            VStack(spacing: 6) {
                                 topBezelBar
-                                HStack(alignment: .top, spacing: safeW * 0.02) {
-                                    VStack(spacing: 7) {
+                                HStack(alignment: .top, spacing: usableW * 0.02) {
+                                    VStack(spacing: 6) {
                                         speedometerCockpit
                                         utilityControlGrid
+                                        portraitBottomCompanionDock
                                     }
                                     .frame(width: leftColW)
                                     
-                                    VStack(spacing: 7) {
-                                        mainStageOrMapSection(stageWidth: rightColW, stageHeight: 185)
+                                    VStack(spacing: 6) {
+                                        mainStageOrMapSection(stageWidth: rightColW, stageHeight: 215)
                                         characterSelectorStrip
                                             .frame(width: rightColW)
                                     }
                                     .frame(width: rightColW)
                                 }
                             }
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 6)
-                            .frame(width: geo.size.width)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 4)
                         }
                         .scaleEffect(x: manager.isHUDMirrored ? -1 : 1, y: 1)
                         .onAppear { manager.stageWalkBound = 95.0 }
@@ -434,6 +472,11 @@ struct ContentView: View {
                         .scaleEffect(x: manager.isHUDMirrored ? -1 : 1, y: 1)
                         .onAppear { manager.stageWalkBound = 65.0 }
                     }
+                }
+                
+                // Long-Press RM-500HTT Beautified Outfit Quick Switcher Modal!
+                if showOutfitPopup {
+                    outfitQuickPickerModalOverlay
                 }
             }
             .onChange(of: isLandscape) { newVal in
@@ -464,18 +507,75 @@ struct ContentView: View {
                 // Top Navigation Guidance Card
                 topNavigationBannerCard
                     .padding(.horizontal, 12)
-                    .padding(.top, isLandscape ? 4 : 44)
+                    .padding(.top, isLandscape ? 6 : 8)
                 
-                // 4 Travel Modes Quick Switcher Bar (Car / e-Bike / Walk / Transit)
+                // 4 Travel Modes Quick Switcher Bar (Single-line Scrollable, Never Wraps Vertically!)
                 travelModeSelectorBar
                     .padding(.horizontal, 12)
                 
+                // Unobstructed Custom Compass + Camera Mode Switcher Row (Right aligned, clear of top banner!)
+                HStack {
+                    // Hint badge: Tap map anywhere to navigate
+                    HStack(spacing: 4) {
+                        Image(systemName: "hand.tap.fill")
+                            .foregroundColor(httGold)
+                        Text(tr("点击地图任意位置可直接导航", "點擊地圖任意位置可直接導航", "Tap anywhere on map to navigate"))
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundColor(httCream)
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .background(Color.black.opacity(0.68))
+                    .cornerRadius(8)
+                    
+                    Spacer()
+                    
+                    // Unobstructed Rotating HTT Compass Badge
+                    Button(action: {
+                        manager.toggleCameraMode()
+                    }) {
+                        HStack(spacing: 5) {
+                            ZStack {
+                                Circle()
+                                    .fill(Color.black.opacity(0.85))
+                                    .frame(width: 30, height: 30)
+                                    .overlay(Circle().stroke(httGold, lineWidth: 1.5))
+                                Image(systemName: "location.north.fill")
+                                    .font(.system(size: 13, weight: .bold))
+                                    .foregroundColor(.red)
+                                    .rotationEffect(.degrees(manager.cameraMode == .headingUp ? -manager.headingDegrees : 0))
+                            }
+                            VStack(alignment: .leading, spacing: 0) {
+                                Text(manager.compassDirectionString)
+                                    .font(.system(size: 11, weight: .black))
+                                    .foregroundColor(.white)
+                                Text(manager.cameraMode.shortTitle(manager.language))
+                                    .font(.system(size: 9, weight: .bold))
+                                    .foregroundColor(httGold)
+                            }
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Color.black.opacity(0.78))
+                        .cornerRadius(18)
+                        .overlay(RoundedRectangle(cornerRadius: 18).stroke(httGold.opacity(0.7), lineWidth: 1))
+                    }
+                }
+                .padding(.horizontal, 12)
+                
                 Spacer()
+                
+                // Interactive Tapped Map Point Navigation Card (Appears when user taps anywhere on map!)
+                if manager.tappedMapCoord != nil {
+                    tappedMapPointNavigationCard
+                        .padding(.horizontal, 12)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
                 
                 // Bottom Floating Control Island (Speedometer + Mascot Stage + Recenter + Exit)
                 bottomEnlargedFloatingIsland(isLandscape: isLandscape)
                     .padding(.horizontal, 12)
-                    .padding(.bottom, isLandscape ? 8 : 24)
+                    .padding(.bottom, isLandscape ? 8 : 20)
             }
         }
     }
@@ -578,76 +678,97 @@ struct ContentView: View {
         )
     }
     
-    // 4 Travel Modes Switcher Bar in Enlarged Navigation View
+    // 4 Travel Modes + Camera Mode + Outfit + Recenter Bar (Single-Line Horizontal Scroll, Never Wraps Vertically!)
     private var travelModeSelectorBar: some View {
-        HStack(spacing: 8) {
-            ForEach(NavigationTravelMode.allCases) { mode in
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                ForEach(NavigationTravelMode.allCases) { mode in
+                    Button(action: {
+                        withAnimation {
+                            manager.travelMode = mode
+                        }
+                    }) {
+                        HStack(spacing: 4) {
+                            Image(systemName: mode.icon)
+                                .font(.system(size: 11, weight: .bold))
+                            Text(mode.title(manager.language))
+                                .font(.system(size: 11, weight: .bold))
+                                .lineLimit(1)
+                                .fixedSize(horizontal: true, vertical: false)
+                        }
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 6)
+                        .background(
+                            manager.travelMode == mode
+                            ? httCrimson
+                            : Color.black.opacity(0.72)
+                        )
+                        .foregroundColor(.white)
+                        .cornerRadius(8)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8)
+                                .stroke(manager.travelMode == mode ? httGold : Color.white.opacity(0.22), lineWidth: 1)
+                        )
+                    }
+                }
+                
+                // Camera Mode Toggle: 地图动 (Heading Up) vs 车标动 (North Up)
                 Button(action: {
-                    withAnimation {
-                        manager.travelMode = mode
-                    }
+                    manager.toggleCameraMode()
                 }) {
-                    HStack(spacing: 4) {
-                        Image(systemName: mode.icon)
-                            .font(.system(size: 11))
-                        Text(mode.title(manager.language))
-                            .font(.system(size: 11, weight: .bold))
+                    HStack(spacing: 3) {
+                        Image(systemName: manager.cameraMode.icon)
+                        Text(manager.cameraMode.title(manager.language))
+                            .lineLimit(1)
+                            .fixedSize(horizontal: true, vertical: false)
                     }
-                    .padding(.horizontal, 10)
+                    .font(.system(size: 10, weight: .bold))
+                    .padding(.horizontal, 8)
                     .padding(.vertical, 6)
-                    .background(
-                        manager.travelMode == mode
-                        ? httCrimson
-                        : Color.black.opacity(0.65)
-                    )
+                    .background(Color.blue.opacity(0.82))
                     .foregroundColor(.white)
                     .cornerRadius(8)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8)
-                            .stroke(manager.travelMode == mode ? httGold : Color.white.opacity(0.2), lineWidth: 1)
-                    )
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold.opacity(0.6), lineWidth: 1))
                 }
-            }
-            Spacer()
-            
-            // RM-500HTT Arrow Outfit Quick Switcher in Enlarged Map!
-            Menu {
-                ForEach(RM500ArrowOutfit.allCases) { outfit in
-                    Button(action: { manager.arrowOutfit = outfit }) {
-                        HStack {
-                            Text(outfit.title(manager.language))
-                            if manager.arrowOutfit == outfit { Image(systemName: "checkmark") }
-                        }
+                
+                // Outfit Switcher Button (Tap to cycle, Long-press to open Beautified Outfit Picker!)
+                Button(action: {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
+                        showOutfitPopup = true
                     }
+                }) {
+                    HStack(spacing: 3) {
+                        Image(systemName: manager.arrowOutfit.icon)
+                        Text(manager.arrowOutfit.title(manager.language))
+                            .lineLimit(1)
+                            .fixedSize(horizontal: true, vertical: false)
+                    }
+                    .font(.system(size: 10, weight: .bold))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 6)
+                    .background(Color.black.opacity(0.78))
+                    .foregroundColor(httGold)
+                    .cornerRadius(8)
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold.opacity(0.6), lineWidth: 1))
                 }
-            } label: {
-                HStack(spacing: 3) {
-                    Image(systemName: manager.arrowOutfit.icon)
-                    Text(manager.arrowOutfit.title(manager.language))
+                
+                // Re-center onto User Location Button (Fast Instant Recenter)
+                Button(action: {
+                    manager.triggerFastRecenter()
+                }) {
+                    HStack(spacing: 3) {
+                        Image(systemName: manager.mapTrackingUser ? "location.north.line.fill" : "location")
+                        Text(manager.mapTrackingUser ? tr("跟车中", "跟車中", "Locked") : tr("回中跟车", "回中跟車", "Recenter"))
+                            .lineLimit(1)
+                            .fixedSize(horizontal: true, vertical: false)
+                    }
+                    .font(.system(size: 10, weight: .bold))
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 6)
+                    .background(manager.mapTrackingUser ? Color.green.opacity(0.88) : Color.black.opacity(0.78))
+                    .foregroundColor(manager.mapTrackingUser ? .black : httGold)
+                    .cornerRadius(8)
                 }
-                .font(.system(size: 10, weight: .bold))
-                .padding(.horizontal, 8)
-                .padding(.vertical, 6)
-                .background(Color.black.opacity(0.78))
-                .foregroundColor(httGold)
-                .cornerRadius(8)
-                .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold.opacity(0.6), lineWidth: 1))
-            }
-            
-            // Re-center onto User Location Button (Fast Instant Recenter)
-            Button(action: {
-                manager.triggerFastRecenter()
-            }) {
-                HStack(spacing: 3) {
-                    Image(systemName: manager.mapTrackingUser ? "location.north.line.fill" : "location")
-                    Text(manager.mapTrackingUser ? tr("跟车中", "跟車中", "Locked") : tr("回中跟车", "回中跟車", "Recenter"))
-                }
-                .font(.system(size: 10, weight: .bold))
-                .padding(.horizontal, 9)
-                .padding(.vertical, 6)
-                .background(manager.mapTrackingUser ? Color.green.opacity(0.85) : Color.black.opacity(0.75))
-                .foregroundColor(manager.mapTrackingUser ? .black : httGold)
-                .cornerRadius(8)
             }
         }
     }
@@ -742,17 +863,20 @@ struct ContentView: View {
             Button(action: {
                 withAnimation { manager.showMapMode.toggle() }
             }) {
-                HStack(spacing: 5) {
+                HStack(spacing: 4) {
                     Image(systemName: manager.showMapMode ? "map.fill" : "cup.and.saucer.fill")
+                        .font(.system(size: 11, weight: .bold))
                         .foregroundColor(httGold)
                     Text(manager.showMapMode
-                         ? tr("地图模式 (点切舞台)", "地圖模式 (點切舞台)", "Map Mode")
-                         : tr("舞台模式 (点切地图)", "舞台模式 (點切地圖)", "Stage Mode"))
-                        .font(.system(size: 12, weight: .heavy, design: .rounded))
+                         ? tr("地图模式(点切舞台)", "地圖模式(點切舞台)", "Map(Tap Stage)")
+                         : tr("舞台模式(点切地图)", "舞台模式(點切地圖)", "Stage(Tap Map)"))
+                        .font(.system(size: 11, weight: .heavy, design: .rounded))
                         .foregroundColor(httCream)
                         .lineLimit(1)
+                        .minimumScaleFactor(0.75)
+                        .fixedSize(horizontal: true, vertical: false)
                 }
-                .padding(.horizontal, 10)
+                .padding(.horizontal, 8)
                 .padding(.vertical, 7)
                 .background(httCrimson)
                 .cornerRadius(8)
@@ -990,6 +1114,22 @@ struct ContentView: View {
                                     .cornerRadius(7)
                             }
                             
+                            // Camera Mode Toggle in compact map (地图动 / 车标动)
+                            Button(action: {
+                                manager.toggleCameraMode()
+                            }) {
+                                HStack(spacing: 2) {
+                                    Image(systemName: manager.cameraMode.icon)
+                                    Text(manager.cameraMode.shortTitle(manager.language))
+                                }
+                                .font(.system(size: 9, weight: .bold))
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 5)
+                                .background(Color.blue.opacity(0.82))
+                                .foregroundColor(.white)
+                                .cornerRadius(7)
+                            }
+                            
                             // Manual Enlarge Full-Screen Button!
                             Button(action: {
                                 withAnimation(.spring(response: 0.35, dampingFraction: 0.7)) {
@@ -1010,6 +1150,11 @@ struct ContentView: View {
                         }
                         .padding(.horizontal, 6)
                         .padding(.top, 6)
+                        
+                        if manager.tappedMapCoord != nil {
+                            tappedMapPointNavigationCard
+                                .padding(.horizontal, 6)
+                        }
                         
                         Spacer()
                         
@@ -1409,110 +1554,315 @@ struct ContentView: View {
         }
     }
     
-    // MARK: - Portrait Bottom RM-500HTT Quick Feature Dock (Fills Bottom Space with Rich Controls!)
+    // MARK: - Interactive Tapped Map Point Card (Click Any Place on Map to Navigate!)
+    private var tappedMapPointNavigationCard: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "mappin.and.ellipse")
+                .font(.title2)
+                .foregroundColor(.orange)
+            
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 4) {
+                    Text(manager.tappedMapTitle)
+                        .font(.system(size: 13, weight: .heavy))
+                        .foregroundColor(.white)
+                        .lineLimit(1)
+                    if manager.isReverseGeocoding {
+                        ProgressView()
+                            .scaleEffect(0.6)
+                    }
+                }
+                Text(manager.tappedMapAddress)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(httCream.opacity(0.85))
+                    .lineLimit(1)
+            }
+            Spacer()
+            
+            Button(action: {
+                manager.startNavigationToTappedPoint()
+            }) {
+                HStack(spacing: 3) {
+                    Image(systemName: "location.fill")
+                    Text(tr("去这里", "去這裡", "Go Here"))
+                }
+                .font(.system(size: 11, weight: .heavy))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(httCrimson)
+                .foregroundColor(.white)
+                .cornerRadius(8)
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold, lineWidth: 1))
+            }
+            
+            Button(action: {
+                withAnimation { manager.dismissTappedPoint() }
+            }) {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.title3)
+                    .foregroundColor(.gray)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(Color.black.opacity(0.88))
+        .cornerRadius(12)
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.orange, lineWidth: 1.5))
+    }
+
+    // MARK: - Beautified RM-500HTT Long-Press Outfit Picker Modal Overlay
+    private var outfitQuickPickerModalOverlay: some View {
+        ZStack {
+            Color.black.opacity(0.65)
+                .ignoresSafeArea()
+                .onTapGesture {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
+                        showOutfitPopup = false
+                    }
+                }
+            
+            VStack(spacing: 12) {
+                // Header with RM-500HTT Authentic Notebook & Tea Cup aesthetics
+                HStack {
+                    if let cup = manager.getRM500UIImage("rm_teacup") {
+                        Image(uiImage: cup)
+                            .resizable()
+                            .scaledToFit()
+                            .frame(width: 34, height: 24)
+                    }
+                    Text(tr("RM-500HTT 导航车标衣橱", "RM-500HTT 導航車標衣櫥", "RM-500HTT Arrow Wardrobe"))
+                        .font(.system(size: 16, weight: .black, design: .rounded))
+                        .foregroundColor(httGold)
+                    Spacer()
+                    Button(action: {
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
+                            showOutfitPopup = false
+                        }
+                    }) {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.title2)
+                            .foregroundColor(httCream)
+                    }
+                }
+                .padding(.horizontal, 14)
+                .padding(.top, 12)
+                
+                // Live Character Arrow Preview Banner
+                HStack(spacing: 18) {
+                    if let arrowImg = manager.getRM500NavigationArrowFrame(mapCameraHeading: manager.headingDegrees) {
+                        Image(uiImage: arrowImg)
+                            .interpolation(.none)
+                            .resizable()
+                            .scaledToFit()
+                            .frame(width: 68, height: 86)
+                            .shadow(color: .black, radius: 4)
+                    } else {
+                        Image(uiImage: HTTSmoothMapView.Coordinator.createNavigationArrowImage())
+                            .resizable()
+                            .scaledToFit()
+                            .frame(width: 56, height: 56)
+                    }
+                    
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(manager.selectedCharacter.displayName(manager.language))
+                            .font(.system(size: 14, weight: .bold))
+                            .foregroundColor(.white)
+                        Text("\(tr("当前车标", "當前車標", "Current")): \(manager.arrowOutfit.title(manager.language))")
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundColor(httGold)
+                        Text(tr("点选下方造型立即更换自车导航标", "點選下方造型立即更換自車導航標", "Tap any outfit below to switch"))
+                            .font(.system(size: 10))
+                            .foregroundColor(httCream.opacity(0.75))
+                    }
+                    Spacer()
+                }
+                .padding(10)
+                .background(Color.white.opacity(0.08))
+                .cornerRadius(12)
+                .padding(.horizontal, 14)
+                
+                // 2-Column Beautified Grid of All Outfits
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+                    ForEach(RM500ArrowOutfit.allCases) { outfit in
+                        Button(action: {
+                            manager.arrowOutfit = outfit
+                            manager.playRandomCharacterGreeting()
+                            withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
+                                showOutfitPopup = false
+                            }
+                        }) {
+                            HStack(spacing: 8) {
+                                Image(systemName: outfit.icon)
+                                    .font(.system(size: 15, weight: .bold))
+                                    .foregroundColor(manager.arrowOutfit == outfit ? .black : httGold)
+                                    .frame(width: 30, height: 30)
+                                    .background(manager.arrowOutfit == outfit ? httGold : Color.black.opacity(0.5))
+                                    .cornerRadius(8)
+                                
+                                Text(outfit.title(manager.language))
+                                    .font(.system(size: 12, weight: .heavy))
+                                    .foregroundColor(manager.arrowOutfit == outfit ? httGold : .white)
+                                    .lineLimit(1)
+                                Spacer(minLength: 0)
+                                if manager.arrowOutfit == outfit {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .foregroundColor(httGold)
+                                        .font(.system(size: 14))
+                                }
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 9)
+                            .background(
+                                RoundedRectangle(cornerRadius: 10)
+                                    .fill(manager.arrowOutfit == outfit ? httCrimson.opacity(0.88) : Color.black.opacity(0.65))
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 10)
+                                    .stroke(manager.arrowOutfit == outfit ? httGold : Color.white.opacity(0.18), lineWidth: 1.5)
+                            )
+                        }
+                    }
+                }
+                .padding(.horizontal, 14)
+                .padding(.bottom, 14)
+            }
+            .frame(maxWidth: 380)
+            .background(
+                ZStack {
+                    RoundedRectangle(cornerRadius: 20)
+                        .fill(Color(red: 0.16, green: 0.12, blue: 0.15).opacity(0.96))
+                    if let themeBG = manager.getCurrentThemeBackground() {
+                        Image(uiImage: themeBG)
+                            .resizable()
+                            .scaledToFill()
+                            .opacity(0.22)
+                            .clipShape(RoundedRectangle(cornerRadius: 20))
+                    }
+                    RoundedRectangle(cornerRadius: 20)
+                        .stroke(httGold, lineWidth: 2.5)
+                }
+            )
+            .shadow(color: .black.opacity(0.6), radius: 16)
+            .padding(20)
+        }
+    }
+
+    // MARK: - Portrait & Landscape Bottom RM-500HTT Quick Feature Dock
     private var portraitBottomCompanionDock: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: 7) {
             // Row 1: 4 Travel Modes Direct Switcher (Car / e-Bike / Walk / Transit)
-            HStack(spacing: 6) {
+            HStack(spacing: 5) {
                 ForEach(NavigationTravelMode.allCases) { mode in
                     Button(action: {
                         manager.travelMode = mode
                     }) {
-                        HStack(spacing: 4) {
+                        HStack(spacing: 3) {
                             Image(systemName: mode.icon)
-                                .font(.system(size: 11, weight: .bold))
+                                .font(.system(size: 10, weight: .bold))
                             Text(mode.title(manager.language))
-                                .font(.system(size: 11, weight: .bold))
+                                .font(.system(size: 10, weight: .bold))
                                 .lineLimit(1)
+                                .minimumScaleFactor(0.8)
                         }
                         .frame(maxWidth: .infinity)
-                        .padding(.vertical, 8)
+                        .padding(.vertical, 7)
                         .background(manager.travelMode == mode ? httCrimson : Color.black.opacity(0.65))
                         .foregroundColor(manager.travelMode == mode ? .white : httCream)
-                        .cornerRadius(9)
+                        .cornerRadius(8)
                         .overlay(
-                            RoundedRectangle(cornerRadius: 9)
+                            RoundedRectangle(cornerRadius: 8)
                                 .stroke(manager.travelMode == mode ? httGold : Color.white.opacity(0.18), lineWidth: 1.2)
                         )
                     }
                 }
             }
             
-            // Row 2: RM-500HTT Quick Outfit Cycle + Birthday Special + Memorial Album + Trip Reset
-            HStack(spacing: 7) {
-                Button(action: {
-                    manager.cycleNextArrowOutfit()
-                }) {
-                    HStack(spacing: 5) {
-                        Image(systemName: manager.arrowOutfit.icon)
-                            .font(.system(size: 13, weight: .bold))
+            // Row 2: RM-500HTT Outfit (Tap=Cycle, LongPress=Wardrobe) + Camera Mode (地图动/车标动) + Birthday Special + Trip Reset
+            HStack(spacing: 6) {
+                // Outfit Button: Tap to cycle, Long-press to open Beautified Wardrobe Popup!
+                HStack(spacing: 5) {
+                    Image(systemName: manager.arrowOutfit.icon)
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundColor(httGold)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(tr("车标换装(长按选)", "車標換裝(長按選)", "Outfit(Hold)"))
+                            .font(.system(size: 10, weight: .heavy))
+                            .foregroundColor(.white)
+                            .lineLimit(1)
+                        Text(manager.arrowOutfit.title(manager.language))
+                            .font(.system(size: 9, weight: .bold))
                             .foregroundColor(httGold)
+                            .lineLimit(1)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 7)
+                .frame(maxWidth: .infinity)
+                .background(Color.black.opacity(0.75))
+                .cornerRadius(10)
+                .overlay(RoundedRectangle(cornerRadius: 10).stroke(httGold.opacity(0.7), lineWidth: 1.2))
+                .onTapGesture {
+                    manager.cycleNextArrowOutfit()
+                }
+                .onLongPressGesture(minimumDuration: 0.35) {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
+                        showOutfitPopup = true
+                    }
+                }
+                
+                // Camera Mode Button: Switch between 地图动 (Heading Up) and 车标动 (North Up)
+                Button(action: {
+                    manager.toggleCameraMode()
+                }) {
+                    HStack(spacing: 4) {
+                        Image(systemName: manager.cameraMode.icon)
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundColor(.cyan)
                         VStack(alignment: .leading, spacing: 1) {
-                            Text(tr("车标一键换装", "車標一鍵換裝", "Arrow Outfit"))
-                                .font(.system(size: 11, weight: .heavy))
+                            Text(tr("导航视角模式", "導航視角模式", "Nav View"))
+                                .font(.system(size: 10, weight: .heavy))
                                 .foregroundColor(.white)
-                            Text(manager.arrowOutfit.title(manager.language))
-                                .font(.system(size: 9, weight: .bold))
-                                .foregroundColor(httGold)
+                                .lineLimit(1)
+                            Text(manager.cameraMode.title(manager.language))
+                                .font(.system(size: 8, weight: .bold))
+                                .foregroundColor(.cyan)
+                                .lineLimit(1)
                         }
                         Spacer(minLength: 0)
                     }
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 8)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 7)
                     .frame(maxWidth: .infinity)
-                    .background(Color.black.opacity(0.72))
+                    .background(Color.black.opacity(0.75))
                     .cornerRadius(10)
-                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(httGold.opacity(0.65), lineWidth: 1.2))
+                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.cyan.opacity(0.6), lineWidth: 1.2))
                 }
                 
+                // Birthday Special Voice Button
                 Button(action: {
                     manager.triggerBirthdaySpecialVoice()
                 }) {
-                    HStack(spacing: 5) {
+                    VStack(spacing: 2) {
                         if let giftImg = manager.getRM500UIImage("rm_gift_yui") {
                             Image(uiImage: giftImg)
                                 .resizable()
                                 .scaledToFit()
-                                .frame(width: 24, height: 24)
+                                .frame(width: 18, height: 18)
                         } else {
                             Image(systemName: "gift.fill")
                                 .font(.system(size: 13, weight: .bold))
                                 .foregroundColor(.pink)
                         }
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(tr("生日/全员特典", "生日/全員特典", "Special Gift"))
-                                .font(.system(size: 11, weight: .heavy))
-                                .foregroundColor(.white)
-                            Text(tr("原机隐藏纪念音", "原機隱藏紀念音", "Secret Voice"))
-                                .font(.system(size: 9))
-                                .foregroundColor(httCream.opacity(0.85))
-                        }
-                        Spacer(minLength: 0)
-                    }
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 8)
-                    .frame(maxWidth: .infinity)
-                    .background(Color(red: 0.72, green: 0.22, blue: 0.48).opacity(0.85))
-                    .cornerRadius(10)
-                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(httGold.opacity(0.65), lineWidth: 1.2))
-                }
-                
-                Button(action: {
-                    manager.resetTripStats()
-                }) {
-                    VStack(spacing: 2) {
-                        Image(systemName: "arrow.counterclockwise.circle.fill")
-                            .font(.system(size: 14, weight: .bold))
-                            .foregroundColor(httGold)
-                        Text(tr("里程清零", "里程清零", "Reset Trip"))
+                        Text(tr("特典音", "特典音", "Gift"))
                             .font(.system(size: 9, weight: .bold))
                             .foregroundColor(.white)
                     }
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 8)
-                    .background(Color.black.opacity(0.72))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 6)
+                    .background(Color(red: 0.72, green: 0.22, blue: 0.48).opacity(0.88))
                     .cornerRadius(10)
-                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.white.opacity(0.25), lineWidth: 1))
+                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(httGold.opacity(0.65), lineWidth: 1.2))
                 }
             }
         }
