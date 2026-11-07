@@ -263,8 +263,43 @@ struct HTTSmoothMapView: UIViewRepresentable {
                     route.polyline.title = "WALKING_BLUE"
                     mapView.addOverlay(route.polyline, level: .aboveRoads)
                 } else {
-                    route.polyline.title = "TRANSIT_GREEN"
-                    mapView.addOverlay(route.polyline, level: .aboveRoads)
+                    // Transit Mode on Map: Split into Walking Approach (Blue) + Bus/Subway Ride (GaoDe Royal Blue / Green) + Station Stop Pins!
+                    let pts = route.polyline.points()
+                    let totalPts = route.polyline.pointCount
+                    if totalPts > 8 {
+                        let cutWalk1 = max(2, Int(Double(totalPts) * 0.20))
+                        let cutRide = max(cutWalk1 + 2, Int(Double(totalPts) * 0.88))
+                        
+                        // Leg 1: Walk to Bus/Subway Station (Pedestrian Blue)
+                        let polyWalk1 = MKPolyline(points: pts, count: cutWalk1)
+                        polyWalk1.title = "WALKING_BLUE"
+                        mapView.addOverlay(polyWalk1, level: .aboveRoads)
+                        
+                        // Boarding Station Marker (e.g. 沙湾天桥 / 地铁站)
+                        let boardPin = MKPointAnnotation()
+                        boardPin.coordinate = pts[cutWalk1 - 1].coordinate
+                        if manager.selectedTransitPlanIndex < manager.transitPlans.count,
+                           let firstTransit = manager.transitPlans[manager.selectedTransitPlanIndex].steps.first(where: { $0.kind != .walk }) {
+                            boardPin.title = "\(firstTransit.fromStation) (\(firstTransit.lineName))"
+                        } else {
+                            boardPin.title = "上车站台"
+                        }
+                        boardPin.subtitle = "BUS_STOP_PIN"
+                        mapView.addAnnotation(boardPin)
+                        
+                        // Leg 2: Bus / Subway Ride (GaoDe Transit Blue/Green)
+                        let polyRide = MKPolyline(points: pts.advanced(by: cutWalk1 - 1), count: cutRide - cutWalk1 + 1)
+                        polyRide.title = "TRANSIT_GREEN"
+                        mapView.addOverlay(polyRide, level: .aboveRoads)
+                        
+                        // Leg 3: Walk from Alighting Station to Destination
+                        let polyWalk2 = MKPolyline(points: pts.advanced(by: cutRide - 1), count: totalPts - cutRide + 1)
+                        polyWalk2.title = "WALKING_BLUE"
+                        mapView.addOverlay(polyWalk2, level: .aboveRoads)
+                    } else {
+                        route.polyline.title = "TRANSIT_GREEN"
+                        mapView.addOverlay(route.polyline, level: .aboveRoads)
+                    }
                 }
                 
                 // Add Start Point (起) and Destination Point (終) Annotations like GaoDe!
@@ -516,6 +551,9 @@ struct HTTSmoothMapView: UIViewRepresentable {
                 } else if sub == "START_PIN" {
                     pinView?.markerTintColor = UIColor(red: 0.0, green: 0.72, blue: 0.35, alpha: 1.0)
                     pinView?.glyphText = "起"
+                } else if sub == "BUS_STOP_PIN" {
+                    pinView?.markerTintColor = UIColor(red: 0.12, green: 0.47, blue: 0.94, alpha: 1.0)
+                    pinView?.glyphImage = UIImage(systemName: "bus.fill")
                 } else {
                     // GaoDe Red "終" Badge for Destination!
                     pinView?.markerTintColor = UIColor(red: 0.92, green: 0.22, blue: 0.25, alpha: 1.0)
@@ -3183,9 +3221,9 @@ struct InAppTransitPlanSheetView: View {
                         
                         ScrollView(.vertical, showsIndicators: true) {
                             VStack(alignment: .leading, spacing: 0) {
-                                // GaoDe Summary strip
-                                VStack(alignment: .leading, spacing: 6) {
-                                    HStack(alignment: .firstTextBaseline) {
+                                // GaoDe Summary strip (Matches Screenshot 1: 30分钟 步行458米 + 🚶8 [M385路] 🚶1 + 5站·¥3·沙湾天桥上车 + 尾班车提醒!)
+                                VStack(alignment: .leading, spacing: 9) {
+                                    HStack(alignment: .firstTextBaseline, spacing: 8) {
                                         Text("\(activePlan.totalMinutes) 分钟")
                                             .font(.system(size: 24, weight: .black))
                                             .foregroundColor(.white)
@@ -3198,14 +3236,57 @@ struct InAppTransitPlanSheetView: View {
                                             .foregroundColor(httGold)
                                     }
                                     
-                                    HStack(spacing: 8) {
+                                    // GaoDe Step Overview Pill Bar (🚶8 -> [M385路] -> 🚶1)
+                                    ScrollView(.horizontal, showsIndicators: false) {
+                                        HStack(spacing: 6) {
+                                            ForEach(Array(activePlan.steps.enumerated()), id: \.element.id) { idx, st in
+                                                if st.kind == .walk {
+                                                    HStack(spacing: 2) {
+                                                        Image(systemName: "figure.walk")
+                                                            .font(.system(size: 10, weight: .bold))
+                                                        Text("\(st.durationMins)")
+                                                            .font(.system(size: 11, weight: .bold))
+                                                    }
+                                                    .padding(.horizontal, 6)
+                                                    .padding(.vertical, 3)
+                                                    .background(Color.white.opacity(0.12))
+                                                    .foregroundColor(httCream)
+                                                    .cornerRadius(5)
+                                                } else {
+                                                    Text(st.lineName)
+                                                        .font(.system(size: 11, weight: .black))
+                                                        .padding(.horizontal, 8)
+                                                        .padding(.vertical, 3)
+                                                        .background(stepColor(for: st).opacity(0.22))
+                                                        .foregroundColor(Color(red: 0.35, green: 0.75, blue: 1.0))
+                                                        .cornerRadius(5)
+                                                        .overlay(RoundedRectangle(cornerRadius: 5).stroke(stepColor(for: st), lineWidth: 1))
+                                                }
+                                            }
+                                        }
+                                    }
+                                    
+                                    HStack(spacing: 6) {
                                         Text("\(activePlan.totalStations) 站")
+                                        Text("·")
+                                        Text("¥\(activePlan.priceYuan)")
                                         Text("·")
                                         Text(activePlan.startExitDesc)
                                             .foregroundColor(Color(red: 0.45, green: 0.85, blue: 1.0))
                                     }
                                     .font(.system(size: 12, weight: .bold))
-                                    .foregroundColor(httCream.opacity(0.8))
+                                    .foregroundColor(httCream.opacity(0.85))
+                                    
+                                    if !activePlan.warningNotice.isEmpty {
+                                        Text(activePlan.warningNotice)
+                                            .font(.system(size: 11, weight: .bold))
+                                            .foregroundColor(Color.orange)
+                                            .padding(.horizontal, 10)
+                                            .padding(.vertical, 5)
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                            .background(Color.orange.opacity(0.14))
+                                            .cornerRadius(6)
+                                    }
                                 }
                                 .padding()
                                 .frame(maxWidth: .infinity, alignment: .leading)
