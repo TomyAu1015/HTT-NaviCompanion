@@ -771,136 +771,355 @@ struct ContentView: View {
         }
     }
     
-    // MARK: - ENLARGED FULL-SCREEN NAVIGATION HUD
+    // MARK: - ENLARGED FULL-SCREEN NAVIGATION HUD (Portrait 100% preserved; Landscape uses dedicated 2-Column Notch-Safe Non-Overlapping Layout!)
     private func enlargedNavigationHUDView(geo: GeometryProxy, isLandscape: Bool) -> some View {
         ZStack {
             // 1. Full Screen 3D Navigation Map
             HTTSmoothMapView(manager: manager)
                 .ignoresSafeArea()
             
-            // 2. Overlays
-            VStack(spacing: 5) {
-                // Top Navigation Guidance Card
-                topNavigationBannerCard
-                    .padding(.horizontal, 12)
-                    .padding(.top, isLandscape ? 6 : 8)
+            // 2. Overlays: Dedicated Landscape vs Portrait Layout
+            if isLandscape {
+                let leadingNotchPad: CGFloat = max(geo.safeAreaInsets.leading + 8, 44)
+                let trailingSafePad: CGFloat = max(geo.safeAreaInsets.trailing + 8, 16)
+                let usableW = max(480, geo.size.width - leadingNotchPad - trailingSafePad)
+                let leftPanelW = min(340, usableW * 0.44)
                 
-                // Multi-Lane Guidance Bar (3~4 Lanes: Recommended in Bright White, Others in Dimmed Gray) + Traffic Light Countdown!
-                if manager.activeRoute != nil || manager.isDemoSimulating {
-                    laneGuidanceAndTrafficLightBar
-                        .padding(.horizontal, 12)
-                }
-                
-                // Show Travel Mode switcher bar ONLY before pressing [开始导航] (Hidden during focused driving!)
-                if !manager.isNavigatingFocused {
-                    travelModeSelectorBar
-                        .padding(.horizontal, 12)
-                }
-                
-                // Electronic Speed Camera + Traffic Congestion + Toll + Service Area HUD Strip + Unobstructed Compass + Zoom [+] / [-]!
-                HStack(alignment: .top, spacing: 6) {
-                    electronicEyeAndHighwayHUDStrip
+                HStack(alignment: .top, spacing: 10) {
+                    // LEFT COLUMN (Compact Control Stack: Top Turn Card + Lanes/Lights + Travel Modes + SpeedCam/ServiceArea)
+                    VStack(alignment: .leading, spacing: 5) {
+                        topNavigationBannerCard
+                        
+                        if manager.activeRoute != nil || manager.isDemoSimulating {
+                            laneGuidanceAndTrafficLightBar
+                        }
+                        
+                        if !manager.isNavigatingFocused {
+                            travelModeSelectorBar
+                        }
+                        
+                        electronicEyeAndHighwayHUDStrip
+                        
+                        Spacer(minLength: 2)
+                        
+                        // Speedometer + Speech Bubble + Mascot Compact Dock at Bottom-Left
+                        bottomEnlargedFloatingIsland(isLandscape: true)
+                    }
+                    .frame(width: leftPanelW)
                     
-                    Spacer(minLength: 4)
-                    
-                    // Right Side Stack: Unobstructed Rotating HTT Compass + Recenter + Zoom [+] / [-] Buttons!
-                    VStack(alignment: .trailing, spacing: 7) {
-                        Button(action: {
-                            manager.toggleCameraMode()
-                        }) {
+                    // CENTER & RIGHT AREA (Wide Open Map Center for Character Arrow + Right Control Column + Bottom Route Card)
+                    VStack(alignment: .trailing, spacing: 5) {
+                        // Top-Right Controls: Compass + Recenter + Zoom [+] / [-]
+                        VStack(alignment: .trailing, spacing: 6) {
+                            Button(action: {
+                                manager.toggleCameraMode()
+                            }) {
+                                HStack(spacing: 5) {
+                                    ZStack {
+                                        Circle()
+                                            .fill(Color.black.opacity(0.85))
+                                            .frame(width: 26, height: 26)
+                                            .overlay(Circle().stroke(httGold, lineWidth: 1.5))
+                                        Image(systemName: "location.north.fill")
+                                            .font(.system(size: 11, weight: .bold))
+                                            .foregroundColor(.red)
+                                            .rotationEffect(.degrees(manager.cameraMode == .headingUp ? -manager.headingDegrees : 0))
+                                    }
+                                    VStack(alignment: .leading, spacing: 0) {
+                                        Text(manager.compassDirectionString)
+                                            .font(.system(size: 10, weight: .black))
+                                            .foregroundColor(.white)
+                                        Text(manager.cameraMode.shortTitle(manager.language))
+                                            .font(.system(size: 8, weight: .bold))
+                                            .foregroundColor(httGold)
+                                    }
+                                }
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 4)
+                                .background(Color.black.opacity(0.82))
+                                .cornerRadius(16)
+                                .overlay(RoundedRectangle(cornerRadius: 16).stroke(httGold.opacity(0.75), lineWidth: 1))
+                            }
+                            
+                            Button(action: {
+                                manager.triggerFastRecenter()
+                            }) {
+                                HStack(spacing: 3) {
+                                    Image(systemName: manager.mapTrackingUser ? "location.north.line.fill" : "location")
+                                    Text(manager.mapTrackingUser ? tr("跟车中", "跟車中", "Locked") : tr("回中", "回中", "Center"))
+                                }
+                                .font(.system(size: 10, weight: .bold))
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 5)
+                                .background(manager.mapTrackingUser ? Color.green.opacity(0.88) : Color.black.opacity(0.82))
+                                .foregroundColor(manager.mapTrackingUser ? .black : httGold)
+                                .cornerRadius(8)
+                            }
+                            
                             HStack(spacing: 5) {
-                                ZStack {
-                                    Circle()
-                                        .fill(Color.black.opacity(0.85))
-                                        .frame(width: 28, height: 28)
-                                        .overlay(Circle().stroke(httGold, lineWidth: 1.5))
-                                    Image(systemName: "location.north.fill")
-                                        .font(.system(size: 12, weight: .bold))
-                                        .foregroundColor(.red)
-                                        .rotationEffect(.degrees(manager.cameraMode == .headingUp ? -manager.headingDegrees : 0))
-                                }
-                                VStack(alignment: .leading, spacing: 0) {
-                                    Text(manager.compassDirectionString)
-                                        .font(.system(size: 10, weight: .black))
-                                        .foregroundColor(.white)
-                                    Text(manager.cameraMode.shortTitle(manager.language))
-                                        .font(.system(size: 8, weight: .bold))
+                                Button(action: { manager.zoomMapIn() }) {
+                                    Image(systemName: "plus.magnifyingglass")
+                                        .font(.system(size: 14, weight: .bold))
                                         .foregroundColor(httGold)
+                                        .frame(width: 32, height: 32)
+                                        .background(Color.black.opacity(0.82))
+                                        .cornerRadius(8)
+                                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold.opacity(0.6), lineWidth: 1))
+                                }
+                                Button(action: { manager.zoomMapOut() }) {
+                                    Image(systemName: "minus.magnifyingglass")
+                                        .font(.system(size: 14, weight: .bold))
+                                        .foregroundColor(httCream)
+                                        .frame(width: 32, height: 32)
+                                        .background(Color.black.opacity(0.82))
+                                        .cornerRadius(8)
+                                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.25), lineWidth: 1))
                                 }
                             }
-                            .padding(.horizontal, 7)
-                            .padding(.vertical, 4)
-                            .background(Color.black.opacity(0.82))
-                            .cornerRadius(16)
-                            .overlay(RoundedRectangle(cornerRadius: 16).stroke(httGold.opacity(0.75), lineWidth: 1))
                         }
                         
-                        // Recenter Button on Right Side (Always accessible even in Focused Driving Mode!)
-                        Button(action: {
-                            manager.triggerFastRecenter()
-                        }) {
-                            HStack(spacing: 3) {
-                                Image(systemName: manager.mapTrackingUser ? "location.north.line.fill" : "location")
-                                Text(manager.mapTrackingUser ? tr("跟车中", "跟車中", "Locked") : tr("回中", "回中", "Center"))
-                            }
-                            .font(.system(size: 10, weight: .bold))
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 6)
-                            .background(manager.mapTrackingUser ? Color.green.opacity(0.88) : Color.black.opacity(0.82))
-                            .foregroundColor(manager.mapTrackingUser ? .black : httGold)
-                            .cornerRadius(8)
+                        Spacer(minLength: 2)
+                        
+                        if manager.tappedMapCoord != nil {
+                            tappedMapPointNavigationCard
                         }
                         
-                        // Explicit Zoom In [+] / Zoom Out [-] Buttons (Strictly zooms in/out at current position!)
-                        VStack(spacing: 4) {
-                            Button(action: { manager.zoomMapIn() }) {
-                                Image(systemName: "plus.magnifyingglass")
-                                    .font(.system(size: 15, weight: .bold))
-                                    .foregroundColor(httGold)
-                                    .frame(width: 34, height: 34)
-                                    .background(Color.black.opacity(0.82))
-                                    .cornerRadius(8)
-                                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold.opacity(0.6), lineWidth: 1))
+                        // Compact Bottom-Right Pre-Navigation Route Card (Fits 100% inside Landscape height without clipping!)
+                        if !manager.isNavigatingFocused && (manager.activeRoute != nil || !manager.candidateRoutes.isEmpty) {
+                            landscapeCompactPreNavCard
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+                }
+                .padding(.leading, leadingNotchPad)
+                .padding(.trailing, trailingSafePad)
+                .padding(.top, 6)
+                .padding(.bottom, 8)
+            } else {
+                // PORTRAIT LAYOUT: Kept 100% Identical as requested!
+                VStack(spacing: 5) {
+                    // Top Navigation Guidance Card
+                    topNavigationBannerCard
+                        .padding(.horizontal, 12)
+                        .padding(.top, 8)
+                    
+                    // Multi-Lane Guidance Bar (3~4 Lanes: Recommended in Bright White, Others in Dimmed Gray) + Traffic Light Countdown!
+                    if manager.activeRoute != nil || manager.isDemoSimulating {
+                        laneGuidanceAndTrafficLightBar
+                            .padding(.horizontal, 12)
+                    }
+                    
+                    // Show Travel Mode switcher bar ONLY before pressing [开始导航] (Hidden during focused driving!)
+                    if !manager.isNavigatingFocused {
+                        travelModeSelectorBar
+                            .padding(.horizontal, 12)
+                    }
+                    
+                    // Electronic Speed Camera + Traffic Congestion + Toll + Service Area HUD Strip + Unobstructed Compass + Zoom [+] / [-]!
+                    HStack(alignment: .top, spacing: 6) {
+                        electronicEyeAndHighwayHUDStrip
+                        
+                        Spacer(minLength: 4)
+                        
+                        // Right Side Stack: Unobstructed Rotating HTT Compass + Recenter + Zoom [+] / [-] Buttons!
+                        VStack(alignment: .trailing, spacing: 7) {
+                            Button(action: {
+                                manager.toggleCameraMode()
+                            }) {
+                                HStack(spacing: 5) {
+                                    ZStack {
+                                        Circle()
+                                            .fill(Color.black.opacity(0.85))
+                                            .frame(width: 28, height: 28)
+                                            .overlay(Circle().stroke(httGold, lineWidth: 1.5))
+                                        Image(systemName: "location.north.fill")
+                                            .font(.system(size: 12, weight: .bold))
+                                            .foregroundColor(.red)
+                                            .rotationEffect(.degrees(manager.cameraMode == .headingUp ? -manager.headingDegrees : 0))
+                                    }
+                                    VStack(alignment: .leading, spacing: 0) {
+                                        Text(manager.compassDirectionString)
+                                            .font(.system(size: 10, weight: .black))
+                                            .foregroundColor(.white)
+                                        Text(manager.cameraMode.shortTitle(manager.language))
+                                            .font(.system(size: 8, weight: .bold))
+                                            .foregroundColor(httGold)
+                                    }
+                                }
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 4)
+                                .background(Color.black.opacity(0.82))
+                                .cornerRadius(16)
+                                .overlay(RoundedRectangle(cornerRadius: 16).stroke(httGold.opacity(0.75), lineWidth: 1))
                             }
-                            Button(action: { manager.zoomMapOut() }) {
-                                Image(systemName: "minus.magnifyingglass")
-                                    .font(.system(size: 15, weight: .bold))
-                                    .foregroundColor(httCream)
-                                    .frame(width: 34, height: 34)
-                                    .background(Color.black.opacity(0.82))
-                                    .cornerRadius(8)
-                                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.25), lineWidth: 1))
+                            
+                            // Recenter Button on Right Side (Always accessible even in Focused Driving Mode!)
+                            Button(action: {
+                                manager.triggerFastRecenter()
+                            }) {
+                                HStack(spacing: 3) {
+                                    Image(systemName: manager.mapTrackingUser ? "location.north.line.fill" : "location")
+                                    Text(manager.mapTrackingUser ? tr("跟车中", "跟車中", "Locked") : tr("回中", "回中", "Center"))
+                                }
+                                .font(.system(size: 10, weight: .bold))
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 6)
+                                .background(manager.mapTrackingUser ? Color.green.opacity(0.88) : Color.black.opacity(0.82))
+                                .foregroundColor(manager.mapTrackingUser ? .black : httGold)
+                                .cornerRadius(8)
+                            }
+                            
+                            // Explicit Zoom In [+] / Zoom Out [-] Buttons (Strictly zooms in/out at current position!)
+                            VStack(spacing: 4) {
+                                Button(action: { manager.zoomMapIn() }) {
+                                    Image(systemName: "plus.magnifyingglass")
+                                        .font(.system(size: 15, weight: .bold))
+                                        .foregroundColor(httGold)
+                                        .frame(width: 34, height: 34)
+                                        .background(Color.black.opacity(0.82))
+                                        .cornerRadius(8)
+                                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold.opacity(0.6), lineWidth: 1))
+                                }
+                                Button(action: { manager.zoomMapOut() }) {
+                                    Image(systemName: "minus.magnifyingglass")
+                                        .font(.system(size: 15, weight: .bold))
+                                        .foregroundColor(httCream)
+                                        .frame(width: 34, height: 34)
+                                        .background(Color.black.opacity(0.82))
+                                        .cornerRadius(8)
+                                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.25), lineWidth: 1))
+                                }
                             }
                         }
                     }
-                }
-                .padding(.horizontal, 12)
-                
-                Spacer()
-                
-                // Interactive Tapped Named POI Card (Appears only when user taps a real shop/place on map!)
-                if manager.tappedMapCoord != nil {
-                    tappedMapPointNavigationCard
-                        .padding(.horizontal, 12)
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
-                }
-                
-                // Bottom Pre-Navigation Panel: Highway Preference + Candidate Routes + Prominent [🚀 开始导航] Button!
-                // Moved to the bottom as requested, and automatically hides once [开始导航] is pressed!
-                if !manager.isNavigatingFocused && (manager.activeRoute != nil || !manager.candidateRoutes.isEmpty) {
-                    bottomPreNavRouteSelectionCard
-                        .padding(.horizontal, 12)
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
-                }
-                
-                // Bottom Floating Control Island (Speedometer + Speech Bubble + Bottom-Right Mascot!)
-                bottomEnlargedFloatingIsland(isLandscape: isLandscape)
                     .padding(.horizontal, 12)
-                    .padding(.bottom, isLandscape ? 8 : 20)
+                    
+                    Spacer()
+                    
+                    // Interactive Tapped Named POI Card (Appears only when user taps a real shop/place on map!)
+                    if manager.tappedMapCoord != nil {
+                        tappedMapPointNavigationCard
+                            .padding(.horizontal, 12)
+                            .transition(.move(edge: .bottom).combined(with: .opacity))
+                    }
+                    
+                    // Bottom Pre-Navigation Panel: Highway Preference + Candidate Routes + Prominent [🚀 开始导航] Button!
+                    if !manager.isNavigatingFocused && (manager.activeRoute != nil || !manager.candidateRoutes.isEmpty) {
+                        bottomPreNavRouteSelectionCard
+                            .padding(.horizontal, 12)
+                            .transition(.move(edge: .bottom).combined(with: .opacity))
+                    }
+                    
+                    // Bottom Floating Control Island (Speedometer + Speech Bubble + Bottom-Right Mascot!)
+                    bottomEnlargedFloatingIsland(isLandscape: false)
+                        .padding(.horizontal, 12)
+                        .padding(.bottom, 20)
+                }
             }
         }
     }
     
+    // Compact Landscape Pre-Navigation Card (Fits in bottom-right of Landscape screen without any vertical overflow!)
+    private var landscapeCompactPreNavCard: some View {
+        VStack(spacing: 6) {
+            if manager.travelMode == .driving {
+                HStack(spacing: 5) {
+                    ForEach(RouteStrategyPreference.allCases) { pref in
+                        let isSelPref = (manager.routePreference == pref)
+                        Button(action: {
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                manager.routePreference = pref
+                            }
+                        }) {
+                            HStack(spacing: 3) {
+                                Image(systemName: pref.icon)
+                                    .font(.system(size: 10, weight: .bold))
+                                Text(pref.title(manager.language))
+                                    .font(.system(size: 11, weight: .heavy))
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.75)
+                            }
+                            .frame(maxWidth: .infinity, minHeight: 28)
+                            .background(isSelPref ? httGold : Color.white.opacity(0.14))
+                            .foregroundColor(isSelPref ? .black : httCream)
+                            .cornerRadius(7)
+                        }
+                    }
+                }
+            } else if manager.travelMode == .transit {
+                Button(action: {
+                    manager.showTransitPlanSheet = true
+                }) {
+                    HStack(spacing: 5) {
+                        Image(systemName: "tram.fill")
+                        Text(tr("查看完整公交地铁换乘时间轴与车站", "查看完整公交地鐵換乘時間軸與車站", "View Full Transit Timeline"))
+                            .font(.system(size: 11, weight: .bold))
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .background(Color.purple.opacity(0.4))
+                    .foregroundColor(.white)
+                    .cornerRadius(7)
+                }
+            }
+            
+            HStack(spacing: 6) {
+                if manager.travelMode != .transit && !manager.candidateRoutes.isEmpty {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 6) {
+                            ForEach(0..<manager.candidateRoutes.count, id: \.self) { idx in
+                                let r = manager.candidateRoutes[idx]
+                                let isSel = (manager.selectedRouteIndex == idx)
+                                let estMins = max(1, Int(r.expectedTravelTime / 60.0))
+                                Button(action: {
+                                    manager.selectCandidateRoute(at: idx)
+                                }) {
+                                    VStack(alignment: .leading, spacing: 1) {
+                                        Text("\(estMins)分 · \(String(format: "%.1fkm", r.distance / 1000.0))")
+                                            .font(.system(size: 11, weight: .black))
+                                            .foregroundColor(isSel ? .white : httGold)
+                                        Text(manager.routeOptionBadgeTitle(for: r, index: idx))
+                                            .font(.system(size: 9, weight: .bold))
+                                            .foregroundColor(isSel ? httCream : .cyan)
+                                    }
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 4)
+                                    .background(isSel ? httCrimson : Color.white.opacity(0.14))
+                                    .cornerRadius(7)
+                                    .overlay(RoundedRectangle(cornerRadius: 7).stroke(isSel ? httGold : Color.clear, lineWidth: 1.2))
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                Button(action: {
+                    withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) {
+                        manager.startFocusedNavigation()
+                    }
+                }) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "location.north.circle.fill")
+                        Text(tr("开始导航", "開始導航", "Start"))
+                            .font(.system(size: 13, weight: .black))
+                    }
+                    .padding(.horizontal, 12)
+                    .frame(height: 36)
+                    .background(httCrimson)
+                    .foregroundColor(.white)
+                    .cornerRadius(9)
+                    .overlay(RoundedRectangle(cornerRadius: 9).stroke(httGold, lineWidth: 1.5))
+                }
+            }
+        }
+        .padding(8)
+        .background(Color.black.opacity(0.90))
+        .cornerRadius(12)
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(httGold, lineWidth: 1.5))
+    }
+
     // MARK: - Top Turn-by-Turn Instruction Banner Card
     private var topNavigationBannerCard: some View {
         HStack(spacing: 12) {
@@ -3294,33 +3513,7 @@ struct InAppTransitPlanSheetView: View {
                                         .cornerRadius(12)
                                         .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.blue.opacity(0.45), lineWidth: 1))
                                         
-                                        // Card B: 順 順風車 (Cross-City Hitchhike Reference Card)
-                                        HStack {
-                                            Text("順")
-                                                .font(.system(size: 12, weight: .black))
-                                                .foregroundColor(.white)
-                                                .padding(5)
-                                                .background(Color.blue)
-                                                .cornerRadius(6)
-                                            Text("順風車跨城直達")
-                                                .font(.system(size: 15, weight: .black))
-                                                .foregroundColor(.white)
-                                            Text("一口價 \(ic.hitchhikePriceText)")
-                                                .font(.system(size: 11, weight: .black))
-                                                .padding(.horizontal, 7)
-                                                .padding(.vertical, 3)
-                                                .background(Color.green.opacity(0.25))
-                                                .foregroundColor(.green)
-                                                .cornerRadius(5)
-                                            Spacer()
-                                            Text("\(ic.hitchhikeTimeText)  \(ic.hitchhikePriceText)")
-                                                .font(.system(size: 14, weight: .black))
-                                                .foregroundColor(httGold)
-                                        }
-                                        .padding(12)
-                                        .background(Color.black.opacity(0.55))
-                                        .cornerRadius(12)
-                                        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.white.opacity(0.12), lineWidth: 1))
+
                                     }
                                     .padding(.horizontal)
                                     .padding(.top, 8)

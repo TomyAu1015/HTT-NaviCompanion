@@ -48,9 +48,30 @@ struct CoordinateConverter {
         return CLLocationCoordinate2D(latitude: coord.latitude + dLat, longitude: coord.longitude + dLon)
     }
     
+    static func isInHongKong(_ coord: CLLocationCoordinate2D) -> Bool {
+        // Precise Hong Kong SAR boundary (South of Shenzhen River ~22.548N)
+        if coord.latitude >= 22.14 && coord.latitude <= 22.545 && coord.longitude >= 113.82 && coord.longitude <= 114.45 {
+            // Exclude Shenzhen Futian/Luohu/Shatoujiao north of 22.522N
+            if coord.latitude > 22.522 && coord.longitude < 114.16 {
+                return false
+            }
+            if coord.latitude > 22.542 {
+                return false
+            }
+            return true
+        }
+        return false
+    }
+    
+    static func isInMacau(_ coord: CLLocationCoordinate2D) -> Bool {
+        return coord.latitude >= 22.10 && coord.latitude <= 22.215 && coord.longitude >= 113.52 && coord.longitude <= 113.60
+    }
+
     private static func isOutOfChina(_ coord: CLLocationCoordinate2D) -> Bool {
         if coord.longitude < 72.004 || coord.longitude > 137.8347 { return true }
         if coord.latitude < 0.8293 || coord.latitude > 55.8271 { return true }
+        // Hong Kong & Macau use WGS-84 natively in Apple MapKit!
+        if isInHongKong(coord) || isInMacau(coord) { return true }
         return false
     }
     
@@ -139,15 +160,13 @@ struct StationCoord {
 struct IntercityTrainBannerInfo {
     let durationText: String       // e.g. "約 3小時38分"
     let startPriceText: String     // e.g. "¥29.5起"
-    let toStationBusText: String   // e.g. "巴士 52分鐘 · Call車 20分鐘 約25元起"
-    let fromTrainSt: String        // e.g. "深圳東"
-    let toTrainSt: String          // e.g. "廣州 / 廣州南"
+    let toStationBusText: String   // e.g. "巴士 52分鐘 · 地鐵直達火車站"
+    let fromTrainSt: String        // e.g. "深圳北 / 深圳東"
+    let toTrainSt: String          // e.g. "廣州南 / 香港西九龍"
     let trainRunTime: String       // e.g. "1小時35分"
-    let trainFreqText: String      // e.g. "3個班次 / 高鐵每15分鐘一班"
+    let trainFreqText: String      // e.g. "高鐵/城際全天密集發車"
     let trainTicketPrice: String   // e.g. "¥21.5起"
-    let fromStationBusText: String // e.g. "巴士 41分鐘 · Call車 40分鐘 約74元起"
-    let hitchhikeTimeText: String  // e.g. "約 1小時47分"
-    let hitchhikePriceText: String // e.g. "¥72"
+    let fromStationBusText: String // e.g. "地鐵/巴士直達終點"
 }
 
 struct TransitPlanOption: Identifiable {
@@ -444,8 +463,8 @@ class PlaceSearchEngine: NSObject, ObservableObject, MKLocalSearchCompleterDeleg
         }
         completer.region = MKCoordinateRegion(
             center: center,
-            latitudinalMeters: 300000,
-            longitudinalMeters: 300000
+            latitudinalMeters: 2500000,
+            longitudinalMeters: 2500000
         )
         completer.queryFragment = trimmed
     }
@@ -471,8 +490,8 @@ class PlaceSearchEngine: NSObject, ObservableObject, MKLocalSearchCompleterDeleg
         req.resultTypes = [.address, .pointOfInterest]
         req.region = MKCoordinateRegion(
             center: center,
-            latitudinalMeters: 350000,
-            longitudinalMeters: 350000
+            latitudinalMeters: 2500000,
+            longitudinalMeters: 2500000
         )
         
         let search = MKLocalSearch(request: req)
@@ -835,16 +854,303 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         generateBuiltInTransitPlans(from: userCoordinate, to: dest, destTitle: title)
     }
 
+    private static let hkStationsDatabase: [StationCoord] = [
+        StationCoord(name: "羅湖 (Lo Wu)", exit: "A口", lat: 22.528, lon: 114.113, line: "東鐵綫"),
+        StationCoord(name: "落馬洲 (Lok Ma Chau)", exit: "B口", lat: 22.514, lon: 114.065, line: "東鐵綫"),
+        StationCoord(name: "上水", exit: "A4口", lat: 22.501, lon: 114.128, line: "東鐵綫"),
+        StationCoord(name: "沙田", exit: "A口", lat: 22.382, lon: 114.187, line: "東鐵綫"),
+        StationCoord(name: "九龍塘", exit: "C2口", lat: 22.337, lon: 114.176, line: "東鐵綫/觀塘綫"),
+        StationCoord(name: "旺角東", exit: "D口", lat: 22.322, lon: 114.172, line: "東鐵綫"),
+        StationCoord(name: "旺角", exit: "E2口", lat: 22.319, lon: 114.169, line: "荃灣綫/觀塘綫"),
+        StationCoord(name: "尖沙咀", exit: "A1口", lat: 22.297, lon: 114.172, line: "荃灣綫"),
+        StationCoord(name: "香港西九龍", exit: "B2口", lat: 22.304, lon: 114.165, line: "廣深港高鐵/屯馬綫"),
+        StationCoord(name: "紅磡", exit: "A口", lat: 22.303, lon: 114.181, line: "東鐵綫/屯馬綫"),
+        StationCoord(name: "會展", exit: "B3口", lat: 22.281, lon: 114.175, line: "東鐵綫"),
+        StationCoord(name: "金鐘", exit: "A口", lat: 22.279, lon: 114.165, line: "東鐵綫/港島綫/荃灣綫/南港島綫"),
+        StationCoord(name: "中環", exit: "D2口", lat: 22.282, lon: 114.158, line: "港島綫/荃灣綫"),
+        StationCoord(name: "銅鑼灣", exit: "E口", lat: 22.280, lon: 114.184, line: "港島綫"),
+        StationCoord(name: "香港國際機場", exit: "A口", lat: 22.316, lon: 113.936, line: "機場快綫")
+    ]
+    
+    func findNearestHKStation(to coord: CLLocationCoordinate2D) -> StationCoord {
+        var best = AudioPlayerManager.hkStationsDatabase[0]
+        var minD = 999999.0
+        for s in AudioPlayerManager.hkStationsDatabase {
+            let d = hypot(coord.latitude - s.lat, coord.longitude - s.lon)
+            if d < minD {
+                minD = d
+                best = s
+            }
+        }
+        return best
+    }
+
     func generateBuiltInTransitPlans(from: CLLocationCoordinate2D, to: CLLocationCoordinate2D, destTitle: String) {
         lastTransitGenLocation = from
         let destClean = destTitle.isEmpty ? "目的地" : destTitle
         let directMeters = metersBetween(from, to)
         
-        // 1. Identify nearest start station in Shenzhen
+        let fromHK = CoordinateConverter.isInHongKong(from)
+        let toHK = CoordinateConverter.isInHongKong(to) || destClean.contains("香港") || destClean.contains("九龙") || destClean.contains("九龍") || destClean.contains("旺角") || destClean.contains("尖沙咀") || destClean.contains("中环") || destClean.contains("中環") || destClean.contains("铜锣湾") || destClean.contains("銅鑼灣") || destClean.contains("金钟") || destClean.contains("金鐘") || destClean.contains("沙田") || destClean.contains("西九龙") || destClean.contains("西九龍")
+        
+        // =========================================================================
+        // 1. HONG KONG INTRA-CITY MTR & KMB BUS (香港本地港铁MTR + 九巴/城巴无缝导航)
+        // =========================================================================
+        if fromHK && toHK {
+            let startHK = findNearestHKStation(to: from)
+            let endHK: StationCoord = {
+                for s in AudioPlayerManager.hkStationsDatabase {
+                    let baseName = s.name.components(separatedBy: " ")[0]
+                    if destClean.contains(baseName) { return s }
+                }
+                return findNearestHKStation(to: to)
+            }()
+            let w1 = min(480, max(80, metersBetween(from, CLLocationCoordinate2D(latitude: startHK.lat, longitude: startHK.lon))))
+            let w1Min = max(2, Int(Double(w1) / 70.0))
+            let w2 = min(480, max(60, metersBetween(to, CLLocationCoordinate2D(latitude: endHK.lat, longitude: endHK.lon))))
+            let w2Min = max(2, Int(Double(w2) / 70.0))
+            let stopsCount = max(2, min(10, Int(Double(directMeters) / 1400.0)))
+            let mtrMins = max(6, stopsCount * 3)
+            
+            let hkPlan1Steps: [TransitStepItem] = [
+                TransitStepItem(
+                    kind: .walk,
+                    lineName: "步行前往港鐵站",
+                    directionDesc: "前往 \(startHK.name) (\(startHK.exit))",
+                    fromStation: "我的位置",
+                    toStation: "\(startHK.name) (\(startHK.exit))",
+                    passStations: [],
+                    durationMins: w1Min,
+                    walkMeters: w1,
+                    doorSideDesc: "🔥 消耗 \(max(2, Int(Double(w1) * 0.043)))卡路里",
+                    acNotice: "",
+                    exitDesc: "從 \(startHK.exit) 進站 (支持八達通/支付寶乘車碼)",
+                    colorHex: "#888888",
+                    intervalDesc: "步行 \(w1) 米 (\(w1Min)分鐘)"
+                ),
+                TransitStepItem(
+                    kind: .subway,
+                    lineName: "港鐵 \(startHK.line.components(separatedBy: "/")[0])",
+                    directionDesc: "往 \(endHK.name) / 金鐘方向",
+                    fromStation: "\(startHK.name) (\(startHK.exit))",
+                    toStation: endHK.name,
+                    passStations: ["九龍塘", "旺角東", "紅磡", "會展"].filter { $0 != startHK.name && $0 != endHK.name },
+                    durationMins: mtrMins,
+                    walkMeters: 0,
+                    doorSideDesc: "港鐵列車",
+                    acNotice: "🚇 港鐵MTR · 班次極密 (約 2~3 分鐘一班)",
+                    exitDesc: "從 \(endHK.exit) 出站",
+                    colorHex: "#0098D4", // MTR East Rail / Island Blue
+                    intervalDesc: "首05:55 末00:35 · 八達通/拍卡入閘"
+                ),
+                TransitStepItem(
+                    kind: .walk,
+                    lineName: "步行到達",
+                    directionDesc: "前往 \(destClean)",
+                    fromStation: "\(endHK.name) (\(endHK.exit))",
+                    toStation: destClean,
+                    passStations: [],
+                    durationMins: w2Min,
+                    walkMeters: w2,
+                    doorSideDesc: "",
+                    acNotice: "",
+                    exitDesc: "到達 \(destClean)",
+                    colorHex: "#888888",
+                    intervalDesc: "步行 \(w2) 米 (\(w2Min)分鐘)"
+                )
+            ]
+            let hkPlan1 = TransitPlanOption(
+                title: "\(w1Min + mtrMins + w2Min)分鐘 · 港鐵MTR直達",
+                badge: "高德推薦 · 港鐵最快",
+                totalMinutes: w1Min + mtrMins + w2Min,
+                totalStations: stopsCount,
+                transferCount: 0,
+                walkMeters: w1 + w2,
+                priceYuan: "HK$12.5",
+                startExitDesc: "\(startHK.name) (\(startHK.exit)) 入閘",
+                warningNotice: "🚇 支持八達通、AlipayHK、微信及銀聯拍卡入閘",
+                realtimeArrivalText: "港鐵列車即將到站  📡 2分鐘 🚃🚃🚃",
+                steps: hkPlan1Steps
+            )
+            
+            // Option 2: KMB / Citybus (九巴/城巴雙層巴士)
+            let hkPlan2Steps: [TransitStepItem] = [
+                TransitStepItem(
+                    kind: .walk,
+                    lineName: "步行前往巴士站",
+                    directionDesc: "前往彌敦道/軒尼詩道巴士站",
+                    fromStation: "我的位置",
+                    toStation: "\(startHK.name)巴士總站",
+                    passStations: [],
+                    durationMins: 3,
+                    walkMeters: 180,
+                    doorSideDesc: "",
+                    acNotice: "",
+                    exitDesc: "巴士站台候車",
+                    colorHex: "#888888",
+                    intervalDesc: "步行 180 米 (3分鐘)"
+                ),
+                TransitStepItem(
+                    kind: .bus,
+                    lineName: "九巴 1A / 城巴 104 過海巴士",
+                    directionDesc: "往 \(destClean) 方向",
+                    fromStation: "\(startHK.name)巴士站",
+                    toStation: "\(destClean)巴士站",
+                    passStations: ["太子站", "旺角奶路臣街", "油麻地文明里", "佐敦道", "尖沙咀中間道"],
+                    durationMins: mtrMins + 10,
+                    walkMeters: 0,
+                    doorSideDesc: "雙層冷氣巴士",
+                    acNotice: "🚌 實時抵站：下一班 4分鐘 到達",
+                    exitDesc: "在 \(destClean)站 下車",
+                    colorHex: "#D92626", // KMB Red
+                    intervalDesc: "九巴/城巴聯營 · 班次約 5~8 分鐘"
+                ),
+                TransitStepItem(
+                    kind: .walk,
+                    lineName: "步行到達",
+                    directionDesc: "前往 \(destClean)",
+                    fromStation: "\(destClean)巴士站",
+                    toStation: destClean,
+                    passStations: [],
+                    durationMins: 2,
+                    walkMeters: 120,
+                    doorSideDesc: "",
+                    acNotice: "",
+                    exitDesc: "到達 \(destClean)",
+                    colorHex: "#888888",
+                    intervalDesc: "步行 120 米 (2分鐘)"
+                )
+            ]
+            let hkPlan2 = TransitPlanOption(
+                title: "\(mtrMins + 15)分鐘 · 九巴/城巴直達",
+                badge: "少步行 · 雙層巴士",
+                totalMinutes: mtrMins + 15,
+                totalStations: 6,
+                transferCount: 0,
+                walkMeters: 300,
+                priceYuan: "HK$10.8",
+                startExitDesc: "\(startHK.name)巴士站上車",
+                warningNotice: "🚌 雙層巴士沿途欣賞香港街景，無需下地鐵換乘",
+                realtimeArrivalText: "九巴 1A / 104 綫  📡 4分鐘 到站",
+                steps: hkPlan2Steps
+            )
+            
+            self.transitPlans = [hkPlan1, hkPlan2]
+            self.selectedTransitPlanIndex = 0
+            self.remainingRouteMinutes = hkPlan1.totalMinutes
+            self.currentStepInstruction = "步行 \(w1)米 前往 \(startHK.name) 乘港鐵MTR"
+            self.distanceToNextStepMeters = Double(w1)
+            return
+        }
+        
+        // =========================================================================
+        // 2. CROSS-BORDER SHENZHEN/MAINLAND <-> HONG KONG (深港跨境：罗湖口岸/福田口岸/西九龙高铁)
+        // =========================================================================
+        if fromHK != toHK {
+            let startSt = fromHK ? findNearestHKStation(to: from) : findNearestStation(to: from)
+            let endHK = toHK ? findNearestHKStation(to: to) : findNearestStation(to: to)
+            
+            let crossBanner = IntercityTrainBannerInfo(
+                durationText: "約 45分鐘",
+                startPriceText: "¥68起",
+                toStationBusText: "地鐵直達深圳北站 / 福田站",
+                fromTrainSt: fromHK ? "香港西九龍" : "深圳北 / 福田",
+                toTrainSt: toHK ? "香港西九龍" : "深圳北 / 廣州南",
+                trainRunTime: "14~18分鐘 (一地兩檢)",
+                trainFreqText: "廣深港跨境高鐵 · 全天逾100班",
+                trainTicketPrice: "¥68.0起",
+                fromStationBusText: "出站即達尖沙咀/柯士甸/九龍核心區"
+            )
+            
+            let cbPlan1Steps: [TransitStepItem] = [
+                TransitStepItem(
+                    kind: .walk,
+                    lineName: "步行進站",
+                    directionDesc: "前往 \(startSt.name)",
+                    fromStation: "我的位置",
+                    toStation: "\(startSt.name) (\(startSt.exit))",
+                    passStations: [],
+                    durationMins: 6,
+                    walkMeters: 420,
+                    doorSideDesc: "",
+                    acNotice: "",
+                    exitDesc: "從 \(startSt.exit) 進站",
+                    colorHex: "#888888",
+                    intervalDesc: "步行 420 米 (6分鐘)"
+                ),
+                TransitStepItem(
+                    kind: .subway,
+                    lineName: fromHK ? "港鐵東鐵綫 (往羅湖/落馬洲)" : "深圳地鐵3號綫 換乘 1號綫",
+                    directionDesc: "前往 羅湖口岸 / 福田口岸 聯檢大樓",
+                    fromStation: startSt.name,
+                    toStation: "羅湖口岸 / 港鐵羅湖站",
+                    passStations: ["布吉", "老街", "國貿", "羅湖口岸通关"],
+                    durationMins: 28,
+                    walkMeters: 0,
+                    doorSideDesc: "口岸通關",
+                    acNotice: "🛂 羅湖口岸通關時間：06:30 - 24:00 (自助e道約10分鐘)",
+                    exitDesc: "辦理深港出入境手續後直接換乘港鐵東鐵綫",
+                    colorHex: "#0076C0",
+                    intervalDesc: "無縫接駁口岸聯檢大樓"
+                ),
+                TransitStepItem(
+                    kind: .subway,
+                    lineName: toHK ? "港鐵東鐵綫 (往金鐘方向)" : "深圳地鐵1號綫/3號綫",
+                    directionDesc: toHK ? "往 九龍塘/旺角東/紅磡/會展/金鐘" : "往 深圳核心區",
+                    fromStation: toHK ? "羅湖 (Lo Wu)" : "羅湖口岸",
+                    toStation: endHK.name,
+                    passStations: ["上水", "粉嶺", "大埔墟", "沙田", "九龍塘", "旺角東", "紅磡", "會展"],
+                    durationMins: 42,
+                    walkMeters: 0,
+                    doorSideDesc: "東鐵綫列車",
+                    acNotice: "🚇 港鐵東鐵綫過海直達會展/金鐘，無需在紅磡轉車",
+                    exitDesc: "從 \(endHK.exit) 出站",
+                    colorHex: "#0098D4",
+                    intervalDesc: "首05:55 末23:30 · 約 3~5 分鐘/班"
+                ),
+                TransitStepItem(
+                    kind: .walk,
+                    lineName: "步行到達",
+                    directionDesc: "前往 \(destClean)",
+                    fromStation: "\(endHK.name) (\(endHK.exit))",
+                    toStation: destClean,
+                    passStations: [],
+                    durationMins: 4,
+                    walkMeters: 280,
+                    doorSideDesc: "",
+                    acNotice: "",
+                    exitDesc: "到達 \(destClean)",
+                    colorHex: "#888888",
+                    intervalDesc: "步行 280 米 (4分鐘)"
+                )
+            ]
+            let cbPlan1 = TransitPlanOption(
+                title: "1小時25分 · 羅湖口岸換乘港鐵東鐵綫",
+                badge: "高德推薦 · 口岸地鐵直連",
+                totalMinutes: 85,
+                totalStations: 14,
+                transferCount: 1,
+                walkMeters: 950,
+                priceYuan: "45",
+                startExitDesc: "\(startSt.name) 進站",
+                warningNotice: "🛂 請攜帶有效港澳通行證及簽注 / 回鄉證過關",
+                realtimeArrivalText: "港鐵東鐵綫 (金鐘方向)  📡 3分鐘 🚃🚃🚃",
+                intercityBanner: crossBanner,
+                steps: cbPlan1Steps
+            )
+            
+            self.transitPlans = [cbPlan1]
+            self.selectedTransitPlanIndex = 0
+            self.remainingRouteMinutes = cbPlan1.totalMinutes
+            self.currentStepInstruction = "深港跨境導航：前往口岸/高鐵站換乘至 \(destClean)"
+            self.distanceToNextStepMeters = 420
+            return
+        }
+        
+        // 3. Identify nearest start station in Mainland China
         let startSt = findNearestStation(to: from)
         
         // CASE 0: CROSS-CITY / INTERCITY DESTINATION (跨市路线：广州/东莞/佛山/惠州/珠海/中山 或 距离 > 38km)
-        // Strictly prevents snapping a Guangzhou/Dongguan/Huizhou destination to Shenzhen Houhai Station!
         let isGuangzhou = destClean.contains("广州") || destClean.contains("廣州") || destClean.contains("番禺") || destClean.contains("天河") || destClean.contains("白云") || (to.latitude > 22.85 && to.longitude < 113.65)
         let isDongguan = destClean.contains("东莞") || destClean.contains("東莞") || destClean.contains("虎门") || destClean.contains("松山湖") || (to.latitude > 22.78 && to.latitude <= 23.15 && to.longitude >= 113.65 && to.longitude <= 114.15)
         let isHuizhou = destClean.contains("惠州") || destClean.contains("惠阳") || destClean.contains("大亚湾") || (to.longitude > 114.32)
@@ -855,18 +1161,15 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             let trainBanner = IntercityTrainBannerInfo(
                 durationText: isGuangzhou ? "約 3小時38分" : "約 2小時15分",
                 startPriceText: isGuangzhou ? "¥29.5起" : "¥21.5起",
-                toStationBusText: "巴士 52分鐘 · Call車 20分鐘 約25元起",
+                toStationBusText: "巴士 52分鐘 · 地鐵直達火車站",
                 fromTrainSt: "深圳東 / 深圳北",
                 toTrainSt: isGuangzhou ? "廣州 / 廣州南" : cityHubName,
                 trainRunTime: isGuangzhou ? "1小時35分 (高鐵最快29分)" : "48分鐘",
                 trainFreqText: "3個班次 · 全部班次",
                 trainTicketPrice: isGuangzhou ? "¥21.5起" : "¥18.0起",
-                fromStationBusText: "巴士 41分鐘 · Call車 40分鐘 約74元起",
-                hitchhikeTimeText: isGuangzhou ? "約 1小時47分" : "約 1小時12分",
-                hitchhikePriceText: isGuangzhou ? "¥72" : "¥48"
+                fromStationBusText: "地鐵/巴士 41分鐘直達終點"
             )
             
-            // Intercity Option 1 (Matches GaoDe Screenshot 2 & 3: 5小時20分 · 步行3.8公里 · 78站 · 丹竹頭(B口)進站 · 地鐵3號綫 -> 惠州208路 -> 城際(惠州北-番禺))
             let icPlan1Steps: [TransitStepItem] = [
                 TransitStepItem(
                     kind: .walk,
@@ -895,7 +1198,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                     doorSideDesc: "右側開門",
                     acNotice: "📡 實時地鐵：4分鐘後到達 🚃🚃🚃 (擁擠度低)",
                     exitDesc: "在 雙龍站 A口 出站換乘公交",
-                    colorHex: "#0076C0", // Line 3 Blue
+                    colorHex: "#0076C0",
                     intervalDesc: "首06:15 末23:30 · 約4分鐘/班"
                 ),
                 TransitStepItem(
@@ -910,7 +1213,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                     doorSideDesc: "分段收費",
                     acNotice: "❗ 首班車於 05:20 發車 · 末班 21:30",
                     exitDesc: "在 城際樞紐站 下車",
-                    colorHex: "#1E78F0", // Bus Blue outline
+                    colorHex: "#1E78F0",
                     intervalDesc: "跨市公交幹線 · 經42站"
                 ),
                 TransitStepItem(
@@ -925,7 +1228,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                     doorSideDesc: "兩側站台",
                     acNotice: "🚄 廣東城際鐵路 · 支持公交卡/支付寶掃碼直接進站",
                     exitDesc: "在 番禺站 出站即達廣州南站",
-                    colorHex: "#7CB305", // GaoDe Intercity Olive Green
+                    colorHex: "#7CB305",
                     intervalDesc: "城際動車組 · 大站快車/站站停交替發車"
                 ),
                 TransitStepItem(
@@ -959,7 +1262,6 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                 steps: icPlan1Steps
             )
             
-            // Intercity Option 2 (Matches GaoDe Screenshot 3: 5小時37分 · 步行3.8公里 · 55站 · 地鐵3號綫 -> 地鐵11號綫 -> 城際(深圳機場-竹料) -> 地鐵13號綫 -> 地鐵7號綫)
             let icPlan2Steps: [TransitStepItem] = [
                 TransitStepItem(
                     kind: .walk,
@@ -1003,7 +1305,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                     doorSideDesc: "左側開門",
                     acNotice: "❄️ 強冷:2-5車廂；弱冷:1、6車廂",
                     exitDesc: "在 機場北站 換乘穗深城際",
-                    colorHex: "#8E2A59", // Line 11 Plum
+                    colorHex: "#8E2A59",
                     intervalDesc: "首06:06 末00:17 · 經9站"
                 ),
                 TransitStepItem(
@@ -1018,7 +1320,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                     doorSideDesc: "城際動車",
                     acNotice: "❗ 城際(深圳機場-竹料) 請留意首末班發車時刻",
                     exitDesc: "在 新塘南站 換乘廣州地鐵13號綫",
-                    colorHex: "#7CB305", // Olive Green
+                    colorHex: "#7CB305",
                     intervalDesc: "穗深城際鐵路 · 跨深圳/東莞/廣州"
                 ),
                 TransitStepItem(
@@ -1082,7 +1384,6 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                 steps: icPlan2Steps
             )
             
-            // Intercity Option 3: High-Speed Rail Direct (深圳北站 -> 廣州南站 29分鐘高鐵最快方案!)
             let icPlan3Steps: [TransitStepItem] = [
                 TransitStepItem(
                     kind: .walk,
@@ -1175,7 +1476,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             return findNearestStation(to: to)
         }()
         
-        // CASE A: SHORT/MEDIUM SURFACE BUS CORRIDOR (Direct distance <= 5.5km OR startSt == endSt, e.g. 沙湾/沙岭 -> 丹竹头地铁站!)
+        // CASE A: SHORT/MEDIUM SURFACE BUS CORRIDOR
         if startSt.name == endSt.name || directMeters <= 5200 {
             let isShawanArea = (abs(from.latitude - 22.60) < 0.04 && abs(from.longitude - 114.16) < 0.04) || destClean.contains("丹竹头") || destClean.contains("布吉") || destClean.contains("沙湾")
             let boardBusStop = isShawanArea ? "沙湾天桥" : "附近公交首末站"
@@ -1382,7 +1683,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             return
         }
         
-        // CASE B: SAME SUBWAY LINE (Both on Line 3! e.g. 横岗 -> 丹竹头 / 布吉 / 老街)
+        // CASE B: SAME SUBWAY LINE (Both on Line 3!)
         if let sIdx = AudioPlayerManager.line3Ordered.firstIndex(of: startSt.name),
            let eIdx = AudioPlayerManager.line3Ordered.firstIndex(of: endSt.name),
            sIdx != eIdx {
@@ -1477,7 +1778,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             return
         }
         
-        // CASE C: WITHIN-SHENZHEN CROSS-DISTRICT EXPRESS TRANSFER (e.g. 横岗/丹竹头/布吉 -> 车公庙/红树湾/后海/深圳北站)
+        // CASE C: WITHIN-CITY EXPRESS TRANSFER
         let walkStartDist = min(550, max(110, metersBetween(from, CLLocationCoordinate2D(latitude: startSt.lat, longitude: startSt.lon))))
         let walkStartMin = max(2, Int(Double(walkStartDist) / 70.0))
         let walkStartCal = max(2, Int(Double(walkStartDist) * 0.043))
@@ -2284,7 +2585,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         let req = MKLocalSearch.Request()
         req.naturalLanguageQuery = trimmed
         req.resultTypes = [.address, .pointOfInterest]
-        req.region = MKCoordinateRegion(center: userCoordinate, latitudinalMeters: 350000, longitudinalMeters: 350000)
+        req.region = MKCoordinateRegion(center: userCoordinate, latitudinalMeters: 2500000, longitudinalMeters: 2500000)
         
         MKLocalSearch(request: req).start { [weak self] response, _ in
             DispatchQueue.main.async {
@@ -3464,7 +3765,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         let req = MKLocalSearch.Request()
         req.naturalLanguageQuery = trimmed
         req.resultTypes = [.address, .pointOfInterest]
-        req.region = MKCoordinateRegion(center: userCoordinate, latitudinalMeters: 350000, longitudinalMeters: 350000)
+        req.region = MKCoordinateRegion(center: userCoordinate, latitudinalMeters: 2500000, longitudinalMeters: 2500000)
         
         MKLocalSearch(request: req).start { [weak self] resp, _ in
             DispatchQueue.main.async {
