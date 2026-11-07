@@ -874,7 +874,22 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         let hour = Calendar.current.component(.hour, from: Date())
         let catHint = (rawCategory ?? "") + " " + name
         
-        if catHint.contains("烟酒") || catHint.contains("煙酒") || catHint.contains("商行") || catHint.contains("名酒") || catHint.contains("茅台") || catHint.contains("五粮液") {
+        // 1. RESIDENTIAL COMMUNITY / GARDEN ESTATE (小区/花园/社区住宅：如沙湾河花园、厦村盛苑、万科公园里、XX小区、XX花园)
+        if catHint.contains("花园") || catHint.contains("花園") || catHint.contains("小区") || catHint.contains("小區") || catHint.contains("盛苑") || catHint.contains("住宅") || catHint.contains("居") || catHint.contains("苑") || catHint.contains("村") || catHint.contains("家园") || catHint.contains("华府") || catHint.contains("雅苑") {
+            self.tappedMapCategory = "住宅区/品质小区"
+            self.tappedMapHours = "全天开放 (门禁管理)"
+            self.tappedMapIsOpen = true
+            self.tappedMapRating = "4.0"
+            self.tappedMapReviewLabel = "优于附近81%小区"
+            self.tappedMapTags = ["近健身场所", "近公园", "近宠物医院", "近小学", "住宅区"]
+            self.tappedMapPricePerPerson = "绿化率35%"
+            self.tappedMapDishes = [
+                DishItem(name: "东门 / 东1门 (主出入口)", price: "91%人到达", iconName: "door.left.hand.open", bgHex: "#1565C0", desc: "小区主要人行及车辆道闸出口 · 设有快递柜", recommendCount: 520),
+                DishItem(name: "地面 / 地下停车场", price: "5%人到达", iconName: "parkingsign.circle.fill", bgHex: "#2E7D32", desc: "访客车位充裕 · 支持临停车牌识别无感支付", recommendCount: 380),
+                DishItem(name: "社区租房 · 精选优质房源", price: "¥1000/月起", iconName: "house.fill", bgHex: "#EF6C00", desc: "整租1室/2室南北通透 · 高楼层带大阳台采光极佳", recommendCount: 410),
+                DishItem(name: "物业服务中心 · 24h安保", price: "东门旁", iconName: "shield.checkmark.fill", bgHex: "#00838F", desc: "全封闭式智能门禁监控 · 24小时保安值班巡逻", recommendCount: 305)
+            ]
+        } else if catHint.contains("烟酒") || catHint.contains("煙酒") || catHint.contains("商行") || catHint.contains("名酒") || catHint.contains("茅台") || catHint.contains("五粮液") {
             self.tappedMapCategory = "烟酒专卖/商行"
             self.tappedMapHours = "08:00-24:00"
             self.tappedMapIsOpen = (hour >= 8)
@@ -1006,7 +1021,9 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     }
 
     func getSectionHeaderTitleForPOI() -> String {
-        if tappedMapCategory.contains("烟酒") || tappedMapCategory.contains("便利") {
+        if tappedMapCategory.contains("住宅") || tappedMapCategory.contains("小区") {
+            return "出入口與小區配套 (點擊查看詳情)"
+        } else if tappedMapCategory.contains("烟酒") || tappedMapCategory.contains("便利") {
             return "熱銷正品商品 (點擊查看詳情)"
         } else if tappedMapCategory.contains("医药") {
             return "常備藥品與健康服務 (點擊查看)"
@@ -1158,27 +1175,52 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                                 rawCategory: fallbackPOI.pointOfInterestCategory?.rawValue
                             )
                         } else {
-                            // 3. Final Reverse Geocode Fallback (Checks areasOfInterest first before road address!)
+                            // 3. Reverse Geocode Guard: Like GaoDe, ONLY open card if tapped on a REAL named building/property!
+                            // If tapped on river/water, blank road, ocean, or open field, dismiss card immediately!
                             CLGeocoder().reverseGeocodeLocation(tapLoc) { [weak self] placemarks, _ in
                                 DispatchQueue.main.async {
                                     guard let self = self else { return }
+                                    self.isReverseGeocoding = false
                                     if let pm = placemarks?.first {
-                                        let aoiName = pm.areasOfInterest?.first
-                                        let candidateName = aoiName ?? pm.name ?? "地图选点"
-                                        var parts: [String] = []
-                                        if let dist = pm.subLocality { parts.append(dist) }
-                                        if let road = pm.thoroughfare { parts.append(road) }
-                                        if let num = pm.subThoroughfare { parts.append(num) }
-                                        self.populatePOIDetails(
-                                            name: candidateName,
-                                            coord: coord,
-                                            address: parts.joined(separator: ""),
-                                            phone: nil
-                                        )
-                                    } else {
-                                        self.isReverseGeocoding = false
-                                        self.tappedMapCoord = nil
+                                        let oceanOrWater = pm.ocean ?? pm.inlandWater
+                                        if oceanOrWater != nil {
+                                            // Tapped inside a river/reservoir/lake -> Do NOT show residential/card!
+                                            self.tappedMapCoord = nil
+                                            return
+                                        }
+                                        
+                                        // Must have an area of interest or a concrete building/estate name
+                                        if let aoi = pm.areasOfInterest?.first, !aoi.isEmpty {
+                                            var parts: [String] = []
+                                            if let dist = pm.subLocality { parts.append(dist) }
+                                            if let road = pm.thoroughfare { parts.append(road) }
+                                            if let num = pm.subThoroughfare { parts.append(num) }
+                                            self.populatePOIDetails(
+                                                name: aoi,
+                                                coord: coord,
+                                                address: parts.joined(separator: ""),
+                                                phone: nil
+                                            )
+                                            return
+                                        }
+                                        
+                                        // If it has a specific building number or estate name
+                                        if let pmName = pm.name, !pmName.isEmpty, pmName != pm.thoroughfare && pmName != pm.name {
+                                            var parts: [String] = []
+                                            if let dist = pm.subLocality { parts.append(dist) }
+                                            if let road = pm.thoroughfare { parts.append(road) }
+                                            if let num = pm.subThoroughfare { parts.append(num) }
+                                            self.populatePOIDetails(
+                                                name: pmName,
+                                                coord: coord,
+                                                address: parts.joined(separator: ""),
+                                                phone: nil
+                                            )
+                                            return
+                                        }
                                     }
+                                    // Otherwise tap is in blank ground/road with no building -> dismiss!
+                                    self.tappedMapCoord = nil
                                 }
                             }
                         }

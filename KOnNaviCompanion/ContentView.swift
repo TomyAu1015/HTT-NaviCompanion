@@ -4594,6 +4594,12 @@ struct InAppTransitPlanSheetView: View {
                 manager.refreshTransitPlansForCurrentLocation(force: true)
             }
         }
+        .sheet(isPresented: $manager.showAllFlightTicketsSheet) {
+            InAppFlightTicketScheduleSheetView(manager: manager)
+        }
+        .sheet(isPresented: $manager.showAllTrainTicketsSheet) {
+            InAppTrainTicketScheduleSheetView(manager: manager)
+        }
     }
     
     private func stepColor(for step: TransitStepItem) -> Color {
