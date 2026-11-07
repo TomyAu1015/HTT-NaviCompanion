@@ -206,6 +206,106 @@ enum RM500ArrowOutfit: Int, CaseIterable, Identifiable {
     }
 }
 
+// MARK: - Isolated Pinyin-Safe AutoNavi/MapKit Place Search Engine
+class PlaceSearchEngine: NSObject, ObservableObject, MKLocalSearchCompleterDelegate {
+    @Published var completions: [MKLocalSearchCompletion] = []
+    @Published var mapItems: [MKMapItem] = []
+    @Published var isSearching: Bool = false
+    
+    private let completer = MKLocalSearchCompleter()
+    private var activeSearch: MKLocalSearch?
+    
+    override init() {
+        super.init()
+        completer.delegate = self
+        completer.resultTypes = [.address, .pointOfInterest, .query]
+    }
+    
+    func updateQueryFragment(_ fragment: String, center: CLLocationCoordinate2D) {
+        let trimmed = fragment.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            completions = []
+            mapItems = []
+            isSearching = false
+            return
+        }
+        completer.region = MKCoordinateRegion(
+            center: center,
+            latitudinalMeters: 300000,
+            longitudinalMeters: 300000
+        )
+        completer.queryFragment = trimmed
+    }
+    
+    func completerDidUpdateResults(_ completer: MKLocalSearchCompleter) {
+        DispatchQueue.main.async {
+            self.completions = Array(completer.results.prefix(25))
+        }
+    }
+    
+    func completer(_ completer: MKLocalSearchCompleter, didFailWithError error: Error) {
+        // Ignore transient completer errors while typing
+    }
+    
+    func performFullSearch(query: String, center: CLLocationCoordinate2D) {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        activeSearch?.cancel()
+        isSearching = true
+        
+        let req = MKLocalSearch.Request()
+        req.naturalLanguageQuery = trimmed
+        req.resultTypes = [.address, .pointOfInterest]
+        req.region = MKCoordinateRegion(
+            center: center,
+            latitudinalMeters: 350000,
+            longitudinalMeters: 350000
+        )
+        
+        let search = MKLocalSearch(request: req)
+        activeSearch = search
+        search.start { [weak self] response, _ in
+            DispatchQueue.main.async {
+                self?.isSearching = false
+                if let items = response?.mapItems, !items.isEmpty {
+                    self?.mapItems = items
+                }
+            }
+        }
+    }
+    
+    func resolveAndStartNavigation(for completion: MKLocalSearchCompletion, manager: AudioPlayerManager, onComplete: @escaping () -> Void) {
+        activeSearch?.cancel()
+        isSearching = true
+        let req = MKLocalSearch.Request(completion: completion)
+        let search = MKLocalSearch(request: req)
+        activeSearch = search
+        search.start { [weak self] response, _ in
+            DispatchQueue.main.async {
+                self?.isSearching = false
+                if let item = response?.mapItems.first {
+                    manager.showMapMode = true
+                    manager.startRouteGuidance(to: item)
+                    onComplete()
+                } else {
+                    // Fallback by natural language query of title + subtitle
+                    let fallbackReq = MKLocalSearch.Request()
+                    fallbackReq.naturalLanguageQuery = completion.title + " " + completion.subtitle
+                    MKLocalSearch(request: fallbackReq).start { resp, _ in
+                        DispatchQueue.main.async {
+                            if let fbItem = resp?.mapItems.first {
+                                manager.showMapMode = true
+                                manager.startRouteGuidance(to: fbItem)
+                            }
+                            onComplete()
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLLocationManagerDelegate {
     static let shared = AudioPlayerManager()
     
@@ -864,7 +964,8 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         isSearching = true
         let req = MKLocalSearch.Request()
         req.naturalLanguageQuery = trimmed
-        req.region = MKCoordinateRegion(center: userCoordinate, latitudinalMeters: 50000, longitudinalMeters: 50000)
+        req.resultTypes = [.address, .pointOfInterest]
+        req.region = MKCoordinateRegion(center: userCoordinate, latitudinalMeters: 350000, longitudinalMeters: 350000)
         
         MKLocalSearch(request: req).start { [weak self] response, _ in
             DispatchQueue.main.async {

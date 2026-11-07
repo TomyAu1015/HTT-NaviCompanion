@@ -1,6 +1,72 @@
 import SwiftUI
 import MapKit
 
+// MARK: - Pinyin IME-Safe Native UISearchBar (Never Interrupts Chinese Marked Text!)
+struct NativePinyinSearchBar: UIViewRepresentable {
+    @Binding var text: String
+    var placeholder: String
+    var onTypingSettled: (String) -> Void
+    var onSearchButtonClicked: (String) -> Void
+    
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+    
+    func makeUIView(context: Context) -> UISearchBar {
+        let bar = UISearchBar(frame: .zero)
+        bar.delegate = context.coordinator
+        bar.searchBarStyle = .minimal
+        bar.placeholder = placeholder
+        bar.returnKeyType = .search
+        bar.autocapitalizationType = .none
+        bar.autocorrectionType = .default
+        return bar
+    }
+    
+    func updateUIView(_ uiView: UISearchBar, context: Context) {
+        uiView.placeholder = placeholder
+        // CRITICAL FOR CHINESE PINYIN INPUT:
+        // Never overwrite textField.text while markedTextRange != nil (when user is composing Pinyin like "guang zhou")!
+        if let tf = uiView.value(forKey: "searchField") as? UITextField {
+            if tf.markedTextRange != nil {
+                return
+            }
+        }
+        if uiView.text != text {
+            uiView.text = text
+        }
+    }
+    
+    class Coordinator: NSObject, UISearchBarDelegate {
+        var parent: NativePinyinSearchBar
+        private var debounceTimer: Timer?
+        
+        init(_ parent: NativePinyinSearchBar) {
+            self.parent = parent
+        }
+        
+        func searchBar(_ searchBar: UISearchBar, textDidChange searchText: String) {
+            // Check if user is still in the middle of Pinyin composition (markedTextRange != nil)
+            if let tf = searchBar.value(forKey: "searchField") as? UITextField,
+               tf.markedTextRange != nil {
+                return
+            }
+            parent.text = searchText
+            debounceTimer?.invalidate()
+            debounceTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: false) { [weak self] _ in
+                self?.parent.onTypingSettled(searchText)
+            }
+        }
+        
+        func searchBarSearchButtonClicked(_ searchBar: UISearchBar) {
+            searchBar.resignFirstResponder()
+            let finalStr = searchBar.text ?? ""
+            parent.text = finalStr
+            parent.onSearchButtonClicked(finalStr)
+        }
+    }
+}
+
 // MARK: - Native 3D AutoNavi/MapKit Route & 60fps Smooth Tracking View
 struct HTTSmoothMapView: UIViewRepresentable {
     @ObservedObject var manager: AudioPlayerManager
@@ -300,17 +366,20 @@ struct ContentView: View {
         GeometryReader { geo in
             let isLandscape = geo.size.width > geo.size.height
             ZStack {
-                httDarkPanel.ignoresSafeArea()
+                httDarkPanel.ignoresSafeArea(.all)
                 
-                // RM-500HTT Authentic Character Starry Diagonal Background Skin
+                // RM-500HTT Authentic Character Starry Diagonal Background Skin (Full Edge-to-Edge Coverage!)
                 if let themeBG = manager.getCurrentThemeBackground(), !manager.isMapEnlarged {
                     Image(uiImage: themeBG)
                         .resizable()
                         .scaledToFill()
-                        .frame(width: geo.size.width, height: geo.size.height)
+                        .frame(
+                            width: max(geo.size.width, UIScreen.main.bounds.width),
+                            height: max(geo.size.height + 120, UIScreen.main.bounds.height + 120)
+                        )
                         .clipped()
-                        .opacity(0.32)
-                        .ignoresSafeArea()
+                        .opacity(0.38)
+                        .ignoresSafeArea(.all)
                 }
                 
                 // CONDITIONAL 1: Prominent Enlarged Full-Screen Navigation View
@@ -364,6 +433,7 @@ struct ContentView: View {
                 manager.stageWalkBound = newVal ? 95.0 : 65.0
             }
         }
+        .ignoresSafeArea(.container, edges: .bottom)
         .sheet(isPresented: $showSoundboardSheet) {
             SoundboardSheetView(manager: manager)
         }
@@ -1379,19 +1449,25 @@ struct ContentView: View {
     }
 }
 
-// MARK: - Multi-Modal Destination Search & Route Sheet
+// MARK: - Multi-Modal Destination Search & Route Sheet (Pinyin-Safe & 20+ Amap POI Suggestions)
 struct DestinationSearchSheetView: View {
-    @ObservedObject var manager: AudioPlayerManager
+    // NOT @ObservedObject on manager so 60fps sprite/GPS ticks never re-render this sheet or interrupt Pinyin typing!
+    let manager: AudioPlayerManager
+    @StateObject private var searchEngine = PlaceSearchEngine()
     @Environment(\.dismiss) var dismiss
     @State private var queryText: String = ""
+    @State private var selectedMode: NavigationTravelMode = AudioPlayerManager.shared.travelMode
     
     var body: some View {
         NavigationView {
-            VStack(spacing: 10) {
+            VStack(spacing: 8) {
                 // 4 Travel Modes Switcher at Top of Search Sheet
                 HStack(spacing: 8) {
                     ForEach(NavigationTravelMode.allCases) { mode in
-                        Button(action: { manager.travelMode = mode }) {
+                        Button(action: {
+                            selectedMode = mode
+                            manager.travelMode = mode
+                        }) {
                             HStack(spacing: 4) {
                                 Image(systemName: mode.icon)
                                 Text(mode.title(manager.language))
@@ -1399,8 +1475,8 @@ struct DestinationSearchSheetView: View {
                             .font(.system(size: 12, weight: .bold))
                             .padding(.horizontal, 10)
                             .padding(.vertical, 7)
-                            .background(manager.travelMode == mode ? Color.red : Color(UIColor.tertiarySystemFill))
-                            .foregroundColor(manager.travelMode == mode ? .white : .primary)
+                            .background(selectedMode == mode ? Color.red : Color(UIColor.tertiarySystemFill))
+                            .foregroundColor(selectedMode == mode ? .white : .primary)
                             .cornerRadius(8)
                         }
                     }
@@ -1408,37 +1484,37 @@ struct DestinationSearchSheetView: View {
                 .padding(.horizontal)
                 .padding(.top, 6)
                 
-                HStack {
-                    Image(systemName: "magnifyingglass")
-                        .foregroundColor(.secondary)
-                    TextField(
-                        manager.language == .en ? "Enter destination, station or road..." : "输入目的地、口岸、商圈或路名...",
+                // Pinyin-Safe Native Search Bar + Search Button
+                HStack(spacing: 4) {
+                    NativePinyinSearchBar(
                         text: $queryText,
-                        onCommit: { manager.searchPlaces(query: queryText) }
-                    )
-                    .textFieldStyle(.plain)
-                    
-                    if !queryText.isEmpty {
-                        Button(action: { queryText = ""; manager.searchResults = [] }) {
-                            Image(systemName: "xmark.circle.fill")
-                                .foregroundColor(.secondary)
+                        placeholder: manager.language == .en ? "Search station, mall, road or city..." : "输入目的地（如：广州南站、罗湖口岸、大厦）...",
+                        onTypingSettled: { settledText in
+                            searchEngine.updateQueryFragment(settledText, center: manager.userCoordinate)
+                            searchEngine.performFullSearch(query: settledText, center: manager.userCoordinate)
+                        },
+                        onSearchButtonClicked: { finalQuery in
+                            searchEngine.updateQueryFragment(finalQuery, center: manager.userCoordinate)
+                            searchEngine.performFullSearch(query: finalQuery, center: manager.userCoordinate)
                         }
-                    }
+                    )
+                    .frame(height: 44)
                     
-                    Button(action: { manager.searchPlaces(query: queryText) }) {
+                    Button(action: {
+                        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+                        searchEngine.updateQueryFragment(queryText, center: manager.userCoordinate)
+                        searchEngine.performFullSearch(query: queryText, center: manager.userCoordinate)
+                    }) {
                         Text(manager.language == .en ? "Search" : "搜索")
                             .font(.subheadline.bold())
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 6)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 8)
                             .background(Color.red)
                             .foregroundColor(.white)
                             .cornerRadius(8)
                     }
+                    .padding(.trailing, 12)
                 }
-                .padding(10)
-                .background(Color(UIColor.secondarySystemBackground))
-                .cornerRadius(10)
-                .padding(.horizontal)
                 
                 // Demo Navigation Test Button
                 Button(action: {
@@ -1463,49 +1539,127 @@ struct DestinationSearchSheetView: View {
                     .padding(.horizontal)
                 }
                 
-                if manager.isSearching {
-                    ProgressView("Searching...")
-                        .padding()
+                if searchEngine.isSearching {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                        Text("正在检索全城及周边详细地点...")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    .padding(.vertical, 4)
                 }
                 
-                List(manager.searchResults, id: \.self) { item in
-                    Button(action: {
-                        manager.showMapMode = true
-                        manager.startRouteGuidance(to: item)
-                        dismiss()
-                    }) {
-                        HStack {
-                            Image(systemName: manager.travelMode.icon)
-                                .font(.title3)
-                                .foregroundColor(.red)
-                                .frame(width: 28)
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(item.name ?? "未知地点")
-                                    .font(.subheadline.bold())
-                                    .foregroundColor(.primary)
-                                Text(item.placemark.title ?? "")
-                                    .font(.caption2)
-                                    .foregroundColor(.secondary)
+                // Combined List: Direct POI MapItems (with Distance!) + Rich Autocomplete Sub-entrances (East/West Plaza, Parking, Metro, etc.)
+                List {
+                    if !searchEngine.mapItems.isEmpty {
+                        Section(header: Text("精准地点结果 (\(searchEngine.mapItems.count) 个)")) {
+                            ForEach(searchEngine.mapItems, id: \.self) { item in
+                                Button(action: {
+                                    manager.travelMode = selectedMode
+                                    manager.showMapMode = true
+                                    manager.startRouteGuidance(to: item)
+                                    dismiss()
+                                }) {
+                                    HStack(spacing: 10) {
+                                        Image(systemName: selectedMode.icon)
+                                            .font(.title3)
+                                            .foregroundColor(.red)
+                                            .frame(width: 28)
+                                        VStack(alignment: .leading, spacing: 3) {
+                                            Text(item.name ?? "未知地点")
+                                                .font(.subheadline.bold())
+                                                .foregroundColor(.primary)
+                                            Text(detailedAddress(for: item.placemark))
+                                                .font(.caption2)
+                                                .foregroundColor(.secondary)
+                                        }
+                                        Spacer()
+                                        VStack(alignment: .trailing, spacing: 3) {
+                                            Text(distanceString(to: item.placemark.coordinate))
+                                                .font(.caption2.bold())
+                                                .foregroundColor(.secondary)
+                                            Text(manager.language == .en ? "Go" : "去这里")
+                                                .font(.caption.bold())
+                                                .padding(.horizontal, 10)
+                                                .padding(.vertical, 4)
+                                                .background(Color.red)
+                                                .foregroundColor(.white)
+                                                .cornerRadius(6)
+                                        }
+                                    }
+                                }
                             }
-                            Spacer()
-                            Text(manager.language == .en ? "Go" : "开始导航")
-                                .font(.caption.bold())
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 5)
-                                .background(Color.red)
-                                .foregroundColor(.white)
-                                .cornerRadius(6)
+                        }
+                    }
+                    
+                    if !searchEngine.completions.isEmpty {
+                        Section(header: Text("全城联想与详细出入口 (\(searchEngine.completions.count) 个)")) {
+                            ForEach(searchEngine.completions, id: \.self) { comp in
+                                Button(action: {
+                                    manager.travelMode = selectedMode
+                                    searchEngine.resolveAndStartNavigation(for: comp, manager: manager) {
+                                        dismiss()
+                                    }
+                                }) {
+                                    HStack(spacing: 10) {
+                                        Image(systemName: "mappin.and.ellipse")
+                                            .font(.title3)
+                                            .foregroundColor(.orange)
+                                            .frame(width: 28)
+                                        VStack(alignment: .leading, spacing: 3) {
+                                            Text(comp.title)
+                                                .font(.subheadline.bold())
+                                                .foregroundColor(.primary)
+                                            if !comp.subtitle.isEmpty {
+                                                Text(comp.subtitle)
+                                                    .font(.caption2)
+                                                    .foregroundColor(.secondary)
+                                            }
+                                        }
+                                        Spacer()
+                                        Text(manager.language == .en ? "Navigate" : "开始导航")
+                                            .font(.caption.bold())
+                                            .padding(.horizontal, 10)
+                                            .padding(.vertical, 5)
+                                            .background(Color.red.opacity(0.9))
+                                            .foregroundColor(.white)
+                                            .cornerRadius(6)
+                                    }
+                                }
+                            }
                         }
                     }
                 }
+                .listStyle(.insetGrouped)
             }
-            .navigationTitle(manager.language == .en ? "Route Planner" : "出行路线规划")
+            .navigationTitle(manager.language == .en ? "Route Planner" : "高德/MapKit 智能路线搜索")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button(manager.language == .en ? "Close" : "关闭") { dismiss() }
                 }
             }
+        }
+    }
+    
+    private func detailedAddress(for pm: MKPlacemark) -> String {
+        var parts: [String] = []
+        if let city = pm.locality { parts.append(city) }
+        if let sub = pm.subLocality { parts.append(sub) }
+        if let road = pm.thoroughfare { parts.append(road) }
+        if let num = pm.subThoroughfare { parts.append(num) }
+        if parts.isEmpty { return pm.title ?? "" }
+        return parts.joined(separator: " · ")
+    }
+    
+    private func distanceString(to coord: CLLocationCoordinate2D) -> String {
+        let uLoc = CLLocation(latitude: manager.userCoordinate.latitude, longitude: manager.userCoordinate.longitude)
+        let dLoc = CLLocation(latitude: coord.latitude, longitude: coord.longitude)
+        let distKm = uLoc.distance(from: dLoc) / 1000.0
+        if distKm < 1.0 {
+            return String(format: "%.0f m", distKm * 1000.0)
+        } else {
+            return String(format: "%.1f km", distKm)
         }
     }
 }
