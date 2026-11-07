@@ -752,7 +752,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                 fromStation: startName,
                 toStation: transferStation,
                 passStationCount: max(3, Int(distKm * 0.3)),
-                durationMins: max(10, Int(baseMins * 0.45)),
+                durationMins: max(10, Int(Double(baseMins) * 0.45)),
                 exitDesc: "在 \(transferStation) 下车",
                 colorHex: line1Color,
                 intervalDesc: "发车间隔约 3 分钟 · 首班 06:15 末班 23:35"
@@ -774,7 +774,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                 fromStation: transferStation,
                 toStation: destStation,
                 passStationCount: max(2, Int(distKm * 0.25)),
-                durationMins: max(8, Int(baseMins * 0.35)),
+                durationMins: max(8, Int(Double(baseMins) * 0.35)),
                 exitDesc: "从 A出入口 出站",
                 colorHex: line2Color,
                 intervalDesc: "发车间隔约 4 分钟 · 首班 06:20 末班 23:45"
