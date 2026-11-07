@@ -297,7 +297,7 @@ struct HTTSmoothMapView: UIViewRepresentable {
         }
         
         func mapView(_ mapView: MKMapView, didUpdate userLocation: MKUserLocation) {
-            guard let loc = userLocation.location, !parent.manager.isDemoSimulating else { return }
+            guard userLocation.location != nil, !parent.manager.isDemoSimulating else { return }
             DispatchQueue.main.async {
                 self.parent.manager.userCoordinate = userLocation.coordinate
             }
@@ -684,6 +684,101 @@ struct ContentView: View {
         }
     }
     
+    // MARK: - Top Turn-by-Turn Instruction Banner Card
+    private var topNavigationBannerCard: some View {
+        HStack(spacing: 12) {
+            // Maneuver Turn Arrow
+            ZStack {
+                Circle()
+                    .fill(httCrimson)
+                    .frame(width: 50, height: 50)
+                    .overlay(Circle().stroke(httGold, lineWidth: 2))
+                
+                Image(systemName: turnIconName(for: manager.currentStepInstruction))
+                    .font(.system(size: 24, weight: .bold))
+                    .foregroundColor(httCream)
+            }
+            
+            // Instruction Text & Total Route Distance/Time
+            VStack(alignment: .leading, spacing: 3) {
+                HStack {
+                    Text(manager.destinationName.isEmpty ? tr("实时路线引导", "即時路線引導", "Route Guidance") : manager.destinationName)
+                        .font(.caption2.bold())
+                        .foregroundColor(httGold)
+                    Spacer()
+                    if manager.remainingRouteDistanceKm > 0 {
+                        Text(String(format: "%.1f km · %d %@", manager.remainingRouteDistanceKm, manager.remainingRouteMinutes, tr("分钟", "分鐘", "min")))
+                            .font(.system(size: 11, weight: .bold, design: .monospaced))
+                            .foregroundColor(httCream.opacity(0.9))
+                    }
+                }
+                
+                Text(manager.currentStepInstruction.isEmpty
+                     ? tr("沿着当前道路直行", "沿著當前道路直行", "Continue straight ahead")
+                     : manager.currentStepInstruction)
+                    .font(.system(size: 15, weight: .black))
+                    .foregroundColor(.white)
+                    .lineLimit(1)
+            }
+            
+            // Step Distance Countdown Badge (Smart km / m format!)
+            if manager.distanceToNextStepMeters > 0 {
+                VStack(spacing: 1) {
+                    Text(manager.formatSmartDistance(Int(manager.distanceToNextStepMeters)))
+                        .font(.system(size: 16, weight: .black, design: .monospaced))
+                        .foregroundColor(httGold)
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+                .background(Color.black.opacity(0.55))
+                .cornerRadius(8)
+            }
+            
+            // Transit Public Timetable Detail Button
+            if manager.travelMode == .transit {
+                Button(action: {
+                    manager.openSystemMapsForTransit()
+                }) {
+                    VStack(spacing: 1) {
+                        Image(systemName: "tram.fill")
+                            .font(.system(size: 12, weight: .bold))
+                        Text(tr("班次", "班次", "Transit"))
+                            .font(.system(size: 8, weight: .bold))
+                    }
+                    .foregroundColor(.white)
+                    .padding(5)
+                    .background(Color.purple.opacity(0.85))
+                    .cornerRadius(8)
+                }
+            }
+            
+            // Exit Navigation / Minimize Button
+            Button(action: {
+                withAnimation(.spring(response: 0.35, dampingFraction: 0.7)) {
+                    if manager.activeRoute != nil {
+                        manager.stopRouteGuidance()
+                    } else {
+                        manager.isMapEnlarged = false
+                    }
+                }
+            }) {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.title2)
+                    .foregroundColor(.red)
+                    .padding(4)
+                    .background(Color.black.opacity(0.6))
+                    .clipShape(Circle())
+            }
+        }
+        .padding(10)
+        .background(
+            RoundedRectangle(cornerRadius: 16)
+                .fill(Color.black.opacity(0.85))
+                .overlay(RoundedRectangle(cornerRadius: 16).stroke(httGold, lineWidth: 2))
+                .shadow(color: .black.opacity(0.5), radius: 8)
+        )
+    }
+
     // MARK: - Multi-Lane Indicator (左转/直行/右转 白灰高亮) + Real-Time Traffic Light Countdown (红绿灯倒计时)
     private var laneGuidanceAndTrafficLightBar: some View {
         HStack(spacing: 10) {
