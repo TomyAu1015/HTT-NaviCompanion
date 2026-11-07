@@ -566,36 +566,51 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     
     func handleMapTap(at coord: CLLocationCoordinate2D) {
         let tapLoc = CLLocation(latitude: coord.latitude, longitude: coord.longitude)
-        if #available(iOS 14.0, *) {
-            let poiReq = MKLocalPointsOfInterestRequest(center: coord, radius: 42.0)
-            poiReq.pointOfInterestFilter = .includingAll
-            MKLocalSearch(request: poiReq).start { [weak self] resp, _ in
-                DispatchQueue.main.async {
-                    guard let self = self else { return }
-                    // Find closest named POI (e.g., 中源大药房, 益友便利店, 沙湾小学) within 42m of tap!
-                    let validItems = (resp?.mapItems ?? []).filter { item in
-                        guard let name = item.name, !name.isEmpty else { return false }
-                        let itemLoc = CLLocation(latitude: item.placemark.coordinate.latitude,
-                                                 longitude: item.placemark.coordinate.longitude)
-                        return tapLoc.distance(from: itemLoc) <= 42.0
-                    }.sorted { a, b in
-                        let la = CLLocation(latitude: a.placemark.coordinate.latitude, longitude: a.placemark.coordinate.longitude)
-                        let lb = CLLocation(latitude: b.placemark.coordinate.latitude, longitude: b.placemark.coordinate.longitude)
-                        return tapLoc.distance(from: la) < tapLoc.distance(from: lb)
-                    }
-                    
-                    if let bestPOI = validItems.first {
-                        self.tappedMapCoord = bestPOI.placemark.coordinate
-                        self.tappedMapTitle = bestPOI.name ?? "精选地点"
-                        var addrParts: [String] = []
-                        if let dist = bestPOI.placemark.subLocality { addrParts.append(dist) }
-                        if let road = bestPOI.placemark.thoroughfare { addrParts.append(road) }
-                        if let num = bestPOI.placemark.subThoroughfare { addrParts.append(num) }
-                        self.tappedMapAddress = addrParts.isEmpty ? (bestPOI.placemark.title ?? "") : addrParts.joined(separator: " · ")
-                        self.isReverseGeocoding = false
-                    } else {
-                        // Tapped on blank road/ground with no POI -> dismiss card so random clicks don't annoy user!
-                        self.tappedMapCoord = nil
+        let req = MKLocalSearch.Request()
+        req.resultTypes = .pointOfInterest
+        req.pointOfInterestFilter = .includingAll
+        req.region = MKCoordinateRegion(center: coord, latitudinalMeters: 90, longitudinalMeters: 90)
+        
+        MKLocalSearch(request: req).start { [weak self] resp, _ in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                let validItems = (resp?.mapItems ?? []).filter { item in
+                    guard let name = item.name, !name.isEmpty else { return false }
+                    let itemLoc = CLLocation(latitude: item.placemark.coordinate.latitude,
+                                             longitude: item.placemark.coordinate.longitude)
+                    return tapLoc.distance(from: itemLoc) <= 45.0
+                }.sorted { a, b in
+                    let la = CLLocation(latitude: a.placemark.coordinate.latitude, longitude: a.placemark.coordinate.longitude)
+                    let lb = CLLocation(latitude: b.placemark.coordinate.latitude, longitude: b.placemark.coordinate.longitude)
+                    return tapLoc.distance(from: la) < tapLoc.distance(from: lb)
+                }
+                
+                if let bestPOI = validItems.first {
+                    self.tappedMapCoord = bestPOI.placemark.coordinate
+                    self.tappedMapTitle = bestPOI.name ?? "精选地点"
+                    var addrParts: [String] = []
+                    if let dist = bestPOI.placemark.subLocality { addrParts.append(dist) }
+                    if let road = bestPOI.placemark.thoroughfare { addrParts.append(road) }
+                    if let num = bestPOI.placemark.subThoroughfare { addrParts.append(num) }
+                    self.tappedMapAddress = addrParts.isEmpty ? (bestPOI.placemark.title ?? "") : addrParts.joined(separator: " · ")
+                    self.isReverseGeocoding = false
+                } else {
+                    // Also check reverse geocode for named landmarks
+                    CLGeocoder().reverseGeocodeLocation(tapLoc) { [weak self] placemarks, _ in
+                        DispatchQueue.main.async {
+                            guard let self = self else { return }
+                            if let pm = placemarks?.first, let name = pm.name, !name.isEmpty, name != pm.thoroughfare {
+                                self.tappedMapCoord = coord
+                                self.tappedMapTitle = name
+                                var parts: [String] = []
+                                if let dist = pm.subLocality { parts.append(dist) }
+                                if let road = pm.thoroughfare { parts.append(road) }
+                                self.tappedMapAddress = parts.joined(separator: " · ")
+                            } else {
+                                // Tapped on blank road/ground with no POI -> dismiss card
+                                self.tappedMapCoord = nil
+                            }
+                        }
                     }
                 }
             }
