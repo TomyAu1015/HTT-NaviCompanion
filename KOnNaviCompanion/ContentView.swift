@@ -1,5 +1,6 @@
 import SwiftUI
 import MapKit
+import WebKit
 
 // MARK: - Pinyin IME-Safe Native UISearchBar (Never Interrupts Chinese Marked Text!)
 struct NativePinyinSearchBar: UIViewRepresentable {
@@ -868,6 +869,9 @@ struct ContentView: View {
         .sheet(isPresented: $manager.showTransitPlanSheet) {
             InAppTransitPlanSheetView(manager: manager)
         }
+        .sheet(isPresented: $manager.showGaoDeWebPortalSheet) {
+            GaoDeLiveWebPortalSheetView(manager: manager)
+        }
     }
     
     // MARK: - ENLARGED FULL-SCREEN NAVIGATION HUD (Portrait 100% preserved; Landscape uses dedicated 2-Column Notch-Safe Non-Overlapping Layout!)
@@ -1560,30 +1564,65 @@ struct ContentView: View {
                 .background(httGold.opacity(0.35))
                 .padding(.vertical, 1)
             
-            // Row 3: Prominent [🚀 开始导航 (专注驾驶)] Button!
-            Button(action: {
-                withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) {
-                    manager.startFocusedNavigation()
+            // Row 3: GaoDe Aggregated Ride-Hailing [🚕 高德打车] + [🚗 顺风车] + Prominent [🚀 开始导航] Button!
+            HStack(spacing: 8) {
+                Button(action: {
+                    manager.openGaoDeLivePortal(mode: 0)
+                }) {
+                    VStack(spacing: 1) {
+                        Image(systemName: "figure.wave")
+                            .font(.system(size: 13, weight: .bold))
+                        Text(tr("高德打车", "高德打車", "Taxi"))
+                            .font(.system(size: 9, weight: .black))
+                    }
+                    .foregroundColor(.white)
+                    .frame(width: 54, minHeight: 42)
+                    .background(Color.orange.opacity(0.28))
+                    .cornerRadius(11)
+                    .overlay(RoundedRectangle(cornerRadius: 11).stroke(Color.orange, lineWidth: 1.2))
                 }
-            }) {
-                HStack(spacing: 8) {
-                    Image(systemName: "location.north.circle.fill")
-                        .font(.title3)
-                    Text(tr("开始导航 · 隐藏选项专注驾驶", "開始導航 · 隱藏選項專注駕駛", "Start Navigation (Focus Mode)"))
-                        .font(.system(size: 15, weight: .black))
+                
+                Button(action: {
+                    manager.openGaoDeLivePortal(mode: 1)
+                }) {
+                    VStack(spacing: 1) {
+                        Image(systemName: "car.2.fill")
+                            .font(.system(size: 12, weight: .bold))
+                        Text(tr("顺风车", "順風車", "Hitch"))
+                            .font(.system(size: 9, weight: .black))
+                    }
+                    .foregroundColor(httCream)
+                    .frame(width: 50, minHeight: 42)
+                    .background(Color.white.opacity(0.14))
+                    .cornerRadius(11)
+                    .overlay(RoundedRectangle(cornerRadius: 11).stroke(Color.white.opacity(0.3), lineWidth: 1))
                 }
-                .frame(maxWidth: .infinity, minHeight: 42)
-                .padding(.vertical, 4)
-                .background(
-                    LinearGradient(
-                        colors: [httCrimson, Color(red: 0.92, green: 0.25, blue: 0.30)],
-                        startPoint: .leading,
-                        endPoint: .trailing
+                
+                Button(action: {
+                    withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) {
+                        manager.startFocusedNavigation()
+                    }
+                }) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "location.north.circle.fill")
+                            .font(.title3)
+                        Text(tr("开始导航 · 专注驾驶", "開始導航 · 專注駕駛", "Start Navigation"))
+                            .font(.system(size: 15, weight: .black))
+                            .lineLimit(1)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 42)
+                    .padding(.vertical, 4)
+                    .background(
+                        LinearGradient(
+                            colors: [httCrimson, Color(red: 0.92, green: 0.25, blue: 0.30)],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )
                     )
-                )
-                .foregroundColor(.white)
-                .cornerRadius(11)
-                .overlay(RoundedRectangle(cornerRadius: 11).stroke(httGold, lineWidth: 1.5))
+                    .foregroundColor(.white)
+                    .cornerRadius(11)
+                    .overlay(RoundedRectangle(cornerRadius: 11).stroke(httGold, lineWidth: 1.5))
+                }
             }
         }
         .padding(12)
@@ -2567,60 +2606,299 @@ struct ContentView: View {
         }
     }
     
-    // MARK: - Interactive Tapped Map Point Card (Click Any Place on Map to Navigate!)
+    // MARK: - Interactive GaoDe-Style Merchant & POI Detail Card (1:1 复刻高德图5：营业时间/电话/评分/推荐菜/高德打车/路线/导航/实时资料库同步)
     private var tappedMapPointNavigationCard: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "mappin.and.ellipse")
-                .font(.title2)
-                .foregroundColor(.orange)
+        VStack(alignment: .leading, spacing: 8) {
+            // Header Row: Title + V Badge + Expand/Collapse + Close Button
+            HStack(alignment: .center, spacing: 6) {
+                Text(manager.tappedMapTitle)
+                    .font(.system(size: 16, weight: .black))
+                    .foregroundColor(.white)
+                    .lineLimit(1)
+                
+                // GaoDe V Verified Badge
+                Text("V")
+                    .font(.system(size: 9, weight: .black))
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 1.5)
+                    .background(LinearGradient(colors: [.blue, .cyan], startPoint: .topLeading, endPoint: .bottomTrailing))
+                    .clipShape(Circle())
+                
+                Spacer()
+                
+                Button(action: {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.78)) {
+                        manager.showPOIDetailCardExpanded.toggle()
+                    }
+                }) {
+                    HStack(spacing: 2) {
+                        Text(manager.showPOIDetailCardExpanded ? "收起" : "详情")
+                            .font(.system(size: 10, weight: .bold))
+                        Image(systemName: manager.showPOIDetailCardExpanded ? "chevron.down" : "chevron.up")
+                            .font(.system(size: 10, weight: .bold))
+                    }
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3)
+                    .background(Color.white.opacity(0.12))
+                    .foregroundColor(httGold)
+                    .cornerRadius(6)
+                }
+                
+                Button(action: {
+                    withAnimation { manager.dismissTappedPoint() }
+                }) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundColor(.gray)
+                        .padding(5)
+                        .background(Color.white.opacity(0.1))
+                        .clipShape(Circle())
+                }
+            }
             
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 4) {
-                    Text(manager.tappedMapTitle)
-                        .font(.system(size: 13, weight: .heavy))
+            // Row 2: Rating Badge (4.4 好好) + Tags (收录1年 · 外卖服务) + Price (¥41/人 火锅)
+            HStack(spacing: 6) {
+                HStack(spacing: 3) {
+                    Text(manager.tappedMapRating)
+                        .font(.system(size: 11, weight: .black))
                         .foregroundColor(.white)
-                        .lineLimit(1)
-                    if manager.isReverseGeocoding {
-                        ProgressView()
-                            .scaleEffect(0.6)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 2)
+                        .background(Color.blue)
+                        .cornerRadius(4)
+                    Text(manager.tappedMapReviewLabel)
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundColor(Color(red: 0.35, green: 0.72, blue: 1.0))
+                }
+                
+                ForEach(manager.tappedMapTags, id: \.self) { tag in
+                    Text(tag)
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundColor(Color.orange)
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 2)
+                        .background(Color.orange.opacity(0.15))
+                        .cornerRadius(3)
+                }
+                
+                Text("\(manager.tappedMapPricePerPerson) \(manager.tappedMapCategory)")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(.white.opacity(0.85))
+                
+                Spacer()
+            }
+            
+            // Row 3: Operating Status (营业中 / 休息中) + Exact Hours (17:00-06:00) + Sync Live GaoDe Info Button
+            HStack(spacing: 6) {
+                Text(manager.tappedMapIsOpen ? "營業中" : "休息中")
+                    .font(.system(size: 10, weight: .black))
+                    .foregroundColor(manager.tappedMapIsOpen ? Color.green : Color.orange)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 2)
+                    .background((manager.tappedMapIsOpen ? Color.green : Color.orange).opacity(0.18))
+                    .cornerRadius(4)
+                
+                Text(manager.tappedMapHours)
+                    .font(.system(size: 12, weight: .bold, design: .monospaced))
+                    .foregroundColor(.white.opacity(0.92))
+                
+                Button(action: {
+                    manager.openGaoDeLivePortal(mode: 3)
+                }) {
+                    HStack(spacing: 2) {
+                        Text("高德實時詳情")
+                        Image(systemName: "chevron.right")
+                    }
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundColor(httGold)
+                }
+                
+                Spacer()
+            }
+            
+            // Row 4: Walking/Driving Time + Detailed Street Address + One-Click Phone Call Button (📞 電話)
+            HStack(alignment: .center, spacing: 10) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("\(manager.tappedMapWalkDistText) · \(manager.tappedMapAddress)")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(httCream.opacity(0.88))
+                        .lineLimit(2)
+                    Text("聯繫電話：\(manager.tappedMapPhone)")
+                        .font(.system(size: 10, weight: .bold, design: .monospaced))
+                        .foregroundColor(Color(red: 0.45, green: 0.82, blue: 1.0))
+                }
+                
+                Spacer()
+                
+                Button(action: {
+                    manager.callTappedMerchantPhone()
+                }) {
+                    VStack(spacing: 2) {
+                        ZStack(alignment: .topTrailing) {
+                            Image(systemName: "phone.circle.fill")
+                                .font(.system(size: 24))
+                                .foregroundColor(.blue)
+                            Text("訂座")
+                                .font(.system(size: 7, weight: .black))
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 3)
+                                .padding(.vertical, 1)
+                                .background(Color.blue)
+                                .cornerRadius(3)
+                                .offset(x: 6, y: -4)
+                        }
+                        Text("電話")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundColor(.white.opacity(0.9))
+                    }
+                    .padding(.horizontal, 6)
+                }
+            }
+            
+            if manager.showPOIDetailCardExpanded {
+                // Row 5: Recommended Dishes / Features Strip (网友推荐菜 / 站点设施)
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack {
+                        Text(manager.tappedMapCategory == "交通枢纽" ? "站內實時設施與服務" : "網友推薦菜 (高德同步)")
+                            .font(.system(size: 11, weight: .heavy))
+                            .foregroundColor(.white)
+                        Spacer()
+                        Button(action: {
+                            manager.openGaoDeLivePortal(mode: 3)
+                        }) {
+                            Text("查看全部 >")
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundColor(.gray)
+                        }
+                    }
+                    
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            ForEach(manager.tappedMapDishes) { dish in
+                                HStack(spacing: 6) {
+                                    Image(systemName: dish.iconName)
+                                        .font(.system(size: 13, weight: .bold))
+                                        .foregroundColor(.white)
+                                        .frame(width: 28, height: 28)
+                                        .background(Color.orange.opacity(0.85))
+                                        .cornerRadius(6)
+                                    VStack(alignment: .leading, spacing: 1) {
+                                        Text(dish.name)
+                                            .font(.system(size: 11, weight: .bold))
+                                            .foregroundColor(.white)
+                                            .lineLimit(1)
+                                        Text(dish.price)
+                                            .font(.system(size: 10, weight: .heavy))
+                                            .foregroundColor(httGold)
+                                    }
+                                }
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 5)
+                                .background(Color.white.opacity(0.08))
+                                .cornerRadius(8)
+                            }
+                        }
                     }
                 }
-                Text(manager.tappedMapAddress)
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundColor(httCream.opacity(0.85))
-                    .lineLimit(1)
+                .padding(.top, 2)
             }
-            Spacer()
             
-            Button(action: {
-                manager.startNavigationToTappedPoint()
-            }) {
-                HStack(spacing: 3) {
-                    Image(systemName: "location.fill")
-                    Text(tr("去这里", "去這裡", "Go Here"))
+            Divider().background(Color.white.opacity(0.15))
+            
+            // Row 6: Bottom Action Bar matching GaoDe Screenshot 5 (搜周边 · 顺风车 · 打车[红包] · 导航 · 路线)
+            HStack(spacing: 8) {
+                // 1. 高德顺风车 (Hitchhike)
+                Button(action: {
+                    manager.openGaoDeLivePortal(mode: 1)
+                }) {
+                    VStack(spacing: 1) {
+                        Image(systemName: "car.2.fill")
+                            .font(.system(size: 13, weight: .bold))
+                        Text("順風車")
+                            .font(.system(size: 9, weight: .bold))
+                    }
+                    .foregroundColor(httCream)
+                    .frame(width: 44, height: 36)
+                    .background(Color.white.opacity(0.10))
+                    .cornerRadius(9)
                 }
-                .font(.system(size: 11, weight: .heavy))
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(httCrimson)
-                .foregroundColor(.white)
-                .cornerRadius(8)
-                .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold, lineWidth: 1))
-            }
-            
-            Button(action: {
-                withAnimation { manager.dismissTappedPoint() }
-            }) {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.title3)
-                    .foregroundColor(.gray)
+                
+                // 2. 高德聚合打车 (Ride-Hailing with Red Packet Badge)
+                Button(action: {
+                    manager.openGaoDeLivePortal(mode: 0)
+                }) {
+                    ZStack(alignment: .topTrailing) {
+                        VStack(spacing: 1) {
+                            Image(systemName: "figure.wave")
+                                .font(.system(size: 13, weight: .bold))
+                            Text("打車")
+                                .font(.system(size: 9, weight: .bold))
+                        }
+                        .foregroundColor(.white)
+                        .frame(width: 46, height: 36)
+                        .background(Color.orange.opacity(0.25))
+                        .cornerRadius(9)
+                        .overlay(RoundedRectangle(cornerRadius: 9).stroke(Color.orange, lineWidth: 1))
+                        
+                        Text("紅包")
+                            .font(.system(size: 7, weight: .black))
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 3)
+                            .padding(.vertical, 1)
+                            .background(Color.red)
+                            .cornerRadius(3)
+                            .offset(x: 4, y: -4)
+                    }
+                }
+                
+                Spacer()
+                
+                // 3. 路线 (View Multi-Mode Route & Transit Sheet)
+                Button(action: {
+                    guard let coord = manager.tappedMapCoord else { return }
+                    let title = manager.tappedMapTitle.isEmpty ? "目的地" : manager.tappedMapTitle
+                    manager.tappedMapCoord = nil
+                    manager.calculateAndStartRoute(to: coord, title: title)
+                    if manager.travelMode == .transit {
+                        manager.showTransitPlanSheet = true
+                    }
+                }) {
+                    Text(tr("路线", "路線", "Routes"))
+                        .font(.system(size: 13, weight: .black))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 16)
+                        .frame(height: 36)
+                        .background(Color.white.opacity(0.18))
+                        .cornerRadius(18)
+                        .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.white.opacity(0.35), lineWidth: 1))
+                }
+                
+                // 4. 导航 (Start Immediate Turn-by-Turn Navigation)
+                Button(action: {
+                    manager.startNavigationToTappedPoint()
+                    manager.startFocusedNavigation()
+                }) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "location.north.fill")
+                            .font(.system(size: 12, weight: .bold))
+                        Text(tr("导航", "導航", "Start"))
+                            .font(.system(size: 13, weight: .black))
+                    }
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 18)
+                    .frame(height: 36)
+                    .background(LinearGradient(colors: [Color.blue, Color(red: 0.0, green: 0.48, blue: 0.98)], startPoint: .leading, endPoint: .trailing))
+                    .cornerRadius(18)
+                    .shadow(color: Color.blue.opacity(0.4), radius: 4)
+                }
             }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 7)
-        .background(Color.black.opacity(0.88))
-        .cornerRadius(12)
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.orange, lineWidth: 1.5))
+        .padding(12)
+        .background(Color(red: 0.11, green: 0.11, blue: 0.13).opacity(0.96))
+        .cornerRadius(16)
+        .overlay(RoundedRectangle(cornerRadius: 16).stroke(httGold.opacity(0.85), lineWidth: 1.5))
+        .shadow(color: .black.opacity(0.55), radius: 10)
     }
 
     // MARK: - Beautified RM-500HTT Long-Press Outfit Picker Modal Overlay
@@ -3539,10 +3817,253 @@ struct InAppTransitPlanSheetView: View {
                         
                         ScrollView(.vertical, showsIndicators: true) {
                             VStack(alignment: .leading, spacing: 10) {
-                                // IF CROSS-CITY: Show GaoDe Intercity Train Card (🚆 火車) & Hitchhike Card (順 順風車) matching Screenshot 2!
+                                // IF CROSS-CITY OR NATIONWIDE LONG-DISTANCE: Show GaoDe Flight (✈️ 飛機) + Normal Train (🚂 火車) + High-Speed Rail (🚄 高鐵動車) matching Screenshot 3 & 4!
                                 if let ic = activePlan.intercityBanner {
-                                    VStack(spacing: 10) {
-                                        // Card A: 🚆 火車 (Train / High-Speed Rail Overview Card)
+                                    VStack(spacing: 12) {
+                                        // 1. IF LONG-DISTANCE FLIGHT AVAILABLE: Show ✈️ 飛機 Card (宝安机场 -> 浦东机场 / 虹桥机场)
+                                        if ic.hasFlightOption {
+                                            VStack(alignment: .leading, spacing: 10) {
+                                                HStack {
+                                                    Image(systemName: "airplane")
+                                                        .font(.system(size: 14, weight: .bold))
+                                                        .foregroundColor(.white)
+                                                        .padding(5)
+                                                        .background(Color.blue)
+                                                        .cornerRadius(6)
+                                                    Text("飛機")
+                                                        .font(.system(size: 17, weight: .black))
+                                                        .foregroundColor(.white)
+                                                    Spacer()
+                                                    Text("\(ic.flight1Duration)  \(ic.flight1TotalFrom)")
+                                                        .font(.system(size: 15, weight: .black))
+                                                        .foregroundColor(httGold)
+                                                }
+                                                
+                                                // Flight Option 1 (Direct Low Price: 宝安机场 -> 浦东机场 ¥580起)
+                                                VStack(alignment: .leading, spacing: 6) {
+                                                    HStack {
+                                                        Text("\(ic.flight1Duration) \(ic.flight1TotalFrom)")
+                                                            .font(.system(size: 14, weight: .black))
+                                                            .foregroundColor(.white)
+                                                        Spacer()
+                                                        Text(ic.flight1Badge)
+                                                            .font(.system(size: 10, weight: .bold))
+                                                            .foregroundColor(Color.green)
+                                                            .padding(.horizontal, 6)
+                                                            .padding(.vertical, 2)
+                                                            .background(Color.green.opacity(0.16))
+                                                            .cornerRadius(4)
+                                                    }
+                                                    
+                                                    HStack(spacing: 6) {
+                                                        Circle().stroke(Color.green, lineWidth: 2).frame(width: 8, height: 8)
+                                                        Text("去機場")
+                                                            .foregroundColor(.gray)
+                                                        Button(action: { manager.openGaoDeLivePortal(mode: 0) }) {
+                                                            Text(ic.flight1ToAirportText)
+                                                                .foregroundColor(Color(red: 0.4, green: 0.78, blue: 1.0))
+                                                        }
+                                                    }
+                                                    .font(.system(size: 11, weight: .bold))
+                                                    
+                                                    HStack {
+                                                        Image(systemName: "airplane")
+                                                            .foregroundColor(.blue)
+                                                        Text(ic.flight1FromAirport)
+                                                            .font(.system(size: 15, weight: .black))
+                                                            .foregroundColor(.white)
+                                                        Spacer()
+                                                        VStack(spacing: 2) {
+                                                            Text(ic.flight1AirTime)
+                                                                .font(.system(size: 10, weight: .bold))
+                                                                .foregroundColor(.gray)
+                                                            Rectangle().fill(Color.gray.opacity(0.5)).frame(width: 55, height: 1)
+                                                            Text(ic.flight1CountText)
+                                                                .font(.system(size: 10, weight: .bold))
+                                                                .foregroundColor(.gray)
+                                                        }
+                                                        Spacer()
+                                                        Text(ic.flight1ToAirport)
+                                                            .font(.system(size: 15, weight: .black))
+                                                            .foregroundColor(.white)
+                                                        Text(ic.flight1TicketPrice)
+                                                            .font(.system(size: 15, weight: .black))
+                                                            .foregroundColor(.orange)
+                                                        Button(action: { manager.openGaoDeLivePortal(mode: 2) }) {
+                                                            Text("全部\n班次")
+                                                                .font(.system(size: 9, weight: .bold))
+                                                                .foregroundColor(Color(red: 0.4, green: 0.78, blue: 1.0))
+                                                                .padding(5)
+                                                                .background(Color.blue.opacity(0.15))
+                                                                .cornerRadius(5)
+                                                        }
+                                                    }
+                                                    .padding(9)
+                                                    .background(Color.white.opacity(0.08))
+                                                    .cornerRadius(8)
+                                                    
+                                                    HStack(spacing: 6) {
+                                                        Circle().stroke(Color.red, lineWidth: 2).frame(width: 8, height: 8)
+                                                        Text("去終點")
+                                                            .foregroundColor(.gray)
+                                                        Text(ic.flight1ToDestText)
+                                                            .foregroundColor(Color(red: 0.4, green: 0.78, blue: 1.0))
+                                                    }
+                                                    .font(.system(size: 11, weight: .bold))
+                                                }
+                                                
+                                                Divider().background(Color.white.opacity(0.12))
+                                                
+                                                // Flight Option 2 (Fastest: 宝安机场 -> 虹桥机场 ¥1825起)
+                                                VStack(alignment: .leading, spacing: 6) {
+                                                    HStack {
+                                                        Text("\(ic.flight2Duration) \(ic.flight2TotalFrom)")
+                                                            .font(.system(size: 14, weight: .black))
+                                                            .foregroundColor(.white)
+                                                        Spacer()
+                                                        Text(ic.flight2Badge)
+                                                            .font(.system(size: 10, weight: .bold))
+                                                            .foregroundColor(Color.green)
+                                                            .padding(.horizontal, 6)
+                                                            .padding(.vertical, 2)
+                                                            .background(Color.green.opacity(0.16))
+                                                            .cornerRadius(4)
+                                                    }
+                                                    
+                                                    HStack {
+                                                        Image(systemName: "airplane")
+                                                            .foregroundColor(.blue)
+                                                        Text(ic.flight1FromAirport)
+                                                            .font(.system(size: 15, weight: .black))
+                                                            .foregroundColor(.white)
+                                                        Spacer()
+                                                        VStack(spacing: 2) {
+                                                            Text(ic.flight2AirTime)
+                                                                .font(.system(size: 10, weight: .bold))
+                                                                .foregroundColor(.gray)
+                                                            Rectangle().fill(Color.gray.opacity(0.5)).frame(width: 55, height: 1)
+                                                            Text(ic.flight2CountText)
+                                                                .font(.system(size: 10, weight: .bold))
+                                                                .foregroundColor(.gray)
+                                                        }
+                                                        Spacer()
+                                                        Text(ic.flight2ToAirport)
+                                                            .font(.system(size: 15, weight: .black))
+                                                            .foregroundColor(.white)
+                                                        Text(ic.flight2TicketPrice)
+                                                            .font(.system(size: 15, weight: .black))
+                                                            .foregroundColor(.orange)
+                                                        Button(action: { manager.openGaoDeLivePortal(mode: 2) }) {
+                                                            Text("全部\n班次")
+                                                                .font(.system(size: 9, weight: .bold))
+                                                                .foregroundColor(Color(red: 0.4, green: 0.78, blue: 1.0))
+                                                                .padding(5)
+                                                                .background(Color.blue.opacity(0.15))
+                                                                .cornerRadius(5)
+                                                        }
+                                                    }
+                                                    .padding(9)
+                                                    .background(Color.white.opacity(0.08))
+                                                    .cornerRadius(8)
+                                                    
+                                                    HStack(spacing: 6) {
+                                                        Circle().stroke(Color.red, lineWidth: 2).frame(width: 8, height: 8)
+                                                        Text("去終點")
+                                                            .foregroundColor(.gray)
+                                                        Text(ic.flight2ToDestText)
+                                                            .foregroundColor(Color(red: 0.4, green: 0.78, blue: 1.0))
+                                                    }
+                                                    .font(.system(size: 11, weight: .bold))
+                                                }
+                                            }
+                                            .padding(12)
+                                            .background(Color.black.opacity(0.58))
+                                            .cornerRadius(12)
+                                            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.cyan.opacity(0.45), lineWidth: 1))
+                                        }
+                                        
+                                        // 2. IF NORMAL SLEEPER TRAIN AVAILABLE: Show 🚂 火車 Card (深圳东 -> 嘉兴 ¥223.5起)
+                                        if ic.hasNormalTrainOption {
+                                            VStack(alignment: .leading, spacing: 10) {
+                                                HStack {
+                                                    Image(systemName: "tram.fill")
+                                                        .font(.system(size: 14, weight: .bold))
+                                                        .foregroundColor(.white)
+                                                        .padding(5)
+                                                        .background(Color.blue)
+                                                        .cornerRadius(6)
+                                                    Text("火車")
+                                                        .font(.system(size: 17, weight: .black))
+                                                        .foregroundColor(.white)
+                                                    Spacer()
+                                                    Text("\(ic.normalTrainDuration)  \(ic.normalTrainTotalFrom)")
+                                                        .font(.system(size: 15, weight: .black))
+                                                        .foregroundColor(httGold)
+                                                }
+                                                
+                                                HStack(spacing: 6) {
+                                                    Circle().stroke(Color.green, lineWidth: 2).frame(width: 8, height: 8)
+                                                    Text("去火車站")
+                                                        .foregroundColor(.gray)
+                                                    Button(action: { manager.openGaoDeLivePortal(mode: 0) }) {
+                                                        Text(ic.normalTrainToStText)
+                                                            .foregroundColor(Color(red: 0.4, green: 0.78, blue: 1.0))
+                                                    }
+                                                }
+                                                .font(.system(size: 11, weight: .bold))
+                                                
+                                                HStack {
+                                                    Image(systemName: "tram.fill")
+                                                        .foregroundColor(.blue)
+                                                    Text(ic.normalTrainFromSt)
+                                                        .font(.system(size: 15, weight: .black))
+                                                        .foregroundColor(.white)
+                                                    Spacer()
+                                                    VStack(spacing: 2) {
+                                                        Text(ic.normalTrainRunTime)
+                                                            .font(.system(size: 10, weight: .bold))
+                                                            .foregroundColor(.gray)
+                                                        Rectangle().fill(Color.gray.opacity(0.5)).frame(width: 55, height: 1)
+                                                        Text(ic.normalTrainCountText)
+                                                            .font(.system(size: 10, weight: .bold))
+                                                            .foregroundColor(.gray)
+                                                    }
+                                                    Spacer()
+                                                    Text(ic.normalTrainToSt)
+                                                        .font(.system(size: 15, weight: .black))
+                                                        .foregroundColor(.white)
+                                                    Text(ic.normalTrainTicketPrice)
+                                                        .font(.system(size: 15, weight: .black))
+                                                        .foregroundColor(.orange)
+                                                    Button(action: { manager.openGaoDeLivePortal(mode: 2) }) {
+                                                        Text("全部\n班次")
+                                                            .font(.system(size: 9, weight: .bold))
+                                                            .foregroundColor(Color(red: 0.4, green: 0.78, blue: 1.0))
+                                                            .padding(5)
+                                                            .background(Color.blue.opacity(0.15))
+                                                            .cornerRadius(5)
+                                                    }
+                                                }
+                                                .padding(9)
+                                                .background(Color.white.opacity(0.08))
+                                                .cornerRadius(8)
+                                                
+                                                HStack(spacing: 6) {
+                                                    Circle().stroke(Color.red, lineWidth: 2).frame(width: 8, height: 8)
+                                                    Text("去終點")
+                                                        .foregroundColor(.gray)
+                                                    Text(ic.normalTrainToDestText)
+                                                        .foregroundColor(Color(red: 0.4, green: 0.78, blue: 1.0))
+                                                }
+                                                .font(.system(size: 11, weight: .bold))
+                                            }
+                                            .padding(12)
+                                            .background(Color.black.opacity(0.58))
+                                            .cornerRadius(12)
+                                            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.blue.opacity(0.45), lineWidth: 1))
+                                        }
+                                        
+                                        // 3. Card C: 🚄 高鐵動車 (High-Speed Rail Overview Card: 深圳北 -> 上海南 ¥845起)
                                         VStack(alignment: .leading, spacing: 10) {
                                             HStack {
                                                 Image(systemName: "train.side.front.car")
@@ -3551,8 +4072,8 @@ struct InAppTransitPlanSheetView: View {
                                                     .padding(5)
                                                     .background(Color.blue)
                                                     .cornerRadius(6)
-                                                Text("火車 / 高鐵跨城方案")
-                                                    .font(.system(size: 16, weight: .black))
+                                                Text(ic.hasFlightOption ? "高鐵動車" : "火車 / 高鐵跨城方案")
+                                                    .font(.system(size: 17, weight: .black))
                                                     .foregroundColor(.white)
                                                 Spacer()
                                                 Text("\(ic.durationText)  \(ic.startPriceText)")
@@ -3564,12 +4085,14 @@ struct InAppTransitPlanSheetView: View {
                                                 Circle().stroke(Color.green, lineWidth: 2).frame(width: 8, height: 8)
                                                 Text("去火車站")
                                                     .foregroundColor(.gray)
-                                                Text(ic.toStationBusText)
-                                                    .foregroundColor(Color(red: 0.4, green: 0.78, blue: 1.0))
+                                                Button(action: { manager.openGaoDeLivePortal(mode: 0) }) {
+                                                    Text(ic.toStationBusText)
+                                                        .foregroundColor(Color(red: 0.4, green: 0.78, blue: 1.0))
+                                                }
                                             }
                                             .font(.system(size: 12, weight: .bold))
                                             
-                                            // Train Ticket Box (深圳東 ➔ 廣州 ¥21.5起 [全部班次])
+                                            // Train Ticket Box (深圳北 ➔ 上海南 ¥845起 [全部班次])
                                             HStack {
                                                 Image(systemName: "tram.fill")
                                                     .foregroundColor(.blue)
@@ -3593,6 +4116,14 @@ struct InAppTransitPlanSheetView: View {
                                                 Text(ic.trainTicketPrice)
                                                     .font(.system(size: 15, weight: .black))
                                                     .foregroundColor(.orange)
+                                                Button(action: { manager.openGaoDeLivePortal(mode: 2) }) {
+                                                    Text("全部\n班次")
+                                                        .font(.system(size: 9, weight: .bold))
+                                                        .foregroundColor(Color(red: 0.4, green: 0.78, blue: 1.0))
+                                                        .padding(5)
+                                                        .background(Color.blue.opacity(0.15))
+                                                        .cornerRadius(5)
+                                                }
                                             }
                                             .padding(10)
                                             .background(Color.white.opacity(0.08))
@@ -3612,7 +4143,44 @@ struct InAppTransitPlanSheetView: View {
                                         .cornerRadius(12)
                                         .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.blue.opacity(0.45), lineWidth: 1))
                                         
-
+                                        // 4. Quick Action Bar for Real GaoDe Ride-Hailing & Hitchhike Login
+                                        HStack(spacing: 10) {
+                                            Button(action: {
+                                                dismiss()
+                                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                                                    manager.openGaoDeLivePortal(mode: 0)
+                                                }
+                                            }) {
+                                                HStack(spacing: 5) {
+                                                    Image(systemName: "figure.wave")
+                                                    Text("高德聚合打車 (實時叫車)")
+                                                        .font(.system(size: 12, weight: .black))
+                                                }
+                                                .foregroundColor(.white)
+                                                .frame(maxWidth: .infinity)
+                                                .padding(.vertical, 9)
+                                                .background(Color.orange.opacity(0.85))
+                                                .cornerRadius(9)
+                                            }
+                                            
+                                            Button(action: {
+                                                dismiss()
+                                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                                                    manager.openGaoDeLivePortal(mode: 1)
+                                                }
+                                            }) {
+                                                HStack(spacing: 5) {
+                                                    Image(systemName: "car.2.fill")
+                                                    Text("高德跨城順風車")
+                                                        .font(.system(size: 12, weight: .black))
+                                                }
+                                                .foregroundColor(.white)
+                                                .frame(maxWidth: .infinity)
+                                                .padding(.vertical, 9)
+                                                .background(Color.blue.opacity(0.75))
+                                                .cornerRadius(9)
+                                            }
+                                        }
                                     }
                                     .padding(.horizontal)
                                     .padding(.top, 8)
@@ -3971,5 +4539,141 @@ extension Color {
         let g = Double((rgb >> 8) & 0xFF) / 255.0
         let b = Double(rgb & 0xFF) / 255.0
         self.init(red: r, green: g, blue: b)
+    }
+}
+
+
+// MARK: - Persistent Login WKWebView for Real GaoDe Ride-Hailing, Hitchhike & Live Merchant Database Sync
+struct GaoDePersistentWebView: UIViewRepresentable {
+    let urlString: String
+    
+    func makeUIView(context: Context) -> WKWebView {
+        let config = WKWebViewConfiguration()
+        config.websiteDataStore = WKWebsiteDataStore.default() // Persists user login session & cookies!
+        config.allowsInlineMediaPlayback = true
+        let webView = WKWebView(frame: .zero, configuration: config)
+        webView.navigationDelegate = context.coordinator
+        webView.allowsBackForwardNavigationGestures = true
+        if let url = URL(string: urlString) {
+            webView.load(URLRequest(url: url))
+        }
+        return webView
+    }
+    
+    func updateUIView(_ uiView: WKWebView, context: Context) {
+        if context.coordinator.lastLoadedURL != urlString, let url = URL(string: urlString) {
+            context.coordinator.lastLoadedURL = urlString
+            uiView.load(URLRequest(url: url))
+        }
+    }
+    
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+    
+    class Coordinator: NSObject, WKNavigationDelegate {
+        var lastLoadedURL: String = ""
+        
+        func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+            if let url = navigationAction.request.url, let scheme = url.scheme?.lowercased() {
+                if scheme != "http" && scheme != "https" && scheme != "about" && scheme != "file" {
+                    // Allow jumping to native Alipay / WeChat / AutoNavi if installed and user taps login/pay!
+                    if UIApplication.shared.canOpenURL(url) {
+                        UIApplication.shared.open(url, options: [:], completionHandler: nil)
+                    }
+                    decisionHandler(.cancel)
+                    return
+                }
+            }
+            decisionHandler(.allow)
+        }
+    }
+}
+
+struct GaoDeLiveWebPortalSheetView: View {
+    @ObservedObject var manager: AudioPlayerManager
+    @Environment(\.dismiss) private var dismiss
+    
+    private let httGold = Color(red: 0.88, green: 0.68, blue: 0.24)
+    private let httCrimson = Color(red: 0.78, green: 0.18, blue: 0.22)
+    private let httCream = Color(red: 0.99, green: 0.96, blue: 0.90)
+    
+    var body: some View {
+        NavigationView {
+            VStack(spacing: 0) {
+                // Top Mode Switcher Bar (聚合打车 / 顺风车 / 火车飞机票 / 实时商家资料库)
+                HStack(spacing: 8) {
+                    portalTabButton(title: "🚕 聚合打車", mode: 0)
+                    portalTabButton(title: "🚗 順風車", mode: 1)
+                    portalTabButton(title: "🚄 班次票務", mode: 2)
+                    portalTabButton(title: "🏪 商家詳情", mode: 3)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(Color.black.opacity(0.9))
+                
+                // Banner to jump to Native GaoDe App if user prefers native app login
+                HStack {
+                    Image(systemName: "checkmark.shield.fill")
+                        .foregroundColor(.green)
+                    Text("支持直接登錄高德賬號叫車 · 實時同步高德地圖資料庫")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundColor(.white)
+                    Spacer()
+                    Button(action: {
+                        manager.launchNativeGaoDeAppTaxiOrNavi(isTaxi: manager.gaoDeWebPortalMode <= 1)
+                    }) {
+                        Text("喚起高德App >")
+                            .font(.system(size: 10, weight: .black))
+                            .foregroundColor(.black)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(httGold)
+                            .cornerRadius(6)
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(Color(red: 0.16, green: 0.15, blue: 0.18))
+                
+                // Live WKWebView with persistent cookies
+                GaoDePersistentWebView(urlString: manager.gaoDeWebPortalURLString)
+                    .edgesIgnoringSafeArea(.bottom)
+            }
+            .navigationTitle(portalNavTitle)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("返回伴侶") {
+                        dismiss()
+                    }
+                    .foregroundColor(httGold)
+                }
+            }
+        }
+    }
+    
+    private var portalNavTitle: String {
+        switch manager.gaoDeWebPortalMode {
+        case 0: return "高德聚合打車 (實時叫車)"
+        case 1: return "高德順風車 · 跨城拼車"
+        case 2: return "高德實時火車/高鐵/機票"
+        default: return "高德實時商家與地圖資料庫"
+        }
+    }
+    
+    private func portalTabButton(title: String, mode: Int) -> some View {
+        let isSel = (manager.gaoDeWebPortalMode == mode)
+        return Button(action: {
+            manager.openGaoDeLivePortal(mode: mode)
+        }) {
+            Text(title)
+                .font(.system(size: 11, weight: .black))
+                .foregroundColor(isSel ? .black : .white)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 7)
+                .background(isSel ? httGold : Color.white.opacity(0.14))
+                .cornerRadius(8)
+        }
     }
 }

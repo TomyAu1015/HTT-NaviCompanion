@@ -103,7 +103,11 @@
 	<key>LSApplicationQueriesSchemes</key>
 	<array>
 		<string>iosamap</string>
+		<string>amapuri</string>
 		<string>baidumap</string>
+		<string>weixin</string>
+		<string>alipays</string>
+		<string>diditaxi</string>
 	</array>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
