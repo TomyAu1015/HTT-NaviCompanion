@@ -156,6 +156,19 @@ enum NavigationTravelMode: String, CaseIterable, Identifiable {
     }
 }
 
+struct RoadLaneItem: Identifiable {
+    let id = UUID()
+    let iconName: String       // e.g. "arrow.turn.up.left", "arrow.up", "arrow.turn.up.right"
+    let label: String          // e.g. "左转", "直行", "右转"
+    let isRecommended: Bool    // true = Bright White/Active, false = Dimmed Gray
+}
+
+enum TrafficLightPhase: String {
+    case green = "green"
+    case yellow = "yellow"
+    case red = "red"
+}
+
 enum RouteStrategyPreference: String, CaseIterable, Identifiable {
     case highwayFirst = "highwayFirst"
     case avoidHighway = "avoidHighway"
@@ -435,11 +448,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     @Published var maxSpeedKmh: Double = 0.0
     @Published var tripDistanceKm: Double = 0.0
     @Published var headingDegrees: Double = 0.0
-    @Published var speedLimitKmh: Double = 80.0 {
-        didSet {
-            if oldValue != speedLimitKmh { triggerSpeedLimitPrompt() }
-        }
-    }
+    @Published var speedLimitKmh: Double = 80.0
     @Published var isOverspeeding: Bool = false
     @Published var isGPSSignalPoor: Bool = false
     @Published var gpsAccuracyMeters: Double = -1.0
@@ -451,9 +460,16 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     @Published var isMapEnlarged: Bool = false // Auto-enlarges on active navigation!
     @Published var travelMode: NavigationTravelMode = .driving {
         didSet {
-            speedLimitKmh = travelMode.defaultSpeedLimit
+            guard oldValue != travelMode else { return }
+            // Immediately stop any previous voice queue so user never has to wait for old audio to finish!
+            stop()
+            let newLimit = travelMode.defaultSpeedLimit
             if let dest = destinationCoord, !destinationName.isEmpty {
+                speedLimitKmh = newLimit
                 calculateAndStartRoute(to: dest, title: destinationName, isReroute: true)
+            } else {
+                speedLimitKmh = newLimit
+                announceTravelModeSwitch()
             }
         }
     }
@@ -494,6 +510,15 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     @Published var upcomingServiceAreaDist: Int = 0
     @Published var congestionStatusText: String = "道路畅通"
     @Published var isCongested: Bool = false
+    @Published var isNavigatingFocused: Bool = false // True after pressing [开始导航] -> hides clutter & focuses on driving!
+    @Published var zoomCommandTrigger: Int = 0       // Dedicated zoom trigger that NEVER resets map center!
+    @Published var trafficLightPhase: TrafficLightPhase = .green
+    @Published var trafficLightSeconds: Int = 26
+    @Published var currentRoadLanes: [RoadLaneItem] = [
+        RoadLaneItem(iconName: "arrow.turn.up.left", label: "左转", isRecommended: false),
+        RoadLaneItem(iconName: "arrow.up", label: "直行", isRecommended: true),
+        RoadLaneItem(iconName: "arrow.turn.up.right", label: "右转", isRecommended: false)
+    ]
     @Published var recenterTrigger: Int = 0
     
     func toggleCameraMode() {
@@ -501,13 +526,42 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     }
     
     func zoomMapIn() {
-        userZoomDistance = max(140.0, userZoomDistance * 0.65)
-        recenterTrigger += 1
+        userZoomDistance = max(100.0, userZoomDistance * 0.62)
+        zoomCommandTrigger += 1
     }
     
     func zoomMapOut() {
-        userZoomDistance = min(15000.0, userZoomDistance * 1.5)
+        userZoomDistance = min(30000.0, userZoomDistance * 1.55)
+        zoomCommandTrigger += 1
+    }
+    
+    func formatSmartDistance(_ meters: Int) -> String {
+        if meters >= 1000 {
+            return String(format: "%.1f km", Double(meters) / 1000.0)
+        } else {
+            return "\(max(0, meters)) m"
+        }
+    }
+    
+    func startFocusedNavigation() {
+        stop()
+        isNavigatingFocused = true
+        mapTrackingUser = true
         recenterTrigger += 1
+        triggerDepartureGreeting(title: destinationName, isReroute: false)
+    }
+    
+    func exitFocusedNavigationToOverview() {
+        isNavigatingFocused = false
+    }
+    
+    private func announceTravelModeSwitch() {
+        let base = activeBaseId()
+        let modeOff = activeModeOffset()
+        let modeTitle = travelMode.title(language)
+        let lim = Int(speedLimitKmh)
+        let msg = "[\(modeTitle)] モード切替完了！制限速度: \(lim) km/h"
+        playVoice(id: base + modeOff + 39, customQuote: msg, clearQueue: true)
     }
     
     func handleMapTap(at coord: CLLocationCoordinate2D) {
@@ -805,6 +859,23 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         let timer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
             guard let self = self else { return }
             self.drivingSeconds += 1
+            
+            // Update Traffic Light Countdown (红绿灯倒计时)
+            if self.trafficLightSeconds > 1 {
+                self.trafficLightSeconds -= 1
+            } else {
+                switch self.trafficLightPhase {
+                case .green:
+                    self.trafficLightPhase = .yellow
+                    self.trafficLightSeconds = 3
+                case .yellow:
+                    self.trafficLightPhase = .red
+                    self.trafficLightSeconds = Int.random(in: 22...38)
+                case .red:
+                    self.trafficLightPhase = .green
+                    self.trafficLightSeconds = Int.random(in: 25...45)
+                }
+            }
             
             if self.drivingSeconds > 0 && self.drivingSeconds % 2700 == 0 {
                 self.triggerTeaTimeReminder()
@@ -1312,6 +1383,82 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         }
     }
     
+    // MARK: - Intelligent Multi-Lane Recommender (车道级白/灰高亮引导) & Dynamic Speed Camera Alert
+    func updateRoadLanes(for instruction: String) {
+        let lower = instruction.lowercased()
+        if lower.contains("调头") || lower.contains("掉头") || lower.contains("u-turn") {
+            currentRoadLanes = [
+                RoadLaneItem(iconName: "arrow.uturn.left", label: "掉头", isRecommended: true),
+                RoadLaneItem(iconName: "arrow.up", label: "直行", isRecommended: false),
+                RoadLaneItem(iconName: "arrow.turn.up.right", label: "右转", isRecommended: false)
+            ]
+        } else if lower.contains("稍向右") || lower.contains("靠右") || lower.contains("出口") || lower.contains("右前方") {
+            currentRoadLanes = [
+                RoadLaneItem(iconName: "arrow.up", label: "直行", isRecommended: false),
+                RoadLaneItem(iconName: "arrow.up", label: "直行", isRecommended: false),
+                RoadLaneItem(iconName: "arrow.up.right", label: "靠右", isRecommended: true),
+                RoadLaneItem(iconName: "arrow.turn.up.right", label: "右转", isRecommended: true)
+            ]
+        } else if lower.contains("稍向左") || lower.contains("靠左") || lower.contains("左前方") {
+            currentRoadLanes = [
+                RoadLaneItem(iconName: "arrow.turn.up.left", label: "左转", isRecommended: true),
+                RoadLaneItem(iconName: "arrow.up.left", label: "靠左", isRecommended: true),
+                RoadLaneItem(iconName: "arrow.up", label: "直行", isRecommended: false),
+                RoadLaneItem(iconName: "arrow.up", label: "直行", isRecommended: false)
+            ]
+        } else if lower.contains("右") || lower.contains("right") {
+            // 3 lanes: Left (Gray), Straight (Gray), Right (White Highlighted!)
+            currentRoadLanes = [
+                RoadLaneItem(iconName: "arrow.turn.up.left", label: "左转", isRecommended: false),
+                RoadLaneItem(iconName: "arrow.up", label: "直行", isRecommended: false),
+                RoadLaneItem(iconName: "arrow.turn.up.right", label: "右转", isRecommended: true)
+            ]
+        } else if lower.contains("左") || lower.contains("left") {
+            // 3 lanes: Left (White Highlighted!), Straight (Gray), Right (Gray)
+            currentRoadLanes = [
+                RoadLaneItem(iconName: "arrow.turn.up.left", label: "左转", isRecommended: true),
+                RoadLaneItem(iconName: "arrow.up", label: "直行", isRecommended: false),
+                RoadLaneItem(iconName: "arrow.turn.up.right", label: "右转", isRecommended: false)
+            ]
+        } else {
+            // Straight ahead: Left (Gray), Center Straight (White Highlighted!), Right (Gray)
+            currentRoadLanes = [
+                RoadLaneItem(iconName: "arrow.turn.up.left", label: "左转", isRecommended: false),
+                RoadLaneItem(iconName: "arrow.up", label: "直行", isRecommended: true),
+                RoadLaneItem(iconName: "arrow.up", label: "直行", isRecommended: true),
+                RoadLaneItem(iconName: "arrow.turn.up.right", label: "右转", isRecommended: false)
+            ]
+        }
+    }
+    
+    func evaluateRoadSpeedLimitAndNotify(for instruction: String) {
+        guard travelMode == .driving else {
+            upcomingCameraLimit = Int(travelMode.defaultSpeedLimit)
+            speedLimitKmh = travelMode.defaultSpeedLimit
+            return
+        }
+        let detectedLimit: Int
+        if instruction.contains("高速") || instruction.contains("G") || instruction.contains("S") {
+            detectedLimit = 100
+        } else if instruction.contains("快速") || instruction.contains("大道") || instruction.contains("高架") || instruction.contains("干道") {
+            detectedLimit = 80
+        } else if instruction.contains("辅路") || instruction.contains("社区") || instruction.contains("巷") || instruction.contains("内部") {
+            detectedLimit = 40
+        } else {
+            detectedLimit = 60
+        }
+        
+        if detectedLimit != upcomingCameraLimit {
+            upcomingCameraLimit = detectedLimit
+            speedLimitKmh = Double(detectedLimit)
+            // Announce road speed limit change immediately with character voice!
+            let base = activeBaseId()
+            let offset = (selectedCharacter == .all) ? 143 : 47
+            let msg = "📸 測速電子眼・制限速度変更：この道路は \(detectedLimit) km/h 制限だよ！注意してね！"
+            playVoice(id: base + offset, customQuote: msg, clearQueue: false)
+        }
+    }
+
     private func applyCalculatedRoute(_ route: MKRoute, title: String, isReroute: Bool) {
         self.activeRoute = route
         self.isMapEnlarged = true
@@ -1319,12 +1466,17 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         self.announcedStepThresholds.removeAll()
         self.keepAlivePlayer?.play()
         
+        if !isReroute {
+            self.isNavigatingFocused = false // Show route overview & [开始导航] button first!
+        }
         let steps = route.steps
         self.currentStepIndex = steps.count > 1 ? 1 : 0
         if self.currentStepIndex < steps.count {
             let step = steps[self.currentStepIndex]
             self.currentStepInstruction = step.instructions.isEmpty ? title : step.instructions
             self.distanceToNextStepMeters = step.distance
+            self.updateRoadLanes(for: self.currentStepInstruction)
+            self.evaluateRoadSpeedLimitAndNotify(for: self.currentStepInstruction)
         }
         self.remainingRouteDistanceKm = route.distance / 1000.0
         
@@ -1439,6 +1591,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     func stopRouteGuidance() {
         stopDemoSimulation()
         activeRoute = nil
+        isNavigatingFocused = false
         candidateRoutes = []
         routeHazards = []
         upcomingTollDistance = 0
@@ -1508,6 +1661,8 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             currentStepIndex += 1
             let nextStep = steps[currentStepIndex]
             currentStepInstruction = nextStep.instructions
+            updateRoadLanes(for: currentStepInstruction)
+            evaluateRoadSpeedLimitAndNotify(for: currentStepInstruction)
         }
     }
     
@@ -1558,6 +1713,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         // Keep user's current view mode (works seamlessly in compact cockpit or enlarged full-screen)
         destinationName = language == .en ? "Sakuragaoka High Music Room" : "樱丘高中轻音部部室 (模拟导航)"
         currentStepInstruction = language == .en ? "In 300m, Turn Right" : "前方 300 米右转进入樱高大道"
+        updateRoadLanes(for: currentStepInstruction)
         distanceToNextStepMeters = 300
         currentSpeedKmh = 48.0
         upcomingCameraDistance = 280
@@ -1596,13 +1752,19 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             case 1:
                 self.distanceToNextStepMeters = 100
                 self.currentStepInstruction = self.language == .en ? "In 100m, Turn Left" : "前方 100 米左转进入商业街"
+                self.updateRoadLanes(for: self.currentStepInstruction)
+                self.evaluateRoadSpeedLimitAndNotify(for: "商业街辅路")
+                self.upcomingTollDistance = max(0, self.upcomingTollDistance - 350)
                 self.enqueueVoiceCombo([
                     (b + 14, "📍 およそ 100m先 (前方100米)"),
                     (b + mOff + 29, "↩️ 左方向に行きまーす！巻き込みに注意してね！")
                 ])
             case 2:
                 self.distanceToNextStepMeters = 30
-                self.currentStepInstruction = self.language == .en ? "Soon, Enter Expressway" : "即将驶入高速道路入口"
+                self.currentStepInstruction = self.language == .en ? "Soon, Enter Expressway" : "即将驶入高速道路入口(靠右)"
+                self.updateRoadLanes(for: self.currentStepInstruction)
+                self.evaluateRoadSpeedLimitAndNotify(for: "高速道路")
+                self.upcomingTollDistance = 180
                 self.enqueueVoiceCombo([
                     (b + 15, "📍 まもなく (即将到达路口)"),
                     (b + mOff + 19, "🛣️ 入口だよ！合流に注意してね！")
