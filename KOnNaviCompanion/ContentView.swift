@@ -204,10 +204,12 @@ struct HTTSmoothMapView: UIViewRepresentable {
         let tappedChanged = (context.coordinator.lastTappedLat != manager.tappedMapCoord?.latitude) ||
                             (context.coordinator.lastTappedLon != manager.tappedMapCoord?.longitude)
         let routeChanged = (context.coordinator.lastRoute !== manager.activeRoute) ||
+                           (context.coordinator.lastCustomPolyline !== manager.customTransitPolyline) ||
                            (context.coordinator.lastCandidateCount != manager.candidateRoutes.count)
         
         if routeChanged || tappedChanged {
             context.coordinator.lastRoute = manager.activeRoute
+            context.coordinator.lastCustomPolyline = manager.customTransitPolyline
             context.coordinator.lastCandidateCount = manager.candidateRoutes.count
             context.coordinator.lastTappedLat = manager.tappedMapCoord?.latitude
             context.coordinator.lastTappedLon = manager.tappedMapCoord?.longitude
@@ -215,11 +217,68 @@ struct HTTSmoothMapView: UIViewRepresentable {
             mapView.removeOverlays(mapView.overlays)
             mapView.removeAnnotations(mapView.annotations.filter { !($0 is MKUserLocation) })
             
-            // First draw alternate candidate routes in light translucent color so user sees multi-route comparison on map like GaoDe!
-            for (idx, cand) in manager.candidateRoutes.enumerated() {
-                if cand !== manager.activeRoute {
-                    cand.polyline.title = "ALT_ROUTE_\(idx)"
-                    mapView.addOverlay(cand.polyline, level: .aboveRoads)
+            if manager.travelMode == .transit, let transitPoly = manager.customTransitPolyline {
+                // Public Transit Mode: Draw synchronized transit route with realistic colored segments & station pins!
+                mapView.addAnnotations(manager.transitStopAnnotations)
+                
+                let pts = transitPoly.points()
+                let totalPts = transitPoly.pointCount
+                if totalPts >= 12 {
+                    // Segment 1 (Walk to bus stop): Pedestrian Blue with > > >
+                    let cut1 = 2
+                    let poly1 = MKPolyline(points: pts, count: cut1)
+                    poly1.title = "TRANSIT_WALK_BLUE"
+                    mapView.addOverlay(poly1, level: .aboveRoads)
+                    
+                    // Segment 2 (Bus 351 ride): Bus Royal Blue
+                    let cut2 = min(totalPts - 4, 9)
+                    let poly2 = MKPolyline(points: pts.advanced(by: cut1 - 1), count: cut2 - cut1 + 1)
+                    poly2.title = "TRANSIT_BUS_BLUE"
+                    mapView.addOverlay(poly2, level: .aboveRoads)
+                    
+                    // Segment 3 (Transfer at Guomao & Metro Line 1 to Luohu): Metro Emerald Green
+                    let cut3 = min(totalPts - 3, 12)
+                    let poly3 = MKPolyline(points: pts.advanced(by: cut2 - 1), count: cut3 - cut2 + 1)
+                    poly3.title = "TRANSIT_METRO_GREEN"
+                    mapView.addOverlay(poly3, level: .aboveRoads)
+                    
+                    // Segment 4 (Luohu Customs walk): Pedestrian Blue
+                    let cut4 = min(totalPts - 2, 14)
+                    let poly4 = MKPolyline(points: pts.advanced(by: cut3 - 1), count: cut4 - cut3 + 1)
+                    poly4.title = "TRANSIT_WALK_BLUE"
+                    mapView.addOverlay(poly4, level: .aboveRoads)
+                    
+                    // Segment 5 (MTR East Rail to Kowloon Tong): MTR Cyan Sky Blue
+                    let cut5 = totalPts - 3
+                    if cut5 > cut4 {
+                        let poly5 = MKPolyline(points: pts.advanced(by: cut4 - 1), count: cut5 - cut4 + 1)
+                        poly5.title = "TRANSIT_MTR_CYAN"
+                        mapView.addOverlay(poly5, level: .aboveRoads)
+                    }
+                    
+                    // Segment 6 (MTR Kwun Tong Line to Shek Kip Mei): MTR Kwun Tong Jade Green
+                    let cut6 = totalPts - 1
+                    if cut6 > cut5 {
+                        let poly6 = MKPolyline(points: pts.advanced(by: max(0, cut5 - 1)), count: cut6 - max(0, cut5 - 1) + 1)
+                        poly6.title = "TRANSIT_MTR_KWUN_TONG"
+                        mapView.addOverlay(poly6, level: .aboveRoads)
+                    }
+                    
+                    // Segment 7 (Walk from station to destination): Pedestrian Blue
+                    let poly7 = MKPolyline(points: pts.advanced(by: cut6 - 1), count: totalPts - cut6 + 1)
+                    poly7.title = "TRANSIT_WALK_BLUE"
+                    mapView.addOverlay(poly7, level: .aboveRoads)
+                } else {
+                    transitPoly.title = "TRANSIT_MTR_CYAN"
+                    mapView.addOverlay(transitPoly, level: .aboveRoads)
+                }
+            } else {
+                // First draw alternate candidate routes in light translucent color so user sees multi-route comparison on map like GaoDe!
+                for (idx, cand) in manager.candidateRoutes.enumerated() {
+                    if cand !== manager.activeRoute {
+                        cand.polyline.title = "ALT_ROUTE_\(idx)"
+                        mapView.addOverlay(cand.polyline, level: .aboveRoads)
+                    }
                 }
             }
             
@@ -330,7 +389,7 @@ struct HTTSmoothMapView: UIViewRepresentable {
                 mapView.addAnnotation(tappedPin)
             }
             
-            if routeChanged && manager.activeRoute != nil {
+            if routeChanged && (manager.activeRoute != nil || manager.customTransitPolyline != nil) {
                 let targetCoord = (!manager.isDemoSimulating && mapView.userLocation.location != nil)
                     ? mapView.userLocation.coordinate
                     : manager.userCoordinate
@@ -422,6 +481,7 @@ struct HTTSmoothMapView: UIViewRepresentable {
     class Coordinator: NSObject, MKMapViewDelegate, UIGestureRecognizerDelegate {
         var parent: HTTSmoothMapView
         var lastRoute: MKRoute? = nil
+        var lastCustomPolyline: MKPolyline? = nil
         var lastCandidateCount: Int = 0
         var lastTappedLat: Double? = nil
         var lastTappedLon: Double? = nil
@@ -554,6 +614,15 @@ struct HTTSmoothMapView: UIViewRepresentable {
                 } else if sub == "BUS_STOP_PIN" {
                     pinView?.markerTintColor = UIColor(red: 0.12, green: 0.47, blue: 0.94, alpha: 1.0)
                     pinView?.glyphImage = UIImage(systemName: "bus.fill")
+                } else if sub == "SUBWAY_STOP_PIN" {
+                    pinView?.markerTintColor = UIColor(red: 0.0, green: 0.60, blue: 0.85, alpha: 1.0)
+                    pinView?.glyphImage = UIImage(systemName: "tram.fill")
+                } else if sub == "PORT_CUSTOMS_PIN" {
+                    pinView?.markerTintColor = UIColor.systemPurple
+                    pinView?.glyphImage = UIImage(systemName: "building.columns.fill")
+                } else if sub == "TRANSFER_PIN" {
+                    pinView?.markerTintColor = UIColor.systemOrange
+                    pinView?.glyphImage = UIImage(systemName: "arrow.triangle.swap")
                 } else {
                     // GaoDe Red "終" Badge for Destination!
                     pinView?.markerTintColor = UIColor(red: 0.92, green: 0.22, blue: 0.25, alpha: 1.0)
@@ -627,6 +696,36 @@ struct HTTSmoothMapView: UIViewRepresentable {
                     renderer.outerBorderColor = UIColor(red: 0.62, green: 0.05, blue: 0.05, alpha: 1.0)
                     renderer.drawDirectionChevrons = true
                     renderer.lineWidth = 11.0
+                } else if tag == "TRANSIT_MTR_CYAN" {
+                    // MTR East Rail Line (港铁东铁线 天蓝蓝 #0098D4)
+                    renderer.mainFillColor = UIColor(red: 0.0, green: 0.60, blue: 0.85, alpha: 0.98)
+                    renderer.outerBorderColor = UIColor(red: 0.0, green: 0.35, blue: 0.58, alpha: 1.0)
+                    renderer.drawDirectionChevrons = true
+                    renderer.lineWidth = 11.0
+                } else if tag == "TRANSIT_MTR_KWUN_TONG" {
+                    // MTR Kwun Tong Line (港铁观塘线 翠绿 #00AB4E)
+                    renderer.mainFillColor = UIColor(red: 0.0, green: 0.68, blue: 0.32, alpha: 0.98)
+                    renderer.outerBorderColor = UIColor(red: 0.0, green: 0.42, blue: 0.18, alpha: 1.0)
+                    renderer.drawDirectionChevrons = true
+                    renderer.lineWidth = 11.0
+                } else if tag == "TRANSIT_BUS_BLUE" {
+                    // Bus Line (公交351路 宝蓝)
+                    renderer.mainFillColor = UIColor(red: 0.12, green: 0.48, blue: 0.96, alpha: 0.98)
+                    renderer.outerBorderColor = UIColor(red: 0.0, green: 0.28, blue: 0.68, alpha: 1.0)
+                    renderer.drawDirectionChevrons = true
+                    renderer.lineWidth = 11.0
+                } else if tag == "TRANSIT_METRO_GREEN" {
+                    // Metro Line 1 (深圳地铁1号线 翡翠绿)
+                    renderer.mainFillColor = UIColor(red: 0.05, green: 0.72, blue: 0.35, alpha: 0.98)
+                    renderer.outerBorderColor = UIColor(red: 0.0, green: 0.45, blue: 0.20, alpha: 1.0)
+                    renderer.drawDirectionChevrons = true
+                    renderer.lineWidth = 11.0
+                } else if tag == "TRANSIT_WALK_BLUE" {
+                    // Transit Pedestrian Walk / Customs link
+                    renderer.mainFillColor = UIColor(red: 0.05, green: 0.65, blue: 0.98, alpha: 0.96)
+                    renderer.outerBorderColor = UIColor(red: 0.0, green: 0.38, blue: 0.72, alpha: 1.0)
+                    renderer.drawDirectionChevrons = true
+                    renderer.lineWidth = 10.0
                 } else {
                     // Default / TRAFFIC_GREEN / TRANSIT_GREEN: GaoDe Smooth Traffic Green (#00C853) with forest green border & white chevrons!
                     renderer.mainFillColor = UIColor(red: 0.0, green: 0.78, blue: 0.33, alpha: 0.98)
@@ -790,7 +889,7 @@ struct ContentView: View {
                     VStack(alignment: .leading, spacing: 5) {
                         topNavigationBannerCard
                         
-                        if manager.activeRoute != nil || manager.isDemoSimulating {
+                        if manager.activeRoute != nil || manager.customTransitPolyline != nil || manager.isDemoSimulating {
                             laneGuidanceAndTrafficLightBar
                         }
                         
@@ -885,7 +984,7 @@ struct ContentView: View {
                         }
                         
                         // Compact Bottom-Right Pre-Navigation Route Card (Fits 100% inside Landscape height without clipping!)
-                        if !manager.isNavigatingFocused && (manager.activeRoute != nil || !manager.candidateRoutes.isEmpty) {
+                        if !manager.isNavigatingFocused && (manager.activeRoute != nil || manager.customTransitPolyline != nil || !manager.candidateRoutes.isEmpty) {
                             landscapeCompactPreNavCard
                         }
                     }
@@ -904,7 +1003,7 @@ struct ContentView: View {
                         .padding(.top, 8)
                     
                     // Multi-Lane Guidance Bar (3~4 Lanes: Recommended in Bright White, Others in Dimmed Gray) + Traffic Light Countdown!
-                    if manager.activeRoute != nil || manager.isDemoSimulating {
+                    if manager.activeRoute != nil || manager.customTransitPolyline != nil || manager.isDemoSimulating {
                         laneGuidanceAndTrafficLightBar
                             .padding(.horizontal, 12)
                     }
@@ -1004,7 +1103,7 @@ struct ContentView: View {
                     }
                     
                     // Bottom Pre-Navigation Panel: Highway Preference + Candidate Routes + Prominent [🚀 开始导航] Button!
-                    if !manager.isNavigatingFocused && (manager.activeRoute != nil || !manager.candidateRoutes.isEmpty) {
+                    if !manager.isNavigatingFocused && (manager.activeRoute != nil || manager.customTransitPolyline != nil || !manager.candidateRoutes.isEmpty) {
                         bottomPreNavRouteSelectionCard
                             .padding(.horizontal, 12)
                             .transition(.move(edge: .bottom).combined(with: .opacity))
@@ -1193,7 +1292,7 @@ struct ContentView: View {
             // Exit Navigation / Minimize Button
             Button(action: {
                 withAnimation(.spring(response: 0.35, dampingFraction: 0.7)) {
-                    if manager.activeRoute != nil {
+                    if manager.activeRoute != nil || manager.customTransitPolyline != nil {
                         manager.stopRouteGuidance()
                     } else {
                         manager.isMapEnlarged = false

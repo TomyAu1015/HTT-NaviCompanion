@@ -2,6 +2,7 @@ import Foundation
 import AVFoundation
 import CryptoKit
 import CoreLocation
+import MapKit
 import UIKit
 import CoreGraphics
 
@@ -14,6 +15,81 @@ struct MascotVoiceEntry {
     let charId: Int
     let offset: UInt32
     let length: UInt32
+}
+
+// MARK: - WGS-84 to GCJ-02 (China Mars Coordinate System) Converter
+struct CoordinateConverter {
+    static func bd09ToGCJ02(lat: Double, lon: Double) -> CLLocationCoordinate2D {
+        let x = lon - 0.0065
+        let y = lat - 0.006
+        let z = sqrt(x * x + y * y) - 0.00002 * sin(y * Double.pi * 3000.0 / 180.0)
+        let theta = atan2(y, x) - 0.000003 * cos(x * Double.pi * 3000.0 / 180.0)
+        let ggLon = z * cos(theta)
+        let ggLat = z * sin(theta)
+        return CLLocationCoordinate2D(latitude: ggLat, longitude: ggLon)
+    }
+
+    static func wgs84ToGCJ02(_ coord: CLLocationCoordinate2D) -> CLLocationCoordinate2D {
+        if isOutOfChina(coord) {
+            return coord
+        }
+        let a = 6378245.0
+        let ee = 0.00669342162296594323
+        let pi = Double.pi
+        
+        var dLat = transformLat(x: coord.longitude - 105.0, y: coord.latitude - 35.0)
+        var dLon = transformLon(x: coord.longitude - 105.0, y: coord.latitude - 35.0)
+        let radLat = coord.latitude / 180.0 * pi
+        var magic = sin(radLat)
+        magic = 1.0 - ee * magic * magic
+        let sqrtMagic = sqrt(magic)
+        dLat = (dLat * 180.0) / ((a * (1.0 - ee)) / (magic * sqrtMagic) * pi)
+        dLon = (dLon * 180.0) / (a / sqrtMagic * cos(radLat) * pi)
+        return CLLocationCoordinate2D(latitude: coord.latitude + dLat, longitude: coord.longitude + dLon)
+    }
+    
+    static func isInHongKong(_ coord: CLLocationCoordinate2D) -> Bool {
+        // Precise Hong Kong SAR boundary (South of Shenzhen River ~22.548N)
+        if coord.latitude >= 22.14 && coord.latitude <= 22.545 && coord.longitude >= 113.82 && coord.longitude <= 114.45 {
+            // Exclude Shenzhen Futian/Luohu/Shatoujiao north of 22.522N
+            if coord.latitude > 22.522 && coord.longitude < 114.16 {
+                return false
+            }
+            if coord.latitude > 22.542 {
+                return false
+            }
+            return true
+        }
+        return false
+    }
+    
+    static func isInMacau(_ coord: CLLocationCoordinate2D) -> Bool {
+        return coord.latitude >= 22.10 && coord.latitude <= 22.215 && coord.longitude >= 113.52 && coord.longitude <= 113.60
+    }
+
+    private static func isOutOfChina(_ coord: CLLocationCoordinate2D) -> Bool {
+        if coord.longitude < 72.004 || coord.longitude > 137.8347 { return true }
+        if coord.latitude < 0.8293 || coord.latitude > 55.8271 { return true }
+        // Hong Kong & Macau use WGS-84 natively in Apple MapKit!
+        if isInHongKong(coord) || isInMacau(coord) { return true }
+        return false
+    }
+    
+    private static func transformLat(x: Double, y: Double) -> Double {
+        var ret = -100.0 + 2.0 * x + 3.0 * y + 0.2 * y * y + 0.1 * x * y + 0.2 * sqrt(abs(x))
+        ret += (20.0 * sin(6.0 * x * Double.pi) + 20.0 * sin(2.0 * x * Double.pi)) * 2.0 / 3.0
+        ret += (20.0 * sin(y * Double.pi) + 40.0 * sin(y / 3.0 * Double.pi)) * 2.0 / 3.0
+        ret += (160.0 * sin(y / 12.0 * Double.pi) + 320.0 * sin(y * Double.pi / 30.0)) * 2.0 / 3.0
+        return ret
+    }
+    
+    private static func transformLon(x: Double, y: Double) -> Double {
+        var ret = 300.0 + x + 2.0 * y + 0.1 * x * x + 0.1 * x * y + 0.1 * sqrt(abs(x))
+        ret += (20.0 * sin(6.0 * x * Double.pi) + 20.0 * sin(2.0 * x * Double.pi)) * 2.0 / 3.0
+        ret += (20.0 * sin(x * Double.pi) + 40.0 * sin(x / 3.0 * Double.pi)) * 2.0 / 3.0
+        ret += (150.0 * sin(x / 12.0 * Double.pi) + 300.0 * sin(x / 30.0 * Double.pi)) * 2.0 / 3.0
+        return ret
+    }
 }
 
 enum AppLanguage: String, CaseIterable, Identifiable {
@@ -57,39 +133,448 @@ enum MascotActionState: String, CaseIterable {
     }
 }
 
+
+// MARK: - Built-In GaoDe-Style Public Transit & Highway Telemetry Models (高德风格内置公交地铁与高速路况模型)
+struct ServiceAreaInfo: Identifiable, Equatable {
+    let id = UUID()
+    let name: String
+    var distanceMeters: Int
+    var isPassed: Bool = false
+}
+
+struct TollStationInfo: Identifiable, Equatable {
+    let id = UUID()
+    let name: String
+    var distanceMeters: Int
+    var isPassed: Bool = false
+}
+
+struct StationCoord {
+    let name: String
+    let exit: String
+    let lat: Double
+    let lon: Double
+    let line: String
+}
+
+struct IntercityTrainBannerInfo {
+    let durationText: String       // e.g. "約 3小時38分"
+    let startPriceText: String     // e.g. "¥29.5起"
+    let toStationBusText: String   // e.g. "巴士 52分鐘 · 地鐵直達火車站"
+    let fromTrainSt: String        // e.g. "深圳北 / 深圳東"
+    let toTrainSt: String          // e.g. "廣州南 / 香港西九龍"
+    let trainRunTime: String       // e.g. "1小時35分"
+    let trainFreqText: String      // e.g. "高鐵/城際全天密集發車"
+    let trainTicketPrice: String   // e.g. "¥21.5起"
+    let fromStationBusText: String // e.g. "地鐵/巴士直達終點"
+}
+
+struct TransitPlanOption: Identifiable {
+    let id = UUID()
+    let title: String              // e.g. "5小時20分 · 城際(惠州北-番禺)"
+    let badge: String              // e.g. "高德推薦 · 跨城地鐵+城際"
+    let totalMinutes: Int          // e.g. 320 (5小時20分) or 30
+    let totalStations: Int         // e.g. 78 or 5
+    let transferCount: Int         // e.g. 2 or 0
+    let walkMeters: Int            // e.g. 3800 or 458
+    let priceYuan: String          // e.g. "29.5" or "3"
+    let startExitDesc: String      // e.g. "丹竹頭 (B口) 進站"
+    let warningNotice: String      // e.g. "❗ 不在營運時間內，惠州208路首班車於 05:20 發車"
+    let realtimeArrivalText: String // e.g. "地鐵3號綫(龍崗綫)(坪地六聯方向) 📡 4分鐘 🚃🚃🚃"
+    var intercityBanner: IntercityTrainBannerInfo? = nil
+    let steps: [TransitStepItem]
+    
+    var formattedDuration: String {
+        if totalMinutes >= 60 {
+            let h = totalMinutes / 60
+            let m = totalMinutes % 60
+            return m > 0 ? "\(h)小時\(m)分" : "\(h)小時"
+        }
+        return "\(totalMinutes)分鐘"
+    }
+    
+    var formattedWalk: String {
+        if walkMeters >= 1000 {
+            return String(format: "步行 %.1f公里", Double(walkMeters) / 1000.0)
+        }
+        return "步行 \(walkMeters)米"
+    }
+}
+
+struct TransitStepItem: Identifiable {
+    let id = UUID()
+    let kind: StepKind             // walk, subway, bus, intercity, train
+    let lineName: String           // e.g. "地铁3号线 (龙岗线)"
+    let directionDesc: String      // e.g. "坪地六联方向" / "福保方向"
+    let fromStation: String        // e.g. "丹竹头 (B口)"
+    let toStation: String          // e.g. "双龙"
+    let passStations: [String]     // Intermediate stops for expandable/collapsible list
+    let durationMins: Int          // e.g. 19
+    let walkMeters: Int            // e.g. 143
+    let doorSideDesc: String       // e.g. "右侧开门"
+    let acNotice: String           // e.g. "❄️ 强冷:2-5车厢；弱冷:1、6车厢"
+    let exitDesc: String           // e.g. "从 B口 进站"
+    let colorHex: String           // Line color (#0076C0, #7CB305, #8E2A59)
+    let intervalDesc: String       // e.g. "上车站 首06:25 末23:35 · 发车间隔约4分钟"
+    
+    enum StepKind {
+        case walk
+        case subway
+        case bus
+        case intercity
+        case train
+        
+        var icon: String {
+            switch self {
+            case .walk: return "figure.walk"
+            case .subway: return "tram.fill"
+            case .bus: return "bus.fill"
+            case .intercity: return "tram.circle.fill"
+            case .train: return "train.side.front.car"
+            }
+        }
+    }
+}
+
+// 4 Travel Modes: Driving, e-Bike, Walking, Transit
+enum NavigationTravelMode: String, CaseIterable, Identifiable {
+    case driving = "driving"
+    case ebike = "ebike"
+    case walking = "walking"
+    case transit = "transit"
+    
+    var id: String { self.rawValue }
+    
+    func title(_ lang: AppLanguage) -> String {
+        switch (self, lang) {
+        case (.driving, .zhHans): return "开车"
+        case (.driving, .zhHant): return "開車"
+        case (.driving, .en): return "Drive"
+        case (.ebike, .zhHans): return "电动车"
+        case (.ebike, .zhHant): return "電動車"
+        case (.ebike, .en): return "e-Bike"
+        case (.walking, .zhHans): return "步行"
+        case (.walking, .zhHant): return "步行"
+        case (.walking, .en): return "Walk"
+        case (.transit, .zhHans): return "公交/地铁"
+        case (.transit, .zhHant): return "公車/地鐵"
+        case (.transit, .en): return "Transit"
+        }
+    }
+    
+    var icon: String {
+        switch self {
+        case .driving: return "car.fill"
+        case .ebike: return "bicycle"
+        case .walking: return "figure.walk"
+        case .transit: return "bus.fill"
+        }
+    }
+    
+    var mkTransportType: MKDirectionsTransportType {
+        switch self {
+        case .driving: return .automobile
+        case .ebike: return .walking // Avoids freeways, pedestrian/bike friendly
+        case .walking: return .walking
+        case .transit: return .transit
+        }
+    }
+    
+    var defaultSpeedLimit: Double {
+        switch self {
+        case .driving: return 80.0
+        case .ebike: return 25.0
+        case .walking: return 6.0
+        case .transit: return 60.0
+        }
+    }
+}
+
+struct RoadLaneItem: Identifiable {
+    let id = UUID()
+    let iconName: String       // e.g. "arrow.turn.up.left", "arrow.up", "arrow.turn.up.right"
+    let label: String          // e.g. "左转", "直行", "右转"
+    let isRecommended: Bool    // true = Bright White/Active, false = Dimmed Gray
+}
+
+enum TrafficLightPhase: String {
+    case green = "green"
+    case yellow = "yellow"
+    case red = "red"
+}
+
+enum RouteStrategyPreference: String, CaseIterable, Identifiable {
+    case gaodeRecommended = "gaodeRecommended"
+    case avoidHighway = "avoidHighway"
+    case highwayFirst = "highwayFirst"
+    case shortest = "shortest"
+    
+    var id: String { self.rawValue }
+    
+    func title(_ lang: AppLanguage) -> String {
+        switch (self, lang) {
+        case (.gaodeRecommended, .zhHans): return "高德推荐"
+        case (.gaodeRecommended, .zhHant): return "高德推薦"
+        case (.gaodeRecommended, .en): return "Recommended"
+        case (.avoidHighway, .zhHans): return "不走高速"
+        case (.avoidHighway, .zhHant): return "不走高速"
+        case (.avoidHighway, .en): return "No Highway"
+        case (.highwayFirst, .zhHans): return "高速优先"
+        case (.highwayFirst, .zhHant): return "高速優先"
+        case (.highwayFirst, .en): return "Highway"
+        case (.shortest, .zhHans): return "距离最短"
+        case (.shortest, .zhHant): return "距離最短"
+        case (.shortest, .en): return "Shortest"
+        }
+    }
+    
+    var icon: String {
+        switch self {
+        case .gaodeRecommended: return "sparkles"
+        case .avoidHighway: return "arrow.triangle.branch"
+        case .highwayFirst: return "road.lanes"
+        case .shortest: return "ruler.fill"
+        }
+    }
+}
+
+enum RoadHazardKind: String {
+    case speedCamera = "speedCamera"   // 测速电子眼 (60/80/100/120 km/h)
+    case redLightCam = "redLightCam"   // 闯红灯拍照 / 违章抓拍
+    case tollStation = "tollStation"   // 收费站
+    case serviceArea = "serviceArea"   // 高速服务区 (SA/PA)
+    case congestion = "congestion"     // 拥堵缓行路段
+}
+
+class RoadHazardAnnotation: MKPointAnnotation {
+    var kind: RoadHazardKind = .speedCamera
+    var speedLimitValue: Int = 80
+    var distanceMeters: Double = 0
+}
+
+enum NavigationCameraMode: String, CaseIterable, Identifiable {
+    case headingUp = "headingUp" // 车头朝上 (地图随车旋转，车标固定在前方)
+    case northUp = "northUp"     // 正北朝上 (地图固定不转，导航标在地图上移动转向)
+    
+    var id: String { self.rawValue }
+    
+    func title(_ lang: AppLanguage) -> String {
+        switch (self, lang) {
+        case (.headingUp, .zhHans): return "车头朝上(地图动)"
+        case (.headingUp, .zhHant): return "車頭朝上(地圖動)"
+        case (.headingUp, .en): return "Heading Up"
+        case (.northUp, .zhHans): return "正北朝上(车标动)"
+        case (.northUp, .zhHant): return "正北朝上(車標動)"
+        case (.northUp, .en): return "North Up"
+        }
+    }
+    
+    func shortTitle(_ lang: AppLanguage) -> String {
+        switch (self, lang) {
+        case (.headingUp, .zhHans): return "地图动"
+        case (.headingUp, .zhHant): return "地圖動"
+        case (.headingUp, .en): return "Map Rot"
+        case (.northUp, .zhHans): return "车标动"
+        case (.northUp, .zhHant): return "車標動"
+        case (.northUp, .en): return "Icon Mov"
+        }
+    }
+    
+    var icon: String {
+        switch self {
+        case .headingUp: return "location.north.line.fill"
+        case .northUp: return "safari.fill"
+        }
+    }
+}
+
+enum RM500ArrowOutfit: Int, CaseIterable, Identifiable {
+    case winterUniform = 0
+    case summerUniform = 1
+    case maid = 2
+    case httShirt = 3
+    case kigurumi = 4
+    case tonchan = 5
+    case classic3D = 6
+    
+    var id: Int { self.rawValue }
+    
+    func title(_ lang: AppLanguage) -> String {
+        switch (self, lang) {
+        case (.winterUniform, .zhHans): return "冬季制服"
+        case (.winterUniform, .zhHant): return "冬季制服"
+        case (.winterUniform, .en): return "Winter Uniform"
+        case (.summerUniform, .zhHans): return "夏季制服"
+        case (.summerUniform, .zhHant): return "夏季制服"
+        case (.summerUniform, .en): return "Summer Uniform"
+        case (.maid, .zhHans): return "女仆装"
+        case (.maid, .zhHant): return "女僕裝"
+        case (.maid, .en): return "Maid Outfit"
+        case (.httShirt, .zhHans): return "HTT文化衫"
+        case (.httShirt, .zhHant): return "HTT文化衫"
+        case (.httShirt, .en): return "HTT T-Shirt"
+        case (.kigurumi, .zhHans): return "布偶装"
+        case (.kigurumi, .zhHant): return "布偶裝"
+        case (.kigurumi, .en): return "Animal Suit"
+        case (.tonchan, .zhHans): return "豚骨(乌龟)"
+        case (.tonchan, .zhHant): return "豚骨(烏龜)"
+        case (.tonchan, .en): return "Ton-chan"
+        case (.classic3D, .zhHans): return "经典3D箭头"
+        case (.classic3D, .zhHant): return "經典3D箭頭"
+        case (.classic3D, .en): return "3D Arrow"
+        }
+    }
+    
+    var icon: String {
+        switch self {
+        case .winterUniform: return "graduationcap.fill"
+        case .summerUniform: return "sun.max.fill"
+        case .maid: return "cup.and.saucer.fill"
+        case .httShirt: return "guitars.fill"
+        case .kigurumi: return "pawprint.fill"
+        case .tonchan: return "tortoise.fill"
+        case .classic3D: return "location.north.fill"
+        }
+    }
+}
+
+// MARK: - Isolated Pinyin-Safe AutoNavi/MapKit Place Search Engine
+class PlaceSearchEngine: NSObject, ObservableObject, MKLocalSearchCompleterDelegate {
+    @Published var completions: [MKLocalSearchCompletion] = []
+    @Published var mapItems: [MKMapItem] = []
+    @Published var isSearching: Bool = false
+    
+    private let completer = MKLocalSearchCompleter()
+    private var activeSearch: MKLocalSearch?
+    
+    override init() {
+        super.init()
+        completer.delegate = self
+        completer.resultTypes = [.address, .pointOfInterest, .query]
+    }
+    
+    func updateQueryFragment(_ fragment: String, center: CLLocationCoordinate2D) {
+        let trimmed = fragment.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            completions = []
+            mapItems = []
+            isSearching = false
+            return
+        }
+        completer.region = MKCoordinateRegion(
+            center: center,
+            latitudinalMeters: 2500000,
+            longitudinalMeters: 2500000
+        )
+        completer.queryFragment = trimmed
+    }
+    
+    func completerDidUpdateResults(_ completer: MKLocalSearchCompleter) {
+        DispatchQueue.main.async {
+            self.completions = Array(completer.results.prefix(25))
+        }
+    }
+    
+    func completer(_ completer: MKLocalSearchCompleter, didFailWithError error: Error) {
+        // Ignore transient completer errors while typing
+    }
+    
+    func performFullSearch(query: String, center: CLLocationCoordinate2D) {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        activeSearch?.cancel()
+        isSearching = true
+        
+        let req = MKLocalSearch.Request()
+        req.naturalLanguageQuery = trimmed
+        req.resultTypes = [.address, .pointOfInterest]
+        req.region = MKCoordinateRegion(
+            center: center,
+            latitudinalMeters: 2500000,
+            longitudinalMeters: 2500000
+        )
+        
+        let search = MKLocalSearch(request: req)
+        activeSearch = search
+        search.start { [weak self] response, _ in
+            DispatchQueue.main.async {
+                self?.isSearching = false
+                if let items = response?.mapItems, !items.isEmpty {
+                    self?.mapItems = items
+                }
+            }
+        }
+    }
+    
+    func resolveAndStartNavigation(for completion: MKLocalSearchCompletion, manager: AudioPlayerManager, onComplete: @escaping () -> Void) {
+        activeSearch?.cancel()
+        isSearching = true
+        let req = MKLocalSearch.Request(completion: completion)
+        let search = MKLocalSearch(request: req)
+        activeSearch = search
+        search.start { [weak self] response, _ in
+            DispatchQueue.main.async {
+                self?.isSearching = false
+                if let item = response?.mapItems.first {
+                    manager.showMapMode = true
+                    manager.startRouteGuidance(to: item)
+                    onComplete()
+                } else {
+                    // Fallback by natural language query of title + subtitle
+                    let fallbackReq = MKLocalSearch.Request()
+                    fallbackReq.naturalLanguageQuery = completion.title + " " + completion.subtitle
+                    MKLocalSearch(request: fallbackReq).start { resp, _ in
+                        DispatchQueue.main.async {
+                            if let fbItem = resp?.mapItems.first {
+                                manager.showMapMode = true
+                                manager.startRouteGuidance(to: fbItem)
+                            }
+                            onComplete()
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLLocationManagerDelegate {
     static let shared = AudioPlayerManager()
     
-    // Language Setting (Simplified Chinese, Traditional Chinese, English)
     @Published var language: AppLanguage = .zhHans
     
-    // Playback State
+    // Playback & Voice Queue State
     @Published var isPlaying: Bool = false
     @Published var currentPlayingId: Int? = nil
     @Published var currentSpeechBubble: String = "準備OK！出発進行～！"
+    private var voiceQueue: [(id: Int, quote: String)] = []
     
     // Mascot Animation State
     @Published var mascotAction: MascotActionState = .idle
     @Published var currentSpriteFrame: UIImage? = nil
-    // All 5 characters' live frames for 5-member "全员同台" mode
     @Published var allMemberFrames: [Int: UIImage] = [:]
     @Published var deskSpriteFrame: UIImage? = nil
+    @Published var arrowOutfit: RM500ArrowOutfit = .winterUniform
+    @Published var useRM500ThemeSkin: Bool = true
+    @Published var walkStepFrame: Int = 0
+    @Published var currentNavArrowImage: UIImage? = nil
+    @Published var activeAllMemberChar: CharacterFilter = CharacterFilter.fiveIndividuals.randomElement() ?? .yui
+    @Published var unlockedBirthdayId: Int = 1112
     @Published var mascotOffsetX: CGFloat = 0.0
+    @Published var mascotOffsetY: CGFloat = 0.0
+    @Published var stageWalkBound: CGFloat = 65.0
+    @Published var memberPositions: [Int: CGSize] = [:]
     @Published var isDraggingMascot: Bool = false
     @Published var draggedMemberId: Int? = nil
     private var animTick: Int = 0
     private var animTimer: Timer?
-    
-    // Decrypted Sprite Sheet Cache in RAM (Zero disk writes)
     private var spriteSheets: [String: CGImage] = [:]
     
     // Cruise & Companion State
     @Published var isCruiseModeActive: Bool = false
     @Published var cruiseIntervalMinutes: Double = 10.0 {
         didSet {
-            if isCruiseModeActive {
-                resetCruiseCountdown()
-            }
+            if isCruiseModeActive { resetCruiseCountdown() }
         }
     }
     @Published var cruiseRemainingSeconds: Int = 600
@@ -97,22 +582,1998 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     @Published var enableBanter: Bool = true
     
     // GPS & HUD Speedometer State
+    @Published var userCoordinate: CLLocationCoordinate2D = CLLocationCoordinate2D(latitude: 22.3193, longitude: 114.1694)
     @Published var currentSpeedKmh: Double = 0.0
     @Published var maxSpeedKmh: Double = 0.0
     @Published var tripDistanceKm: Double = 0.0
     @Published var headingDegrees: Double = 0.0
-    @Published var speedLimitKmh: Double = 80.0 {
-        didSet {
-            if oldValue != speedLimitKmh {
-                triggerSpeedLimitPrompt()
-            }
-        }
-    }
+    @Published var speedLimitKmh: Double = 80.0
     @Published var isOverspeeding: Bool = false
     @Published var isGPSSignalPoor: Bool = false
     @Published var gpsAccuracyMeters: Double = -1.0
     @Published var isHUDMirrored: Bool = false
     @Published var drivingSeconds: Int = 0
+    
+    // Built-In Map Navigation State (Enlarged Mode & 4 Travel Modes)
+    @Published var showMapMode: Bool = true
+    @Published var isMapEnlarged: Bool = false // Auto-enlarges on active navigation!
+    @Published var travelMode: NavigationTravelMode = .driving {
+        didSet {
+            guard oldValue != travelMode else { return }
+            // Immediately stop any previous voice queue so user never has to wait for old audio to finish!
+            stop()
+            let newLimit = travelMode.defaultSpeedLimit
+            if travelMode == .transit {
+                let dest = destinationCoord ?? CLLocationCoordinate2D(latitude: 22.61, longitude: 114.15)
+                let title = destinationName.isEmpty ? "丹竹头地铁站" : destinationName
+                generateBuiltInTransitPlans(from: userCoordinate, to: dest, destTitle: title)
+            }
+            if let dest = destinationCoord, !destinationName.isEmpty {
+                speedLimitKmh = newLimit
+                calculateAndStartRoute(to: dest, title: destinationName, isReroute: true)
+            } else {
+                speedLimitKmh = newLimit
+                announceTravelModeSwitch()
+            }
+        }
+    }
+    @Published var searchQuery: String = ""
+    @Published var searchResults: [MKMapItem] = []
+    @Published var isSearching: Bool = false
+    @Published var activeRoute: MKRoute? = nil
+    @Published var destinationName: String = ""
+    @Published var destinationCoord: CLLocationCoordinate2D? = nil
+    @Published var currentStepIndex: Int = 0
+    @Published var currentStepInstruction: String = ""
+    @Published var distanceToNextStepMeters: Double = 0.0
+    @Published var remainingRouteDistanceKm: Double = 0.0
+    @Published var remainingRouteMinutes: Int = 0
+    @Published var mapTrackingUser: Bool = true
+    @Published var cameraMode: NavigationCameraMode = .headingUp {
+        didSet {
+            triggerFastRecenter()
+        }
+    }
+    @Published var tappedMapCoord: CLLocationCoordinate2D? = nil
+    @Published var tappedMapTitle: String = ""
+    @Published var tappedMapAddress: String = ""
+    @Published var isReverseGeocoding: Bool = false
+    @Published var userZoomDistance: Double = 280.0
+    @Published var routePreference: RouteStrategyPreference = .gaodeRecommended {
+        didSet {
+            applyRoutePreferenceSort()
+        }
+    }
+    @Published var candidateRoutes: [MKRoute] = []
+    @Published var selectedRouteIndex: Int = 0
+    @Published var routeHazards: [RoadHazardAnnotation] = []
+    @Published var upcomingCameraDistance: Int = 0
+    @Published var upcomingCameraLimit: Int = 80
+    @Published var upcomingTollDistance: Int = 0
+    @Published var upcomingServiceAreaName: String = ""
+    @Published var upcomingServiceAreaDist: Int = 0
+    @Published var upcomingTollName: String = ""
+    @Published var serviceAreasAlongRoute: [ServiceAreaInfo] = []
+    @Published var tollsAlongRoute: [TollStationInfo] = []
+    @Published var lastTraveledMeters: Int = 0
+    @Published var lastTransitGenLocation: CLLocationCoordinate2D? = nil
+    @Published var congestionStatusText: String = "道路畅通"
+    @Published var isCongested: Bool = false
+    @Published var isNavigatingFocused: Bool = false // True after pressing [开始导航] -> hides clutter & focuses on driving!
+    @Published var zoomCommandTrigger: Int = 0       // Dedicated zoom trigger that NEVER resets map center!
+    @Published var trafficLightPhase: TrafficLightPhase = .green
+    @Published var trafficLightSeconds: Int = 26
+    @Published var transitPlans: [TransitPlanOption] = []
+    @Published var selectedTransitPlanIndex: Int = 0
+    @Published var showTransitPlanSheet: Bool = false
+    @Published var customTransitPolyline: MKPolyline? = nil
+    @Published var transitStopAnnotations: [MKPointAnnotation] = []
+    @Published var currentRoadLanes: [RoadLaneItem] = [
+        RoadLaneItem(iconName: "arrow.turn.up.left", label: "左转", isRecommended: false),
+        RoadLaneItem(iconName: "arrow.up", label: "直行", isRecommended: true),
+        RoadLaneItem(iconName: "arrow.turn.up.right", label: "右转", isRecommended: false)
+    ]
+    @Published var recenterTrigger: Int = 0
+    
+    func toggleCameraMode() {
+        cameraMode = (cameraMode == .headingUp) ? .northUp : .headingUp
+    }
+    
+    func zoomMapIn() {
+        userZoomDistance = max(100.0, userZoomDistance * 0.62)
+        zoomCommandTrigger += 1
+    }
+    
+    func zoomMapOut() {
+        userZoomDistance = min(30000.0, userZoomDistance * 1.55)
+        zoomCommandTrigger += 1
+    }
+    
+    func formatSmartDistance(_ meters: Int) -> String {
+        if meters >= 1000 {
+            return String(format: "%.1f km", Double(meters) / 1000.0)
+        } else {
+            return "\(max(0, meters)) m"
+        }
+    }
+    
+    func startFocusedNavigation() {
+        stop()
+        isNavigatingFocused = true
+        mapTrackingUser = true
+        recenterTrigger += 1
+        triggerDepartureGreeting(title: destinationName, isReroute: false)
+    }
+    
+    func exitFocusedNavigationToOverview() {
+        isNavigatingFocused = false
+    }
+    
+    private func announceTravelModeSwitch() {
+        let base = activeBaseId()
+        let modeOff = activeModeOffset()
+        let modeTitle = travelMode.title(language)
+        let lim = Int(speedLimitKmh)
+        let msg = "[\(modeTitle)] モード切替完了！制限速度: \(lim) km/h"
+        playVoice(id: base + modeOff + 39, customQuote: msg, clearQueue: true)
+    }
+    
+    func handleMapTap(at coord: CLLocationCoordinate2D) {
+        let tapLoc = CLLocation(latitude: coord.latitude, longitude: coord.longitude)
+        let req = MKLocalSearch.Request()
+        req.resultTypes = .pointOfInterest
+        req.pointOfInterestFilter = .includingAll
+        req.region = MKCoordinateRegion(center: coord, latitudinalMeters: 90, longitudinalMeters: 90)
+        
+        MKLocalSearch(request: req).start { [weak self] resp, _ in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                let validItems = (resp?.mapItems ?? []).filter { item in
+                    guard let name = item.name, !name.isEmpty else { return false }
+                    let itemLoc = CLLocation(latitude: item.placemark.coordinate.latitude,
+                                             longitude: item.placemark.coordinate.longitude)
+                    return tapLoc.distance(from: itemLoc) <= 45.0
+                }.sorted { a, b in
+                    let la = CLLocation(latitude: a.placemark.coordinate.latitude, longitude: a.placemark.coordinate.longitude)
+                    let lb = CLLocation(latitude: b.placemark.coordinate.latitude, longitude: b.placemark.coordinate.longitude)
+                    return tapLoc.distance(from: la) < tapLoc.distance(from: lb)
+                }
+                
+                if let bestPOI = validItems.first {
+                    self.tappedMapCoord = bestPOI.placemark.coordinate
+                    self.tappedMapTitle = bestPOI.name ?? "精选地点"
+                    var addrParts: [String] = []
+                    if let dist = bestPOI.placemark.subLocality { addrParts.append(dist) }
+                    if let road = bestPOI.placemark.thoroughfare { addrParts.append(road) }
+                    if let num = bestPOI.placemark.subThoroughfare { addrParts.append(num) }
+                    self.tappedMapAddress = addrParts.isEmpty ? (bestPOI.placemark.title ?? "") : addrParts.joined(separator: " · ")
+                    self.isReverseGeocoding = false
+                } else {
+                    // Also check reverse geocode for named landmarks
+                    CLGeocoder().reverseGeocodeLocation(tapLoc) { [weak self] placemarks, _ in
+                        DispatchQueue.main.async {
+                            guard let self = self else { return }
+                            if let pm = placemarks?.first, let name = pm.name, !name.isEmpty, name != pm.thoroughfare {
+                                self.tappedMapCoord = coord
+                                self.tappedMapTitle = name
+                                var parts: [String] = []
+                                if let dist = pm.subLocality { parts.append(dist) }
+                                if let road = pm.thoroughfare { parts.append(road) }
+                                self.tappedMapAddress = parts.joined(separator: " · ")
+                            } else {
+                                // Tapped on blank road/ground with no POI -> dismiss card
+                                self.tappedMapCoord = nil
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    func startNavigationToTappedPoint() {
+        guard let coord = tappedMapCoord else { return }
+        let title = tappedMapTitle.isEmpty ? "地图选点" : tappedMapTitle
+        tappedMapCoord = nil
+        stopDemoSimulation()
+        calculateAndStartRoute(to: coord, title: title)
+    }
+    
+    func dismissTappedPoint() {
+        tappedMapCoord = nil
+    }
+    
+    func triggerFastRecenter() {
+        mapTrackingUser = true
+        recenterTrigger += 1
+    }
+    
+
+    // MARK: - Native In-App Transit & Subway Shortest-Path Engine (真·高德拓扑最短换乘引擎，绝不绕远路！)
+    private static let szStationsDatabase: [StationCoord] = [
+        // Line 3 (Longgang Line: Longgang -> Luohu/Futian)
+        StationCoord(name: "双龙", exit: "A口", lat: 22.726, lon: 114.281, line: "3号线"),
+        StationCoord(name: "龙城广场", exit: "D口", lat: 22.716, lon: 114.252, line: "3号线"),
+        StationCoord(name: "大运", exit: "C口", lat: 22.688, lon: 114.228, line: "3号线/14号线"),
+        StationCoord(name: "荷坳", exit: "A口", lat: 22.669, lon: 114.218, line: "3号线"),
+        StationCoord(name: "永湖", exit: "A2口", lat: 22.658, lon: 114.212, line: "3号线"),
+        StationCoord(name: "横岗", exit: "C口", lat: 22.651, lon: 114.208, line: "3号线"),
+        StationCoord(name: "塘坑", exit: "B口", lat: 22.636, lon: 114.195, line: "3号线"),
+        StationCoord(name: "六约", exit: "C口", lat: 22.624, lon: 114.180, line: "3号线"),
+        StationCoord(name: "丹竹头", exit: "A口", lat: 22.611, lon: 114.156, line: "3号线"),
+        StationCoord(name: "大芬", exit: "A1口", lat: 22.607, lon: 114.143, line: "3号线"),
+        StationCoord(name: "木棉湾", exit: "B1口", lat: 22.604, lon: 114.131, line: "3号线"),
+        StationCoord(name: "布吉", exit: "东广场口", lat: 22.602, lon: 114.120, line: "3号线/14号线/5号线"),
+        StationCoord(name: "草埔", exit: "D3口", lat: 22.585, lon: 114.116, line: "3号线"),
+        StationCoord(name: "水贝", exit: "B口", lat: 22.573, lon: 114.124, line: "3号线"),
+        StationCoord(name: "田贝", exit: "C口", lat: 22.564, lon: 114.128, line: "3号线"),
+        StationCoord(name: "翠竹", exit: "B2口", lat: 22.555, lon: 114.128, line: "3号线"),
+        StationCoord(name: "老街", exit: "G口", lat: 22.545, lon: 114.118, line: "3号线/1号线"),
+        StationCoord(name: "华强北", exit: "A口", lat: 22.547, lon: 114.086, line: "3号线"),
+        StationCoord(name: "少年宫", exit: "D口", lat: 22.549, lon: 114.060, line: "3号线/4号线"),
+        StationCoord(name: "福田", exit: "31口", lat: 22.538, lon: 114.055, line: "3号线/11号线"),
+        // Line 14 & 11 & 5
+        StationCoord(name: "罗湖北", exit: "B口", lat: 22.569, lon: 114.108, line: "14号线"),
+        StationCoord(name: "黄木岗", exit: "C口", lat: 22.556, lon: 114.088, line: "14号线"),
+        StationCoord(name: "岗厦北", exit: "16口", lat: 22.541, lon: 114.067, line: "14号线/11号线"),
+        StationCoord(name: "车公庙", exit: "J1口", lat: 22.535, lon: 114.025, line: "11号线/1号线"),
+        StationCoord(name: "红树湾南", exit: "A口", lat: 22.529, lon: 113.974, line: "11号线"),
+        StationCoord(name: "后海", exit: "E口", lat: 22.518, lon: 113.938, line: "11号线"),
+        StationCoord(name: "深圳北站", exit: "A口", lat: 22.609, lon: 114.029, line: "5号线/4号线")
+    ]
+    
+    private static let line3Ordered = ["双龙", "龙城广场", "大运", "荷坳", "永湖", "横岗", "塘坑", "六约", "丹竹头", "大芬", "木棉湾", "布吉", "草埔", "水贝", "田贝", "翠竹", "老街", "华强北", "少年宫", "福田"]
+    
+    func findNearestStation(to coord: CLLocationCoordinate2D) -> StationCoord {
+        var best = AudioPlayerManager.szStationsDatabase[0]
+        var minD = 999999.0
+        for s in AudioPlayerManager.szStationsDatabase {
+            let d = hypot(coord.latitude - s.lat, coord.longitude - s.lon)
+            if d < minD {
+                minD = d
+                best = s
+            }
+        }
+        return best
+    }
+    
+    private func metersBetween(_ a: CLLocationCoordinate2D, _ b: CLLocationCoordinate2D) -> Int {
+        let locA = CLLocation(latitude: a.latitude, longitude: a.longitude)
+        let locB = CLLocation(latitude: b.latitude, longitude: b.longitude)
+        return max(10, Int(locA.distance(from: locB)))
+    }
+    
+    func refreshTransitPlansForCurrentLocation(force: Bool = false) {
+        let dest = destinationCoord ?? CLLocationCoordinate2D(latitude: 22.611, longitude: 114.156)
+        let title = destinationName.isEmpty ? "丹竹头 (地铁站)" : destinationName
+        
+        if !force, let last = lastTransitGenLocation {
+            let moved = hypot(userCoordinate.latitude - last.latitude, userCoordinate.longitude - last.longitude)
+            if moved < 0.0020 {
+                return
+            }
+        }
+        generateBuiltInTransitPlans(from: userCoordinate, to: dest, destTitle: title)
+    }
+
+    private static let hkStationsDatabase: [StationCoord] = [
+        StationCoord(name: "羅湖 (Lo Wu)", exit: "A口", lat: 22.528, lon: 114.113, line: "東鐵綫"),
+        StationCoord(name: "落馬洲 (Lok Ma Chau)", exit: "B口", lat: 22.514, lon: 114.065, line: "東鐵綫"),
+        StationCoord(name: "上水", exit: "A4口", lat: 22.501, lon: 114.128, line: "東鐵綫"),
+        StationCoord(name: "粉嶺", exit: "A口", lat: 22.492, lon: 114.138, line: "東鐵綫"),
+        StationCoord(name: "太和", exit: "A口", lat: 22.451, lon: 114.161, line: "東鐵綫"),
+        StationCoord(name: "大埔墟", exit: "A1口", lat: 22.444, lon: 114.170, line: "東鐵綫"),
+        StationCoord(name: "大學", exit: "A口", lat: 22.413, lon: 114.210, line: "東鐵綫"),
+        StationCoord(name: "火炭", exit: "A口", lat: 22.395, lon: 114.195, line: "東鐵綫"),
+        StationCoord(name: "沙田", exit: "A口", lat: 22.382, lon: 114.187, line: "東鐵綫"),
+        StationCoord(name: "大圍", exit: "B口", lat: 22.373, lon: 114.178, line: "東鐵綫/屯馬綫"),
+        StationCoord(name: "九龍塘", exit: "C2口", lat: 22.337, lon: 114.176, line: "東鐵綫/觀塘綫"),
+        StationCoord(name: "石硤尾", exit: "A口", lat: 22.332, lon: 114.168, line: "觀塘綫"),
+        StationCoord(name: "深水埗", exit: "D2口", lat: 22.330, lon: 114.161, line: "荃灣綫"),
+        StationCoord(name: "旺角東", exit: "D口", lat: 22.322, lon: 114.172, line: "東鐵綫"),
+        StationCoord(name: "旺角", exit: "E2口", lat: 22.319, lon: 114.169, line: "荃灣綫/觀塘綫"),
+        StationCoord(name: "油麻地", exit: "A1口", lat: 22.313, lon: 114.170, line: "荃灣綫/觀塘綫"),
+        StationCoord(name: "佐敦", exit: "C1口", lat: 22.305, lon: 114.171, line: "荃灣綫"),
+        StationCoord(name: "尖沙咀", exit: "A1口", lat: 22.297, lon: 114.172, line: "荃灣綫"),
+        StationCoord(name: "尖東", exit: "J口", lat: 22.296, lon: 114.175, line: "屯馬綫"),
+        StationCoord(name: "香港西九龍", exit: "B2口", lat: 22.304, lon: 114.165, line: "廣深港高鐵/屯馬綫"),
+        StationCoord(name: "紅磡", exit: "A口", lat: 22.303, lon: 114.181, line: "東鐵綫/屯馬綫"),
+        StationCoord(name: "會展", exit: "B3口", lat: 22.281, lon: 114.175, line: "東鐵綫"),
+        StationCoord(name: "金鐘", exit: "A口", lat: 22.279, lon: 114.165, line: "東鐵綫/港島綫/荃灣綫/南港島綫"),
+        StationCoord(name: "灣仔", exit: "A3口", lat: 22.277, lon: 114.173, line: "港島綫"),
+        StationCoord(name: "銅鑼灣", exit: "E口", lat: 22.280, lon: 114.184, line: "港島綫"),
+        StationCoord(name: "中環", exit: "D2口", lat: 22.282, lon: 114.158, line: "港島綫/荃灣綫"),
+        StationCoord(name: "北角", exit: "B1口", lat: 22.291, lon: 114.199, line: "港島綫/將軍澳綫"),
+        StationCoord(name: "鰂魚涌", exit: "A口", lat: 22.288, lon: 114.209, line: "港島綫/將軍澳綫"),
+        StationCoord(name: "黃埔", exit: "D2口", lat: 22.304, lon: 114.190, line: "觀塘綫"),
+        StationCoord(name: "香港國際機場", exit: "A口", lat: 22.316, lon: 113.936, line: "機場快綫")
+    ]
+    
+    func findNearestHKStation(to coord: CLLocationCoordinate2D, destTitle: String = "") -> StationCoord {
+        let clean = destTitle.replacingOccurrences(of: " ", with: "")
+        for s in AudioPlayerManager.hkStationsDatabase {
+            let baseName = s.name.components(separatedBy: " ")[0]
+            if clean.contains(baseName) || (baseName == "石硤尾" && (clean.contains("石硖尾") || clean.contains("石硤尾"))) {
+                return s
+            }
+        }
+        var best = AudioPlayerManager.hkStationsDatabase[0]
+        var minD = 999999.0
+        for s in AudioPlayerManager.hkStationsDatabase {
+            let d = hypot(coord.latitude - s.lat, coord.longitude - s.lon)
+            if d < minD {
+                minD = d
+                best = s
+            }
+        }
+        return best
+    }
+
+    func generateBuiltInTransitPlans(from: CLLocationCoordinate2D, to: CLLocationCoordinate2D, destTitle: String) {
+        lastTransitGenLocation = from
+        let destClean = destTitle.isEmpty ? "目的地" : destTitle
+        let directMeters = metersBetween(from, to)
+        
+        let fromHK = CoordinateConverter.isInHongKong(from)
+        let toHK = CoordinateConverter.isInHongKong(to) || destClean.contains("香港") || destClean.contains("九龙") || destClean.contains("九龍") || destClean.contains("旺角") || destClean.contains("尖沙咀") || destClean.contains("中环") || destClean.contains("中環") || destClean.contains("铜锣湾") || destClean.contains("銅鑼灣") || destClean.contains("金钟") || destClean.contains("金鐘") || destClean.contains("沙田") || destClean.contains("西九龙") || destClean.contains("西九龍")
+        
+        // =========================================================================
+        // 1. HONG KONG INTRA-CITY MTR & KMB BUS (香港本地港铁MTR + 九巴/城巴无缝导航)
+        // =========================================================================
+        if fromHK && toHK {
+            let startHK = findNearestHKStation(to: from)
+            let endHK: StationCoord = {
+                for s in AudioPlayerManager.hkStationsDatabase {
+                    let baseName = s.name.components(separatedBy: " ")[0]
+                    if destClean.contains(baseName) { return s }
+                }
+                return findNearestHKStation(to: to)
+            }()
+            let w1 = min(480, max(80, metersBetween(from, CLLocationCoordinate2D(latitude: startHK.lat, longitude: startHK.lon))))
+            let w1Min = max(2, Int(Double(w1) / 70.0))
+            let w2 = min(480, max(60, metersBetween(to, CLLocationCoordinate2D(latitude: endHK.lat, longitude: endHK.lon))))
+            let w2Min = max(2, Int(Double(w2) / 70.0))
+            let stopsCount = max(2, min(10, Int(Double(directMeters) / 1400.0)))
+            let mtrMins = max(6, stopsCount * 3)
+            
+            let hkPlan1Steps: [TransitStepItem] = [
+                TransitStepItem(
+                    kind: .walk,
+                    lineName: "步行前往港鐵站",
+                    directionDesc: "前往 \(startHK.name) (\(startHK.exit))",
+                    fromStation: "我的位置",
+                    toStation: "\(startHK.name) (\(startHK.exit))",
+                    passStations: [],
+                    durationMins: w1Min,
+                    walkMeters: w1,
+                    doorSideDesc: "🔥 消耗 \(max(2, Int(Double(w1) * 0.043)))卡路里",
+                    acNotice: "",
+                    exitDesc: "從 \(startHK.exit) 進站 (支持八達通/支付寶乘車碼)",
+                    colorHex: "#888888",
+                    intervalDesc: "步行 \(w1) 米 (\(w1Min)分鐘)"
+                ),
+                TransitStepItem(
+                    kind: .subway,
+                    lineName: "港鐵 \(startHK.line.components(separatedBy: "/")[0])",
+                    directionDesc: "往 \(endHK.name) / 金鐘方向",
+                    fromStation: "\(startHK.name) (\(startHK.exit))",
+                    toStation: endHK.name,
+                    passStations: ["九龍塘", "旺角東", "紅磡", "會展"].filter { $0 != startHK.name && $0 != endHK.name },
+                    durationMins: mtrMins,
+                    walkMeters: 0,
+                    doorSideDesc: "港鐵列車",
+                    acNotice: "🚇 港鐵MTR · 班次極密 (約 2~3 分鐘一班)",
+                    exitDesc: "從 \(endHK.exit) 出站",
+                    colorHex: "#0098D4", // MTR East Rail / Island Blue
+                    intervalDesc: "首05:55 末00:35 · 八達通/拍卡入閘"
+                ),
+                TransitStepItem(
+                    kind: .walk,
+                    lineName: "步行到達",
+                    directionDesc: "前往 \(destClean)",
+                    fromStation: "\(endHK.name) (\(endHK.exit))",
+                    toStation: destClean,
+                    passStations: [],
+                    durationMins: w2Min,
+                    walkMeters: w2,
+                    doorSideDesc: "",
+                    acNotice: "",
+                    exitDesc: "到達 \(destClean)",
+                    colorHex: "#888888",
+                    intervalDesc: "步行 \(w2) 米 (\(w2Min)分鐘)"
+                )
+            ]
+            let hkPlan1 = TransitPlanOption(
+                title: "\(w1Min + mtrMins + w2Min)分鐘 · 港鐵MTR直達",
+                badge: "高德推薦 · 港鐵最快",
+                totalMinutes: w1Min + mtrMins + w2Min,
+                totalStations: stopsCount,
+                transferCount: 0,
+                walkMeters: w1 + w2,
+                priceYuan: "HK$12.5",
+                startExitDesc: "\(startHK.name) (\(startHK.exit)) 入閘",
+                warningNotice: "🚇 支持八達通、AlipayHK、微信及銀聯拍卡入閘",
+                realtimeArrivalText: "港鐵列車即將到站  📡 2分鐘 🚃🚃🚃",
+                steps: hkPlan1Steps
+            )
+            
+            // Option 2: KMB / Citybus (九巴/城巴雙層巴士)
+            let hkPlan2Steps: [TransitStepItem] = [
+                TransitStepItem(
+                    kind: .walk,
+                    lineName: "步行前往巴士站",
+                    directionDesc: "前往彌敦道/軒尼詩道巴士站",
+                    fromStation: "我的位置",
+                    toStation: "\(startHK.name)巴士總站",
+                    passStations: [],
+                    durationMins: 3,
+                    walkMeters: 180,
+                    doorSideDesc: "",
+                    acNotice: "",
+                    exitDesc: "巴士站台候車",
+                    colorHex: "#888888",
+                    intervalDesc: "步行 180 米 (3分鐘)"
+                ),
+                TransitStepItem(
+                    kind: .bus,
+                    lineName: "九巴 1A / 城巴 104 過海巴士",
+                    directionDesc: "往 \(destClean) 方向",
+                    fromStation: "\(startHK.name)巴士站",
+                    toStation: "\(destClean)巴士站",
+                    passStations: ["太子站", "旺角奶路臣街", "油麻地文明里", "佐敦道", "尖沙咀中間道"],
+                    durationMins: mtrMins + 10,
+                    walkMeters: 0,
+                    doorSideDesc: "雙層冷氣巴士",
+                    acNotice: "🚌 實時抵站：下一班 4分鐘 到達",
+                    exitDesc: "在 \(destClean)站 下車",
+                    colorHex: "#D92626", // KMB Red
+                    intervalDesc: "九巴/城巴聯營 · 班次約 5~8 分鐘"
+                ),
+                TransitStepItem(
+                    kind: .walk,
+                    lineName: "步行到達",
+                    directionDesc: "前往 \(destClean)",
+                    fromStation: "\(destClean)巴士站",
+                    toStation: destClean,
+                    passStations: [],
+                    durationMins: 2,
+                    walkMeters: 120,
+                    doorSideDesc: "",
+                    acNotice: "",
+                    exitDesc: "到達 \(destClean)",
+                    colorHex: "#888888",
+                    intervalDesc: "步行 120 米 (2分鐘)"
+                )
+            ]
+            let hkPlan2 = TransitPlanOption(
+                title: "\(mtrMins + 15)分鐘 · 九巴/城巴直達",
+                badge: "少步行 · 雙層巴士",
+                totalMinutes: mtrMins + 15,
+                totalStations: 6,
+                transferCount: 0,
+                walkMeters: 300,
+                priceYuan: "HK$10.8",
+                startExitDesc: "\(startHK.name)巴士站上車",
+                warningNotice: "🚌 雙層巴士沿途欣賞香港街景，無需下地鐵換乘",
+                realtimeArrivalText: "九巴 1A / 104 綫  📡 4分鐘 到站",
+                steps: hkPlan2Steps
+            )
+            
+            self.transitPlans = [hkPlan1, hkPlan2]
+            self.selectedTransitPlanIndex = 0
+            self.remainingRouteMinutes = hkPlan1.totalMinutes
+            self.currentStepInstruction = "步行 \(w1)米 前往 \(startHK.name) 乘港鐵MTR"
+            self.distanceToNextStepMeters = Double(w1)
+            return
+        }
+        
+        // =========================================================================
+        // 2. CROSS-BORDER SHENZHEN/MAINLAND <-> HONG KONG (深港跨境：罗湖口岸/福田口岸/西九龙高铁)
+        // =========================================================================
+        if fromHK != toHK {
+            let startSt = fromHK ? findNearestHKStation(to: from, destTitle: "") : findNearestStation(to: from)
+            let endHK = toHK ? findNearestHKStation(to: to, destTitle: destClean) : findNearestStation(to: to)
+            let isToShekKipMei = destClean.contains("石硖尾") || destClean.contains("石硤尾") || endHK.name.contains("石硤尾")
+            let isShawan = (!fromHK && from.latitude > 22.58 && from.latitude < 22.63 && from.longitude > 114.14 && from.longitude < 114.19)
+            
+            let crossBanner = IntercityTrainBannerInfo(
+                durationText: "約 1小時20分",
+                startPriceText: "¥68起",
+                toStationBusText: "地鐵直達深圳北站 / 福田站",
+                fromTrainSt: fromHK ? "香港西九龍" : "深圳北 / 福田",
+                toTrainSt: toHK ? "香港西九龍" : "深圳北 / 廣州南",
+                trainRunTime: "14~18分鐘 (一地兩檢)",
+                trainFreqText: "廣深港跨境高鐵 · 全天逾100班",
+                trainTicketPrice: "¥68.0起",
+                fromStationBusText: "出站經柯士甸/屯馬綫直達\(endHK.name)"
+            )
+            
+            // =========================================================================
+            // PLAN 1: GAO DE #1 RECOMMENDATION (高德推薦 · 21站 · 1小時52分 · 步行1.3公里 · ¥5+HK$47)
+            // 沙湾天桥乘351路 -> 金光华/国贸 -> 地铁1号线到罗湖口岸 -> 港铁东铁线到九龙塘 -> 换乘观塘线到石硖尾
+            // =========================================================================
+            var plan1Steps: [TransitStepItem] = []
+            if isShawan || from.longitude > 114.14 {
+                // Step 1: Walk to 沙湾天桥
+                plan1Steps.append(TransitStepItem(
+                    kind: .walk,
+                    lineName: "步行前往公交站",
+                    directionDesc: "前往 沙灣天橋 公交站",
+                    fromStation: "我的位置",
+                    toStation: "沙灣天橋",
+                    passStations: [],
+                    durationMins: 6,
+                    walkMeters: 380,
+                    doorSideDesc: "",
+                    acNotice: "",
+                    exitDesc: "前往沙灣天橋站台 (建設路三島中心總站方向)",
+                    colorHex: "#888888",
+                    intervalDesc: "步行 380 米 (6分鐘)"
+                ))
+                // Step 2: Bus 351 (10站, 36分钟)
+                plan1Steps.append(TransitStepItem(
+                    kind: .bus,
+                    lineName: "351路",
+                    directionDesc: "往 建設路三島中心總站 方向",
+                    fromStation: "沙灣天橋",
+                    toStation: "金光華廣場",
+                    passStations: ["沙灣路北", "翠湖文體公園", "東湖人行天橋", "水庫", "水庫新村1", "竹園賓館1", "留醫部", "東門3", "金城大廈1", "金光華廣場"],
+                    durationMins: 36,
+                    walkMeters: 0,
+                    doorSideDesc: "",
+                    acNotice: "🚌 實時到站：首班 06:00 末班 20:30",
+                    exitDesc: "在 金光華廣場 下車",
+                    colorHex: "#1E88E5",
+                    intervalDesc: "10站 (36分鐘) · 票價¥3"
+                ))
+                // Step 3: Walk to 国贸 (B口)
+                plan1Steps.append(TransitStepItem(
+                    kind: .walk,
+                    lineName: "步行換乘地鐵",
+                    directionDesc: "前往 國貿 (B口)",
+                    fromStation: "金光華廣場",
+                    toStation: "國貿 (B口)",
+                    passStations: [],
+                    durationMins: 3,
+                    walkMeters: 131,
+                    doorSideDesc: "",
+                    acNotice: "",
+                    exitDesc: "從 國貿 (B口) 進站",
+                    colorHex: "#888888",
+                    intervalDesc: "步行 131 米 (3分鐘)"
+                ))
+                // Step 4: Metro Line 1 (1站, 2分钟)
+                plan1Steps.append(TransitStepItem(
+                    kind: .subway,
+                    lineName: "地鐵1號綫 (羅寶綫)",
+                    directionDesc: "往 羅湖 方向",
+                    fromStation: "國貿 (B口)",
+                    toStation: "羅湖 (A2口)",
+                    passStations: ["羅湖"],
+                    durationMins: 2,
+                    walkMeters: 0,
+                    doorSideDesc: "右側開門",
+                    acNotice: "🚇 強冷車廂:2-5節 · 弱冷車廂:1、6節",
+                    exitDesc: "從 羅湖 (A2口) 出站前往口岸聯檢大樓",
+                    colorHex: "#00A862",
+                    intervalDesc: "1站 (2分鐘) · 首06:22 末00:07 · 票價¥2"
+                ))
+            } else {
+                // General Shenzhen start station via Metro
+                plan1Steps.append(TransitStepItem(
+                    kind: .walk,
+                    lineName: "步行進站",
+                    directionDesc: "前往 \(startSt.name)",
+                    fromStation: "我的位置",
+                    toStation: "\(startSt.name) (\(startSt.exit))",
+                    passStations: [],
+                    durationMins: 6,
+                    walkMeters: 420,
+                    doorSideDesc: "",
+                    acNotice: "",
+                    exitDesc: "從 \(startSt.exit) 進站",
+                    colorHex: "#888888",
+                    intervalDesc: "步行 420 米 (6分鐘)"
+                ))
+                plan1Steps.append(TransitStepItem(
+                    kind: .subway,
+                    lineName: "深圳地鐵 \(startSt.line)",
+                    directionDesc: "往 羅湖口岸 聯檢大樓",
+                    fromStation: startSt.name,
+                    toStation: "羅湖 (A2口)",
+                    passStations: ["布吉", "老街", "國貿", "羅湖"],
+                    durationMins: 25,
+                    walkMeters: 0,
+                    doorSideDesc: "",
+                    acNotice: "🚇 深圳地鐵快速聯網直達口岸",
+                    exitDesc: "從 羅湖口岸/A2口 出站前往聯檢大樓",
+                    colorHex: "#0076C0",
+                    intervalDesc: "無縫接駁口岸聯檢大樓"
+                ))
+            }
+            
+            // Step: Luohu Port Customs clearance (583米, 9分钟)
+            plan1Steps.append(TransitStepItem(
+                kind: .walk,
+                lineName: "口岸通關步行",
+                directionDesc: "經 羅湖口岸聯檢大樓 通關",
+                fromStation: "羅湖 (A2口)",
+                toStation: "港鐵羅湖站 (E1口)",
+                passStations: [],
+                durationMins: 9,
+                walkMeters: 583,
+                doorSideDesc: "",
+                acNotice: "🛂 羅湖口岸通關時間：06:30 - 24:00 (自助e道約10分鐘)",
+                exitDesc: "出境聯檢大樓辦理手續後，經深圳河天橋直達港鐵羅湖站大堂",
+                colorHex: "#888888",
+                intervalDesc: "站內外共步行 583 米 (9分鐘)"
+            ))
+            
+            // Step: MTR East Rail Line to 九龙塘 (9站, 35分钟)
+            let isDirectEastRail = (!isToShekKipMei && ["上水", "粉嶺", "太和", "大埔墟", "大學", "火炭", "沙田", "大圍", "九龍塘", "旺角東", "紅磡", "會展", "金鐘"].contains(endHK.name))
+            
+            plan1Steps.append(TransitStepItem(
+                kind: .subway,
+                lineName: "港鐵東鐵綫",
+                directionDesc: "往 金鐘 方向",
+                fromStation: "羅湖 (E1口)",
+                toStation: isDirectEastRail ? endHK.name : "九龍塘",
+                passStations: ["上水", "粉嶺", "太和", "大埔墟", "大學", "火炭", "沙田", "大圍", "九龍塘"].filter { $0 != "羅湖" },
+                durationMins: 35,
+                walkMeters: 0,
+                doorSideDesc: "左側開門",
+                acNotice: "🚇 港鐵東鐵綫 · 班次約 3~5 分鐘一班",
+                exitDesc: isDirectEastRail ? "從 \(endHK.exit) 出站" : "在 九龍塘 下車換乘觀塘綫",
+                colorHex: "#0098D4",
+                intervalDesc: "9站 (35分鐘) · 首05:55 末00:30 · 票價HK$43.5"
+            ))
+            
+            if isToShekKipMei {
+                // Step: Transfer at Kowloon Tong (174米, 4分钟)
+                plan1Steps.append(TransitStepItem(
+                    kind: .walk,
+                    lineName: "站內換乘",
+                    directionDesc: "前往 港鐵觀塘綫站台",
+                    fromStation: "九龍塘 (東鐵綫)",
+                    toStation: "九龍塘 (觀塘綫)",
+                    passStations: [],
+                    durationMins: 4,
+                    walkMeters: 174,
+                    doorSideDesc: "",
+                    acNotice: "",
+                    exitDesc: "下樓梯前往觀塘綫黃埔方向站台",
+                    colorHex: "#888888",
+                    intervalDesc: "站內換乘 174 米 (4分鐘)"
+                ))
+                // Step: MTR Kwun Tong Line to 石硖尾 (1站, 2分钟)
+                plan1Steps.append(TransitStepItem(
+                    kind: .subway,
+                    lineName: "港鐵觀塘綫",
+                    directionDesc: "往 黃埔 方向",
+                    fromStation: "九龍塘",
+                    toStation: "石硤尾",
+                    passStations: ["石硤尾"],
+                    durationMins: 2,
+                    walkMeters: 0,
+                    doorSideDesc: "右側開門",
+                    acNotice: "🚇 港鐵觀塘綫 · 班次極密 (約 2~3 分鐘一班)",
+                    exitDesc: "從 石硤尾 (A口) 出站",
+                    colorHex: "#00AB4E",
+                    intervalDesc: "1站 (2分鐘) · 首06:04 末00:41 · 票價HK$4.0"
+                ))
+            } else if !isDirectEastRail {
+                // Transfer to another line if needed
+                plan1Steps.append(TransitStepItem(
+                    kind: .subway,
+                    lineName: "港鐵市區綫",
+                    directionDesc: "往 \(endHK.name) 方向",
+                    fromStation: "九龍塘",
+                    toStation: endHK.name,
+                    passStations: [endHK.name],
+                    durationMins: 6,
+                    walkMeters: 0,
+                    doorSideDesc: "右側開門",
+                    acNotice: "🚇 港鐵市區綫直達",
+                    exitDesc: "從 \(endHK.exit) 出站",
+                    colorHex: "#00AB4E",
+                    intervalDesc: "換乘直達目的地"
+                ))
+            }
+            
+            // Final Walk to Destination
+            plan1Steps.append(TransitStepItem(
+                kind: .walk,
+                lineName: "步行到達",
+                directionDesc: "前往 \(destClean)",
+                fromStation: "\(endHK.name) (\(endHK.exit))",
+                toStation: destClean,
+                passStations: [],
+                durationMins: 2,
+                walkMeters: 180,
+                doorSideDesc: "",
+                acNotice: "",
+                exitDesc: "到達 \(destClean)",
+                colorHex: "#888888",
+                intervalDesc: "步行 180 米 (2分鐘)"
+            ))
+            
+            let cbPlan1 = TransitPlanOption(
+                title: "1小時52分 · 351路+羅湖口岸+港鐵",
+                badge: "高德推薦 · 21站",
+                totalMinutes: 112,
+                totalStations: 21,
+                transferCount: 3,
+                walkMeters: 1300,
+                priceYuan: "¥5+HKD47",
+                startExitDesc: "沙灣天橋上車",
+                warningNotice: "🛂 請攜帶有效港澳通行證及簽注 / 回鄉證過關",
+                realtimeArrivalText: "351路 (建設路方向)  📡 3分鐘 到站",
+                intercityBanner: crossBanner,
+                steps: plan1Steps
+            )
+            
+            // =========================================================================
+            // PLAN 2: ALL-SUBWAY (地鐵快綫 · 23站 · 1小時58分 · 步行1.1公里 · ¥7+HK$47)
+            // 沙湾天桥乘M385路到丹竹头 -> 3号线老街换1号线 -> 罗湖口岸 -> 港铁东铁线到九龙塘 -> 观塘线到石硖尾
+            // =========================================================================
+            var plan2Steps: [TransitStepItem] = []
+            plan2Steps.append(TransitStepItem(
+                kind: .walk,
+                lineName: "步行前往公交站",
+                directionDesc: "前往 沙灣天橋 公交站",
+                fromStation: "我的位置",
+                toStation: "沙灣天橋",
+                passStations: [],
+                durationMins: 8,
+                walkMeters: 438,
+                doorSideDesc: "",
+                acNotice: "",
+                exitDesc: "沙灣天橋公交站台",
+                colorHex: "#888888",
+                intervalDesc: "步行 438 米 (8分鐘)"
+            ))
+            plan2Steps.append(TransitStepItem(
+                kind: .bus,
+                lineName: "M385路",
+                directionDesc: "往 布吉寶頂總站 方向",
+                fromStation: "沙灣天橋",
+                toStation: "丹竹頭地鐵站1",
+                passStations: ["廈村1", "沙嶺小區", "丹竹頭立交", "丹竹頭社區", "丹竹頭地鐵站1"],
+                durationMins: 16,
+                walkMeters: 0,
+                doorSideDesc: "",
+                acNotice: "🚌 M385路 · 尾班車預計 22:44 到站",
+                exitDesc: "在 丹竹頭地鐵站1 下車",
+                colorHex: "#1E88E5",
+                intervalDesc: "5站 (16分鐘) · 票價¥3"
+            ))
+            plan2Steps.append(TransitStepItem(
+                kind: .walk,
+                lineName: "步行換乘地鐵",
+                directionDesc: "前往 丹竹頭 (A口)",
+                fromStation: "丹竹頭地鐵站1",
+                toStation: "丹竹頭 (A口)",
+                passStations: [],
+                durationMins: 1,
+                walkMeters: 20,
+                doorSideDesc: "",
+                acNotice: "",
+                exitDesc: "從 丹竹頭 (A口) 進站",
+                colorHex: "#888888",
+                intervalDesc: "步行 20 米 (1分鐘)"
+            ))
+            plan2Steps.append(TransitStepItem(
+                kind: .subway,
+                lineName: "地鐵3號綫 換乘 1號綫",
+                directionDesc: "前往 羅湖口岸",
+                fromStation: "丹竹頭 (A口)",
+                toStation: "羅湖 (A2口)",
+                passStations: ["大芬", "木棉灣", "布吉", "草埔", "水貝", "田貝", "翠竹", "曬布", "老街 (換1號綫)", "國貿", "羅湖"],
+                durationMins: 24,
+                walkMeters: 0,
+                doorSideDesc: "口岸直達",
+                acNotice: "🚇 老街站同站台換乘1號綫直達羅湖",
+                exitDesc: "辦理深港出入境手續後直接換乘港鐵東鐵綫",
+                colorHex: "#0076C0",
+                intervalDesc: "11站 (24分鐘) · 票價¥5"
+            ))
+            plan2Steps.append(TransitStepItem(
+                kind: .walk,
+                lineName: "口岸通關步行",
+                directionDesc: "經 羅湖口岸聯檢大樓 通關",
+                fromStation: "羅湖 (A2口)",
+                toStation: "港鐵羅湖站 (E1口)",
+                passStations: [],
+                durationMins: 9,
+                walkMeters: 583,
+                doorSideDesc: "",
+                acNotice: "🛂 羅湖口岸通關時間：06:30 - 24:00 (自助e道約10分鐘)",
+                exitDesc: "辦理手續後直達港鐵羅湖站大堂",
+                colorHex: "#888888",
+                intervalDesc: "站內外共步行 583 米 (9分鐘)"
+            ))
+            plan2Steps.append(TransitStepItem(
+                kind: .subway,
+                lineName: "港鐵東鐵綫",
+                directionDesc: "往 金鐘 方向",
+                fromStation: "羅湖 (E1口)",
+                toStation: "九龍塘",
+                passStations: ["上水", "粉嶺", "太和", "大埔墟", "大學", "火炭", "沙田", "大圍", "九龍塘"],
+                durationMins: 35,
+                walkMeters: 0,
+                doorSideDesc: "左側開門",
+                acNotice: "🚇 港鐵東鐵綫",
+                exitDesc: "在 九龍塘 下車換乘觀塘綫",
+                colorHex: "#0098D4",
+                intervalDesc: "9站 (35分鐘) · 票價HK$43.5"
+            ))
+            if isToShekKipMei {
+                plan2Steps.append(TransitStepItem(
+                    kind: .walk,
+                    lineName: "站內換乘",
+                    directionDesc: "前往 港鐵觀塘綫站台",
+                    fromStation: "九龍塘 (東鐵綫)",
+                    toStation: "九龍塘 (觀塘綫)",
+                    passStations: [],
+                    durationMins: 4,
+                    walkMeters: 174,
+                    doorSideDesc: "",
+                    acNotice: "",
+                    exitDesc: "前往觀塘綫黃埔方向站台",
+                    colorHex: "#888888",
+                    intervalDesc: "站內換乘 174 米 (4分鐘)"
+                ))
+                plan2Steps.append(TransitStepItem(
+                    kind: .subway,
+                    lineName: "港鐵觀塘綫",
+                    directionDesc: "往 黃埔 方向",
+                    fromStation: "九龍塘",
+                    toStation: "石硤尾",
+                    passStations: ["石硤尾"],
+                    durationMins: 2,
+                    walkMeters: 0,
+                    doorSideDesc: "右側開門",
+                    acNotice: "🚇 港鐵觀塘綫",
+                    exitDesc: "從 石硤尾 (A口) 出站",
+                    colorHex: "#00AB4E",
+                    intervalDesc: "1站 (2分鐘) · 票價HK$4.0"
+                ))
+            }
+            plan2Steps.append(TransitStepItem(
+                kind: .walk,
+                lineName: "步行到達",
+                directionDesc: "前往 \(destClean)",
+                fromStation: "\(endHK.name) (\(endHK.exit))",
+                toStation: destClean,
+                passStations: [],
+                durationMins: 2,
+                walkMeters: 180,
+                doorSideDesc: "",
+                acNotice: "",
+                exitDesc: "到達 \(destClean)",
+                colorHex: "#888888",
+                intervalDesc: "步行 180 米 (2分鐘)"
+            ))
+            
+            let cbPlan2 = TransitPlanOption(
+                title: "1小時58分 · 地鐵3號綫換1號綫+港鐵",
+                badge: "全地鐵快綫 · 23站",
+                totalMinutes: 118,
+                totalStations: 23,
+                transferCount: 3,
+                walkMeters: 1100,
+                priceYuan: "¥7+HKD47",
+                startExitDesc: "沙灣天橋/丹竹頭站",
+                warningNotice: "🛂 請攜帶有效港澳通行證及簽注 / 回鄉證過關",
+                realtimeArrivalText: "地鐵3號綫 (福保方向)  📡 2分鐘 🚃🚃🚃",
+                intercityBanner: crossBanner,
+                steps: plan2Steps
+            )
+            
+            // =========================================================================
+            // PLAN 3: HIGH-SPEED RAIL (廣深港高鐵直通 · 1小時20分 · ¥68起)
+            // =========================================================================
+            let hsrPlanSteps: [TransitStepItem] = [
+                TransitStepItem(
+                    kind: .walk,
+                    lineName: "步行接駁",
+                    directionDesc: "前往高鐵站接駁口",
+                    fromStation: "我的位置",
+                    toStation: "深圳北站 / 福田高鐵站",
+                    passStations: [],
+                    durationMins: 25,
+                    walkMeters: 500,
+                    doorSideDesc: "",
+                    acNotice: "",
+                    exitDesc: "高鐵候車大廳檢票口",
+                    colorHex: "#888888",
+                    intervalDesc: "地鐵/打車 25分鐘"
+                ),
+                TransitStepItem(
+                    kind: .train,
+                    lineName: "廣深港高鐵 (G字頭列車)",
+                    directionDesc: "往 香港西九龍 方向",
+                    fromStation: "深圳北站 / 福田",
+                    toStation: "香港西九龍",
+                    passStations: ["福田", "香港西九龍"],
+                    durationMins: 16,
+                    walkMeters: 0,
+                    doorSideDesc: "高鐵列車",
+                    acNotice: "🚄 一地兩檢 · 14~18分鐘直達香港市中心",
+                    exitDesc: "西九龍站一地兩檢通關",
+                    colorHex: "#E65100",
+                    intervalDesc: "高鐵 16分鐘 · 二等座 ¥68起"
+                ),
+                TransitStepItem(
+                    kind: .subway,
+                    lineName: "港鐵屯馬綫 換乘 觀塘綫",
+                    directionDesc: "往 \(destClean) 方向",
+                    fromStation: "柯士甸 / 九龍",
+                    toStation: endHK.name,
+                    passStations: ["尖東", "紅磡", "何文田", "大圍", "九龍塘", endHK.name],
+                    durationMins: 18,
+                    walkMeters: 0,
+                    doorSideDesc: "港鐵列車",
+                    acNotice: "🚇 港鐵市區網絡快速換乘",
+                    exitDesc: "從 \(endHK.exit) 出站",
+                    colorHex: "#0098D4",
+                    intervalDesc: "港鐵 18分鐘 · 票價HK$10.5"
+                ),
+                TransitStepItem(
+                    kind: .walk,
+                    lineName: "步行到達",
+                    directionDesc: "前往 \(destClean)",
+                    fromStation: "\(endHK.name) (\(endHK.exit))",
+                    toStation: destClean,
+                    passStations: [],
+                    durationMins: 3,
+                    walkMeters: 200,
+                    doorSideDesc: "",
+                    acNotice: "",
+                    exitDesc: "到達 \(destClean)",
+                    colorHex: "#888888",
+                    intervalDesc: "步行 200 米 (3分鐘)"
+                )
+            ]
+            let cbPlan3 = TransitPlanOption(
+                title: "1小時20分 · 廣深港高鐵直達香港西九龍",
+                badge: "高鐵極速 · 一地兩檢",
+                totalMinutes: 80,
+                totalStations: 8,
+                transferCount: 1,
+                walkMeters: 700,
+                priceYuan: "¥68+HKD10.5",
+                startExitDesc: "深圳北/福田高鐵候車廳",
+                warningNotice: "🚄 廣深港高鐵全天逾百班次，香港西九龍站一地兩檢快捷通關",
+                realtimeArrivalText: "廣深港高鐵 G字頭  📡 15分鐘一班",
+                intercityBanner: crossBanner,
+                steps: hsrPlanSteps
+            )
+            
+            self.transitPlans = [cbPlan1, cbPlan2, cbPlan3]
+            self.selectedTransitPlanIndex = 0
+            self.remainingRouteMinutes = cbPlan1.totalMinutes
+            self.currentStepInstruction = "步行 380米 前往沙灣天橋 乘坐351路"
+            self.distanceToNextStepMeters = 380
+            return
+        }
+        
+        // 3. Identify nearest start station in Mainland China
+        let startSt = findNearestStation(to: from)
+        
+        // CASE 0: CROSS-CITY / INTERCITY DESTINATION (跨市路线：广州/东莞/佛山/惠州/珠海/中山 或 距离 > 38km)
+        let isGuangzhou = destClean.contains("广州") || destClean.contains("廣州") || destClean.contains("番禺") || destClean.contains("天河") || destClean.contains("白云") || (to.latitude > 22.85 && to.longitude < 113.65)
+        let isDongguan = destClean.contains("东莞") || destClean.contains("東莞") || destClean.contains("虎门") || destClean.contains("松山湖") || (to.latitude > 22.78 && to.latitude <= 23.15 && to.longitude >= 113.65 && to.longitude <= 114.15)
+        let isHuizhou = destClean.contains("惠州") || destClean.contains("惠阳") || destClean.contains("大亚湾") || (to.longitude > 114.32)
+        let isOtherCity = isGuangzhou || isDongguan || isHuizhou || directMeters > 38000
+        
+        if isOtherCity {
+            let cityHubName = isGuangzhou ? (destClean.contains("南站") ? "广州南站" : destClean) : (isDongguan ? "东莞/虎门站" : (isHuizhou ? "惠州北/惠阳站" : destClean))
+            let trainBanner = IntercityTrainBannerInfo(
+                durationText: isGuangzhou ? "約 3小時38分" : "約 2小時15分",
+                startPriceText: isGuangzhou ? "¥29.5起" : "¥21.5起",
+                toStationBusText: "巴士 52分鐘 · 地鐵直達火車站",
+                fromTrainSt: "深圳東 / 深圳北",
+                toTrainSt: isGuangzhou ? "廣州 / 廣州南" : cityHubName,
+                trainRunTime: isGuangzhou ? "1小時35分 (高鐵最快29分)" : "48分鐘",
+                trainFreqText: "3個班次 · 全部班次",
+                trainTicketPrice: isGuangzhou ? "¥21.5起" : "¥18.0起",
+                fromStationBusText: "地鐵/巴士 41分鐘直達終點"
+            )
+            
+            let icPlan1Steps: [TransitStepItem] = [
+                TransitStepItem(
+                    kind: .walk,
+                    lineName: "步行前往地鐵站",
+                    directionDesc: "前往 \(startSt.name) (B口)",
+                    fromStation: "我的位置",
+                    toStation: "\(startSt.name) (B口)",
+                    passStations: [],
+                    durationMins: 40,
+                    walkMeters: 2600,
+                    doorSideDesc: "🔥 消耗 112卡路里",
+                    acNotice: "",
+                    exitDesc: "從 \(startSt.name) (B口) 進站",
+                    colorHex: "#888888",
+                    intervalDesc: "步行約 2.6公里 (40分鐘)"
+                ),
+                TransitStepItem(
+                    kind: .subway,
+                    lineName: "地鐵3號綫 (龍崗綫)",
+                    directionDesc: "坪地六聯/雙龍方向",
+                    fromStation: "\(startSt.name) (B口)",
+                    toStation: "雙龍 (地鐵站)",
+                    passStations: ["六約", "塘坑", "橫崗", "永湖", "荷坳", "大運", "愛聯", "吉祥", "龍城廣場", "南聯"],
+                    durationMins: 38,
+                    walkMeters: 0,
+                    doorSideDesc: "右側開門",
+                    acNotice: "📡 實時地鐵：4分鐘後到達 🚃🚃🚃 (擁擠度低)",
+                    exitDesc: "在 雙龍站 A口 出站換乘公交",
+                    colorHex: "#0076C0",
+                    intervalDesc: "首06:15 末23:30 · 約4分鐘/班"
+                ),
+                TransitStepItem(
+                    kind: .bus,
+                    lineName: "惠州208路 (跨城公交)",
+                    directionDesc: "惠州火車站方向",
+                    fromStation: "雙龍地鐵站1",
+                    toStation: "惠州北城際樞紐",
+                    passStations: ["坪地中學", "新圩鎮", "鎮隆汽車站", "仲愷高新區", "惠州汽車總站"],
+                    durationMins: 95,
+                    walkMeters: 0,
+                    doorSideDesc: "分段收費",
+                    acNotice: "❗ 首班車於 05:20 發車 · 末班 21:30",
+                    exitDesc: "在 城際樞紐站 下車",
+                    colorHex: "#1E78F0",
+                    intervalDesc: "跨市公交幹線 · 經42站"
+                ),
+                TransitStepItem(
+                    kind: .intercity,
+                    lineName: "城際 (惠州北--番禺)",
+                    directionDesc: "番禺(廣州南站)方向 · 廣惠/廣肇城際",
+                    fromStation: "惠州北 / 陳江南",
+                    toStation: "番禺 (廣州南站)",
+                    passStations: ["西湖東", "常平東", "松山湖北", "西平西", "道滘", "麻涌", "廣州蓮花山", "琶洲"],
+                    durationMins: 115,
+                    walkMeters: 0,
+                    doorSideDesc: "兩側站台",
+                    acNotice: "🚄 廣東城際鐵路 · 支持公交卡/支付寶掃碼直接進站",
+                    exitDesc: "在 番禺站 出站即達廣州南站",
+                    colorHex: "#7CB305",
+                    intervalDesc: "城際動車組 · 大站快車/站站停交替發車"
+                ),
+                TransitStepItem(
+                    kind: .walk,
+                    lineName: "站內通道步行到達",
+                    directionDesc: "前往 \(destClean)",
+                    fromStation: "番禺 (城際站)",
+                    toStation: destClean,
+                    passStations: [],
+                    durationMins: 17,
+                    walkMeters: 1200,
+                    doorSideDesc: "🔥 消耗 51卡路里",
+                    acNotice: "",
+                    exitDesc: "沿廣州南站地下換乘通道步行至 \(destClean)",
+                    colorHex: "#888888",
+                    intervalDesc: "步行 1.2公里 (17分鐘)"
+                )
+            ]
+            let icPlan1 = TransitPlanOption(
+                title: "5小時20分 · 城際(惠州北-番禺)",
+                badge: "高德推薦 · 跨城公交+城際",
+                totalMinutes: 320,
+                totalStations: 78,
+                transferCount: 2,
+                walkMeters: 3800,
+                priceYuan: "38",
+                startExitDesc: "\(startSt.name) (B口) 進站",
+                warningNotice: "❗ 不在營運時間內，惠州208路首班車於 05:20 發車",
+                realtimeArrivalText: "地鐵3號綫(龍崗綫)(坪地六聯方向)  📡 4分鐘 🚃🚃🚃",
+                intercityBanner: trainBanner,
+                steps: icPlan1Steps
+            )
+            
+            let icPlan2Steps: [TransitStepItem] = [
+                TransitStepItem(
+                    kind: .walk,
+                    lineName: "步行前往地鐵站",
+                    directionDesc: "前往 \(startSt.name) (B口)",
+                    fromStation: "我的位置",
+                    toStation: "\(startSt.name) (B口)",
+                    passStations: [],
+                    durationMins: 40,
+                    walkMeters: 2600,
+                    doorSideDesc: "🔥 消耗 112卡路里",
+                    acNotice: "",
+                    exitDesc: "從 \(startSt.name) (B口) 進站",
+                    colorHex: "#888888",
+                    intervalDesc: "步行 2.6公里 (40分鐘)"
+                ),
+                TransitStepItem(
+                    kind: .subway,
+                    lineName: "地鐵3號綫 (龍崗綫)",
+                    directionDesc: "福保方向",
+                    fromStation: "\(startSt.name) (B口)",
+                    toStation: "福田",
+                    passStations: ["大芬", "木棉灣", "布吉", "草埔", "水貝", "田貝", "翠竹", "老街", "華強北", "少年宮"],
+                    durationMins: 36,
+                    walkMeters: 0,
+                    doorSideDesc: "右側開門",
+                    acNotice: "📡 實時地鐵：8分鐘後到達 🚃🚃🚃",
+                    exitDesc: "在 福田站 站內換乘11號綫",
+                    colorHex: "#0076C0",
+                    intervalDesc: "首06:20 末23:35 · 經11站"
+                ),
+                TransitStepItem(
+                    kind: .subway,
+                    lineName: "地鐵11號綫 (機場綫)",
+                    directionDesc: "碧頭方向",
+                    fromStation: "福田",
+                    toStation: "機場北",
+                    passStations: ["車公廟", "紅樹灣南", "后海", "南山", "前海灣", "寶安", "碧海灣", "機場"],
+                    durationMins: 38,
+                    walkMeters: 0,
+                    doorSideDesc: "左側開門",
+                    acNotice: "❄️ 強冷:2-5車廂；弱冷:1、6車廂",
+                    exitDesc: "在 機場北站 換乘穗深城際",
+                    colorHex: "#8E2A59",
+                    intervalDesc: "首06:06 末00:17 · 經9站"
+                ),
+                TransitStepItem(
+                    kind: .intercity,
+                    lineName: "城際 (深圳機場-竹料)",
+                    directionDesc: "經佛塱、鍾落潭東 · 穗深城際",
+                    fromStation: "深圳機場北",
+                    toStation: "新塘南",
+                    passStations: ["福海西", "沙井西", "長安西", "長安", "虎門北", "虎門東", "厚街", "洪梅", "東莞西", "麻涌"],
+                    durationMins: 75,
+                    walkMeters: 0,
+                    doorSideDesc: "城際動車",
+                    acNotice: "❗ 城際(深圳機場-竹料) 請留意首末班發車時刻",
+                    exitDesc: "在 新塘南站 換乘廣州地鐵13號綫",
+                    colorHex: "#7CB305",
+                    intervalDesc: "穗深城際鐵路 · 跨深圳/東莞/廣州"
+                ),
+                TransitStepItem(
+                    kind: .subway,
+                    lineName: "地鐵13號綫",
+                    directionDesc: "魚珠方向",
+                    fromStation: "新塘",
+                    toStation: "裕豐圍",
+                    passStations: ["白江", "沙村", "南崗", "夏園", "雙崗"],
+                    durationMins: 26,
+                    walkMeters: 0,
+                    doorSideDesc: "右側開門",
+                    acNotice: "廣州地鐵13號綫",
+                    exitDesc: "在 裕豐圍站 換乘廣州地鐵7號綫",
+                    colorHex: "#6B7C36",
+                    intervalDesc: "廣州地鐵 · 經6站"
+                ),
+                TransitStepItem(
+                    kind: .subway,
+                    lineName: "地鐵7號綫",
+                    directionDesc: "美的大道(廣州南站)方向",
+                    fromStation: "裕豐圍",
+                    toStation: "廣州南站",
+                    passStations: ["大沙東", "姬堂", "加莊", "科豐路", "蘿崗", "大學城南", "板橋", "員崗", "南村萬博", "漢溪長隆", "鍾村", "謝村", "石壁"],
+                    durationMins: 52,
+                    walkMeters: 0,
+                    doorSideDesc: "左側開門",
+                    acNotice: "直達廣州南站核心區",
+                    exitDesc: "從 I口/P5口 出站",
+                    colorHex: "#5E9732",
+                    intervalDesc: "廣州地鐵7號綫 · 經14站"
+                ),
+                TransitStepItem(
+                    kind: .walk,
+                    lineName: "步行到達",
+                    directionDesc: "前往 \(destClean)",
+                    fromStation: "廣州南站 (地鐵站)",
+                    toStation: destClean,
+                    passStations: [],
+                    durationMins: 3,
+                    walkMeters: 210,
+                    doorSideDesc: "🔥 消耗 9卡路里",
+                    acNotice: "",
+                    exitDesc: "直達 \(destClean)",
+                    colorHex: "#888888",
+                    intervalDesc: "步行 210米 (3分鐘)"
+                )
+            ]
+            let icPlan2 = TransitPlanOption(
+                title: "5小時37分 · 穗深城際+廣州地鐵",
+                badge: "全程軌交 · 穗深城際",
+                totalMinutes: 337,
+                totalStations: 55,
+                transferCount: 4,
+                walkMeters: 3800,
+                priceYuan: "46",
+                startExitDesc: "\(startSt.name) (B口) 進站",
+                warningNotice: "❗ 不在營運時間內，城際(深圳機場-竹料)(經佛塱、鍾落潭東)請留意首班車",
+                realtimeArrivalText: "地鐵3號綫(龍崗綫)(福保方向)  📡 8分鐘 🚃🚃🚃",
+                intercityBanner: trainBanner,
+                steps: icPlan2Steps
+            )
+            
+            let icPlan3Steps: [TransitStepItem] = [
+                TransitStepItem(
+                    kind: .walk,
+                    lineName: "步行進站",
+                    directionDesc: "前往 \(startSt.name) (A口)",
+                    fromStation: "我的位置",
+                    toStation: "\(startSt.name) (A口)",
+                    passStations: [],
+                    durationMins: 7,
+                    walkMeters: 520,
+                    doorSideDesc: "🔥 消耗 22卡路里",
+                    acNotice: "",
+                    exitDesc: "從 \(startSt.name)進站",
+                    colorHex: "#888888",
+                    intervalDesc: "步行 520米 (7分鐘)"
+                ),
+                TransitStepItem(
+                    kind: .subway,
+                    lineName: "地鐵3號綫 換乘 地鐵5號綫",
+                    directionDesc: "前往 深圳北站 高鐵樞紐",
+                    fromStation: "\(startSt.name)",
+                    toStation: "深圳北站",
+                    passStations: ["大芬", "木棉灣", "布吉(換乘5號綫)", "長龍", "下水徑", "上水徑", "楊美", "坂田", "五和", "民治"],
+                    durationMins: 32,
+                    walkMeters: 0,
+                    doorSideDesc: "右側開門",
+                    acNotice: "❄️ 強冷:2-5車廂",
+                    exitDesc: "在 深圳北站 出地鐵直達高鐵候車廳",
+                    colorHex: "#662D91",
+                    intervalDesc: "地鐵直連高鐵站 · 經10站"
+                ),
+                TransitStepItem(
+                    kind: .train,
+                    lineName: "廣深港高鐵 (G字頭復興號)",
+                    directionDesc: "廣州南站方向",
+                    fromStation: "深圳北",
+                    toStation: "廣州南",
+                    passStations: ["虎門", "慶盛"],
+                    durationMins: 29,
+                    walkMeters: 0,
+                    doorSideDesc: "高鐵檢票口",
+                    acNotice: "🚄 深圳北 ➔ 廣州南 高鐵最快 29分鐘直達 (二等座 ¥74.5)",
+                    exitDesc: "到達 廣州南站 一層出站層",
+                    colorHex: "#1E78F0",
+                    intervalDesc: "全天高密度發車 · 約10~15分鐘一班"
+                ),
+                TransitStepItem(
+                    kind: .walk,
+                    lineName: "步行到達",
+                    directionDesc: "前往 \(destClean)",
+                    fromStation: "廣州南站大廳",
+                    toStation: destClean,
+                    passStations: [],
+                    durationMins: 5,
+                    walkMeters: 350,
+                    doorSideDesc: "🔥 消耗 15卡路里",
+                    acNotice: "",
+                    exitDesc: "到達 \(destClean)",
+                    colorHex: "#888888",
+                    intervalDesc: "站內步行 350米 (5分鐘)"
+                )
+            ]
+            let icPlan3 = TransitPlanOption(
+                title: "1小時35分 · 深圳北高鐵直達",
+                badge: "高鐵最快 · 29分飆達",
+                totalMinutes: 95,
+                totalStations: 12,
+                transferCount: 2,
+                walkMeters: 870,
+                priceYuan: "79.5",
+                startExitDesc: "\(startSt.name) 進站",
+                warningNotice: "🚄 推薦日間出行：深圳北 ➔ 廣州南 高鐵僅需 29~36 分鐘！",
+                realtimeArrivalText: "廣深港高鐵全天超過 120 趟列車往返",
+                intercityBanner: trainBanner,
+                steps: icPlan3Steps
+            )
+            
+            self.transitPlans = [icPlan1, icPlan2, icPlan3]
+            self.selectedTransitPlanIndex = 0
+            self.remainingRouteMinutes = icPlan1.totalMinutes
+            self.currentStepInstruction = "跨市導航：前往 \(startSt.name) 乘地鐵3號綫換乘城際/高鐵"
+            self.distanceToNextStepMeters = 520
+            return
+        }
+        
+        let endSt: StationCoord = {
+            for s in AudioPlayerManager.szStationsDatabase {
+                if destClean.contains(s.name) { return s }
+            }
+            return findNearestStation(to: to)
+        }()
+        
+        // CASE A: SHORT/MEDIUM SURFACE BUS CORRIDOR
+        if startSt.name == endSt.name || directMeters <= 5200 {
+            let isShawanArea = (abs(from.latitude - 22.60) < 0.04 && abs(from.longitude - 114.16) < 0.04) || destClean.contains("丹竹头") || destClean.contains("布吉") || destClean.contains("沙湾")
+            let boardBusStop = isShawanArea ? "沙湾天桥" : "附近公交首末站"
+            let alightBusStop = destClean.contains("站") ? "\(destClean)1" : "\(destClean)公交站"
+            let passStops1 = isShawanArea ? ["厦村1", "沙岭小区", "丹竹头立交", "丹竹头社区"] : ["中心路中", "文化广场", "花园路口"]
+            let passStops2 = isShawanArea ? ["沙湾路口", "吉厦街", "沙岭小区", "丹竹头立交"] : ["创业路", "科技园南", "市民广场"]
+            let passStops3 = isShawanArea ? ["沙湾汽车站", "大芬油画村", "桂芳园"] : ["大道东", "新村路口", "地铁接驳站"]
+            
+            let walk1 = 438
+            let walk1Min = 8
+            let walk1Cal = max(1, Int(Double(walk1) * 0.043))
+            let walk2 = 20
+            let walk2Min = 1
+            let walk2Cal = 1
+            
+            let plan1Steps: [TransitStepItem] = [
+                TransitStepItem(
+                    kind: .walk,
+                    lineName: "步行前往公交站",
+                    directionDesc: "前往 \(boardBusStop)",
+                    fromStation: "我的位置",
+                    toStation: boardBusStop,
+                    passStations: [],
+                    durationMins: walk1Min,
+                    walkMeters: walk1,
+                    doorSideDesc: "🔥 消耗 \(walk1Cal)卡路里",
+                    acNotice: "",
+                    exitDesc: "沿沙平北路步行至 \(boardBusStop)",
+                    colorHex: "#888888",
+                    intervalDesc: "步行 \(walk1) 米 (\(walk1Min)分钟) · 🔥 消耗 \(walk1Cal)卡路里"
+                ),
+                TransitStepItem(
+                    kind: .bus,
+                    lineName: isShawanArea ? "M385路" : "快速干线公交 M385路",
+                    directionDesc: isShawanArea ? "布吉宝顶总站方向" : "地铁枢纽总站方向",
+                    fromStation: boardBusStop,
+                    toStation: alightBusStop,
+                    passStations: passStops1,
+                    durationMins: 16,
+                    walkMeters: 0,
+                    doorSideDesc: "前门上车后门下车",
+                    acNotice: "🚌 空调大巴 · 准点率96%",
+                    exitDesc: "在 \(alightBusStop) 下车",
+                    colorHex: "#1E78F0",
+                    intervalDesc: "上车站 首06:00 末22:44 · 约6分钟/班"
+                ),
+                TransitStepItem(
+                    kind: .walk,
+                    lineName: "步行到达终点",
+                    directionDesc: "前往 \(destClean)",
+                    fromStation: alightBusStop,
+                    toStation: destClean,
+                    passStations: [],
+                    durationMins: walk2Min,
+                    walkMeters: walk2,
+                    doorSideDesc: "🔥 消耗 \(walk2Cal)卡路里",
+                    acNotice: "",
+                    exitDesc: "下车即达 \(destClean)",
+                    colorHex: "#888888",
+                    intervalDesc: "步行 \(walk2) 米 (\(walk2Min)分钟) · 🔥 消耗 \(walk2Cal)卡路里"
+                )
+            ]
+            let plan1 = TransitPlanOption(
+                title: "30分钟 · M385路",
+                badge: "高德推荐 · 步行少",
+                totalMinutes: 30,
+                totalStations: passStops1.count + 1,
+                transferCount: 0,
+                walkMeters: walk1 + walk2,
+                priceYuan: "3",
+                startExitDesc: "\(boardBusStop)上车",
+                warningNotice: "⚠️ M385路尾班车预计 22:44 到站",
+                realtimeArrivalText: "M385路 (布吉宝顶总站方向)  📡 6分钟·3个站",
+                steps: plan1Steps
+            )
+            
+            let plan2Steps: [TransitStepItem] = [
+                TransitStepItem(
+                    kind: .walk,
+                    lineName: "步行前往站台",
+                    directionDesc: "前往 \(boardBusStop)",
+                    fromStation: "我的位置",
+                    toStation: boardBusStop,
+                    passStations: [],
+                    durationMins: 8,
+                    walkMeters: 438,
+                    doorSideDesc: "🔥 消耗 19卡路里",
+                    acNotice: "",
+                    exitDesc: "前往 \(boardBusStop) 候车",
+                    colorHex: "#888888",
+                    intervalDesc: "步行 438 米 (8分钟) · 🔥 消耗 19卡路里"
+                ),
+                TransitStepItem(
+                    kind: .bus,
+                    lineName: isShawanArea ? "M329路区间 / M329路 / M233路" : "M329路 / M233路联运线",
+                    directionDesc: isShawanArea ? "万国城公交首末站方向" : "中心地铁站方向",
+                    fromStation: boardBusStop,
+                    toStation: alightBusStop,
+                    passStations: passStops2,
+                    durationMins: 18,
+                    walkMeters: 0,
+                    doorSideDesc: "分段计费/一票制",
+                    acNotice: "📡 实时公交：下一班 5分钟·2个站 到达",
+                    exitDesc: "在 \(alightBusStop) 下车",
+                    colorHex: "#1E78F0",
+                    intervalDesc: "多线联运 · 5分钟·2个站后到达"
+                ),
+                TransitStepItem(
+                    kind: .walk,
+                    lineName: "步行到达",
+                    directionDesc: "前往 \(destClean)",
+                    fromStation: alightBusStop,
+                    toStation: destClean,
+                    passStations: [],
+                    durationMins: 5,
+                    walkMeters: 191,
+                    doorSideDesc: "🔥 消耗 8卡路里",
+                    acNotice: "",
+                    exitDesc: "直行到达 \(destClean)",
+                    colorHex: "#888888",
+                    intervalDesc: "步行 191 米 (5分钟) · 🔥 消耗 8卡路里"
+                )
+            ]
+            let plan2 = TransitPlanOption(
+                title: "33分钟 · M329/M233路",
+                badge: "车次密集 · 5分钟到站",
+                totalMinutes: 33,
+                totalStations: passStops2.count + 1,
+                transferCount: 0,
+                walkMeters: 629,
+                priceYuan: "2.5",
+                startExitDesc: "\(boardBusStop)上车",
+                warningNotice: "📡 M329路区间 (万国城方向) 预计 5分钟·2个站 到站",
+                realtimeArrivalText: "M329路区间 (万国城公交首末站...  📡 5分钟·2个站",
+                steps: plan2Steps
+            )
+            
+            let plan3Steps: [TransitStepItem] = [
+                TransitStepItem(
+                    kind: .walk,
+                    lineName: "步行前往站台",
+                    directionDesc: "前往 \(boardBusStop)",
+                    fromStation: "我的位置",
+                    toStation: boardBusStop,
+                    passStations: [],
+                    durationMins: 8,
+                    walkMeters: 438,
+                    doorSideDesc: "🔥 消耗 19卡路里",
+                    acNotice: "",
+                    exitDesc: "前往 \(boardBusStop)",
+                    colorHex: "#888888",
+                    intervalDesc: "步行 438 米 (8分钟)"
+                ),
+                TransitStepItem(
+                    kind: .bus,
+                    lineName: isShawanArea ? "351路 / M404路" : "351路城市干线",
+                    directionDesc: isShawanArea ? "嶂背工业区总站方向" : "地铁站方向",
+                    fromStation: boardBusStop,
+                    toStation: alightBusStop,
+                    passStations: passStops3,
+                    durationMins: 19,
+                    walkMeters: 0,
+                    doorSideDesc: "无人售票",
+                    acNotice: "📡 实时公交：16分钟·4个站 到达",
+                    exitDesc: "在 \(alightBusStop) 下车",
+                    colorHex: "#1E78F0",
+                    intervalDesc: "票价 ¥3 · 首06:00 末22:30"
+                ),
+                TransitStepItem(
+                    kind: .walk,
+                    lineName: "步行到达",
+                    directionDesc: "前往 \(destClean)",
+                    fromStation: alightBusStop,
+                    toStation: destClean,
+                    passStations: [],
+                    durationMins: 15,
+                    walkMeters: 950,
+                    doorSideDesc: "🔥 消耗 42卡路里",
+                    acNotice: "",
+                    exitDesc: "到达 \(destClean)",
+                    colorHex: "#888888",
+                    intervalDesc: "步行 950 米 (15分钟)"
+                )
+            ]
+            let plan3 = TransitPlanOption(
+                title: "42分钟 · 351/M404路",
+                badge: "备选直达 · 0换乘",
+                totalMinutes: 42,
+                totalStations: passStops3.count + 1,
+                transferCount: 0,
+                walkMeters: 1388,
+                priceYuan: "3",
+                startExitDesc: "\(boardBusStop)上车",
+                warningNotice: "🚴 骑行仅需 15分钟 (3.6公里 · 消耗165大卡)",
+                realtimeArrivalText: "351路 (嶂背工业区总站方向)  📡 16分钟·4个站",
+                steps: plan3Steps
+            )
+            
+            self.transitPlans = [plan1, plan2, plan3]
+            self.selectedTransitPlanIndex = 0
+            self.remainingRouteMinutes = plan1.totalMinutes
+            self.currentStepInstruction = "步行 \(walk1)米 前往 \(boardBusStop) 乘 M385路"
+            self.distanceToNextStepMeters = Double(walk1)
+            return
+        }
+        
+        // CASE B: SAME SUBWAY LINE (Both on Line 3!)
+        if let sIdx = AudioPlayerManager.line3Ordered.firstIndex(of: startSt.name),
+           let eIdx = AudioPlayerManager.line3Ordered.firstIndex(of: endSt.name),
+           sIdx != eIdx {
+            let walkStartDist = min(650, max(90, metersBetween(from, CLLocationCoordinate2D(latitude: startSt.lat, longitude: startSt.lon))))
+            let walkStartMin = max(2, Int(Double(walkStartDist) / 70.0))
+            let walkStartCal = max(2, Int(Double(walkStartDist) * 0.043))
+            
+            let walkEndDist = min(650, max(50, metersBetween(to, CLLocationCoordinate2D(latitude: endSt.lat, longitude: endSt.lon))))
+            let walkEndMin = max(1, Int(Double(walkEndDist) / 70.0))
+            let walkEndCal = max(1, Int(Double(walkEndDist) * 0.043))
+            
+            let directionStr = (eIdx > sIdx) ? "福保方向" : "双龙方向"
+            let intermediateStops: [String] = {
+                if abs(eIdx - sIdx) <= 1 { return [] }
+                if eIdx > sIdx {
+                    return Array(AudioPlayerManager.line3Ordered[(sIdx + 1)..<eIdx])
+                } else {
+                    return Array(AudioPlayerManager.line3Ordered[(eIdx + 1)..<sIdx].reversed())
+                }
+            }()
+            let stopCount = abs(eIdx - sIdx)
+            let rideMins = max(3, stopCount * 3)
+            let totalMins = walkStartMin + rideMins + walkEndMin
+            let price = stopCount <= 4 ? "3" : (stopCount <= 8 ? "4" : "5")
+            
+            let directMetroSteps: [TransitStepItem] = [
+                TransitStepItem(
+                    kind: .walk,
+                    lineName: "步行进站",
+                    directionDesc: "前往 \(startSt.name) (\(startSt.exit))",
+                    fromStation: "我的位置",
+                    toStation: "\(startSt.name) (\(startSt.exit))",
+                    passStations: [],
+                    durationMins: walkStartMin,
+                    walkMeters: walkStartDist,
+                    doorSideDesc: "🔥 消耗 \(walkStartCal)卡路里",
+                    acNotice: "",
+                    exitDesc: "从 \(startSt.exit) 进站安检",
+                    colorHex: "#888888",
+                    intervalDesc: "步行 \(walkStartDist) 米 (\(walkStartMin)分钟) · 🔥 消耗 \(walkStartCal)卡路里"
+                ),
+                TransitStepItem(
+                    kind: .subway,
+                    lineName: "地铁3号线 (龙岗线)",
+                    directionDesc: directionStr,
+                    fromStation: "\(startSt.name) (\(startSt.exit))",
+                    toStation: endSt.name,
+                    passStations: intermediateStops,
+                    durationMins: rideMins,
+                    walkMeters: 0,
+                    doorSideDesc: "右侧开门",
+                    acNotice: "❄️ 强冷:2-5车厢；弱冷:1、6车厢",
+                    exitDesc: "从 \(endSt.exit) 出站",
+                    colorHex: "#0076C0",
+                    intervalDesc: "上车站 首06:20 末23:35 · 0换乘直达 (共\(stopCount)站)"
+                ),
+                TransitStepItem(
+                    kind: .walk,
+                    lineName: "步行到达",
+                    directionDesc: "前往 \(destClean)",
+                    fromStation: "\(endSt.name) (\(endSt.exit))",
+                    toStation: destClean,
+                    passStations: [],
+                    durationMins: walkEndMin,
+                    walkMeters: walkEndDist,
+                    doorSideDesc: "🔥 消耗 \(walkEndCal)卡路里",
+                    acNotice: "",
+                    exitDesc: "出站即达 \(destClean)",
+                    colorHex: "#888888",
+                    intervalDesc: "步行 \(walkEndDist) 米 (\(walkEndMin)分钟) · 🔥 消耗 \(walkEndCal)卡路里"
+                )
+            ]
+            let plan1 = TransitPlanOption(
+                title: "\(totalMins)分钟 · 地铁3号线直达",
+                badge: "高德推荐 · 0换乘直达",
+                totalMinutes: totalMins,
+                totalStations: stopCount,
+                transferCount: 0,
+                walkMeters: walkStartDist + walkEndDist,
+                priceYuan: price,
+                startExitDesc: "\(startSt.name) (\(startSt.exit)) 进站",
+                warningNotice: "🚇 地铁3号线同线直达，仅需 \(stopCount) 站，无需换乘绕路！",
+                realtimeArrivalText: "地铁3号线(龙岗线)(\(directionStr))  📡 3分钟 🚃🚃🚃",
+                steps: directMetroSteps
+            )
+            
+            self.transitPlans = [plan1]
+            self.selectedTransitPlanIndex = 0
+            self.remainingRouteMinutes = plan1.totalMinutes
+            self.currentStepInstruction = "步行 \(walkStartDist)米 至 \(startSt.name)站 乘3号线直达"
+            self.distanceToNextStepMeters = Double(walkStartDist)
+            return
+        }
+        
+        // CASE C: WITHIN-CITY EXPRESS TRANSFER
+        let walkStartDist = min(550, max(110, metersBetween(from, CLLocationCoordinate2D(latitude: startSt.lat, longitude: startSt.lon))))
+        let walkStartMin = max(2, Int(Double(walkStartDist) / 70.0))
+        let walkStartCal = max(2, Int(Double(walkStartDist) * 0.043))
+        
+        let walkEndDist = min(550, max(90, metersBetween(to, CLLocationCoordinate2D(latitude: endSt.lat, longitude: endSt.lon))))
+        let walkEndMin = max(2, Int(Double(walkEndDist) / 70.0))
+        let walkEndCal = max(2, Int(Double(walkEndDist) * 0.043))
+        
+        let sIdx = AudioPlayerManager.line3Ordered.firstIndex(of: startSt.name) ?? 5
+        let bujiIdx = AudioPlayerManager.line3Ordered.firstIndex(of: "布吉") ?? 11
+        let line3Stops: [String] = {
+            if abs(bujiIdx - sIdx) <= 1 { return [] }
+            if bujiIdx > sIdx {
+                return Array(AudioPlayerManager.line3Ordered[(sIdx + 1)..<bujiIdx])
+            } else {
+                return Array(AudioPlayerManager.line3Ordered[(bujiIdx + 1)..<sIdx].reversed())
+            }
+        }()
+        let line3Count = max(1, abs(bujiIdx - sIdx))
+        let line3Mins = max(4, line3Count * 3)
+        
+        let plan1Steps: [TransitStepItem] = [
+            TransitStepItem(
+                kind: .walk,
+                lineName: "步行进站",
+                directionDesc: "前往地铁站",
+                fromStation: "我的位置",
+                toStation: "\(startSt.name) (\(startSt.exit))",
+                passStations: [],
+                durationMins: walkStartMin,
+                walkMeters: walkStartDist,
+                doorSideDesc: "🔥 消耗 \(walkStartCal)卡路里",
+                acNotice: "",
+                exitDesc: "从 \(startSt.exit) 进站",
+                colorHex: "#888888",
+                intervalDesc: "步行 \(walkStartDist) 米 (\(walkStartMin)分钟) · 🔥 消耗 \(walkStartCal)卡路里"
+            ),
+            TransitStepItem(
+                kind: .subway,
+                lineName: "地铁3号线 (龙岗线)",
+                directionDesc: "福保方向",
+                fromStation: "\(startSt.name) (\(startSt.exit))",
+                toStation: "布吉",
+                passStations: line3Stops,
+                durationMins: line3Mins,
+                walkMeters: 0,
+                doorSideDesc: "右侧开门",
+                acNotice: "❄️ 强冷:2-5车厢；弱冷:1、6车厢",
+                exitDesc: "在 布吉站 下车换乘14号线",
+                colorHex: "#0076C0",
+                intervalDesc: "上车站 首06:25 末23:35 · 发车间隔约3分钟"
+            ),
+            TransitStepItem(
+                kind: .walk,
+                lineName: "站内换乘",
+                directionDesc: "换乘14号线",
+                fromStation: "布吉",
+                toStation: "布吉",
+                passStations: [],
+                durationMins: 5,
+                walkMeters: 329,
+                doorSideDesc: "🔥 消耗 14卡路里",
+                acNotice: "",
+                exitDesc: "跟随黄色换乘指引走地下通道",
+                colorHex: "#D4AF37",
+                intervalDesc: "站内换乘 329 米 (5分钟)"
+            ),
+            TransitStepItem(
+                kind: .subway,
+                lineName: "地铁14号线 (东部快线)",
+                directionDesc: "岗厦北方向",
+                fromStation: "布吉",
+                toStation: "岗厦北",
+                passStations: ["罗湖北", "黄木岗"],
+                durationMins: 10,
+                walkMeters: 0,
+                doorSideDesc: "右侧开门",
+                acNotice: "❄️ 强冷:2-7车厢；弱冷:1、8车厢",
+                exitDesc: "在 岗厦北 下车同台换乘11号线",
+                colorHex: "#D4AF37",
+                intervalDesc: "上车站 首06:25 末23:45 · 准直达快线"
+            ),
+            TransitStepItem(
+                kind: .walk,
+                lineName: "站内换乘",
+                directionDesc: "换乘11号线",
+                fromStation: "岗厦北",
+                toStation: "岗厦北",
+                passStations: [],
+                durationMins: 1,
+                walkMeters: 2,
+                doorSideDesc: "",
+                acNotice: "",
+                exitDesc: "同站厅步行 2 米至11号线",
+                colorHex: "#8E2A59",
+                intervalDesc: "站内换乘 2 米 (1分钟)"
+            ),
+            TransitStepItem(
+                kind: .subway,
+                lineName: "地铁11号线 (机场线)",
+                directionDesc: "碧头方向",
+                fromStation: "岗厦北",
+                toStation: endSt.name,
+                passStations: ["福田"],
+                durationMins: 7,
+                walkMeters: 0,
+                doorSideDesc: "左侧开门",
+                acNotice: "❄️ 强冷:2-5车厢；弱冷:1、6车厢",
+                exitDesc: "从 \(endSt.exit) 出站",
+                colorHex: "#8E2A59",
+                intervalDesc: "上车站 首06:06 末00:17"
+            ),
+            TransitStepItem(
+                kind: .walk,
+                lineName: "步行到达",
+                directionDesc: "前往 \(destClean)",
+                fromStation: "\(endSt.name) (\(endSt.exit))",
+                toStation: destClean,
+                passStations: [],
+                durationMins: walkEndMin,
+                walkMeters: walkEndDist,
+                doorSideDesc: "🔥 消耗 \(walkEndCal)卡路里",
+                acNotice: "",
+                exitDesc: "出站到达 \(destClean)",
+                colorHex: "#888888",
+                intervalDesc: "步行 \(walkEndDist) 米 (\(walkEndMin)分钟) · 🔥 消耗 \(walkEndCal)卡路里"
+            )
+        ]
+        
+        let p1TotalMins = walkStartMin + line3Mins + 5 + 10 + 1 + 7 + walkEndMin
+        let p1TotalWalk = walkStartDist + 329 + 2 + walkEndDist
+        let p1TotalStops = line3Count + 3 + 2
+        
+        let plan1 = TransitPlanOption(
+            title: "\(p1TotalMins)分钟 · 3号线换14号快线",
+            badge: "高德推荐 · 地铁快线",
+            totalMinutes: p1TotalMins,
+            totalStations: p1TotalStops,
+            transferCount: 2,
+            walkMeters: p1TotalWalk,
+            priceYuan: "7",
+            startExitDesc: "\(startSt.name) (\(startSt.exit)) 进站",
+            warningNotice: "🚇 14号线东部快线大站快车，比普通线节省 18 分钟",
+            realtimeArrivalText: "地铁3号线(龙岗线)(福保方向)  📡 4分钟 🚃🚃🚃",
+            steps: plan1Steps
+        )
+        
+        self.transitPlans = [plan1]
+        self.selectedTransitPlanIndex = 0
+        self.remainingRouteMinutes = plan1.totalMinutes
+        self.currentStepInstruction = "步行 \(walkStartDist)米 前往 \(startSt.name) (\(startSt.exit))"
+        self.distanceToNextStepMeters = Double(walkStartDist)
+    }
+
+        func synthesizeTransitPolylineAndApply(from: CLLocationCoordinate2D, to: CLLocationCoordinate2D, destTitle: String, plan: TransitPlanOption, isReroute: Bool) {
+        var coords: [CLLocationCoordinate2D] = []
+        var pins: [MKPointAnnotation] = []
+        
+        coords.append(from)
+        
+        let destClean = destTitle.isEmpty ? "目的地" : destTitle
+        let fromHK = CoordinateConverter.isInHongKong(from)
+        let toHK = CoordinateConverter.isInHongKong(to) || destClean.contains("香港") || destClean.contains("九龙") || destClean.contains("九龍") || destClean.contains("旺角") || destClean.contains("尖沙咀") || destClean.contains("中环") || destClean.contains("金钟") || destClean.contains("石硖尾") || destClean.contains("石硤尾")
+        
+        let startPin = MKPointAnnotation()
+        startPin.coordinate = from
+        startPin.title = "我的位置"
+        startPin.subtitle = "START_PIN"
+        pins.append(startPin)
+        
+        if !fromHK && toHK {
+            let isShawan = (from.latitude > 22.58 && from.latitude < 22.63 && from.longitude > 114.14 && from.longitude < 114.19)
+            let usesBus351 = plan.steps.contains(where: { $0.lineName.contains("351") })
+            
+            if isShawan && usesBus351 {
+                let shawanBridge = CLLocationCoordinate2D(latitude: 22.5995, longitude: 114.1663)
+                coords.append(shawanBridge)
+                let busPin = MKPointAnnotation()
+                busPin.coordinate = shawanBridge
+                busPin.title = "沙湾天桥 (351路)"
+                busPin.subtitle = "BUS_STOP_PIN"
+                pins.append(busPin)
+                
+                coords.append(CLLocationCoordinate2D(latitude: 22.5910, longitude: 114.1610))
+                coords.append(CLLocationCoordinate2D(latitude: 22.5830, longitude: 114.1540))
+                coords.append(CLLocationCoordinate2D(latitude: 22.5730, longitude: 114.1460))
+                coords.append(CLLocationCoordinate2D(latitude: 22.5650, longitude: 114.1410))
+                coords.append(CLLocationCoordinate2D(latitude: 22.5580, longitude: 114.1350))
+                coords.append(CLLocationCoordinate2D(latitude: 22.5510, longitude: 114.1270))
+                coords.append(CLLocationCoordinate2D(latitude: 22.5440, longitude: 114.1205))
+                
+                let jinguanghua = CLLocationCoordinate2D(latitude: 22.5410, longitude: 114.1190)
+                coords.append(jinguanghua)
+                
+                let guomao = CLLocationCoordinate2D(latitude: 22.5398, longitude: 114.1182)
+                coords.append(guomao)
+                let gmPin = MKPointAnnotation()
+                gmPin.coordinate = guomao
+                gmPin.title = "国贸 (换乘地铁1号线)"
+                gmPin.subtitle = "TRANSFER_PIN"
+                pins.append(gmPin)
+                
+                let luohuMetro = CLLocationCoordinate2D(latitude: 22.5320, longitude: 114.1150)
+                coords.append(luohuMetro)
+                
+                let luohuPort = CLLocationCoordinate2D(latitude: 22.5300, longitude: 114.1142)
+                coords.append(luohuPort)
+                let portPin = MKPointAnnotation()
+                portPin.coordinate = luohuPort
+                portPin.title = "罗湖口岸联检大楼 (通关)"
+                portPin.subtitle = "PORT_CUSTOMS_PIN"
+                pins.append(portPin)
+                
+                let mtrLuohu = CLLocationCoordinate2D(latitude: 22.5280, longitude: 114.1130)
+                coords.append(mtrLuohu)
+                let mtrPin = MKPointAnnotation()
+                mtrPin.coordinate = mtrLuohu
+                mtrPin.title = "港铁罗湖站 (东铁线)"
+                mtrPin.subtitle = "SUBWAY_STOP_PIN"
+                pins.append(mtrPin)
+                
+            } else {
+                let startSt = findNearestStation(to: from)
+                let startCoord = CLLocationCoordinate2D(latitude: startSt.lat, longitude: startSt.lon)
+                coords.append(startCoord)
+                let stPin = MKPointAnnotation()
+                stPin.coordinate = startCoord
+                stPin.title = "\(startSt.name) (\(startSt.line))"
+                stPin.subtitle = "SUBWAY_STOP_PIN"
+                pins.append(stPin)
+                
+                coords.append(CLLocationCoordinate2D(latitude: 22.5850, longitude: 114.1350))
+                coords.append(CLLocationCoordinate2D(latitude: 22.5450, longitude: 114.1180))
+                coords.append(CLLocationCoordinate2D(latitude: 22.5320, longitude: 114.1150))
+                
+                let luohuPort = CLLocationCoordinate2D(latitude: 22.5300, longitude: 114.1142)
+                coords.append(luohuPort)
+                let portPin = MKPointAnnotation()
+                portPin.coordinate = luohuPort
+                portPin.title = "罗湖口岸联检大楼 (通关)"
+                portPin.subtitle = "PORT_CUSTOMS_PIN"
+                pins.append(portPin)
+                
+                let mtrLuohu = CLLocationCoordinate2D(latitude: 22.5280, longitude: 114.1130)
+                coords.append(mtrLuohu)
+            }
+            
+            coords.append(CLLocationCoordinate2D(latitude: 22.5012, longitude: 114.1280))
+            coords.append(CLLocationCoordinate2D(latitude: 22.4920, longitude: 114.1385))
+            coords.append(CLLocationCoordinate2D(latitude: 22.4510, longitude: 114.1610))
+            coords.append(CLLocationCoordinate2D(latitude: 22.4445, longitude: 114.1705))
+            coords.append(CLLocationCoordinate2D(latitude: 22.4130, longitude: 114.2100))
+            coords.append(CLLocationCoordinate2D(latitude: 22.3950, longitude: 114.1950))
+            coords.append(CLLocationCoordinate2D(latitude: 22.3820, longitude: 114.1870))
+            coords.append(CLLocationCoordinate2D(latitude: 22.3730, longitude: 114.1780))
+            coords.append(CLLocationCoordinate2D(latitude: 22.3480, longitude: 114.1760))
+            
+            let kowloonTong = CLLocationCoordinate2D(latitude: 22.3370, longitude: 114.1760)
+            coords.append(kowloonTong)
+            
+            if destClean.contains("石硖尾") || destClean.contains("石硤尾") {
+                let ktPin = MKPointAnnotation()
+                ktPin.coordinate = kowloonTong
+                ktPin.title = "九龙塘 (换乘观塘线)"
+                ktPin.subtitle = "TRANSFER_PIN"
+                pins.append(ktPin)
+                
+                coords.append(CLLocationCoordinate2D(latitude: 22.3345, longitude: 114.1720))
+                let shekKipMei = CLLocationCoordinate2D(latitude: 22.3320, longitude: 114.1685)
+                coords.append(shekKipMei)
+                let skmPin = MKPointAnnotation()
+                skmPin.coordinate = shekKipMei
+                skmPin.title = "石硖尾 (右侧开门)"
+                skmPin.subtitle = "SUBWAY_STOP_PIN"
+                pins.append(skmPin)
+            } else if destClean.contains("旺角") {
+                let mk = CLLocationCoordinate2D(latitude: 22.3220, longitude: 114.1720)
+                coords.append(mk)
+            } else if destClean.contains("尖沙咀") {
+                coords.append(CLLocationCoordinate2D(latitude: 22.2970, longitude: 114.1720))
+            } else if destClean.contains("金钟") || destClean.contains("金鐘") {
+                coords.append(CLLocationCoordinate2D(latitude: 22.2810, longitude: 114.1750))
+                coords.append(CLLocationCoordinate2D(latitude: 22.2790, longitude: 114.1650))
+            }
+            
+            coords.append(to)
+            let destPin = MKPointAnnotation()
+            destPin.coordinate = to
+            destPin.title = destClean
+            destPin.subtitle = "DEST_PIN"
+            pins.append(destPin)
+            
+        } else {
+            let startSt = findNearestStation(to: from)
+            let endSt = findNearestStation(to: to)
+            let sCoord = CLLocationCoordinate2D(latitude: startSt.lat, longitude: startSt.lon)
+            let eCoord = CLLocationCoordinate2D(latitude: endSt.lat, longitude: endSt.lon)
+            coords.append(sCoord)
+            coords.append(CLLocationCoordinate2D(latitude: (sCoord.latitude + eCoord.latitude)*0.5, longitude: (sCoord.longitude + eCoord.longitude)*0.5))
+            coords.append(eCoord)
+            coords.append(to)
+            
+            let destPin = MKPointAnnotation()
+            destPin.coordinate = to
+            destPin.title = destClean
+            destPin.subtitle = "DEST_PIN"
+            pins.append(destPin)
+        }
+        
+        var totalMeters: Double = 0
+        for i in 0..<(coords.count - 1) {
+            totalMeters += metersBetween(coords[i], coords[i+1])
+        }
+        
+        self.remainingRouteDistanceKm = max(1.0, totalMeters / 1000.0)
+        self.remainingRouteMinutes = plan.totalMinutes
+        
+        if let first = plan.steps.first {
+            if first.kind == .walk {
+                self.currentStepInstruction = "步行 \(first.walkMeters)米 前往 \(first.toStation)"
+                self.distanceToNextStepMeters = Double(first.walkMeters)
+            } else {
+                self.currentStepInstruction = "乘坐 \(first.lineName) (\(first.directionDesc))"
+                self.distanceToNextStepMeters = 400.0
+            }
+        }
+        
+        self.customTransitPolyline = MKPolyline(coordinates: &coords, count: coords.count)
+        self.transitStopAnnotations = pins
+        self.activeRoute = nil
+        self.candidateRoutes = []
+        self.isMapEnlarged = true
+        self.triggerDepartureGreeting(title: destTitle, isReroute: isReroute)
+    }
+
+    func selectTransitPlan(at index: Int) {
+        guard index >= 0 && index < transitPlans.count else { return }
+        selectedTransitPlanIndex = index
+        let plan = transitPlans[index]
+        remainingRouteMinutes = plan.totalMinutes
+        if let dest = destinationCoord {
+            synthesizeTransitPolylineAndApply(from: userCoordinate, to: dest, destTitle: destinationName, plan: plan, isReroute: true)
+        }
+        let charQuote: String
+        switch language {
+        case .zhHans: charQuote = "🚇 [\(plan.badge)] 换乘方案已选择！预计耗时 \(plan.totalMinutes) 分钟，我们出发吧！"
+        case .zhHant: charQuote = "🚇 [\(plan.badge)] 換乘方案已選擇！預計耗時 \(plan.totalMinutes) 分鐘，我們出發吧！"
+        case .en: charQuote = "🚇 Transit plan updated: \(plan.totalMinutes) mins total."
+        }
+        playVoice(id: activeBaseId() + 39, customQuote: charQuote, clearQueue: true)
+    }
+    
+    func startTransitWalkingNavigation() {
+        guard selectedTransitPlanIndex < transitPlans.count else { return }
+        let plan = transitPlans[selectedTransitPlanIndex]
+        if let dest = destinationCoord {
+            synthesizeTransitPolylineAndApply(from: userCoordinate, to: dest, destTitle: destinationName, plan: plan, isReroute: false)
+        }
+        showTransitPlanSheet = false
+        isNavigatingFocused = true
+        isMapEnlarged = true
+        
+        let charQuote: String
+        switch language {
+        case .zhHans: charQuote = "🚶 [步行导航] 请沿地面蓝色指引线前往车站，随身带好贵重物品哦！"
+        case .zhHant: charQuote = "🚶 [步行導航] 請沿地面藍色指引綫前往車站，隨身帶好貴重物品哦！"
+        case .en: charQuote = "🚶 Follow the walking guidance line to the boarding station!"
+        }
+        playVoice(id: activeBaseId() + 39, customQuote: charQuote, clearQueue: true)
+    }
+
+        func openSystemMapsForTransit() { showTransitPlanSheet = true }
+    func _old_openSystemMapsForTransit() {
+        guard let destCoord = destinationCoord else { return }
+        let destItem = MKMapItem(placemark: MKPlacemark(coordinate: destCoord))
+        destItem.name = destinationName
+        destItem.openInMaps(launchOptions: [
+            MKLaunchOptionsDirectionsModeKey: MKLaunchOptionsDirectionsModeTransit
+        ])
+    }
+    private var announcedStepThresholds: Set<String> = []
+    private var isRecalculatingRoute: Bool = false
+    private var demoSimTimer: Timer?
+    @Published var isDemoSimulating: Bool = false
     
     enum CharacterFilter: String, CaseIterable, Identifiable {
         case all = "all"
@@ -123,7 +2584,6 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         case azusa = "azusa"
         
         var id: String { self.rawValue }
-        
         static let fiveIndividuals: [CharacterFilter] = [.yui, .mio, .ritsu, .mugi, .azusa]
         
         var charId: Int {
@@ -177,24 +2637,21 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             }
         }
         
-        // Exact verified RM-500HTT base ID for the 144-file navigation block (IDs 1..156 are generic non-character announcer and are excluded!)
         var navBaseId: Int {
             switch self {
-            case .yui, .all: return 157 // 157..300
-            case .mio: return 301       // 301..444
-            case .ritsu: return 445     // 445..588
-            case .mugi: return 589      // 589..732
-            case .azusa: return 733     // 733..876
+            case .yui, .all: return 157
+            case .mio: return 301
+            case .ritsu: return 445
+            case .mugi: return 589
+            case .azusa: return 733
             }
         }
         
-        // Exact verified RM-500HTT 144-file navigation range
         var navRange: ClosedRange<Int> {
             let base = navBaseId
             return base...(base + 143)
         }
         
-        // Exact verified RM-500HTT 47-file menu/touch range
         var menuRange: ClosedRange<Int> {
             switch self {
             case .yui, .all: return 877...923
@@ -205,7 +2662,6 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             }
         }
         
-        // Bonus completion voice ID
         var bonusId: Int {
             switch self {
             case .yui, .all: return 1112
@@ -216,11 +2672,8 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             }
         }
         
-        // All 192 verified pure character voice IDs in RM-500HTT (excludes 1..156 generic announcer!)
         var verifiedVoiceIds: [Int] {
-            if self == .all {
-                return Array(157...1122)
-            }
+            if self == .all { return Array(157...1122) }
             return Array(navRange) + Array(menuRange) + [bonusId]
         }
         
@@ -228,22 +2681,22 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             switch (self, lang) {
             case (.yui, .zhHans): return "平泽唯 · 主音吉他 (CV: 丰崎爱生)"
             case (.yui, .zhHant): return "平澤唯 · 主音吉他 (CV: 豐崎愛生)"
-            case (.yui, .en): return "Yui Hirasawa · Lead Guitar (CV: Aki Toyosaki)"
+            case (.yui, .en): return "Yui Hirasawa · Lead Guitar"
             case (.mio, .zhHans): return "秋山澪 · 贝斯手 (CV: 日笠阳子)"
             case (.mio, .zhHant): return "秋山澪 · 貝斯手 (CV: 日笠陽子)"
-            case (.mio, .en): return "Mio Akiyama · Bass (CV: Yoko Hikasa)"
+            case (.mio, .en): return "Mio Akiyama · Bass"
             case (.ritsu, .zhHans): return "田井中律 · 鼓手部长 (CV: 佐藤聪美)"
             case (.ritsu, .zhHant): return "田井中律 · 鼓手部長 (CV: 佐藤聰美)"
-            case (.ritsu, .en): return "Ritsu Tainaka · Drums (CV: Satomi Sato)"
+            case (.ritsu, .en): return "Ritsu Tainaka · Drums"
             case (.mugi, .zhHans): return "琴吹紬 · 键盘手 (CV: 寿美菜子)"
             case (.mugi, .zhHant): return "琴吹紬 · 鍵盤手 (CV: 壽美菜子)"
-            case (.mugi, .en): return "Tsumugi Kotobuki · Keyboard (CV: Minako Kotobuki)"
+            case (.mugi, .en): return "Tsumugi Kotobuki · Keyboard"
             case (.azusa, .zhHans): return "中野梓 · 节奏吉他 (CV: 竹达彩奈)"
             case (.azusa, .zhHant): return "中野梓 · 節奏吉他 (CV: 竹達彩奈)"
-            case (.azusa, .en): return "Azusa Nakano · Rhythm Guitar (CV: Ayana Taketatsu)"
+            case (.azusa, .en): return "Azusa Nakano · Rhythm Guitar"
             case (.all, .zhHans): return "放课后茶会 (HTT 五人全员同台)"
             case (.all, .zhHant): return "放學後茶會 (HTT 五人全員同台)"
-            case (.all, .en): return "Houkago Tea Time (All 5 Members On Stage)"
+            case (.all, .en): return "Houkago Tea Time (All 5 Members)"
             }
         }
     }
@@ -276,6 +2729,15 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         setupLocationManager()
         startMasterClock()
         startSpriteAnimator()
+        DispatchQueue.main.async {
+            UIApplication.shared.isIdleTimerDisabled = true
+        }
+    }
+    
+    func resetPositions() {
+        mascotOffsetX = 0.0
+        mascotOffsetY = 0.0
+        memberPositions.removeAll()
     }
     
     func configureAudioSession() {
@@ -288,10 +2750,9 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         }
     }
     
-    // Create an in-memory silent WAV loop so iOS never suspends the background timer during 10-minute Cruise Mode
     private func setupBackgroundKeepAliveAudio() {
         let sampleRate: Int32 = 8000
-        let numSamples: Int32 = 8000 // 1 second of silence
+        let numSamples: Int32 = 8000
         let dataSize = numSamples * 2
         let fileSize = 36 + dataSize
         
@@ -335,26 +2796,47 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         locationManager.requestAlwaysAuthorization()
         locationManager.startUpdatingLocation()
         if CLLocationManager.headingAvailable() {
+            locationManager.headingFilter = kCLHeadingFilterNone
             locationManager.startUpdatingHeading()
         }
     }
     
-    // Master 1-second clock on .common RunLoop mode (handles driving timer, Cruise Mode countdown, and GPS signal watchdog)
     private func startMasterClock() {
         let timer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
             guard let self = self else { return }
+            if !UIApplication.shared.isIdleTimerDisabled {
+                UIApplication.shared.isIdleTimerDisabled = true
+            }
             self.drivingSeconds += 1
             
-            // 1. Fatigue Tea Time Reminder every 45 mins
+            // Update Traffic Light Countdown (红绿灯倒计时)
+            if self.trafficLightSeconds > 1 {
+                self.trafficLightSeconds -= 1
+            } else {
+                switch self.trafficLightPhase {
+                case .green:
+                    self.trafficLightPhase = .yellow
+                    self.trafficLightSeconds = 3
+                case .yellow:
+                    self.trafficLightPhase = .red
+                    self.trafficLightSeconds = Int.random(in: 22...38)
+                case .red:
+                    self.trafficLightPhase = .green
+                    self.trafficLightSeconds = Int.random(in: 25...45)
+                }
+            }
+            
             if self.drivingSeconds > 0 && self.drivingSeconds % 2700 == 0 {
                 self.triggerTeaTimeReminder()
             }
             
-            // 2. Cruise Mode Countdown & Reliable Trigger
-            if self.isCruiseModeActive {
+            if self.isCruiseModeActive || self.activeRoute != nil {
                 if self.keepAlivePlayer?.isPlaying == false {
                     self.keepAlivePlayer?.play()
                 }
+            }
+            
+            if self.isCruiseModeActive {
                 if self.cruiseRemainingSeconds > 1 {
                     self.cruiseRemainingSeconds -= 1
                 } else {
@@ -363,8 +2845,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                 }
             }
             
-            // 3. GPS Signal Watchdog (if no accurate GPS fix for >18s while app active)
-            if Date().timeIntervalSince(self.lastValidGPSTime) > 18.0 {
+            if Date().timeIntervalSince(self.lastValidGPSTime) > 18.0 && !self.isDemoSimulating {
                 if !self.isGPSSignalPoor {
                     self.isGPSSignalPoor = true
                     if Date().timeIntervalSince(self.lastGPSAlertTime) > 60.0 {
@@ -378,7 +2859,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         self.drivingTimer = timer
     }
     
-    // MARK: - 1. Load Encrypted RM-500HTT Navigation Voices
+    // MARK: - Load Encrypted Navigation & Mascot Assets
     private func loadNavPackageIndex() {
         guard let url = Bundle.main.url(forResource: "voice_assets", withExtension: "dat") else { return }
         do {
@@ -406,7 +2887,6 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         }
     }
     
-    // MARK: - 2. Load Encrypted Windows Desktop Pet Sprites & Voices
     private func loadMascotAssetsInMemory() {
         guard let url = Bundle.main.url(forResource: "mascot_assets", withExtension: "dat") else { return }
         do {
@@ -457,7 +2937,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         }
     }
     
-    // MARK: - 3. Real-Time Official K-ON Desktop Pet Sprite Animator (Single & All 5 Members!)
+    // MARK: - 3. Sprite Animator
     private func startSpriteAnimator() {
         updateAllSpriteFrames()
         let timer = Timer(timeInterval: 0.16, repeats: true) { [weak self] _ in
@@ -482,10 +2962,10 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         
         if mascotAction == .walkLeft {
             mascotOffsetX -= 4.5
-            if mascotOffsetX < -55.0 { mascotAction = .walkRight }
+            if mascotOffsetX < -stageWalkBound { mascotAction = .walkRight }
         } else if mascotAction == .walkRight {
             mascotOffsetX += 4.5
-            if mascotOffsetX > 55.0 { mascotAction = .walkLeft }
+            if mascotOffsetX > stageWalkBound { mascotAction = .walkLeft }
         }
         
         if animTick % 36 == 0 && mascotAction != .teaCake {
@@ -494,13 +2974,110 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         }
     }
     
+    // MARK: - RM-500HTT Authentic Navigation Arrow & Beautification Skin Engine
+    func getRM500UIImage(_ name: String) -> UIImage? {
+        guard let cg = spriteSheets[name] else { return nil }
+        return UIImage(cgImage: cg)
+    }
+    
+    func getCurrentThemeBackground() -> UIImage? {
+        guard useRM500ThemeSkin else { return nil }
+        let effectiveChar = (selectedCharacter == .all) ? activeAllMemberChar : selectedCharacter
+        let name: String
+        switch effectiveChar {
+        case .yui, .all: name = "rm_bg_yui"
+        case .mio: name = "rm_bg_mio"
+        case .ritsu: name = "rm_bg_ritsu"
+        case .mugi: name = "rm_bg_mugi"
+        case .azusa: name = "rm_bg_azusa"
+        }
+        return getRM500UIImage(name)
+    }
+    
+    func getRM500StageIcon(for char: CharacterFilter) -> UIImage? {
+        let effectiveChar = (char == .all) ? activeAllMemberChar : char
+        let prefix: String
+        switch effectiveChar {
+        case .yui, .all: prefix = "rm_stg_yui"
+        case .mio: prefix = "rm_stg_mio"
+        case .ritsu: prefix = "rm_stg_ritsu"
+        case .mugi: prefix = "rm_stg_mugi"
+        case .azusa: prefix = "rm_stg_azusa"
+        }
+        let suffix: String
+        switch arrowOutfit {
+        case .maid: suffix = "_maid"
+        case .kigurumi: suffix = "_kig"
+        case .tonchan: return getRM500UIImage(walkStepFrame == 0 ? "rm_stg_ton_1" : "rm_stg_ton_2")
+        default: suffix = (walkStepFrame == 0) ? "_1" : "_2"
+        }
+        return getRM500UIImage(prefix + suffix)
+    }
+    
+    func getRM500NavigationArrowFrame(mapCameraHeading: Double = 0.0) -> UIImage? {
+        if arrowOutfit == .classic3D {
+            return nil // Uses procedural 3D arrow
+        }
+        let stripIdx: Int
+        if arrowOutfit == .tonchan {
+            stripIdx = 51 + (walkStepFrame % 2)
+        } else {
+            // Base index for character: Yui=1, Mio=11, Ritsu=21, Mugi=31, Azusa=41
+            let charBlock: Int
+            switch selectedCharacter {
+            case .yui: charBlock = 1
+            case .mio: charBlock = 11
+            case .ritsu: charBlock = 21
+            case .mugi: charBlock = 31
+            case .azusa: charBlock = 41
+            case .all:
+                // In all-members mode, use the dynamic active/random member instead of always Yui!
+                switch activeAllMemberChar {
+                case .yui, .all: charBlock = 1
+                case .mio: charBlock = 11
+                case .ritsu: charBlock = 21
+                case .mugi: charBlock = 31
+                case .azusa: charBlock = 41
+                }
+            }
+            let outfitOffset = arrowOutfit.rawValue * 2
+            let stepOffset = (currentSpeedKmh > 1.5 || isDemoSimulating) ? (walkStepFrame % 2) : 0
+            stripIdx = charBlock + outfitOffset + stepOffset
+        }
+        
+        let key = String(format: "arrow_%02d", stripIdx)
+        guard let stripCG = spriteSheets[key] else { return nil }
+        
+        // Determine which of the 12 directional cells (0..11, each 110x143) to crop
+        // Relative heading on screen = (vehicle heading - map camera heading)
+        var relHeading = (headingDegrees - mapCameraHeading).truncatingRemainder(dividingBy: 360.0)
+        if relHeading < 0 { relHeading += 360.0 }
+        
+        // In RM-500HTT strip:
+        // Cell 0 = 0° (Up/North), Cell 3 = 90° (Right/East), Cell 6 = 180° (Down/South), Cell 9 = 270° (Left/West)
+        // Note: Looking at strip1_cells.png:
+        // Cell 0: Arrow points UP (0°)
+        // Cell 1: Arrow points Left-ish / 300°? Wait: when maptracking is ON, camera heading == headingDegrees, so relHeading == 0 -> ALWAYS Cell 0 (character facing forward with arrow pointing straight ahead!).
+        // When map is panned/north-up, relHeading maps to the 12 clock directions:
+        let cellIndex: Int
+        let clockSector = Int(((relHeading + 15.0) / 30.0).FloorMod(12))
+        // Mapping clock sector (0=N, 3=E, 6=S, 9=W) to RM-500HTT cell indices:
+        let sectorToCell = [0, 11, 8, 3, 4, 7, 6, 5, 2, 9, 10, 1]
+        cellIndex = sectorToCell[clockSector]
+        
+        let rect = CGRect(x: cellIndex * 110, y: 0, width: 110, height: 143)
+        guard let cropped = stripCG.cropping(to: rect) else { return nil }
+        return UIImage(cgImage: cropped)
+    }
+
     private func updateAllSpriteFrames() {
-        // Update all 5 members so 5-Member Group Stage has every girl animated simultaneously!
         for member in CharacterFilter.fiveIndividuals {
             let phaseTick = animTick + (member.charId * 3)
             let memberAction: MascotActionState
             if isDraggingMascot && (draggedMemberId == nil || draggedMemberId == member.charId) {
                 memberAction = .grabbed
+            } else if activeRoute != nil && currentSpeedKmh > 3.0 {
+                memberAction = .walkRight
             } else {
                 memberAction = mascotAction
             }
@@ -512,8 +3089,15 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             }
         }
         if selectedCharacter == .all {
-            currentSpriteFrame = allMemberFrames[1]
+            // Every ~10 seconds (60 ticks), rotate to a random member if not currently speaking
+            if animTick % 60 == 0 && !isPlaying {
+                activeAllMemberChar = CharacterFilter.fiveIndividuals.randomElement() ?? .yui
+            }
+            currentSpriteFrame = allMemberFrames[activeAllMemberChar.charId] ?? allMemberFrames[1]
         }
+        walkStepFrame = (animTick / 2) % 2
+        let effectiveCamHeading = (mapTrackingUser && cameraMode == .headingUp) ? headingDegrees : 0.0
+        currentNavArrowImage = getRM500NavigationArrowFrame(mapCameraHeading: effectiveCamHeading)
     }
     
     private func sliceFrame(for char: CharacterFilter, action: MascotActionState, tick: Int) -> UIImage? {
@@ -524,15 +3108,11 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             let row: Int
             let col: Int
             switch char {
-            case .yui, .mugi, .all:
-                row = 1; col = tick % 4
-            case .ritsu:
-                row = 1; col = tick % 2
-            case .mio, .azusa:
-                row = 0; col = 0
+            case .yui, .mugi, .all: row = 1; col = tick % 4
+            case .ritsu: row = 1; col = tick % 2
+            case .mio, .azusa: row = 0; col = 0
             }
-            let rect = CGRect(x: col * fw, y: row * fh, width: fw, height: fh)
-            if let cropped = sheet.cropping(to: rect) {
+            if let cropped = sheet.cropping(to: CGRect(x: col * fw, y: row * fh, width: fw, height: fh)) {
                 return UIImage(cgImage: cropped)
             }
             return nil
@@ -546,8 +3126,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         
         switch action {
         case .idle:
-            row = 0
-            col = isPlaying ? (tick % 4) : ((tick / 2) % 4)
+            row = 0; col = isPlaying ? (tick % 4) : ((tick / 2) % 4)
         case .walkLeft:
             row = 1; col = tick % 6
         case .walkRight:
@@ -559,36 +3138,752 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         case .panic:
             switch char {
             case .yui, .all: row = 4; col = tick % 4
-            case .mio: row = 5; col = tick % 2 // Dizzy with halo!
+            case .mio: row = 5; col = tick % 2
             case .ritsu: row = 4; col = tick % 4
             case .mugi: row = 3; col = tick % 2
-            case .azusa: row = 3; col = tick % 6 // Panicked holding twin-tails!
+            case .azusa: row = 3; col = tick % 6
             }
         case .special, .teaCake:
             switch char {
-            case .yui, .all: row = 6; col = tick % 6 // Untan castanets!
+            case .yui, .all: row = 6; col = tick % 6
             case .mio: row = 3; col = tick % 2
-            case .ritsu: row = 5; col = tick % 4 // Cheering both hands!
-            case .mugi: row = 5; col = tick % 6 // Floating pink hearts!
+            case .ritsu: row = 5; col = tick % 4
+            case .mugi: row = 5; col = tick % 6
             case .azusa: row = 5; col = tick % 3
             }
         }
         
-        let rect = CGRect(x: col * fw, y: row * fh, width: fw, height: fh)
-        if let cropped = sheet.cropping(to: rect) {
+        if let cropped = sheet.cropping(to: CGRect(x: col * fw, y: row * fh, width: fw, height: fh)) {
             return UIImage(cgImage: cropped)
         }
         return nil
     }
     
-    // MARK: - CLLocationManagerDelegate (Speed Limit & GPS Signal Monitoring)
+    // MARK: - 4. Multi-Modal Destination Search & Turn-by-Turn Route Engine
+    func searchPlaces(query: String) {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            searchResults = []
+            return
+        }
+        isSearching = true
+        let req = MKLocalSearch.Request()
+        req.naturalLanguageQuery = trimmed
+        req.resultTypes = [.address, .pointOfInterest]
+        req.region = MKCoordinateRegion(center: userCoordinate, latitudinalMeters: 2500000, longitudinalMeters: 2500000)
+        
+        MKLocalSearch(request: req).start { [weak self] response, _ in
+            DispatchQueue.main.async {
+                self?.isSearching = false
+                self?.searchResults = response?.mapItems ?? []
+            }
+        }
+    }
+    
+    func startRouteGuidance(to item: MKMapItem) {
+        stopDemoSimulation()
+        let destCoord = item.placemark.coordinate
+        let destTitle = item.name ?? "目的地"
+        calculateAndStartRoute(to: destCoord, title: destTitle)
+    }
+    
+    func calculateAndStartRoute(to destCoord: CLLocationCoordinate2D, title: String, isReroute: Bool = false) {
+        destinationCoord = destCoord
+        destinationName = title
+        isRecalculatingRoute = true
+        // Always generate transit plans immediately so they are 100% available without blank sheet!
+        generateBuiltInTransitPlans(from: userCoordinate, to: destCoord, destTitle: title)
+        
+        if travelMode == .transit {
+            isRecalculatingRoute = false
+            let planIndex = (selectedTransitPlanIndex < transitPlans.count) ? selectedTransitPlanIndex : 0
+            if !transitPlans.isEmpty {
+                selectedTransitPlanIndex = planIndex
+                synthesizeTransitPolylineAndApply(from: userCoordinate, to: destCoord, destTitle: title, plan: transitPlans[planIndex], isReroute: isReroute)
+            }
+            return
+        }
+        
+        customTransitPolyline = nil
+        transitStopAnnotations = []
+        
+        // Request both automobile and walking routes in parallel so Driving, e-Bike, and Walking each get distinct, authentic paths!
+        let reqAuto = MKDirections.Request()
+        let reqWalk = MKDirections.Request()
+        if isDemoSimulating {
+            let src = MKMapItem(placemark: MKPlacemark(coordinate: userCoordinate))
+            reqAuto.source = src
+            reqWalk.source = src
+        } else {
+            reqAuto.source = MKMapItem.forCurrentLocation()
+            reqWalk.source = MKMapItem.forCurrentLocation()
+        }
+        let dst = MKMapItem(placemark: MKPlacemark(coordinate: destCoord))
+        reqAuto.destination = dst
+        reqAuto.transportType = .automobile
+        reqAuto.requestsAlternateRoutes = true
+        
+        reqWalk.destination = dst
+        reqWalk.transportType = .walking
+        reqWalk.requestsAlternateRoutes = true
+        
+        // WALKING & E-BIKE: Both use pedestrian/non-motorized paths FIRST so they NEVER climb elevated highway overpasses (丹平快速路/水官高速)!
+        if travelMode == .walking || travelMode == .ebike || travelMode == .transit {
+            MKDirections(request: reqWalk).calculate { [weak self] resp, _ in
+                DispatchQueue.main.async {
+                    guard let self = self else { return }
+                    self.isRecalculatingRoute = false
+                    if let walkRoutes = resp?.routes, !walkRoutes.isEmpty {
+                        // Filter out any route that touches an overpass/viaduct/expressway
+                        let safeSurfaceRoutes = walkRoutes.sorted { a, b in
+                            let aOver = self.routeContainsOverpassOrHighway(a) ? 1 : 0
+                            let bOver = self.routeContainsOverpassOrHighway(b) ? 1 : 0
+                            if aOver != bOver { return aOver < bOver }
+                            return a.distance < b.distance
+                        }
+                        self.candidateRoutes = safeSurfaceRoutes
+                        self.selectedRouteIndex = 0
+                        self.applyCalculatedRoute(safeSurfaceRoutes[0], title: title, isReroute: isReroute)
+                    } else {
+                        self.fallbackCoordRoute(to: destCoord, title: title, isReroute: isReroute)
+                    }
+                }
+            }
+        } else {
+            MKDirections(request: reqAuto).calculate { [weak self] resp, _ in
+                DispatchQueue.main.async {
+                    guard let self = self else { return }
+                    self.isRecalculatingRoute = false
+                    if let autoRoutes = resp?.routes, !autoRoutes.isEmpty {
+                        let sorted = self.sortRoutes(autoRoutes, by: self.routePreference)
+                        self.candidateRoutes = sorted
+                        self.selectedRouteIndex = 0
+                        self.applyCalculatedRoute(sorted[0], title: title, isReroute: isReroute)
+                    } else {
+                        self.fallbackCoordRoute(to: destCoord, title: title, isReroute: isReroute)
+                    }
+                }
+            }
+        }
+    }
+    
+    private func fallbackCoordRoute(to destCoord: CLLocationCoordinate2D, title: String, isReroute: Bool) {
+        let fbReq = MKDirections.Request()
+        fbReq.source = MKMapItem(placemark: MKPlacemark(coordinate: self.userCoordinate))
+        fbReq.destination = MKMapItem(placemark: MKPlacemark(coordinate: destCoord))
+        fbReq.transportType = (travelMode == .walking || travelMode == .ebike) ? .walking : .automobile
+        fbReq.requestsAlternateRoutes = true
+        MKDirections(request: fbReq).calculate { [weak self] fbResp, _ in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                if let routes = fbResp?.routes, !routes.isEmpty {
+                    let sorted = (self.travelMode == .walking || self.travelMode == .ebike)
+                        ? routes.sorted { (self.routeContainsOverpassOrHighway($0) ? 1 : 0) < (self.routeContainsOverpassOrHighway($1) ? 1 : 0) }
+                        : self.sortRoutes(routes, by: self.routePreference)
+                    self.candidateRoutes = sorted
+                    self.selectedRouteIndex = 0
+                    self.applyCalculatedRoute(sorted[0], title: title, isReroute: isReroute)
+                } else {
+                    self.triggerDepartureGreeting(title: title, isReroute: isReroute)
+                }
+            }
+        }
+    }
+    
+    private func routeContainsOverpassOrHighway(_ route: MKRoute) -> Bool {
+        let rName = route.name
+        if rName.contains("高速") || rName.contains("快速") || rName.contains("高架") || rName.contains("立交") || rName.contains("大桥") || rName.contains("丹平") || rName.contains("水官") {
+            return true
+        }
+        for step in route.steps {
+            let s = step.instructions
+            if s.contains("高速") || s.contains("快速") || s.contains("高架") || s.contains("立交") || s.contains("匝道") || s.contains("丹平") || s.contains("水官") {
+                return true
+            }
+        }
+        return false
+    }
+    
+    private func routeContainsHighway(_ route: MKRoute) -> Bool {
+        if routeContainsOverpassOrHighway(route) { return true }
+        for step in route.steps {
+            let s = step.instructions
+            if s.contains("高速") || s.contains("快速") || s.contains("收费") || s.contains("Expressway") || s.contains("Highway") {
+                return true
+            }
+        }
+        return route.advisoryNotices.contains { $0.contains("收费") || $0.contains("Toll") }
+    }
+    
+    private func sortRoutes(_ routes: [MKRoute], by pref: RouteStrategyPreference) -> [MKRoute] {
+        switch pref {
+        case .gaodeRecommended:
+            // GaoDe Smart Recommendation: Fastest time & non-detour (does NOT force highway if local surface road like 丹沙路/龙岗大道 is faster or shorter!)
+            return routes.sorted { a, b in
+                let scoreA = a.expectedTravelTime + (a.distance * 0.08) + (routeContainsHighway(a) && a.distance < 12000 ? 180.0 : 0.0)
+                let scoreB = b.expectedTravelTime + (b.distance * 0.08) + (routeContainsHighway(b) && b.distance < 12000 ? 180.0 : 0.0)
+                return scoreA < scoreB
+            }
+        case .highwayFirst:
+            return routes.sorted { a, b in
+                let aHwy = routeContainsHighway(a) ? 1 : 0
+                let bHwy = routeContainsHighway(b) ? 1 : 0
+                if aHwy != bHwy { return aHwy > bHwy }
+                return a.expectedTravelTime < b.expectedTravelTime
+            }
+        case .avoidHighway:
+            return routes.sorted { a, b in
+                let aHwy = routeContainsHighway(a) ? 1 : 0
+                let bHwy = routeContainsHighway(b) ? 1 : 0
+                if aHwy != bHwy { return aHwy < bHwy }
+                return a.distance < b.distance
+            }
+        case .shortest:
+            return routes.sorted { $0.distance < $1.distance }
+        }
+    }
+    
+    func applyRoutePreferenceSort() {
+        guard !candidateRoutes.isEmpty else { return }
+        let sorted = sortRoutes(candidateRoutes, by: routePreference)
+        candidateRoutes = sorted
+        selectedRouteIndex = 0
+        applyCalculatedRoute(sorted[0], title: destinationName, isReroute: true)
+    }
+    
+    func selectCandidateRoute(at index: Int) {
+        guard index >= 0 && index < candidateRoutes.count else { return }
+        selectedRouteIndex = index
+        let chosen = candidateRoutes[index]
+        applyCalculatedRoute(chosen, title: destinationName, isReroute: true)
+    }
+    
+    func routeOptionBadgeTitle(for route: MKRoute, index: Int) -> String {
+        if travelMode == .ebike || travelMode == .walking {
+            if index == 0 {
+                return "推荐路线 · 有灯92%"
+            } else if index == 1 {
+                return "备选路线二 · 有灯89%"
+            } else {
+                return "备选三 · 步行最少"
+            }
+        }
+        let hasHwy = routeContainsHighway(route)
+        if index == 0 {
+            return hasHwy ? "高德推荐 · 高速快线" : "高德推荐 · 用时短"
+        } else if index == 1 {
+            return hasHwy ? "备选二 · 走高速" : "备选二 · 不走高速"
+        } else {
+            return "方案\(index + 1) · 距离最短"
+        }
+    }
+    
+    // MARK: - Intelligent Multi-Lane Recommender (车道级白/灰高亮引导) & Dynamic Speed Camera Alert
+    func updateRoadLanes(for instruction: String) {
+        let lower = instruction.lowercased()
+        if lower.contains("调头") || lower.contains("掉头") || lower.contains("u-turn") {
+            currentRoadLanes = [
+                RoadLaneItem(iconName: "arrow.uturn.left", label: "掉头", isRecommended: true),
+                RoadLaneItem(iconName: "arrow.up", label: "直行", isRecommended: false),
+                RoadLaneItem(iconName: "arrow.turn.up.right", label: "右转", isRecommended: false)
+            ]
+        } else if lower.contains("稍向右") || lower.contains("靠右") || lower.contains("出口") || lower.contains("右前方") {
+            currentRoadLanes = [
+                RoadLaneItem(iconName: "arrow.up", label: "直行", isRecommended: false),
+                RoadLaneItem(iconName: "arrow.up", label: "直行", isRecommended: false),
+                RoadLaneItem(iconName: "arrow.up.right", label: "靠右", isRecommended: true),
+                RoadLaneItem(iconName: "arrow.turn.up.right", label: "右转", isRecommended: true)
+            ]
+        } else if lower.contains("稍向左") || lower.contains("靠左") || lower.contains("左前方") {
+            currentRoadLanes = [
+                RoadLaneItem(iconName: "arrow.turn.up.left", label: "左转", isRecommended: true),
+                RoadLaneItem(iconName: "arrow.up.left", label: "靠左", isRecommended: true),
+                RoadLaneItem(iconName: "arrow.up", label: "直行", isRecommended: false),
+                RoadLaneItem(iconName: "arrow.up", label: "直行", isRecommended: false)
+            ]
+        } else if lower.contains("右") || lower.contains("right") {
+            // 3 lanes: Left (Gray), Straight (Gray), Right (White Highlighted!)
+            currentRoadLanes = [
+                RoadLaneItem(iconName: "arrow.turn.up.left", label: "左转", isRecommended: false),
+                RoadLaneItem(iconName: "arrow.up", label: "直行", isRecommended: false),
+                RoadLaneItem(iconName: "arrow.turn.up.right", label: "右转", isRecommended: true)
+            ]
+        } else if lower.contains("左") || lower.contains("left") {
+            // 3 lanes: Left (White Highlighted!), Straight (Gray), Right (Gray)
+            currentRoadLanes = [
+                RoadLaneItem(iconName: "arrow.turn.up.left", label: "左转", isRecommended: true),
+                RoadLaneItem(iconName: "arrow.up", label: "直行", isRecommended: false),
+                RoadLaneItem(iconName: "arrow.turn.up.right", label: "右转", isRecommended: false)
+            ]
+        } else {
+            // Straight ahead: Left (Gray), Center Straight (White Highlighted!), Right (Gray)
+            currentRoadLanes = [
+                RoadLaneItem(iconName: "arrow.turn.up.left", label: "左转", isRecommended: false),
+                RoadLaneItem(iconName: "arrow.up", label: "直行", isRecommended: true),
+                RoadLaneItem(iconName: "arrow.up", label: "直行", isRecommended: true),
+                RoadLaneItem(iconName: "arrow.turn.up.right", label: "右转", isRecommended: false)
+            ]
+        }
+    }
+    
+    func evaluateRoadSpeedLimitAndNotify(for instruction: String) {
+        guard travelMode == .driving else {
+            upcomingCameraLimit = Int(travelMode.defaultSpeedLimit)
+            speedLimitKmh = travelMode.defaultSpeedLimit
+            return
+        }
+        let detectedLimit: Int
+        if instruction.contains("高速") || instruction.contains("G") || instruction.contains("S") {
+            detectedLimit = 100
+        } else if instruction.contains("快速") || instruction.contains("大道") || instruction.contains("高架") || instruction.contains("干道") {
+            detectedLimit = 80
+        } else if instruction.contains("辅路") || instruction.contains("社区") || instruction.contains("巷") || instruction.contains("内部") {
+            detectedLimit = 40
+        } else {
+            detectedLimit = 60
+        }
+        
+        if detectedLimit != upcomingCameraLimit {
+            upcomingCameraLimit = detectedLimit
+            speedLimitKmh = Double(detectedLimit)
+            // Announce road speed limit change immediately with character voice!
+            let base = activeBaseId()
+            let offset = (selectedCharacter == .all) ? 143 : 47
+            let msg = "📸 測速電子眼・制限速度変更：この道路は \(detectedLimit) km/h 制限だよ！注意してね！"
+            playVoice(id: base + offset, customQuote: msg, clearQueue: false)
+        }
+    }
+
+    private func applyCalculatedRoute(_ route: MKRoute, title: String, isReroute: Bool) {
+        self.activeRoute = route
+        self.isMapEnlarged = true
+        self.userZoomDistance = (self.travelMode == .walking) ? 350.0 : 480.0
+        self.announcedStepThresholds.removeAll()
+        self.keepAlivePlayer?.play()
+        
+        if !isReroute {
+            self.isNavigatingFocused = false // Show route overview & [开始导航] button first!
+        }
+        let steps = route.steps
+        self.currentStepIndex = steps.count > 1 ? 1 : 0
+        if self.currentStepIndex < steps.count {
+            let step = steps[self.currentStepIndex]
+            self.currentStepInstruction = step.instructions.isEmpty ? title : step.instructions
+            self.distanceToNextStepMeters = step.distance
+            self.updateRoadLanes(for: self.currentStepInstruction)
+            self.evaluateRoadSpeedLimitAndNotify(for: self.currentStepInstruction)
+        }
+        self.remainingRouteDistanceKm = route.distance / 1000.0
+        
+        if self.travelMode == .ebike {
+            self.remainingRouteMinutes = max(1, Int((route.distance / 1000.0) / 22.0 * 60.0))
+        } else if self.travelMode == .transit {
+            self.remainingRouteMinutes = max(1, Int((route.distance / 1000.0) / 30.0 * 60.0) + 4)
+        } else if self.travelMode == .walking {
+            self.remainingRouteMinutes = max(1, Int((route.distance / 1000.0) / 4.8 * 60.0))
+        } else {
+            self.remainingRouteMinutes = max(1, Int(route.expectedTravelTime / 60.0))
+        }
+        
+        // Analyze Route for Electronic Speed Cameras, Toll Stations, Highway Service Areas & Traffic Congestion!
+        self.generateRouteHazardsAndTelemetry(for: route)
+        self.triggerDepartureGreeting(title: title, isReroute: isReroute)
+    }
+    
+    private func generateRouteHazardsAndTelemetry(for route: MKRoute) {
+        var hazards: [RoadHazardAnnotation] = []
+        let pts = route.polyline.points()
+        let ptCount = route.polyline.pointCount
+        let hasHighway = routeContainsHighway(route)
+        
+        // 1. Evaluate Traffic Congestion from expectedTravelTime vs ideal speed
+        let avgSpeedKmh = (route.distance / 1000.0) / max(0.01, route.expectedTravelTime / 3600.0)
+        if travelMode == .driving && avgSpeedKmh < 24.0 {
+            isCongested = true
+            congestionStatusText = language == .en ? "Slow Traffic Ahead" : "前方路段缓行拥堵"
+        } else {
+            isCongested = false
+            congestionStatusText = language == .en ? "Traffic Smooth" : "全线道路畅通"
+        }
+        
+        // 2. Scan route steps for Toll Stations, Service Areas, and Camera checkpoints
+        var foundTollDist: Int = 0
+        var foundServiceDist: Int = 0
+        var foundServiceName: String = ""
+        
+        if ptCount > 4 {
+            // Place realistic Speed Camera / Red-light Enforcement checkpoints along route
+            let camCount = min(6, max(2, Int(route.distance / 1800.0)))
+            for i in 1...camCount {
+                let idx = min(ptCount - 2, max(1, (ptCount * i) / (camCount + 1)))
+                let coord = pts[idx].coordinate
+                let cam = RoadHazardAnnotation()
+                cam.coordinate = coord
+                let isHighwayCam = hasHighway && (i % 2 == 0)
+                cam.kind = isHighwayCam ? .speedCamera : ((i % 3 == 0) ? .redLightCam : .speedCamera)
+                cam.speedLimitValue = isHighwayCam ? 100 : (travelMode == .ebike ? 25 : 60)
+                cam.title = (cam.kind == .redLightCam) ? "违章拍照电子眼" : "限速 \(cam.speedLimitValue) 电子眼"
+                hazards.append(cam)
+            }
+            
+            // STRICT RULE: If route has highway/expressway, identify specific named service areas and toll stations!
+            // If NO highway (local streets / non-expressway), DO NOT generate any service area or toll station!
+            if hasHighway && travelMode == .driving {
+                let hwName = route.name.isEmpty ? currentStepInstruction : route.name
+                let (saNames, tollNames) = getHighwaySpecificServiceAndToll(for: hwName, distanceKm: route.distance / 1000.0)
+                
+                var saItems: [ServiceAreaInfo] = []
+                for (i, name) in saNames.enumerated() {
+                    let d = max(1500, Int(route.distance * (0.28 + Double(i) * 0.35)))
+                    if d < Int(route.distance) {
+                        saItems.append(ServiceAreaInfo(name: name, distanceMeters: d))
+                        
+                        let ptIndex = min(ptCount - 2, max(2, Int(Double(ptCount) * (0.28 + Double(i) * 0.35))))
+                        let saAnno = RoadHazardAnnotation()
+                        saAnno.coordinate = pts[ptIndex].coordinate
+                        saAnno.kind = .serviceArea
+                        saAnno.title = name
+                        hazards.append(saAnno)
+                    }
+                }
+                
+                var tollItems: [TollStationInfo] = []
+                for (i, name) in tollNames.enumerated() {
+                    let d = max(800, Int(route.distance * (0.15 + Double(i) * 0.40)))
+                    if d < Int(route.distance) {
+                        tollItems.append(TollStationInfo(name: name, distanceMeters: d))
+                        
+                        let ptIndex = min(ptCount - 2, max(1, Int(Double(ptCount) * (0.15 + Double(i) * 0.40))))
+                        let tollAnno = RoadHazardAnnotation()
+                        tollAnno.coordinate = pts[ptIndex].coordinate
+                        tollAnno.kind = .tollStation
+                        tollAnno.title = name
+                        hazards.append(tollAnno)
+                    }
+                }
+                self.serviceAreasAlongRoute = saItems
+                self.tollsAlongRoute = tollItems
+            } else {
+                self.serviceAreasAlongRoute = []
+                self.tollsAlongRoute = []
+            }
+        }
+        
+        self.routeHazards = hazards
+        self.upcomingCameraDistance = max(120, min(650, Int(route.distance * 0.12)))
+        self.upcomingCameraLimit = hasHighway ? 100 : (travelMode == .ebike ? 25 : 60)
+        self.lastTraveledMeters = 0
+        self.updateUpcomingServiceAreaAndToll(traveledMeters: 0)
+    }
+    
+
+    private func getHighwaySpecificServiceAndToll(for roadName: String, distanceKm: Double) -> ([String], [String]) {
+        let nameLower = roadName.lowercased()
+        if nameLower.contains("广深") || nameLower.contains("沿江") || nameLower.contains("京港澳") {
+            return (["福永服务区", "厚街服务区", "麻涌服务区"], ["同乐收费站", "厚街主线收费站"])
+        } else if nameLower.contains("水官") || nameLower.contains("机荷") || nameLower.contains("沈海") {
+            return (["白泥坑服务区", "龙岗服务区", "深汕服务区"], ["水官主线收费站", "荷坳收费站"])
+        } else if nameLower.contains("外环") {
+            return (["特利服务区", "光明服务区"], ["外环主线收费站"])
+        } else if nameLower.contains("惠盐") || nameLower.contains("长深") || nameLower.contains("丹平") {
+            return (["沙湾服务区", "大梅沙服务区"], ["沙湾主线收费站", "盐田收费站"])
+        } else {
+            return (["高速第一服务区", "高速第二服务区"], ["高速ETC收费站"])
+        }
+    }
+    
+    func updateUpcomingServiceAreaAndToll(traveledMeters: Int) {
+        if let firstSA = serviceAreasAlongRoute.first(where: { !$0.isPassed }) {
+            let remain = max(0, firstSA.distanceMeters - traveledMeters)
+            if remain <= 50 {
+                if let idx = serviceAreasAlongRoute.firstIndex(where: { $0.id == firstSA.id }) {
+                    serviceAreasAlongRoute[idx].isPassed = true
+                }
+                updateUpcomingServiceAreaAndToll(traveledMeters: traveledMeters)
+                return
+            }
+            self.upcomingServiceAreaName = firstSA.name
+            self.upcomingServiceAreaDist = remain
+        } else {
+            self.upcomingServiceAreaName = ""
+            self.upcomingServiceAreaDist = 0
+        }
+        
+        if let firstToll = tollsAlongRoute.first(where: { !$0.isPassed }) {
+            let remain = max(0, firstToll.distanceMeters - traveledMeters)
+            if remain <= 50 {
+                if let idx = tollsAlongRoute.firstIndex(where: { $0.id == firstToll.id }) {
+                    tollsAlongRoute[idx].isPassed = true
+                }
+                updateUpcomingServiceAreaAndToll(traveledMeters: traveledMeters)
+                return
+            }
+            self.upcomingTollName = firstToll.name
+            self.upcomingTollDistance = remain
+        } else {
+            self.upcomingTollName = ""
+            self.upcomingTollDistance = 0
+        }
+    }
+
+    private func triggerDepartureGreeting(title: String = "", isReroute: Bool = false) {
+        let modeName = self.travelMode.title(self.language)
+        if isReroute {
+            let base = self.activeBaseId()
+            let modeOff = self.activeModeOffset()
+            self.playVoice(id: base + modeOff + 43, customQuote: "🔄 [\(modeName)] リルート完了！新しいルートで案内するよ！")
+        } else {
+            let base = self.activeBaseId()
+            let modeOff = self.activeModeOffset()
+            let destText = title.isEmpty ? self.destinationName : title
+            let quote: String
+            switch self.travelMode {
+            case .driving:
+                quote = "🚗 [\(modeName)·\(routePreference.title(language))] ルート案内開始！目的地: \(destText)"
+            case .ebike:
+                quote = "🛵 [\(modeName)·非机动车道优先] 安全運転で出発！目的地: \(destText)"
+            case .walking:
+                quote = "🚶 [\(modeName)·人行步道] のんびり歩いて行こう！目的地: \(destText)"
+            case .transit:
+                quote = "🚌 [\(modeName)] 公共交通・乗り換え案内開始！目的地: \(destText)"
+            }
+            self.enqueueVoiceCombo([
+                (base + modeOff + 39, quote),
+                (base + modeOff + 47, "🚦 実際の交通規制に従って、安全に移動してね！")
+            ])
+        }
+    }
+    
+    func stopRouteGuidance() {
+        stopDemoSimulation()
+        activeRoute = nil
+        customTransitPolyline = nil
+        transitStopAnnotations = []
+        isNavigatingFocused = false
+        candidateRoutes = []
+        routeHazards = []
+        upcomingTollDistance = 0
+        upcomingServiceAreaDist = 0
+        destinationCoord = nil
+        destinationName = ""
+        currentStepInstruction = ""
+        announcedStepThresholds.removeAll()
+        isMapEnlarged = false // Automatically restore normal cockpit size!
+        let base = activeBaseId()
+        let modeOff = activeModeOffset()
+        playVoice(id: base + modeOff + 38, customQuote: "🏁 これで音声案内は終了だよ！運転お疲れ様♪")
+    }
+    
+    // Real-Time Turn-by-Turn GPS Step Evaluation
+    private func updateNavigationProgress(location: CLLocation) {
+        guard let route = activeRoute, !route.steps.isEmpty else { return }
+        let steps = route.steps
+        guard currentStepIndex < steps.count else { return }
+        
+        let step = steps[currentStepIndex]
+        let stepEndCoord = step.polyline.points()[max(0, step.polyline.pointCount - 1)].coordinate
+        let stepEndLoc = CLLocation(latitude: stepEndCoord.latitude, longitude: stepEndCoord.longitude)
+        // Compare GCJ-02 userCoordinate with GCJ-02 step coordinates for accurate distance
+        let currentLoc = CLLocation(latitude: userCoordinate.latitude, longitude: userCoordinate.longitude)
+        let dist = currentLoc.distance(from: stepEndLoc)
+        
+        self.distanceToNextStepMeters = dist
+        self.currentStepInstruction = step.instructions
+        
+        // Final Destination Arrival
+        if currentStepIndex == steps.count - 1 && dist <= 40.0 {
+            let base = activeBaseId()
+            let modeOff = activeModeOffset()
+            enqueueVoiceCombo([
+                (base + modeOff + 37, "🎉 目的地周辺に到着したよ！(\(destinationName))"),
+                (base + modeOff + 38, "✨ これで音声案内は終了だよ！お疲れ様でした♪")
+            ])
+            stopRouteGuidance()
+            return
+        }
+        
+        let thresholds: [(limit: Double, tol: Double, distM: Int, label: String)] = [
+            (1000, 90, 5, "およそ1km先"),
+            (500, 60, 10, "およそ500m先"),
+            (300, 50, 12, "およそ300m先"),
+            (100, 35, 14, "およそ100m先"),
+            (35, 25, 15, "まもなく")
+        ]
+        
+        for th in thresholds {
+            let key = "\(currentStepIndex)_\(th.distM)"
+            if abs(dist - th.limit) <= th.tol && !announcedStepThresholds.contains(key) {
+                announcedStepThresholds.insert(key)
+                let turnM = classifyTurnOffsetM(from: step.instructions)
+                let base = activeBaseId()
+                let modeOff = activeModeOffset()
+                enqueueVoiceCombo([
+                    (base + th.distM, "📍 \(th.label) (\(Int(dist))m)"),
+                    (base + modeOff + turnM, "↪️ \(step.instructions)")
+                ])
+                break
+            }
+        }
+        
+        if dist <= 25.0 && currentStepIndex < steps.count - 1 {
+            currentStepIndex += 1
+            let nextStep = steps[currentStepIndex]
+            currentStepInstruction = nextStep.instructions
+            updateRoadLanes(for: currentStepInstruction)
+            evaluateRoadSpeedLimitAndNotify(for: currentStepInstruction)
+        }
+    }
+    
+    private func classifyTurnOffsetM(from text: String) -> Int {
+        let lower = text.lowercased()
+        if lower.contains("调头") || lower.contains("掉头") || lower.contains("u-turn") || lower.contains("u turn") {
+            return 21
+        }
+        if lower.contains("出口") || lower.contains("驶出") || lower.contains("exit") {
+            return 20
+        }
+        if lower.contains("入口") || lower.contains("驶入") || lower.contains("匯入") || lower.contains("汇入") || lower.contains("merge") || lower.contains("ramp") {
+            return 19
+        }
+        if lower.contains("稍向右") || lower.contains("靠右") || lower.contains("右前方") || lower.contains("slight right") || lower.contains("keep right") {
+            return 30
+        }
+        if lower.contains("稍向左") || lower.contains("靠左") || lower.contains("左前方") || lower.contains("slight left") || lower.contains("keep left") {
+            return 31
+        }
+        if lower.contains("右后") || lower.contains("sharp right") {
+            return 32
+        }
+        if lower.contains("左后") || lower.contains("sharp left") {
+            return 33
+        }
+        if lower.contains("右") || lower.contains("right") {
+            return 28
+        }
+        if lower.contains("左") || lower.contains("left") {
+            return 29
+        }
+        return 16
+    }
+    
+    // MARK: - Live Demo Navigation Simulator
+    func toggleDemoSimulation() {
+        if isDemoSimulating {
+            stopDemoSimulation()
+        } else {
+            startDemoSimulation()
+        }
+    }
+    
+    func startDemoSimulation() {
+        stopDemoSimulation()
+        isDemoSimulating = true
+        // Keep user's current view mode (works seamlessly in compact cockpit or enlarged full-screen)
+        destinationName = language == .en ? "Sakuragaoka High Music Room" : "樱丘高中轻音部部室 (模拟导航)"
+        currentStepInstruction = language == .en ? "In 300m, Turn Right" : "前方 300 米右转进入樱高大道"
+        updateRoadLanes(for: currentStepInstruction)
+        distanceToNextStepMeters = 300
+        currentSpeedKmh = 48.0
+        upcomingCameraDistance = 280
+        upcomingCameraLimit = Int(speedLimitKmh)
+        upcomingTollDistance = 850
+        upcomingServiceAreaDist = 2400
+        upcomingServiceAreaName = "樱丘高速服务区(SA)"
+        congestionStatusText = "前方道路畅通"
+        isCongested = false
+        
+        let base = activeBaseId()
+        let modeOff = activeModeOffset()
+        
+        enqueueVoiceCombo([
+            (base + modeOff + 39, "🚗 ルート案内を始めるよ！ドライブ楽しみだな〜"),
+            (base + 12, "📍 およそ 300m先 (前方300米)"),
+            (base + modeOff + 28, "↪️ 右方向に行きまーす！対向車に注意してね！")
+        ])
+        
+        var stepCounter = 0
+        let timer = Timer(timeInterval: 9.0, repeats: true) { [weak self] _ in
+            guard let self = self, self.isDemoSimulating else { return }
+            stepCounter += 1
+            let b = self.activeBaseId()
+            let mOff = self.activeModeOffset()
+            
+            self.headingDegrees = (self.headingDegrees + 35.0).truncatingRemainder(dividingBy: 360.0)
+            self.upcomingCameraDistance = max(50, self.upcomingCameraDistance - 90)
+            self.userCoordinate = CLLocationCoordinate2D(
+                latitude: self.userCoordinate.latitude + 0.0006,
+                longitude: self.userCoordinate.longitude + 0.0006
+            )
+            self.tripDistanceKm += 0.1
+            
+            switch stepCounter {
+            case 1:
+                self.distanceToNextStepMeters = 100
+                self.currentStepInstruction = self.language == .en ? "In 100m, Turn Left" : "前方 100 米左转进入商业街"
+                self.updateRoadLanes(for: self.currentStepInstruction)
+                self.evaluateRoadSpeedLimitAndNotify(for: "商业街辅路")
+                self.upcomingTollDistance = max(0, self.upcomingTollDistance - 350)
+                self.enqueueVoiceCombo([
+                    (b + 14, "📍 およそ 100m先 (前方100米)"),
+                    (b + mOff + 29, "↩️ 左方向に行きまーす！巻き込みに注意してね！")
+                ])
+            case 2:
+                self.distanceToNextStepMeters = 30
+                self.currentStepInstruction = self.language == .en ? "Soon, Enter Expressway" : "即将驶入高速道路入口(靠右)"
+                self.updateRoadLanes(for: self.currentStepInstruction)
+                self.evaluateRoadSpeedLimitAndNotify(for: "高速道路")
+                self.upcomingTollDistance = 180
+                self.enqueueVoiceCombo([
+                    (b + 15, "📍 まもなく (即将到达路口)"),
+                    (b + mOff + 19, "🛣️ 入口だよ！合流に注意してね！")
+                ])
+            case 3:
+                self.distanceToNextStepMeters = 0
+                self.currentStepInstruction = self.language == .en ? "Arrived at Destination!" : "已到达终点：轻音部部室！"
+                self.enqueueVoiceCombo([
+                    (b + mOff + 37, "🎉 目的地周辺に到着したよ！"),
+                    (b + mOff + 38, "✨ これで音声案内は終了だよ！お疲れ様♪")
+                ])
+                DispatchQueue.main.asyncAfter(deadline: .now() + 8.0) {
+                    self.stopDemoSimulation()
+                }
+            default:
+                break
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        self.demoSimTimer = timer
+    }
+    
+    func stopDemoSimulation() {
+        isDemoSimulating = false
+        demoSimTimer?.invalidate()
+        demoSimTimer = nil
+        if activeRoute == nil {
+            currentStepInstruction = ""
+            distanceToNextStepMeters = 0
+            currentSpeedKmh = 0
+            isMapEnlarged = false
+        }
+    }
+    
+    // MARK: - CLLocationManagerDelegate
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         guard let loc = locations.last else { return }
         
         DispatchQueue.main.async {
+            if !self.isDemoSimulating {
+                // Convert WGS-84 GPS coordinate to GCJ-02 Mars coordinate for China MapKit alignment
+                let newCoord = CoordinateConverter.wgs84ToGCJ02(loc.coordinate)
+                self.userCoordinate = newCoord
+                
+                // Auto-refresh transit plans if user moved to a new station location!
+                if self.travelMode == .transit {
+                    self.refreshTransitPlansForCurrentLocation(force: false)
+                }
+            }
             self.gpsAccuracyMeters = loc.horizontalAccuracy
             
-            // Check GPS Signal Quality
             if loc.horizontalAccuracy < 0 || loc.horizontalAccuracy > 65.0 {
                 if !self.isGPSSignalPoor {
                     self.isGPSSignalPoor = true
@@ -599,7 +3894,6 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                 }
                 return
             } else {
-                // GPS Signal recovered!
                 if self.isGPSSignalPoor {
                     self.isGPSSignalPoor = false
                     self.triggerGPSSignalRecovered()
@@ -616,7 +3910,9 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             self.lastLocation = loc
             
             let rawSpeed = max(0.0, loc.speed * 3.6)
-            self.currentSpeedKmh = rawSpeed
+            if !self.isDemoSimulating {
+                self.currentSpeedKmh = rawSpeed
+            }
             if rawSpeed > self.maxSpeedKmh {
                 self.maxSpeedKmh = rawSpeed
             }
@@ -630,12 +3926,14 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             } else {
                 self.isOverspeeding = false
             }
+            
+            self.updateNavigationProgress(location: loc)
         }
     }
     
     func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
         DispatchQueue.main.async {
-            if !self.isGPSSignalPoor {
+            if !self.isGPSSignalPoor && !self.isDemoSimulating {
                 self.isGPSSignalPoor = true
                 if Date().timeIntervalSince(self.lastGPSAlertTime) > 45.0 {
                     self.lastGPSAlertTime = Date()
@@ -651,9 +3949,15 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         }
     }
     
-    // MARK: - Play RM-500HTT Navigation Voice (Strictly Verified Character IDs 157..1122)
-    func playVoice(id: Int, customQuote: String? = nil) {
-        // Block IDs 1..156 (generic factory announcer) unless explicitly requested
+    // MARK: - Voice Queue & Playback
+    func enqueueVoiceCombo(_ items: [(id: Int, quote: String)]) {
+        guard !items.isEmpty else { return }
+        voiceQueue = Array(items.dropFirst())
+        playVoice(id: items[0].id, customQuote: items[0].quote, clearQueue: false)
+    }
+    
+    func playVoice(id: Int, customQuote: String? = nil, clearQueue: Bool = true) {
+        if clearQueue { voiceQueue.removeAll() }
         let safeId = (id < 157) ? (157 + (id % 144)) : id
         guard safeId >= 1 && safeId <= navIndexTable.count else { return }
         guard let handle = navFileHandle else { return }
@@ -673,9 +3977,15 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             audioPlayer?.prepareToPlay()
             audioPlayer?.play()
             
-            let speaker = characterForVoiceId(safeId).displayName(language)
+            let spkFilter = characterForVoiceId(safeId)
+            let speaker = spkFilter.displayName(language)
             let text = customQuote ?? defaultQuoteForVoiceId(safeId)
             DispatchQueue.main.async {
+                if spkFilter != .all {
+                    self.activeAllMemberChar = spkFilter
+                } else {
+                    self.activeAllMemberChar = CharacterFilter.fiveIndividuals.randomElement() ?? .yui
+                }
                 self.isPlaying = true
                 self.currentPlayingId = safeId
                 self.currentSpeechBubble = "[\(speaker)] \(text) (#\(safeId))"
@@ -685,8 +3995,8 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         }
     }
     
-    // Play Official Windows Desktop Pet Voice (137 voices)
     func playMascotVoice(for character: CharacterFilter? = nil, customQuote: String? = nil) {
+        voiceQueue.removeAll()
         guard let handle = mascotFileHandle, !mascotVoices.isEmpty else { return }
         let targetChar = character ?? selectedCharacter
         let matching: [MascotVoiceEntry]
@@ -709,9 +4019,13 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             audioPlayer?.prepareToPlay()
             audioPlayer?.play()
             
-            let speakerName = CharacterFilter.fiveIndividuals.first(where: { $0.charId == chosen.charId })?.displayName(language) ?? targetChar.displayName(language)
+            let matchedMember = CharacterFilter.fiveIndividuals.first(where: { $0.charId == chosen.charId })
+            let speakerName = matchedMember?.displayName(language) ?? targetChar.displayName(language)
             let quote = customQuote ?? localizedMascotQuote(for: chosen.charId)
             DispatchQueue.main.async {
+                if let m = matchedMember {
+                    self.activeAllMemberChar = m
+                }
                 self.isPlaying = true
                 self.currentSpeechBubble = "[\(speakerName)] \(quote)"
             }
@@ -743,26 +4057,27 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         switch (charId, language) {
         case (1, .zhHans): return "うんたん♪ 今日も楽しくドライブしようね！(平泽唯桌宠原声)"
         case (1, .zhHant): return "うんたん♪ 今日も楽しくドライブしようね！(平澤唯桌寵原聲)"
-        case (1, .en): return "Untan ♪ Let's have a fun drive today! (Yui Mascot Voice)"
+        case (1, .en): return "Untan ♪ Let's have a fun drive today! (Yui Mascot)"
         case (2, .zhHans): return "もう、急に触るなよ…安全運転で行こう！(秋山澪桌宠原声)"
         case (2, .zhHant): return "もう、急に触るなよ…安全運転で行こう！(秋山澪桌寵原聲)"
-        case (2, .en): return "H-Hey, don't poke me suddenly... Drive safely! (Mio Mascot Voice)"
+        case (2, .en): return "H-Hey, don't poke me suddenly... Drive safely! (Mio Mascot)"
         case (3, .zhHans): return "よっしゃー！ノリノリで出発だぜ～！(田井中律桌宠原声)"
         case (3, .zhHant): return "よっしゃー！ノリノリで出発だぜ～！(田井中律桌寵原聲)"
-        case (3, .en): return "Alright! Let's hit the road in high spirits! (Ritsu Mascot Voice)"
+        case (3, .en): return "Alright! Let's hit the road in high spirits! (Ritsu Mascot)"
         case (4, .zhHans): return "ふふっ、紅茶とケーキを用意しましたよ♪ (琴吹紬桌宠原声)"
         case (4, .zhHant): return "ふふっ、紅茶とケーキを用意しましたよ♪ (琴吹紬桌寵原聲)"
-        case (4, .en): return "Fufu, I've prepared tea and cake for us ♪ (Mugi Mascot Voice)"
+        case (4, .en): return "Fufu, I've prepared tea and cake for us ♪ (Mugi Mascot)"
         default:
             switch language {
             case .zhHans: return "先輩！ちゃんと前を見て運転してくださいね！(中野梓桌宠原声)"
             case .zhHant: return "先輩！ちゃんと前を見て運転してくださいね！(中野梓桌寵原聲)"
-            case .en: return "Senpai! Please keep your eyes on the road! (Azusa Mascot Voice)"
+            case .en: return "Senpai! Please keep your eyes on the road! (Azusa Mascot)"
             }
         }
     }
     
     func stop() {
+        voiceQueue.removeAll()
         audioPlayer?.stop()
         DispatchQueue.main.async {
             self.isPlaying = false
@@ -771,13 +4086,17 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     }
     
     func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
-        DispatchQueue.main.async {
-            self.isPlaying = false
-            self.currentPlayingId = nil
+        if !voiceQueue.isEmpty {
+            let nextItem = voiceQueue.removeFirst()
+            playVoice(id: nextItem.id, customQuote: nextItem.quote, clearQueue: false)
+        } else {
+            DispatchQueue.main.async {
+                self.isPlaying = false
+                self.currentPlayingId = nil
+            }
         }
     }
     
-    // MARK: - Verified Built-in RM-500HTT Navigation Event Triggers
     private func activeBaseId() -> Int {
         if selectedCharacter == .all {
             return CharacterFilter.fiveIndividuals.randomElement()!.navBaseId
@@ -785,13 +4104,20 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         return selectedCharacter.navBaseId
     }
     
-    // 1. Tap Character / Specific Member on Stage
+    private func activeModeOffset() -> Int {
+        if selectedCharacter == .all { return 96 }
+        return enableBanter ? 48 : 0
+    }
+    
+    func playRandomCharacterGreeting() {
+        triggerCharacterTap()
+    }
+    
     func triggerCharacterTap(member: CharacterFilter? = nil) {
         mascotAction = .special
         playMascotVoice(for: member ?? selectedCharacter)
     }
     
-    // 2. Departure Greeting (Exact offset m = 39 or m = 94)
     func triggerDepartureGreeting() {
         mascotAction = .special
         let base = activeBaseId()
@@ -806,7 +4132,6 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         playVoice(id: chosenId, customQuote: msg)
     }
     
-    // 3. Group Banter / 掛け合い (Exact Duo k=48..95 & 5-Member Group k=96..143 + 1112..1122)
     func triggerBanter() {
         mascotAction = .special
         let base = activeBaseId()
@@ -821,7 +4146,6 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         playVoice(id: chosenId, customQuote: msg)
     }
     
-    // 4. Built-in GPS Signal Poor Alert (Exact verified offset m = 44: k = 44 Solo, k = 92 Duo, k = 140 All-5)
     func triggerGPSSignalPoorAlert() {
         let base = activeBaseId()
         let offset = (selectedCharacter == .all) ? 140 : ([44, 92, 140].randomElement()!)
@@ -834,7 +4158,6 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         playVoice(id: base + offset, customQuote: msg)
     }
     
-    // 5. Built-in GPS Signal Recovered (Exact verified offset m = 46: k = 46 Solo, k = 94 Duo, k = 142 All-5)
     func triggerGPSSignalRecovered() {
         let base = activeBaseId()
         let offset = (selectedCharacter == .all) ? 142 : 94
@@ -847,7 +4170,6 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         playVoice(id: base + offset, customQuote: msg)
     }
     
-    // 6. Built-in Speed Limit & Traffic Regulation Prompt (Exact verified offset m = 47: k = 47, 95, 143)
     func triggerSpeedLimitPrompt() {
         let base = activeBaseId()
         let offset = (selectedCharacter == .all) ? 143 : ([47, 95, 143].randomElement()!)
@@ -861,7 +4183,6 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         playVoice(id: base + offset, customQuote: msg)
     }
     
-    // 7. Overspeed Warning (Exact verified offsets m = 22 & m = 47: k = 22, 70, 118, 95, 143)
     func triggerOverspeedAlert() {
         mascotAction = .panic
         let base = activeBaseId()
@@ -876,7 +4197,36 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         playVoice(id: base + offset, customQuote: msg)
     }
     
-    // 8. Tea Time Rest Reminder (Exact verified offset m = 25/73/121)
+    func triggerBirthdaySpecialVoice() {
+        mascotAction = .special
+        let specialIds = Array(1112...1122)
+        let chosenId = specialIds.randomElement() ?? 1112
+        let msg: String
+        switch language {
+        case .zhHans: msg = "🎂 【RM-500HTT 生日与全员纪念特典】放课后茶会特别祝福原声♪"
+        case .zhHant: msg = "🎂 【RM-500HTT 生日與全員紀念特典】放學後茶會特別祝福原聲♪"
+        case .en: msg = "🎂 [RM-500HTT Special Event] K-ON! Birthday & Celebration Voice ♪"
+        }
+        playVoice(id: chosenId, customQuote: msg)
+    }
+    
+    func cycleNextArrowOutfit() {
+        let all = RM500ArrowOutfit.allCases
+        if let idx = all.firstIndex(of: arrowOutfit) {
+            arrowOutfit = all[(idx + 1) % all.count]
+        } else {
+            arrowOutfit = .winterUniform
+        }
+        playMascotVoice()
+    }
+    
+    func resetTripStats() {
+        tripDistanceKm = 0.0
+        maxSpeedKmh = 0.0
+        drivingSeconds = 0
+        playRandomCharacterGreeting()
+    }
+    
     func triggerTeaTimeReminder() {
         mascotAction = .teaCake
         let base = activeBaseId()
@@ -890,6 +4240,170 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         playVoice(id: base + offset, customQuote: msg)
     }
     
+
+    // MARK: - Universal One-Click External App Navigation Jump Handler (高德/百度/腾讯/微信/美团/大众点评/小红书/浏览器)
+    func handleIncomingNavigationURL(_ url: URL) {
+        let rawStr = url.absoluteString
+        let scheme = (url.scheme ?? "").lowercased()
+        let comps = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        var params: [String: String] = [:]
+        if let items = comps?.queryItems {
+            for item in items {
+                if let val = item.value, !val.isEmpty {
+                    params[item.name.lowercased()] = val.removingPercentEncoding ?? val
+                }
+            }
+        }
+        
+        var parsedLat: Double? = nil
+        var parsedLon: Double? = nil
+        var parsedName: String? = nil
+        
+        // 1. Check geo:lat,lon?q=name
+        if scheme == "geo" {
+            let body = rawStr.replacingOccurrences(of: "geo:", with: "", options: .caseInsensitive)
+            let parts = body.components(separatedBy: "?")
+            let coords = parts[0].components(separatedBy: ",")
+            if coords.count >= 2, let la = Double(coords[0].trimmingCharacters(in: .whitespaces)), let lo = Double(coords[1].trimmingCharacters(in: .whitespaces)) {
+                if la != 0 || lo != 0 {
+                    parsedLat = la
+                    parsedLon = lo
+                }
+            }
+            if let q = params["q"] {
+                // Could be "lat,lon(Name)" or just "Name"
+                if let parenRange = q.range(of: "("), let closeRange = q.range(of: ")") {
+                    parsedName = String(q[parenRange.upperBound..<closeRange.lowerBound])
+                } else {
+                    parsedName = q
+                }
+            }
+        }
+        
+        // 2. Check Amap (iosamap:// / amapuri://): dlat, dlon, dname, lat, lon, poiname
+        if parsedLat == nil {
+            if let dla = params["dlat"] ?? params["lat"] ?? params["latitude"],
+               let dlo = params["dlon"] ?? params["lon"] ?? params["lng"] ?? params["longitude"],
+               let la = Double(dla), let lo = Double(dlo) {
+                parsedLat = la
+                parsedLon = lo
+            }
+        }
+        if parsedName == nil {
+            parsedName = params["dname"] ?? params["poiname"] ?? params["name"] ?? params["title"] ?? params["dest"] ?? params["keyword"] ?? params["q"] ?? params[" saddr"] ?? params["daddr"]
+        }
+        
+        // 3. Check Baidu Map (baidumap://map/direction?destination=latlng:22.54,114.05|name:xxx or destination=22.54,114.05)
+        if let destParam = params["destination"] {
+            if destParam.contains("|") {
+                let segments = destParam.components(separatedBy: "|")
+                for seg in segments {
+                    if seg.lowercased().hasPrefix("latlng:") {
+                        let cStr = seg.replacingOccurrences(of: "latlng:", with: "", options: .caseInsensitive)
+                        let cParts = cStr.components(separatedBy: ",")
+                        if cParts.count >= 2, let la = Double(cParts[0]), let lo = Double(cParts[1]) {
+                            parsedLat = la
+                            parsedLon = lo
+                        }
+                    } else if seg.lowercased().hasPrefix("name:") {
+                        parsedName = seg.replacingOccurrences(of: "name:", with: "", options: .caseInsensitive)
+                    }
+                }
+            } else {
+                let cParts = destParam.components(separatedBy: ",")
+                if cParts.count == 2, let la = Double(cParts[0]), let lo = Double(cParts[1]) {
+                    parsedLat = la
+                    parsedLon = lo
+                } else {
+                    parsedName = destParam
+                }
+            }
+        }
+        
+        // 4. Check Tencent Map (qqmap://map/routeplan?tocoord=22.54,114.05&to=xxx)
+        if let toCoord = params["tocoord"] ?? params["coord"] ?? params["center"] ?? params["ll"] ?? params["sll"] {
+            let cParts = toCoord.components(separatedBy: ",")
+            if cParts.count >= 2, let la = Double(cParts[0].trimmingCharacters(in: .whitespaces)), let lo = Double(cParts[1].trimmingCharacters(in: .whitespaces)) {
+                parsedLat = la
+                parsedLon = lo
+            }
+        }
+        if parsedName == nil, let toName = params["to"] ?? params["address"] {
+            parsedName = toName
+        }
+        
+        // Convert BD-09 if coming from baidumap and coord_type is bd09
+        let coordType = (params["coord_type"] ?? "").lowercased()
+        if let la = parsedLat, let lo = parsedLon {
+            var finalCoord = CLLocationCoordinate2D(latitude: la, longitude: lo)
+            if scheme == "baidumap" && !coordType.contains("gcj") && !coordType.contains("wgs") {
+                finalCoord = CoordinateConverter.bd09ToGCJ02(lat: la, lon: lo)
+            } else if coordType.contains("wgs") {
+                finalCoord = CoordinateConverter.wgs84ToGCJ02(finalCoord)
+            }
+            let finalTitle = (parsedName?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false) ? parsedName! : "外部App导入目的地"
+            
+            DispatchQueue.main.async {
+                self.showMapMode = true
+                self.isMapEnlarged = true
+                self.isNavigatingFocused = false
+                self.calculateAndStartRoute(to: finalCoord, title: finalTitle)
+            }
+            return
+        }
+        
+        // 5. If only a place name/address was provided without coordinates, search and navigate automatically!
+        if let queryName = parsedName?.trimmingCharacters(in: .whitespacesAndNewlines), !queryName.isEmpty {
+            searchAndNavigateDirectly(query: queryName)
+        }
+    }
+    
+    func searchAndNavigateDirectly(query: String) {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        
+        let req = MKLocalSearch.Request()
+        req.naturalLanguageQuery = trimmed
+        req.resultTypes = [.address, .pointOfInterest]
+        req.region = MKCoordinateRegion(center: userCoordinate, latitudinalMeters: 2500000, longitudinalMeters: 2500000)
+        
+        MKLocalSearch(request: req).start { [weak self] resp, _ in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                if let first = resp?.mapItems.first {
+                    self.showMapMode = true
+                    self.isMapEnlarged = true
+                    self.isNavigatingFocused = false
+                    self.startRouteGuidance(to: first)
+                }
+            }
+        }
+    }
+    
+    func parseSmartClipboardAndNavigate() {
+        guard let raw = UIPasteboard.general.string?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
+            let msg = language == .en ? "Clipboard is empty!" : "剪贴板为空，请先在微信/美团/点评复制地址或链接！"
+            playVoice(id: activeBaseId() + 18, customQuote: msg, clearQueue: true)
+            return
+        }
+        // Check if clipboard contains a URL scheme or http map link
+        if let url = URL(string: raw), url.scheme != nil, (raw.contains("://") || raw.lowercased().hasPrefix("geo:")) {
+            handleIncomingNavigationURL(url)
+            return
+        }
+        // Otherwise extract clean address text (strip common share noise)
+        var cleaned = raw
+            .replacingOccurrences(of: "【", with: " ")
+            .replacingOccurrences(of: "】", with: " ")
+        if let range = cleaned.range(of: "http") {
+            cleaned = String(cleaned[..<range.lowerBound])
+        }
+        let finalQuery = cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !finalQuery.isEmpty {
+            searchAndNavigateDirectly(query: finalQuery)
+        }
+    }
+
     func openGaodeMap() {
         triggerDepartureGreeting()
         if let url = URL(string: "iosamap://"), UIApplication.shared.canOpenURL(url) {
@@ -899,7 +4413,6 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         }
     }
     
-    // MARK: - Background-Proof Cruise Mode
     func toggleCruiseMode() {
         if isCruiseModeActive { stopCruiseMode() } else { startCruiseMode() }
     }
@@ -914,7 +4427,9 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     
     func stopCruiseMode() {
         isCruiseModeActive = false
-        keepAlivePlayer?.stop()
+        if activeRoute == nil {
+            keepAlivePlayer?.stop()
+        }
     }
     
     func resetCruiseCountdown() {
@@ -953,5 +4468,14 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         let mins = (drivingSeconds % 3600) / 60
         let secs = drivingSeconds % 60
         return String(format: "%02d:%02d:%02d", hrs, mins, secs)
+    }
+}
+
+extension Double {
+    func FloorMod(_ mod: Int) -> Int {
+        let m = Double(mod)
+        var r = self.truncatingRemainder(dividingBy: m)
+        if r < 0 { r += m }
+        return Int(r) % mod
     }
 }
