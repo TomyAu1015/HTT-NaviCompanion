@@ -11,6 +11,7 @@
 		1002 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2002 /* ContentView.swift */; };
 		1003 /* AudioPlayerManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2003 /* AudioPlayerManager.swift */; };
 		1004 /* KeyConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2004 /* KeyConfig.swift */; };
+		1007 /* CarPlaySceneDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2008 /* CarPlaySceneDelegate.swift */; };
 		1005 /* voice_assets.dat in Resources */ = {isa = PBXBuildFile; fileRef = 2005 /* voice_assets.dat */; };
 		1006 /* mascot_assets.dat in Resources */ = {isa = PBXBuildFile; fileRef = 2007 /* mascot_assets.dat */; };
 /* End PBXBuildFile section */
@@ -24,6 +25,7 @@
 		2005 /* voice_assets.dat */ = {isa = PBXFileReference; lastKnownFileType = file; path = voice_assets.dat; sourceTree = "<group>"; };
 		2006 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		2007 /* mascot_assets.dat */ = {isa = PBXFileReference; lastKnownFileType = file; path = mascot_assets.dat; sourceTree = "<group>"; };
+		2008 /* CarPlaySceneDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CarPlaySceneDelegate.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -52,6 +54,7 @@
 				2002 /* ContentView.swift */,
 				2003 /* AudioPlayerManager.swift */,
 				2004 /* KeyConfig.swift */,
+				2008 /* CarPlaySceneDelegate.swift */,
 				2005 /* voice_assets.dat */,
 				2007 /* mascot_assets.dat */,
 				2006 /* Info.plist */,
@@ -141,6 +144,7 @@
 				1002 /* ContentView.swift in Sources */,
 				1003 /* AudioPlayerManager.swift in Sources */,
 				1004 /* KeyConfig.swift in Sources */,
+				1007 /* CarPlaySceneDelegate.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

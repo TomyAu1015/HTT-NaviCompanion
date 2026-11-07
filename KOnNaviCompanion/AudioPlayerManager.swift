@@ -156,6 +156,56 @@ enum NavigationTravelMode: String, CaseIterable, Identifiable {
     }
 }
 
+enum RM500ArrowOutfit: Int, CaseIterable, Identifiable {
+    case winterUniform = 0
+    case summerUniform = 1
+    case maid = 2
+    case httShirt = 3
+    case kigurumi = 4
+    case tonchan = 5
+    case classic3D = 6
+    
+    var id: Int { self.rawValue }
+    
+    func title(_ lang: AppLanguage) -> String {
+        switch (self, lang) {
+        case (.winterUniform, .zhHans): return "冬季制服"
+        case (.winterUniform, .zhHant): return "冬季制服"
+        case (.winterUniform, .en): return "Winter Uniform"
+        case (.summerUniform, .zhHans): return "夏季制服"
+        case (.summerUniform, .zhHant): return "夏季制服"
+        case (.summerUniform, .en): return "Summer Uniform"
+        case (.maid, .zhHans): return "女仆装"
+        case (.maid, .zhHant): return "女僕裝"
+        case (.maid, .en): return "Maid Outfit"
+        case (.httShirt, .zhHans): return "HTT文化衫"
+        case (.httShirt, .zhHant): return "HTT文化衫"
+        case (.httShirt, .en): return "HTT T-Shirt"
+        case (.kigurumi, .zhHans): return "布偶装"
+        case (.kigurumi, .zhHant): return "布偶裝"
+        case (.kigurumi, .en): return "Animal Suit"
+        case (.tonchan, .zhHans): return "豚骨(乌龟)"
+        case (.tonchan, .zhHant): return "豚骨(烏龜)"
+        case (.tonchan, .en): return "Ton-chan"
+        case (.classic3D, .zhHans): return "经典3D箭头"
+        case (.classic3D, .zhHant): return "經典3D箭頭"
+        case (.classic3D, .en): return "3D Arrow"
+        }
+    }
+    
+    var icon: String {
+        switch self {
+        case .winterUniform: return "graduationcap.fill"
+        case .summerUniform: return "sun.max.fill"
+        case .maid: return "cup.and.saucer.fill"
+        case .httShirt: return "guitars.fill"
+        case .kigurumi: return "pawprint.fill"
+        case .tonchan: return "tortoise.fill"
+        case .classic3D: return "location.north.fill"
+        }
+    }
+}
+
 class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLLocationManagerDelegate {
     static let shared = AudioPlayerManager()
     
@@ -172,6 +222,10 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     @Published var currentSpriteFrame: UIImage? = nil
     @Published var allMemberFrames: [Int: UIImage] = [:]
     @Published var deskSpriteFrame: UIImage? = nil
+    @Published var arrowOutfit: RM500ArrowOutfit = .winterUniform
+    @Published var useRM500ThemeSkin: Bool = true
+    @Published var walkStepFrame: Int = 0
+    @Published var currentNavArrowImage: UIImage? = nil
     @Published var mascotOffsetX: CGFloat = 0.0
     @Published var mascotOffsetY: CGFloat = 0.0
     @Published var stageWalkBound: CGFloat = 65.0
@@ -628,6 +682,94 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         }
     }
     
+    // MARK: - RM-500HTT Authentic Navigation Arrow & Beautification Skin Engine
+    func getRM500UIImage(_ name: String) -> UIImage? {
+        guard let cg = spriteSheets[name] else { return nil }
+        return UIImage(cgImage: cg)
+    }
+    
+    func getCurrentThemeBackground() -> UIImage? {
+        guard useRM500ThemeSkin else { return nil }
+        let name: String
+        switch selectedCharacter {
+        case .yui, .all: name = "rm_bg_yui"
+        case .mio: name = "rm_bg_mio"
+        case .ritsu: name = "rm_bg_ritsu"
+        case .mugi: name = "rm_bg_mugi"
+        case .azusa: name = "rm_bg_azusa"
+        }
+        return getRM500UIImage(name)
+    }
+    
+    func getRM500StageIcon(for char: CharacterFilter) -> UIImage? {
+        let prefix: String
+        switch char {
+        case .yui, .all: prefix = "rm_stg_yui"
+        case .mio: prefix = "rm_stg_mio"
+        case .ritsu: prefix = "rm_stg_ritsu"
+        case .mugi: prefix = "rm_stg_mugi"
+        case .azusa: prefix = "rm_stg_azusa"
+        }
+        let suffix: String
+        switch arrowOutfit {
+        case .maid: suffix = "_maid"
+        case .kigurumi: suffix = "_kig"
+        case .tonchan: return getRM500UIImage(walkStepFrame == 0 ? "rm_stg_ton_1" : "rm_stg_ton_2")
+        default: suffix = (walkStepFrame == 0) ? "_1" : "_2"
+        }
+        return getRM500UIImage(prefix + suffix)
+    }
+    
+    func getRM500NavigationArrowFrame(mapCameraHeading: Double = 0.0) -> UIImage? {
+        if arrowOutfit == .classic3D {
+            return nil // Uses procedural 3D arrow
+        }
+        let stripIdx: Int
+        if arrowOutfit == .tonchan {
+            stripIdx = 51 + (walkStepFrame % 2)
+        } else {
+            // Base index for character: Yui=1, Mio=11, Ritsu=21, Mugi=31, Azusa=41
+            let charBlock: Int
+            switch selectedCharacter {
+            case .yui: charBlock = 1
+            case .mio: charBlock = 11
+            case .ritsu: charBlock = 21
+            case .mugi: charBlock = 31
+            case .azusa: charBlock = 41
+            case .all:
+                // In all-members mode, cycle or use Yui/active speaker
+                charBlock = 1
+            }
+            let outfitOffset = arrowOutfit.rawValue * 2
+            let stepOffset = (currentSpeedKmh > 1.5 || isDemoSimulating) ? (walkStepFrame % 2) : 0
+            stripIdx = charBlock + outfitOffset + stepOffset
+        }
+        
+        let key = String(format: "arrow_%02d", stripIdx)
+        guard let stripCG = spriteSheets[key] else { return nil }
+        
+        // Determine which of the 12 directional cells (0..11, each 110x143) to crop
+        // Relative heading on screen = (vehicle heading - map camera heading)
+        var relHeading = (headingDegrees - mapCameraHeading).truncatingRemainder(dividingBy: 360.0)
+        if relHeading < 0 { relHeading += 360.0 }
+        
+        // In RM-500HTT strip:
+        // Cell 0 = 0° (Up/North), Cell 3 = 90° (Right/East), Cell 6 = 180° (Down/South), Cell 9 = 270° (Left/West)
+        // Note: Looking at strip1_cells.png:
+        // Cell 0: Arrow points UP (0°)
+        // Cell 1: Arrow points Left-ish / 300°? Wait: when maptracking is ON, camera heading == headingDegrees, so relHeading == 0 -> ALWAYS Cell 0 (character facing forward with arrow pointing straight ahead!).
+        // When map is panned/north-up, relHeading maps to the 12 clock directions:
+        let cellIndex: Int
+        let clockSector = Int(((relHeading + 15.0) / 30.0).FloorMod(12))
+        // Mapping clock sector (0=N, 3=E, 6=S, 9=W) to RM-500HTT cell indices:
+        let sectorToCell = [0, 11, 8, 3, 4, 7, 6, 5, 2, 9, 10, 1]
+        cellIndex = sectorToCell[clockSector]
+        
+        let rect = CGRect(x: cellIndex * 110, y: 0, width: 110, height: 143)
+        guard let cropped = stripCG.cropping(to: rect) else { return nil }
+        return UIImage(cgImage: cropped)
+    }
+
     private func updateAllSpriteFrames() {
         for member in CharacterFilter.fiveIndividuals {
             let phaseTick = animTick + (member.charId * 3)
@@ -649,6 +791,8 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         if selectedCharacter == .all {
             currentSpriteFrame = allMemberFrames[1]
         }
+        walkStepFrame = (animTick / 2) % 2
+        currentNavArrowImage = getRM500NavigationArrowFrame(mapCameraHeading: mapTrackingUser ? headingDegrees : 0.0)
     }
     
     private func sliceFrame(for char: CharacterFilter, action: MascotActionState, tick: Int) -> UIImage? {
@@ -1261,6 +1405,10 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         return enableBanter ? 48 : 0
     }
     
+    func playRandomCharacterGreeting() {
+        triggerCharacterTap()
+    }
+    
     func triggerCharacterTap(member: CharacterFilter? = nil) {
         mascotAction = .special
         playMascotVoice(for: member ?? selectedCharacter)
@@ -1422,5 +1570,14 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         let mins = (drivingSeconds % 3600) / 60
         let secs = drivingSeconds % 60
         return String(format: "%02d:%02d:%02d", hrs, mins, secs)
+    }
+}
+
+extension Double {
+    func FloorMod(_ mod: Int) -> Int {
+        let m = Double(mod)
+        var r = self.truncatingRemainder(dividingBy: m)
+        if r < 0 { r += m }
+        return Int(r) % mod
     }
 }

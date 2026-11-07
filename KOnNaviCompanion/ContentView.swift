@@ -29,8 +29,8 @@ struct HTTSmoothMapView: UIViewRepresentable {
         
         let region = MKCoordinateRegion(
             center: manager.userCoordinate,
-            latitudinalMeters: 600,
-            longitudinalMeters: 600
+            latitudinalMeters: 500,
+            longitudinalMeters: 500
         )
         mapView.setRegion(region, animated: false)
         return mapView
@@ -52,50 +52,79 @@ struct HTTSmoothMapView: UIViewRepresentable {
                     mapView.addAnnotation(pin)
                 }
                 
-                // When navigation starts, instantly focus first-person on user vehicle rather than distant city overview!
-                if manager.mapTrackingUser {
-                    let camera = MKMapCamera(
-                        lookingAtCenter: manager.userCoordinate,
-                        fromDistance: manager.travelMode == .walking ? 380 : 520,
-                        pitch: 48,
-                        heading: manager.headingDegrees
-                    )
-                    mapView.setCamera(camera, animated: false)
-                } else {
-                    let rect = route.polyline.boundingMapRect
-                    mapView.setVisibleMapRect(rect, edgePadding: UIEdgeInsets(top: 80, left: 40, bottom: 90, right: 40), animated: false)
-                }
+                // Instantly snap to user vehicle on route start
+                let targetCoord = (!manager.isDemoSimulating && mapView.userLocation.location != nil)
+                    ? mapView.userLocation.coordinate
+                    : manager.userCoordinate
+                let camera = MKMapCamera(
+                    lookingAtCenter: targetCoord,
+                    fromDistance: manager.travelMode == .walking ? 380 : 520,
+                    pitch: 48,
+                    heading: manager.headingDegrees
+                )
+                mapView.setCamera(camera, animated: false)
             }
         }
         
-        // 2. Real-Time Vehicle Arrow Rotation (Points dynamically in heading direction!)
+        // 2. Update Authentic RM-500HTT Navigation Arrow Sprite / 3D Arrow
         if let userView = mapView.view(for: mapView.userLocation) {
-            let rotationAngle = CGFloat((manager.headingDegrees - mapView.camera.heading) * .pi / 180.0)
-            userView.transform = CGAffineTransform(rotationAngle: rotationAngle)
+            if let rmArrow = manager.getRM500NavigationArrowFrame(mapCameraHeading: mapView.camera.heading) {
+                userView.image = rmArrow
+                userView.bounds = CGRect(x: 0, y: 0, width: 68, height: 88)
+                userView.centerOffset = CGPoint(x: 0, y: -22)
+                userView.transform = .identity
+            } else {
+                userView.image = context.coordinator.arrowImage
+                userView.bounds = CGRect(x: 0, y: 0, width: 46, height: 46)
+                userView.centerOffset = .zero
+                let rotationAngle = CGFloat((manager.headingDegrees - mapView.camera.heading) * .pi / 180.0)
+                userView.transform = CGAffineTransform(rotationAngle: rotationAngle)
+            }
         }
         
-        // 3. Fast Recenter Trigger (Snaps instantly back to car in 0.25s)
+        // 3. Instant Zero-Lag Recenter (Fixes slow return after zooming out or panning!)
         if context.coordinator.lastRecenterTrigger != manager.recenterTrigger {
             context.coordinator.lastRecenterTrigger = manager.recenterTrigger
             context.coordinator.isUserInteracting = false
+            
+            let targetCoord = (!manager.isDemoSimulating && mapView.userLocation.location != nil)
+                ? mapView.userLocation.coordinate
+                : manager.userCoordinate
+            
+            // Cancel any ongoing MapKit zoom/pan inertia and jump immediately to vehicle!
+            mapView.layer.removeAllAnimations()
             let camera = MKMapCamera(
-                lookingAtCenter: manager.userCoordinate,
+                lookingAtCenter: targetCoord,
+                fromDistance: manager.travelMode == .walking ? 380 : 500,
+                pitch: 48,
+                heading: manager.headingDegrees
+            )
+            mapView.setCamera(camera, animated: false)
+            
+        } else if manager.mapTrackingUser && !context.coordinator.isUserInteracting {
+            let targetCoord = (!manager.isDemoSimulating && mapView.userLocation.location != nil)
+                ? mapView.userLocation.coordinate
+                : manager.userCoordinate
+            
+            // Check if current camera center or zoom distance is far away (e.g. user zoomed out)
+            let camLoc = CLLocation(latitude: mapView.camera.centerCoordinate.latitude,
+                                    longitude: mapView.camera.centerCoordinate.longitude)
+            let usrLoc = CLLocation(latitude: targetCoord.latitude, longitude: targetCoord.longitude)
+            let distDelta = camLoc.distance(from: usrLoc)
+            let altDelta = abs(mapView.camera.centerCoordinateDistance - 520.0)
+            
+            let camera = MKMapCamera(
+                lookingAtCenter: targetCoord,
                 fromDistance: manager.travelMode == .walking ? 380 : 520,
                 pitch: 48,
                 heading: manager.headingDegrees
             )
-            UIView.animate(withDuration: 0.25, delay: 0, options: [.curveEaseOut, .beginFromCurrentState]) {
-                mapView.camera = camera
+            // If far away or zoomed out, jump immediately without slow multi-second flyover!
+            if distDelta > 150.0 || altDelta > 400.0 {
+                mapView.setCamera(camera, animated: false)
+            } else {
+                mapView.setCamera(camera, animated: true)
             }
-        } else if manager.mapTrackingUser && !context.coordinator.isUserInteracting {
-            // Continuous 60fps smooth vehicle follow
-            let camera = MKMapCamera(
-                lookingAtCenter: manager.userCoordinate,
-                fromDistance: manager.travelMode == .walking ? 380 : 550,
-                pitch: 48,
-                heading: manager.headingDegrees
-            )
-            mapView.setCamera(camera, animated: true)
         }
     }
     
@@ -105,7 +134,6 @@ struct HTTSmoothMapView: UIViewRepresentable {
         var isUserInteracting: Bool = false
         var lastRecenterTrigger: Int = 0
         
-        // Pre-rendered high-definition 3D Navigation Arrow
         lazy var arrowImage: UIImage = {
             Coordinator.createNavigationArrowImage()
         }()
@@ -119,7 +147,7 @@ struct HTTSmoothMapView: UIViewRepresentable {
         }
         
         @objc func didPanMap(_ gesture: UIPanGestureRecognizer) {
-            if gesture.state == .began {
+            if gesture.state == .began || gesture.state == .changed {
                 isUserInteracting = true
                 if parent.manager.mapTrackingUser {
                     DispatchQueue.main.async {
@@ -127,13 +155,12 @@ struct HTTSmoothMapView: UIViewRepresentable {
                     }
                 }
             } else if gesture.state == .ended || gesture.state == .cancelled {
-                // Instantly unblock interaction flag when finger lifts so recenter and tracking work immediately!
                 isUserInteracting = false
             }
         }
         
         @objc func didPinchMap(_ gesture: UIPinchGestureRecognizer) {
-            if gesture.state == .began {
+            if gesture.state == .began || gesture.state == .changed {
                 isUserInteracting = true
                 if parent.manager.mapTrackingUser {
                     DispatchQueue.main.async {
@@ -152,7 +179,7 @@ struct HTTSmoothMapView: UIViewRepresentable {
             }
         }
         
-        // MARK: - Custom 3D Directional Navigation Arrow (导航箭头标)
+        // MARK: - RM-500HTT Authentic Character Vehicle Arrow & 3D Arrow
         func mapView(_ mapView: MKMapView, viewFor annotation: MKAnnotation) -> MKAnnotationView? {
             if annotation is MKUserLocation {
                 let identifier = "UserVehicleArrowView"
@@ -163,10 +190,19 @@ struct HTTSmoothMapView: UIViewRepresentable {
                 } else {
                     view?.annotation = annotation
                 }
-                view?.image = arrowImage
-                view?.centerOffset = CGPoint(x: 0, y: 0)
-                let rotationAngle = CGFloat((parent.manager.headingDegrees - mapView.camera.heading) * .pi / 180.0)
-                view?.transform = CGAffineTransform(rotationAngle: rotationAngle)
+                
+                if let rmArrow = parent.manager.getRM500NavigationArrowFrame(mapCameraHeading: mapView.camera.heading) {
+                    view?.image = rmArrow
+                    view?.bounds = CGRect(x: 0, y: 0, width: 68, height: 88)
+                    view?.centerOffset = CGPoint(x: 0, y: -22)
+                    view?.transform = .identity
+                } else {
+                    view?.image = arrowImage
+                    view?.bounds = CGRect(x: 0, y: 0, width: 46, height: 46)
+                    view?.centerOffset = .zero
+                    let rotationAngle = CGFloat((parent.manager.headingDegrees - mapView.camera.heading) * .pi / 180.0)
+                    view?.transform = CGAffineTransform(rotationAngle: rotationAngle)
+                }
                 return view
             } else if let pin = annotation as? MKPointAnnotation {
                 let id = "DestinationPinView"
@@ -189,29 +225,19 @@ struct HTTSmoothMapView: UIViewRepresentable {
             let renderer = UIGraphicsImageRenderer(size: size)
             return renderer.image { ctx in
                 let cg = ctx.cgContext
-                
-                // Soft 3D drop shadow for elevation
                 cg.setShadow(offset: CGSize(width: 0, height: 3), blur: 5, color: UIColor.black.withAlphaComponent(0.45).cgColor)
-                
-                // 3D Navigation Arrow Path (Pointing Up)
                 let path = UIBezierPath()
-                path.move(to: CGPoint(x: 23, y: 4))      // Top apex
-                path.addLine(to: CGPoint(x: 41, y: 41))  // Bottom right wing
-                path.addLine(to: CGPoint(x: 23, y: 31))  // Inner notch
-                path.addLine(to: CGPoint(x: 5, y: 41))   // Bottom left wing
+                path.move(to: CGPoint(x: 23, y: 4))
+                path.addLine(to: CGPoint(x: 41, y: 41))
+                path.addLine(to: CGPoint(x: 23, y: 31))
+                path.addLine(to: CGPoint(x: 5, y: 41))
                 path.close()
-                
-                // Crisp thick white outer border (visible against any road / map style)
                 UIColor.white.setStroke()
                 path.lineWidth = 3.5
                 path.lineJoinStyle = .round
                 path.stroke()
-                
-                // Vibrant Professional Navigation Blue fill
                 UIColor(red: 0.10, green: 0.58, blue: 0.98, alpha: 1.0).setFill()
                 path.fill()
-                
-                // Inner 3D spine ridge highlight
                 let ridge = UIBezierPath()
                 ridge.move(to: CGPoint(x: 23, y: 8))
                 ridge.addLine(to: CGPoint(x: 23, y: 29))
@@ -229,7 +255,6 @@ struct HTTSmoothMapView: UIViewRepresentable {
                     renderer.strokeColor = UIColor(red: 0.92, green: 0.22, blue: 0.35, alpha: 0.92)
                     renderer.lineWidth = 8.0
                 case .ebike:
-                    // High-contrast vibrant yellow (easily distinguished from green expressway/parks)
                     renderer.strokeColor = UIColor(red: 1.0, green: 0.82, blue: 0.10, alpha: 0.96)
                     renderer.lineWidth = 8.0
                 case .walking:
@@ -254,6 +279,8 @@ struct ContentView: View {
     @StateObject private var manager = AudioPlayerManager.shared
     @State private var showSoundboardSheet: Bool = false
     @State private var showSearchSheet: Bool = false
+    @State private var showAlbumSheet: Bool = false
+    @State private var showCautionSplash: Bool = false
     @State private var dragOffset: CGSize = .zero
     
     private let httCrimson = Color(red: 0.78, green: 0.18, blue: 0.22)
@@ -274,6 +301,17 @@ struct ContentView: View {
             let isLandscape = geo.size.width > geo.size.height
             ZStack {
                 httDarkPanel.ignoresSafeArea()
+                
+                // RM-500HTT Authentic Character Starry Diagonal Background Skin
+                if let themeBG = manager.getCurrentThemeBackground(), !manager.isMapEnlarged {
+                    Image(uiImage: themeBG)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: geo.size.width, height: geo.size.height)
+                        .clipped()
+                        .opacity(0.32)
+                        .ignoresSafeArea()
+                }
                 
                 // CONDITIONAL 1: Prominent Enlarged Full-Screen Navigation View
                 if manager.isMapEnlarged {
@@ -331,6 +369,9 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showSearchSheet) {
             DestinationSearchSheetView(manager: manager)
+        }
+        .sheet(isPresented: $showAlbumSheet) {
+            RM500AlbumAndOutfitSheetView(manager: manager)
         }
     }
     
@@ -491,6 +532,30 @@ struct ContentView: View {
                 }
             }
             Spacer()
+            
+            // RM-500HTT Arrow Outfit Quick Switcher in Enlarged Map!
+            Menu {
+                ForEach(RM500ArrowOutfit.allCases) { outfit in
+                    Button(action: { manager.arrowOutfit = outfit }) {
+                        HStack {
+                            Text(outfit.title(manager.language))
+                            if manager.arrowOutfit == outfit { Image(systemName: "checkmark") }
+                        }
+                    }
+                }
+            } label: {
+                HStack(spacing: 3) {
+                    Image(systemName: manager.arrowOutfit.icon)
+                    Text(manager.arrowOutfit.title(manager.language))
+                }
+                .font(.system(size: 10, weight: .bold))
+                .padding(.horizontal, 8)
+                .padding(.vertical, 6)
+                .background(Color.black.opacity(0.78))
+                .foregroundColor(httGold)
+                .cornerRadius(8)
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold.opacity(0.6), lineWidth: 1))
+            }
             
             // Re-center onto User Location Button (Fast Instant Recenter)
             Button(action: {
@@ -653,6 +718,28 @@ struct ContentView: View {
                 .background(manager.isHUDMirrored ? httGold : Color.white.opacity(0.12))
                 .foregroundColor(manager.isHUDMirrored ? .black : httCream)
                 .cornerRadius(8)
+            }
+            
+            // RM-500HTT Official Album & Arrow Outfit Button
+            Button(action: { showAlbumSheet = true }) {
+                HStack(spacing: 3) {
+                    if let iconImg = manager.getRM500UIImage("rm_btn_icon_on") {
+                        Image(uiImage: iconImg)
+                            .resizable()
+                            .scaledToFit()
+                            .frame(width: 18, height: 18)
+                    } else {
+                        Image(systemName: "photo.on.rectangle.angled")
+                    }
+                    Text(tr("相册/车标", "相冊/車標", "HTT Album"))
+                }
+                .font(.caption2.bold())
+                .padding(.horizontal, 8)
+                .padding(.vertical, 6)
+                .background(Color.pink.opacity(0.85))
+                .foregroundColor(.white)
+                .cornerRadius(8)
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold, lineWidth: 1))
             }
             
             Button(action: { showSoundboardSheet = true }) {
@@ -1489,6 +1576,233 @@ struct SoundboardSheetView: View {
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button(manager.language == .en ? "Done" : "完成") { dismiss() }
+                }
+            }
+        }
+    }
+}
+
+
+// MARK: - RM-500HTT Official Memorial Album (36 Episode CGs) & Vehicle Arrow Outfit Selector
+struct RM500AlbumAndOutfitSheetView: View {
+    @ObservedObject var manager: AudioPlayerManager
+    @Environment(\.dismiss) var dismiss
+    @State private var selectedTab: Int = 0
+    @State private var selectedCGIndex: Int = 1
+    
+    private let episodeTitles: [String] = [
+        "けいおん！ #1 廃部！", "けいおん！ #2 楽器！", "けいおん！ #3 特訓！", "けいおん！ #4 合宿！",
+        "けいおん！ #5 顧問！", "けいおん！ #6 学園祭！", "けいおん！ #7 クリスマス！", "けいおん！ #8 新歓！",
+        "けいおん！ #9 新入部員！", "けいおん！ #10 また合宿！", "けいおん！ #11 ピンチ！", "けいおん！ 最終回 軽音！",
+        "けいおん！！ #1 高3！", "けいおん！！ #2 整頓！", "けいおん！！ #3 ドラマー！", "けいおん！！ #4 修学旅行！",
+        "けいおん！！ #5 お留守番！", "けいおん！！ #6 梅雨！", "けいおん！！ #7 お茶会！", "けいおん！！ #8 進路！",
+        "けいおん！！ #9 期末試験！", "けいおん！！ #10 先生！", "けいおん！！ #11 暑い！", "けいおん！！ #12 夏フェス！",
+        "けいおん！！ #13 残暑見舞い！", "けいおん！！ #14 夏期講習！", "けいおん！！ #15 マラソン大会！", "けいおん！！ #16 先輩！",
+        "けいおん！！ #17 部室がない！", "けいおん！！ #18 主役！", "けいおん！！ #19 ロミジュリ！", "けいおん！！ #20 またまた学園祭！",
+        "けいおん！！ #21 卒業アルバム！", "けいおん！！ #22 受験！", "けいおん！！ #23 放課後！", "けいおん！！ 最終回 卒業式！"
+    ]
+    
+    var body: some View {
+        NavigationView {
+            VStack(spacing: 12) {
+                Picker("Mode", selection: $selectedTab) {
+                    Text("RM-500HTT 导航箭头换装").tag(0)
+                    Text("放課後ティータイム 纪念相册 (36枚)").tag(1)
+                }
+                .pickerStyle(.segmented)
+                .padding(.horizontal)
+                .padding(.top, 8)
+                
+                if selectedTab == 0 {
+                    ScrollView {
+                        VStack(spacing: 14) {
+                            // Live Preview Card of Current RM-500HTT Navigation Arrow
+                            VStack(spacing: 8) {
+                                Text("当前地图自车导航箭头预览")
+                                    .font(.caption.bold())
+                                    .foregroundColor(.secondary)
+                                
+                                HStack(spacing: 24) {
+                                    if let arrowImg = manager.getRM500NavigationArrowFrame(mapCameraHeading: manager.headingDegrees) {
+                                        Image(uiImage: arrowImg)
+                                            .interpolation(.none)
+                                            .resizable()
+                                            .scaledToFit()
+                                            .frame(width: 90, height: 115)
+                                    } else {
+                                        Image(uiImage: HTTSmoothMapView.Coordinator.createNavigationArrowImage())
+                                            .resizable()
+                                            .scaledToFit()
+                                            .frame(width: 70, height: 70)
+                                    }
+                                    
+                                    if let stageIcon = manager.getRM500StageIcon(for: manager.selectedCharacter) {
+                                        Image(uiImage: stageIcon)
+                                            .resizable()
+                                            .scaledToFit()
+                                            .frame(width: 95, height: 95)
+                                            .cornerRadius(12)
+                                    }
+                                }
+                                
+                                Text("\(manager.selectedCharacter.displayName(manager.language)) · \(manager.arrowOutfit.title(manager.language))")
+                                    .font(.headline.bold())
+                            }
+                            .padding()
+                            .frame(maxWidth: .infinity)
+                            .background(Color(UIColor.secondarySystemBackground))
+                            .cornerRadius(16)
+                            .padding(.horizontal)
+                            
+                            // Toggle for RM-500HTT Starry Cockpit Background Skin
+                            Toggle(isOn: $manager.useRM500ThemeSkin) {
+                                HStack {
+                                    Image(systemName: "sparkles.rectangle.stack.fill")
+                                        .foregroundColor(.pink)
+                                    VStack(alignment: .leading) {
+                                        Text("启用 RM-500HTT 原版角色星光斜纹背景皮肤")
+                                            .font(.subheadline.bold())
+                                        Text("随所选角色自动切换红/蓝/黄/粉/绿专属星光底图")
+                                            .font(.caption2)
+                                            .foregroundColor(.secondary)
+                                    }
+                                }
+                            }
+                            .padding()
+                            .background(Color(UIColor.secondarySystemBackground))
+                            .cornerRadius(12)
+                            .padding(.horizontal)
+                            
+                            // Outfit Grid
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("选择 RM-500HTT 原版导航自车箭头服装")
+                                    .font(.subheadline.bold())
+                                    .padding(.horizontal)
+                                
+                                ForEach(RM500ArrowOutfit.allCases) { outfit in
+                                    Button(action: {
+                                        manager.arrowOutfit = outfit
+                                        manager.playRandomCharacterGreeting()
+                                    }) {
+                                        HStack(spacing: 12) {
+                                            Image(systemName: outfit.icon)
+                                                .font(.title3)
+                                                .foregroundColor(.white)
+                                                .frame(width: 38, height: 38)
+                                                .background(manager.arrowOutfit == outfit ? Color.red : Color.gray)
+                                                .cornerRadius(8)
+                                            
+                                            VStack(alignment: .leading, spacing: 2) {
+                                                Text(outfit.title(manager.language))
+                                                    .font(.subheadline.bold())
+                                                    .foregroundColor(.primary)
+                                                Text(outfit == .tonchan ? "轻音部宠物猪鼻龟专属游泳导航车标" : "支持 12 方向精准转向与行车迈步动画")
+                                                    .font(.caption2)
+                                                    .foregroundColor(.secondary)
+                                            }
+                                            Spacer()
+                                            if manager.arrowOutfit == outfit {
+                                                Image(systemName: "checkmark.circle.fill")
+                                                    .foregroundColor(.red)
+                                                    .font(.title3)
+                                            }
+                                        }
+                                        .padding(12)
+                                        .background(Color(UIColor.secondarySystemBackground))
+                                        .cornerRadius(12)
+                                    }
+                                    .padding(.horizontal)
+                                }
+                            }
+                        }
+                        .padding(.bottom, 20)
+                    }
+                } else {
+                    // Tab 1: Official RM-500HTT 36 Memorial Album CGs
+                    ScrollView {
+                        VStack(spacing: 12) {
+                            if let logo = manager.getRM500UIImage("rm_album_logo") {
+                                Image(uiImage: logo)
+                                    .resizable()
+                                    .scaledToFit()
+                                    .frame(height: 90)
+                                    .cornerRadius(10)
+                                    .padding(.horizontal)
+                            }
+                            
+                            // Large Selected CG Viewer
+                            if let cgImg = manager.getRM500UIImage(String(format: "rm_cg_%02d", selectedCGIndex)) {
+                                VStack(spacing: 6) {
+                                    Image(uiImage: cgImg)
+                                        .resizable()
+                                        .scaledToFit()
+                                        .cornerRadius(12)
+                                        .shadow(radius: 4)
+                                    
+                                    HStack {
+                                        Button(action: {
+                                            selectedCGIndex = selectedCGIndex > 1 ? selectedCGIndex - 1 : 36
+                                        }) {
+                                            Label("上一张", systemImage: "chevron.left.circle.fill")
+                                                .font(.caption.bold())
+                                        }
+                                        Spacer()
+                                        Text("\(selectedCGIndex) / 36 · \(episodeTitles[selectedCGIndex - 1])")
+                                            .font(.caption.bold())
+                                            .foregroundColor(.primary)
+                                        Spacer()
+                                        Button(action: {
+                                            selectedCGIndex = selectedCGIndex < 36 ? selectedCGIndex + 1 : 1
+                                        }) {
+                                            Label("下一张", systemImage: "chevron.right.circle.fill")
+                                                .font(.caption.bold())
+                                        }
+                                    }
+                                    .padding(.horizontal, 8)
+                                }
+                                .padding(10)
+                                .background(Color(UIColor.secondarySystemBackground))
+                                .cornerRadius(14)
+                                .padding(.horizontal)
+                            }
+                            
+                            // Thumbnail Grid of all 36 CGs
+                            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+                                ForEach(1...36, id: \.self) { idx in
+                                    Button(action: {
+                                        selectedCGIndex = idx
+                                        manager.playRandomCharacterGreeting()
+                                    }) {
+                                        VStack(spacing: 3) {
+                                            if let thumb = manager.getRM500UIImage(String(format: "rm_cg_%02d", idx)) {
+                                                Image(uiImage: thumb)
+                                                    .resizable()
+                                                    .scaledToFit()
+                                                    .cornerRadius(6)
+                                                    .overlay(
+                                                        RoundedRectangle(cornerRadius: 6)
+                                                            .stroke(selectedCGIndex == idx ? Color.red : Color.clear, lineWidth: 2.5)
+                                                    )
+                                            }
+                                            Text(episodeTitles[idx - 1])
+                                                .font(.system(size: 9, weight: .bold))
+                                                .lineLimit(1)
+                                                .foregroundColor(.primary)
+                                        }
+                                    }
+                                }
+                            }
+                            .padding(.horizontal)
+                        }
+                        .padding(.bottom, 20)
+                    }
+                }
+            }
+            .navigationTitle("RM-500HTT 典藏中心")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("完成") { dismiss() }
                 }
             }
         }
