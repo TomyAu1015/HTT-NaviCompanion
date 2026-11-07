@@ -2295,7 +2295,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             let finalTitle = (parsedName?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false) ? parsedName! : "外部App导入目的地"
             
             DispatchQueue.main.async {
-                self.isMapMode = true
+                self.showMapMode = true
                 self.isMapEnlarged = true
                 self.isNavigatingFocused = false
                 self.calculateAndStartRoute(to: finalCoord, title: finalTitle)
@@ -2322,7 +2322,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 if let first = resp?.mapItems.first {
-                    self.isMapMode = true
+                    self.showMapMode = true
                     self.isMapEnlarged = true
                     self.isNavigatingFocused = false
                     self.startRouteGuidance(to: first)
