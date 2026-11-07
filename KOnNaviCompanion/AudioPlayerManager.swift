@@ -19,6 +19,16 @@ struct MascotVoiceEntry {
 
 // MARK: - WGS-84 to GCJ-02 (China Mars Coordinate System) Converter
 struct CoordinateConverter {
+    static func bd09ToGCJ02(lat: Double, lon: Double) -> CLLocationCoordinate2D {
+        let x = lon - 0.0065
+        let y = lat - 0.006
+        let z = sqrt(x * x + y * y) - 0.00002 * sin(y * Double.pi * 3000.0 / 180.0)
+        let theta = atan2(y, x) - 0.000003 * cos(x * Double.pi * 3000.0 / 180.0)
+        let ggLon = z * cos(theta)
+        let ggLat = z * sin(theta)
+        return CLLocationCoordinate2D(latitude: ggLat, longitude: ggLon)
+    }
+
     static func wgs84ToGCJ02(_ coord: CLLocationCoordinate2D) -> CLLocationCoordinate2D {
         if isOutOfChina(coord) {
             return coord
@@ -2181,6 +2191,170 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         playVoice(id: base + offset, customQuote: msg)
     }
     
+
+    // MARK: - Universal One-Click External App Navigation Jump Handler (高德/百度/腾讯/微信/美团/大众点评/小红书/浏览器)
+    func handleIncomingNavigationURL(_ url: URL) {
+        let rawStr = url.absoluteString
+        let scheme = (url.scheme ?? "").lowercased()
+        let comps = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        var params: [String: String] = [:]
+        if let items = comps?.queryItems {
+            for item in items {
+                if let val = item.value, !val.isEmpty {
+                    params[item.name.lowercased()] = val.removingPercentEncoding ?? val
+                }
+            }
+        }
+        
+        var parsedLat: Double? = nil
+        var parsedLon: Double? = nil
+        var parsedName: String? = nil
+        
+        // 1. Check geo:lat,lon?q=name
+        if scheme == "geo" {
+            let body = rawStr.replacingOccurrences(of: "geo:", with: "", options: .caseInsensitive)
+            let parts = body.components(separatedBy: "?")
+            let coords = parts[0].components(separatedBy: ",")
+            if coords.count >= 2, let la = Double(coords[0].trimmingCharacters(in: .whitespaces)), let lo = Double(coords[1].trimmingCharacters(in: .whitespaces)) {
+                if la != 0 || lo != 0 {
+                    parsedLat = la
+                    parsedLon = lo
+                }
+            }
+            if let q = params["q"] {
+                // Could be "lat,lon(Name)" or just "Name"
+                if let parenRange = q.range(of: "("), let closeRange = q.range(of: ")") {
+                    parsedName = String(q[parenRange.upperBound..<closeRange.lowerBound])
+                } else {
+                    parsedName = q
+                }
+            }
+        }
+        
+        // 2. Check Amap (iosamap:// / amapuri://): dlat, dlon, dname, lat, lon, poiname
+        if parsedLat == nil {
+            if let dla = params["dlat"] ?? params["lat"] ?? params["latitude"],
+               let dlo = params["dlon"] ?? params["lon"] ?? params["lng"] ?? params["longitude"],
+               let la = Double(dla), let lo = Double(dlo) {
+                parsedLat = la
+                parsedLon = lo
+            }
+        }
+        if parsedName == nil {
+            parsedName = params["dname"] ?? params["poiname"] ?? params["name"] ?? params["title"] ?? params["dest"] ?? params["keyword"] ?? params["q"] ?? params[" saddr"] ?? params["daddr"]
+        }
+        
+        // 3. Check Baidu Map (baidumap://map/direction?destination=latlng:22.54,114.05|name:xxx or destination=22.54,114.05)
+        if let destParam = params["destination"] {
+            if destParam.contains("|") {
+                let segments = destParam.components(separatedBy: "|")
+                for seg in segments {
+                    if seg.lowercased().hasPrefix("latlng:") {
+                        let cStr = seg.replacingOccurrences(of: "latlng:", with: "", options: .caseInsensitive)
+                        let cParts = cStr.components(separatedBy: ",")
+                        if cParts.count >= 2, let la = Double(cParts[0]), let lo = Double(cParts[1]) {
+                            parsedLat = la
+                            parsedLon = lo
+                        }
+                    } else if seg.lowercased().hasPrefix("name:") {
+                        parsedName = seg.replacingOccurrences(of: "name:", with: "", options: .caseInsensitive)
+                    }
+                }
+            } else {
+                let cParts = destParam.components(separatedBy: ",")
+                if cParts.count == 2, let la = Double(cParts[0]), let lo = Double(cParts[1]) {
+                    parsedLat = la
+                    parsedLon = lo
+                } else {
+                    parsedName = destParam
+                }
+            }
+        }
+        
+        // 4. Check Tencent Map (qqmap://map/routeplan?tocoord=22.54,114.05&to=xxx)
+        if let toCoord = params["tocoord"] ?? params["coord"] ?? params["center"] ?? params["ll"] ?? params["sll"] {
+            let cParts = toCoord.components(separatedBy: ",")
+            if cParts.count >= 2, let la = Double(cParts[0].trimmingCharacters(in: .whitespaces)), let lo = Double(cParts[1].trimmingCharacters(in: .whitespaces)) {
+                parsedLat = la
+                parsedLon = lo
+            }
+        }
+        if parsedName == nil, let toName = params["to"] ?? params["address"] {
+            parsedName = toName
+        }
+        
+        // Convert BD-09 if coming from baidumap and coord_type is bd09
+        let coordType = (params["coord_type"] ?? "").lowercased()
+        if let la = parsedLat, let lo = parsedLon {
+            var finalCoord = CLLocationCoordinate2D(latitude: la, longitude: lo)
+            if scheme == "baidumap" && !coordType.contains("gcj") && !coordType.contains("wgs") {
+                finalCoord = CoordinateConverter.bd09ToGCJ02(lat: la, lon: lo)
+            } else if coordType.contains("wgs") {
+                finalCoord = CoordinateConverter.wgs84ToGCJ02(finalCoord)
+            }
+            let finalTitle = (parsedName?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false) ? parsedName! : "外部App导入目的地"
+            
+            DispatchQueue.main.async {
+                self.isMapMode = true
+                self.isMapEnlarged = true
+                self.isNavigatingFocused = false
+                self.calculateAndStartRoute(to: finalCoord, title: finalTitle)
+            }
+            return
+        }
+        
+        // 5. If only a place name/address was provided without coordinates, search and navigate automatically!
+        if let queryName = parsedName?.trimmingCharacters(in: .whitespacesAndNewlines), !queryName.isEmpty {
+            searchAndNavigateDirectly(query: queryName)
+        }
+    }
+    
+    func searchAndNavigateDirectly(query: String) {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        
+        let req = MKLocalSearch.Request()
+        req.naturalLanguageQuery = trimmed
+        req.resultTypes = [.address, .pointOfInterest]
+        req.region = MKCoordinateRegion(center: userCoordinate, latitudinalMeters: 350000, longitudinalMeters: 350000)
+        
+        MKLocalSearch(request: req).start { [weak self] resp, _ in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                if let first = resp?.mapItems.first {
+                    self.isMapMode = true
+                    self.isMapEnlarged = true
+                    self.isNavigatingFocused = false
+                    self.startRouteGuidance(to: first)
+                }
+            }
+        }
+    }
+    
+    func parseSmartClipboardAndNavigate() {
+        guard let raw = UIPasteboard.general.string?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
+            let msg = language == .en ? "Clipboard is empty!" : "剪贴板为空，请先在微信/美团/点评复制地址或链接！"
+            playVoice(id: activeBaseId() + 18, customQuote: msg, clearQueue: true)
+            return
+        }
+        // Check if clipboard contains a URL scheme or http map link
+        if let url = URL(string: raw), url.scheme != nil, (raw.contains("://") || raw.lowercased().hasPrefix("geo:")) {
+            handleIncomingNavigationURL(url)
+            return
+        }
+        // Otherwise extract clean address text (strip common share noise)
+        var cleaned = raw
+            .replacingOccurrences(of: "【", with: " ")
+            .replacingOccurrences(of: "】", with: " ")
+        if let range = cleaned.range(of: "http") {
+            cleaned = String(cleaned[..<range.lowerBound])
+        }
+        let finalQuery = cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !finalQuery.isEmpty {
+            searchAndNavigateDirectly(query: finalQuery)
+        }
+    }
+
     func openGaodeMap() {
         triggerDepartureGreeting()
         if let url = URL(string: "iosamap://"), UIApplication.shared.canOpenURL(url) {

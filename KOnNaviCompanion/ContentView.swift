@@ -870,60 +870,81 @@ struct ContentView: View {
         }
     }
     
-    // Bottom Pre-Navigation Card: Highway Strategy (高速优先/不走高速/距离最短) + Candidate Routes + Prominent [🚀 开始导航] Button!
+    // Bottom Pre-Navigation Card: Enlarged Highway Strategy (高速优先/不走高速/距离最短) + Separate Candidate Routes Row + Anti-Mistouch [🚀 开始导航] Button!
     private var bottomPreNavRouteSelectionCard: some View {
-        VStack(spacing: 7) {
-            // Row 1: Highway Strategy + Candidate Routes
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 6) {
-                    if manager.travelMode == .driving {
-                        ForEach(RouteStrategyPreference.allCases) { pref in
-                            Button(action: {
+        VStack(spacing: 11) {
+            // Row 1: Enlarged Full-Width 3-Grid Highway Strategy Buttons (Large touch targets, zero mistouch!)
+            if manager.travelMode == .driving {
+                HStack(spacing: 8) {
+                    ForEach(RouteStrategyPreference.allCases) { pref in
+                        let isSelPref = (manager.routePreference == pref)
+                        Button(action: {
+                            withAnimation(.easeInOut(duration: 0.2)) {
                                 manager.routePreference = pref
-                            }) {
-                                HStack(spacing: 3) {
-                                    Image(systemName: pref.icon)
-                                        .font(.system(size: 9, weight: .bold))
-                                    Text(pref.title(manager.language))
-                                        .font(.system(size: 10, weight: .bold))
-                                        .fixedSize(horizontal: true, vertical: false)
-                                }
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 5)
-                                .background(manager.routePreference == pref ? httGold : Color.white.opacity(0.12))
-                                .foregroundColor(manager.routePreference == pref ? .black : httCream)
-                                .cornerRadius(7)
                             }
+                        }) {
+                            HStack(spacing: 5) {
+                                Image(systemName: pref.icon)
+                                    .font(.system(size: 13, weight: .bold))
+                                Text(pref.title(manager.language))
+                                    .font(.system(size: 13, weight: .heavy))
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.8)
+                            }
+                            .frame(maxWidth: .infinity, minHeight: 38)
+                            .padding(.vertical, 4)
+                            .background(isSelPref ? httGold : Color.white.opacity(0.14))
+                            .foregroundColor(isSelPref ? .black : httCream)
+                            .cornerRadius(10)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 10)
+                                    .stroke(isSelPref ? Color.white : httGold.opacity(0.45), lineWidth: isSelPref ? 2 : 1)
+                            )
                         }
                     }
-                    
-                    if manager.candidateRoutes.count > 1 {
+                }
+            }
+            
+            // Row 2: Dedicated Candidate Route Selection Cards (Separate row with large tap targets!)
+            if manager.candidateRoutes.count > 1 {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
                         ForEach(0..<manager.candidateRoutes.count, id: \.self) { idx in
                             let r = manager.candidateRoutes[idx]
                             let isSel = (manager.selectedRouteIndex == idx)
                             Button(action: {
-                                manager.selectCandidateRoute(at: idx)
+                                withAnimation(.easeInOut(duration: 0.2)) {
+                                    manager.selectCandidateRoute(at: idx)
+                                }
                             }) {
-                                HStack(spacing: 4) {
+                                HStack(spacing: 5) {
                                     Image(systemName: isSel ? "checkmark.circle.fill" : "arrow.triangle.swap")
-                                        .font(.system(size: 9))
+                                        .font(.system(size: 12, weight: .bold))
                                     Text("\(manager.routeOptionBadgeTitle(for: r, index: idx)) (\(String(format: "%.1fkm", r.distance / 1000.0)))")
-                                        .font(.system(size: 10, weight: .heavy))
+                                        .font(.system(size: 12, weight: .heavy))
                                         .fixedSize(horizontal: true, vertical: false)
                                 }
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 5)
-                                .background(isSel ? httCrimson : Color.white.opacity(0.12))
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 9)
+                                .background(isSel ? httCrimson : Color.white.opacity(0.14))
                                 .foregroundColor(.white)
-                                .cornerRadius(7)
-                                .overlay(RoundedRectangle(cornerRadius: 7).stroke(isSel ? httGold : Color.clear, lineWidth: 1))
+                                .cornerRadius(9)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 9)
+                                        .stroke(isSel ? httGold : Color.white.opacity(0.25), lineWidth: isSel ? 1.8 : 1)
+                                )
                             }
                         }
                     }
                 }
             }
             
-            // Row 2: Prominent [🚀 开始导航 (专注驾驶)] Button!
+            // Safety Divider Cushion to prevent accidental mistouch on [开始导航] when tapping highway options
+            Divider()
+                .background(httGold.opacity(0.35))
+                .padding(.vertical, 1)
+            
+            // Row 3: Prominent [🚀 开始导航 (专注驾驶)] Button!
             Button(action: {
                 withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) {
                     manager.startFocusedNavigation()
@@ -933,10 +954,10 @@ struct ContentView: View {
                     Image(systemName: "location.north.circle.fill")
                         .font(.title3)
                     Text(tr("开始导航 · 隐藏选项专注驾驶", "開始導航 · 隱藏選項專注駕駛", "Start Navigation (Focus Mode)"))
-                        .font(.system(size: 14, weight: .black))
+                        .font(.system(size: 15, weight: .black))
                 }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 9)
+                .frame(maxWidth: .infinity, minHeight: 42)
+                .padding(.vertical, 4)
                 .background(
                     LinearGradient(
                         colors: [httCrimson, Color(red: 0.92, green: 0.25, blue: 0.30)],
@@ -945,14 +966,14 @@ struct ContentView: View {
                     )
                 )
                 .foregroundColor(.white)
-                .cornerRadius(10)
-                .overlay(RoundedRectangle(cornerRadius: 10).stroke(httGold, lineWidth: 1.5))
+                .cornerRadius(11)
+                .overlay(RoundedRectangle(cornerRadius: 11).stroke(httGold, lineWidth: 1.5))
             }
         }
-        .padding(9)
-        .background(Color.black.opacity(0.88))
-        .cornerRadius(14)
-        .overlay(RoundedRectangle(cornerRadius: 14).stroke(httGold, lineWidth: 1.5))
+        .padding(12)
+        .background(Color.black.opacity(0.90))
+        .cornerRadius(16)
+        .overlay(RoundedRectangle(cornerRadius: 16).stroke(httGold, lineWidth: 1.8))
     }
     
     // Electronic Speed Camera (测速电子眼) + Congestion (路况拥堵) + Service Area (服务区) + Toll Station (收费站) HUD Strip
@@ -2314,26 +2335,50 @@ struct DestinationSearchSheetView: View {
                 .padding(.horizontal)
                 .padding(.top, 6)
                 
-                // Driving Highway Preference Selector in Search Sheet
+                // Driving Highway Preference Selector in Search Sheet (Enlarged!)
                 if selectedMode == .driving {
                     HStack(spacing: 8) {
                         ForEach(RouteStrategyPreference.allCases) { pref in
                             Button(action: {
                                 manager.routePreference = pref
                             }) {
-                                HStack(spacing: 4) {
+                                HStack(spacing: 5) {
                                     Image(systemName: pref.icon)
+                                        .font(.system(size: 13, weight: .bold))
                                     Text(pref.title(manager.language))
+                                        .font(.system(size: 13, weight: .heavy))
                                 }
-                                .font(.system(size: 11, weight: .bold))
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 5)
+                                .frame(maxWidth: .infinity, minHeight: 36)
                                 .background(manager.routePreference == pref ? Color.orange : Color(UIColor.tertiarySystemFill))
                                 .foregroundColor(manager.routePreference == pref ? .white : .primary)
-                                .cornerRadius(7)
+                                .cornerRadius(9)
                             }
                         }
                     }
+                    .padding(.horizontal)
+                }
+                
+                // One-Click External App / Clipboard Quick Navigation Bar
+                Button(action: {
+                    dismiss()
+                    manager.parseSmartClipboardAndNavigate()
+                }) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "arrow.uturn.forward.circle.fill")
+                            .font(.system(size: 15, weight: .bold))
+                        Text(manager.language == .en
+                             ? "One-Click Navigate from Copied Address / App Link"
+                             : "一键识别外部App复制的地址/分享链接并直接导航")
+                            .font(.system(size: 12, weight: .bold))
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .font(.caption.bold())
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 9)
+                    .background(Color.blue.opacity(0.15))
+                    .foregroundColor(.blue)
+                    .cornerRadius(9)
                     .padding(.horizontal)
                 }
                 

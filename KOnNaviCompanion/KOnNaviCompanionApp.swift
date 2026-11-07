@@ -11,6 +11,18 @@ class PhoneSceneDelegate: UIResponder, UIWindowSceneDelegate {
         window.rootViewController = UIHostingController(rootView: ContentView())
         self.window = window
         window.makeKeyAndVisible()
+        
+        // Cold-launch external navigation URL jump
+        if let firstURLContext = connectionOptions.urlContexts.first {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                AudioPlayerManager.shared.handleIncomingNavigationURL(firstURLContext.url)
+            }
+        }
+    }
+    
+    func scene(_ scene: UIScene, openURLContexts URLContexts: Set<UIOpenURLContext>) {
+        guard let firstURLContext = URLContexts.first else { return }
+        AudioPlayerManager.shared.handleIncomingNavigationURL(firstURLContext.url)
     }
 }
 
@@ -18,6 +30,13 @@ class AppDelegate: NSObject, UIApplicationDelegate {
     func application(_ application: UIApplication,
                      didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey : Any]? = nil) -> Bool {
         AudioPlayerManager.shared.configureAudioSession()
+        return true
+    }
+    
+    func application(_ application: UIApplication,
+                     open url: URL,
+                     options: [UIApplication.OpenURLOptionsKey : Any] = [:]) -> Bool {
+        AudioPlayerManager.shared.handleIncomingNavigationURL(url)
         return true
     }
     
@@ -46,6 +65,9 @@ struct KOnNaviCompanionApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .onOpenURL { url in
+                    AudioPlayerManager.shared.handleIncomingNavigationURL(url)
+                }
         }
     }
 }

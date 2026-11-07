@@ -14,6 +14,9 @@
 		1007 /* CarPlaySceneDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2008 /* CarPlaySceneDelegate.swift */; };
 		1005 /* voice_assets.dat in Resources */ = {isa = PBXBuildFile; fileRef = 2005 /* voice_assets.dat */; };
 		1006 /* mascot_assets.dat in Resources */ = {isa = PBXBuildFile; fileRef = 2007 /* mascot_assets.dat */; };
+		1008 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 2009 /* Assets.xcassets */; };
+		1009 /* AppIcon60x60@2x.png in Resources */ = {isa = PBXBuildFile; fileRef = 2010 /* AppIcon60x60@2x.png */; };
+		1010 /* AppIcon60x60@3x.png in Resources */ = {isa = PBXBuildFile; fileRef = 2011 /* AppIcon60x60@3x.png */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -57,6 +60,9 @@
 				2008 /* CarPlaySceneDelegate.swift */,
 				2005 /* voice_assets.dat */,
 				2007 /* mascot_assets.dat */,
+				2009 /* Assets.xcassets */,
+				2010 /* AppIcon60x60@2x.png */,
+				2011 /* AppIcon60x60@3x.png */,
 				2006 /* Info.plist */,
 			);
 			path = KOnNaviCompanion;
@@ -130,6 +136,9 @@
 			files = (
 				1005 /* voice_assets.dat in Resources */,
 				1006 /* mascot_assets.dat in Resources */,
+				1008 /* Assets.xcassets in Resources */,
+				1009 /* AppIcon60x60@2x.png in Resources */,
+				1010 /* AppIcon60x60@3x.png in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
