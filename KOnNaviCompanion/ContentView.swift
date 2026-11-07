@@ -1574,7 +1574,7 @@ struct ContentView: View {
                         .font(.system(size: 9, weight: .black))
                 }
                 .foregroundColor(.white)
-                .frame(width: 54, minHeight: 42)
+                .frame(width: 54, height: 42)
                 .background(Color.orange.opacity(0.28))
                 .cornerRadius(11)
                 .overlay(RoundedRectangle(cornerRadius: 11).stroke(Color.orange, lineWidth: 1.2))
@@ -1590,7 +1590,7 @@ struct ContentView: View {
                         .font(.system(size: 9, weight: .black))
                 }
                 .foregroundColor(httCream)
-                .frame(width: 50, minHeight: 42)
+                .frame(width: 50, height: 42)
                 .background(Color.white.opacity(0.14))
                 .cornerRadius(11)
                 .overlay(RoundedRectangle(cornerRadius: 11).stroke(Color.white.opacity(0.3), lineWidth: 1))
