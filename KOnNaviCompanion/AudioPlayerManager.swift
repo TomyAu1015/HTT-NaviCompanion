@@ -515,6 +515,11 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             // Immediately stop any previous voice queue so user never has to wait for old audio to finish!
             stop()
             let newLimit = travelMode.defaultSpeedLimit
+            if travelMode == .transit {
+                let dest = destinationCoord ?? CLLocationCoordinate2D(latitude: 22.61, longitude: 114.15)
+                let title = destinationName.isEmpty ? "丹竹头地铁站" : destinationName
+                generateBuiltInTransitPlans(from: userCoordinate, to: dest, destTitle: title)
+            }
             if let dest = destinationCoord, !destinationName.isEmpty {
                 speedLimitKmh = newLimit
                 calculateAndStartRoute(to: dest, title: destinationName, isReroute: true)
@@ -1555,6 +1560,8 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         destinationCoord = destCoord
         destinationName = title
         isRecalculatingRoute = true
+        // Always generate transit plans immediately so they are 100% available without blank sheet!
+        generateBuiltInTransitPlans(from: userCoordinate, to: destCoord, destTitle: title)
         
         // Request both automobile and walking routes in parallel so Driving, e-Bike, Walking, and Transit each get distinct, authentic paths!
         let reqAuto = MKDirections.Request()

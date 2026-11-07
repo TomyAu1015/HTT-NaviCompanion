@@ -967,8 +967,8 @@ struct ContentView: View {
                 }
             }
             
-            // Row 2: Dedicated Candidate Route Selection Cards (Separate row with large tap targets!)
-            if manager.candidateRoutes.count > 1 {
+            // Row 2: Dedicated Candidate Route Selection Cards (ONLY for Driving Mode!)
+            if manager.travelMode == .driving && manager.candidateRoutes.count > 1 {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
                         ForEach(0..<manager.candidateRoutes.count, id: \.self) { idx in
@@ -3107,6 +3107,13 @@ struct InAppTransitPlanSheetView: View {
                         dismiss()
                     }
                     .foregroundColor(httGold)
+                }
+            }
+            .onAppear {
+                if manager.transitPlans.isEmpty {
+                    let dest = manager.destinationCoord ?? CLLocationCoordinate2D(latitude: 22.61, longitude: 114.15)
+                    let title = manager.destinationName.isEmpty ? "丹竹头地铁站" : manager.destinationName
+                    manager.generateBuiltInTransitPlans(from: manager.userCoordinate, to: dest, destTitle: title)
                 }
             }
         }
