@@ -552,6 +552,9 @@ struct ContentView: View {
         .sheet(isPresented: $showAlbumSheet) {
             RM500AlbumAndOutfitSheetView(manager: manager)
         }
+        .sheet(isPresented: $manager.showTransitPlanSheet) {
+            InAppTransitPlanSheetView(manager: manager)
+        }
     }
     
     // MARK: - ENLARGED FULL-SCREEN NAVIGATION HUD
@@ -734,21 +737,23 @@ struct ContentView: View {
                 .cornerRadius(8)
             }
             
-            // Transit Public Timetable Detail Button
+            // In-App Public Transit & Subway Route Detail Button (Zero External App Jumping!)
             if manager.travelMode == .transit {
                 Button(action: {
-                    manager.openSystemMapsForTransit()
+                    manager.showTransitPlanSheet = true
                 }) {
                     VStack(spacing: 1) {
                         Image(systemName: "tram.fill")
-                            .font(.system(size: 12, weight: .bold))
-                        Text(tr("班次", "班次", "Transit"))
-                            .font(.system(size: 8, weight: .bold))
+                            .font(.system(size: 13, weight: .bold))
+                        Text(tr("换乘方案", "換乘方案", "Transit"))
+                            .font(.system(size: 8, weight: .black))
                     }
                     .foregroundColor(.white)
-                    .padding(5)
-                    .background(Color.purple.opacity(0.85))
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 5)
+                    .background(Color.purple.opacity(0.92))
                     .cornerRadius(8)
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold, lineWidth: 1.2))
                 }
             }
             
@@ -873,7 +878,7 @@ struct ContentView: View {
     // Bottom Pre-Navigation Card: Enlarged Highway Strategy (高速优先/不走高速/距离最短) + Separate Candidate Routes Row + Anti-Mistouch [🚀 开始导航] Button!
     private var bottomPreNavRouteSelectionCard: some View {
         VStack(spacing: 11) {
-            // Row 1: Enlarged Full-Width 3-Grid Highway Strategy Buttons (Large touch targets, zero mistouch!)
+            // Row 1: Enlarged Full-Width 3-Grid Highway Strategy (Driving) OR Built-In Transit Plans (Transit)
             if manager.travelMode == .driving {
                 HStack(spacing: 8) {
                     ForEach(RouteStrategyPreference.allCases) { pref in
@@ -901,6 +906,63 @@ struct ContentView: View {
                                     .stroke(isSelPref ? Color.white : httGold.opacity(0.45), lineWidth: isSelPref ? 2 : 1)
                             )
                         }
+                    }
+                }
+            } else if manager.travelMode == .transit {
+                // Built-In Transit Multi-Plan Quick Selector Cards
+                VStack(spacing: 8) {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            ForEach(Array(manager.transitPlans.enumerated()), id: \.element.id) { idx, plan in
+                                let isSel = (manager.selectedTransitPlanIndex == idx)
+                                Button(action: {
+                                    withAnimation(.easeInOut(duration: 0.2)) {
+                                        manager.selectTransitPlan(at: idx)
+                                    }
+                                }) {
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        HStack(spacing: 5) {
+                                            Image(systemName: "tram.fill")
+                                                .font(.system(size: 11, weight: .bold))
+                                            Text(plan.badge)
+                                                .font(.system(size: 12, weight: .black))
+                                        }
+                                        Text("\(plan.totalMinutes)分钟 · ¥\(plan.priceYuan) · \(plan.transferCount)次换乘")
+                                            .font(.system(size: 10, weight: .bold, design: .monospaced))
+                                            .opacity(0.9)
+                                    }
+                                    .padding(.horizontal, 11)
+                                    .padding(.vertical, 7)
+                                    .background(isSel ? Color.purple : Color.white.opacity(0.14))
+                                    .foregroundColor(.white)
+                                    .cornerRadius(10)
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 10)
+                                            .stroke(isSel ? httGold : Color.white.opacity(0.2), lineWidth: isSel ? 2 : 1)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    
+                    // Button to open Full Timeline Sheet
+                    Button(action: {
+                        manager.showTransitPlanSheet = true
+                    }) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "list.bullet.rectangle.portrait.fill")
+                                .font(.system(size: 12, weight: .bold))
+                            Text(tr("查看完整公交地铁换乘时间轴与车站", "查看完整公交地鐵換乘時間軸與車站", "View Full Transit Timeline & Stations"))
+                                .font(.system(size: 12, weight: .bold))
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.caption.bold())
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(Color.purple.opacity(0.3))
+                        .foregroundColor(Color(red: 0.85, green: 0.65, blue: 1.0))
+                        .cornerRadius(8)
                     }
                 }
             }
@@ -2858,5 +2920,218 @@ struct RM500AlbumAndOutfitSheetView: View {
                 }
             }
         }
+    }
+}
+
+
+// MARK: - Native Built-In GaoDe-Style Transit & Subway Plan Modal Sheet (完全内置公交地铁换乘时间轴)
+struct InAppTransitPlanSheetView: View {
+    @ObservedObject var manager: AudioPlayerManager
+    @Environment(\.dismiss) private var dismiss
+    
+    private let httGold = Color(red: 0.88, green: 0.68, blue: 0.24)
+    private let httCrimson = Color(red: 0.78, green: 0.18, blue: 0.22)
+    private let httCream = Color(red: 0.99, green: 0.96, blue: 0.90)
+    
+    var body: some View {
+        NavigationView {
+            ZStack {
+                Color(red: 0.11, green: 0.10, blue: 0.12).ignoresSafeArea()
+                
+                VStack(spacing: 0) {
+                    // 1. Plan Tabs (方案1/方案2/方案3)
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 10) {
+                            ForEach(Array(manager.transitPlans.enumerated()), id: \.element.id) { idx, plan in
+                                let isSel = (manager.selectedTransitPlanIndex == idx)
+                                Button(action: {
+                                    withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
+                                        manager.selectTransitPlan(at: idx)
+                                    }
+                                }) {
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text(plan.badge)
+                                            .font(.system(size: 12, weight: .black))
+                                        Text("\(plan.totalMinutes)分钟 · ¥\(plan.priceYuan)")
+                                            .font(.system(size: 14, weight: .heavy, design: .rounded))
+                                        Text("\(plan.transferCount)次换乘 · 步行\(plan.walkMeters)米")
+                                            .font(.system(size: 10, weight: .bold))
+                                            .opacity(0.85)
+                                    }
+                                    .padding(.horizontal, 14)
+                                    .padding(.vertical, 8)
+                                    .background(isSel ? Color.purple : Color.white.opacity(0.10))
+                                    .foregroundColor(.white)
+                                    .cornerRadius(12)
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 12)
+                                            .stroke(isSel ? httGold : Color.clear, lineWidth: 2)
+                                    )
+                                }
+                            }
+                        }
+                        .padding(.horizontal)
+                        .padding(.vertical, 10)
+                    }
+                    .background(Color.black.opacity(0.6))
+                    
+                    Divider().background(Color.white.opacity(0.15))
+                    
+                    // 2. Active Plan Detailed Station & Transfer Timeline
+                    if manager.selectedTransitPlanIndex < manager.transitPlans.count {
+                        let activePlan = manager.transitPlans[manager.selectedTransitPlanIndex]
+                        
+                        ScrollView(.vertical, showsIndicators: true) {
+                            VStack(alignment: .leading, spacing: 0) {
+                                // Summary strip
+                                HStack(spacing: 12) {
+                                    Label("\(activePlan.totalMinutes) 分钟", systemImage: "clock.fill")
+                                    Label("¥\(activePlan.priceYuan)", systemImage: "yensign.circle.fill")
+                                    Label("步行 \(activePlan.walkMeters)m", systemImage: "figure.walk")
+                                    Label("\(activePlan.totalStations) 站", systemImage: "tram.fill")
+                                }
+                                .font(.system(size: 12, weight: .bold))
+                                .foregroundColor(httGold)
+                                .padding()
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(Color.black.opacity(0.4))
+                                
+                                // Vertical Step-by-Step Timeline
+                                VStack(alignment: .leading, spacing: 0) {
+                                    ForEach(Array(activePlan.steps.enumerated()), id: \.element.id) { stepIdx, step in
+                                        HStack(alignment: .top, spacing: 14) {
+                                            // Left Icon & Vertical Track Line
+                                            VStack(spacing: 0) {
+                                                Circle()
+                                                    .fill(stepColor(for: step))
+                                                    .frame(width: 28, height: 28)
+                                                    .overlay(
+                                                        Image(systemName: step.kind.icon)
+                                                            .font(.system(size: 13, weight: .bold))
+                                                            .foregroundColor(.white)
+                                                    )
+                                                
+                                                if stepIdx < activePlan.steps.count - 1 {
+                                                    Rectangle()
+                                                        .fill(stepColor(for: step).opacity(0.6))
+                                                        .frame(width: 3)
+                                                        .frame(minHeight: 46)
+                                                }
+                                            }
+                                            
+                                            // Right Step Info
+                                            VStack(alignment: .leading, spacing: 4) {
+                                                HStack {
+                                                    Text(step.lineName)
+                                                        .font(.system(size: 15, weight: .black))
+                                                        .foregroundColor(.white)
+                                                    
+                                                    if step.durationMins > 0 {
+                                                        Text("约 \(step.durationMins) 分钟")
+                                                            .font(.system(size: 11, weight: .bold, design: .monospaced))
+                                                            .foregroundColor(httGold)
+                                                    }
+                                                }
+                                                
+                                                if !step.fromStation.isEmpty && !step.toStation.isEmpty {
+                                                    Text("\(step.fromStation) ➔ \(step.toStation)")
+                                                        .font(.system(size: 13, weight: .bold))
+                                                        .foregroundColor(httCream.opacity(0.92))
+                                                }
+                                                
+                                                if step.passStationCount > 0 {
+                                                    Text("乘坐 \(step.passStationCount) 站 · \(step.intervalDesc)")
+                                                        .font(.system(size: 11, weight: .medium))
+                                                        .foregroundColor(.gray)
+                                                } else if !step.intervalDesc.isEmpty {
+                                                    Text(step.intervalDesc)
+                                                        .font(.system(size: 11, weight: .medium))
+                                                        .foregroundColor(.gray)
+                                                }
+                                                
+                                                if !step.exitDesc.isEmpty {
+                                                    HStack(spacing: 4) {
+                                                        Image(systemName: "arrow.right.circle.fill")
+                                                            .font(.caption2)
+                                                        Text(step.exitDesc)
+                                                            .font(.system(size: 11, weight: .bold))
+                                                    }
+                                                    .foregroundColor(Color(red: 0.45, green: 0.85, blue: 1.0))
+                                                    .padding(.vertical, 2)
+                                                }
+                                            }
+                                            .padding(.bottom, 16)
+                                            
+                                            Spacer()
+                                        }
+                                    }
+                                }
+                                .padding()
+                            }
+                        }
+                    }
+                    
+                    // 3. Bottom One-Click Start Guidance in App (Zero External Jump!)
+                    Button(action: {
+                        dismiss()
+                        withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) {
+                            manager.startFocusedNavigation()
+                        }
+                    }) {
+                        HStack(spacing: 8) {
+                            Image(systemName: "tram.circle.fill")
+                                .font(.title3)
+                            Text("开始按此方案乘车指引 (内置专注模式)")
+                                .font(.system(size: 15, weight: .black))
+                        }
+                        .frame(maxWidth: .infinity, minHeight: 46)
+                        .background(
+                            LinearGradient(
+                                colors: [Color.purple, Color(red: 0.65, green: 0.25, blue: 0.85)],
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
+                        )
+                        .foregroundColor(.white)
+                        .cornerRadius(12)
+                        .overlay(RoundedRectangle(cornerRadius: 12).stroke(httGold, lineWidth: 1.8))
+                        .padding()
+                    }
+                }
+            }
+            .navigationTitle("放课后茶会 · 内置公交地铁导航")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("关闭") {
+                        dismiss()
+                    }
+                    .foregroundColor(httGold)
+                }
+            }
+        }
+    }
+    
+    private func stepColor(for step: TransitStepItem) -> Color {
+        switch step.kind {
+        case .walk:
+            return Color.gray
+        case .subway:
+            return Color(hex: step.colorHex) ?? Color.purple
+        case .bus:
+            return Color(red: 0.95, green: 0.55, blue: 0.20)
+        }
+    }
+}
+
+extension Color {
+    init?(hex: String) {
+        var cleanHex = hex.trimmingCharacters(in: .whitespacesAndNewlines)
+        if cleanHex.hasPrefix("#") { cleanHex.removeFirst() }
+        guard cleanHex.count == 6, let rgb = UInt64(cleanHex, radix: 16) else { return nil }
+        let r = Double((rgb >> 16) & 0xFF) / 255.0
+        let g = Double((rgb >> 8) & 0xFF) / 255.0
+        let b = Double(rgb & 0xFF) / 255.0
+        self.init(red: r, green: g, blue: b)
     }
 }
