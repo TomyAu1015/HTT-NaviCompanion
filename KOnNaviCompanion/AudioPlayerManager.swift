@@ -5849,6 +5849,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             audioPlayer?.delegate = self
             audioPlayer?.prepareToPlay()
             audioPlayer?.play()
+            KOnMusicManager.shared.duckForVoice(duck: true)
             
             let spkFilter = characterForVoiceId(safeId)
             let speaker = spkFilter.displayName(language)
@@ -5891,6 +5892,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             audioPlayer?.delegate = self
             audioPlayer?.prepareToPlay()
             audioPlayer?.play()
+            KOnMusicManager.shared.duckForVoice(duck: true)
             
             let matchedMember = CharacterFilter.fiveIndividuals.first(where: { $0.charId == chosen.charId })
             let speakerName = matchedMember?.displayName(language) ?? targetChar.displayName(language)
@@ -5966,6 +5968,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             DispatchQueue.main.async {
                 self.isPlaying = false
                 self.currentPlayingId = nil
+                KOnMusicManager.shared.duckForVoice(duck: false)
             }
         }
     }

@@ -754,6 +754,7 @@ struct HTTSmoothMapView: UIViewRepresentable {
 // MARK: - Main Content View with Dynamic Auto-Enlarging Navigation HUD
 struct ContentView: View {
     @StateObject private var manager = AudioPlayerManager.shared
+    @ObservedObject private var musicManager = KOnMusicManager.shared
     @State private var showSoundboardSheet: Bool = false
     @State private var showSearchSheet: Bool = false
     @State private var showAlbumSheet: Bool = false
@@ -996,6 +997,22 @@ struct ContentView: View {
                                 }
                                 
                                 Button(action: {
+                                    musicManager.showMusicSheet = true
+                                }) {
+                                    HStack(spacing: 2) {
+                                        Image(systemName: "music.note")
+                                        Text(tr("音乐", "音樂", "Music"))
+                                    }
+                                    .font(.system(size: 10, weight: .heavy))
+                                    .padding(.horizontal, 5)
+                                    .padding(.vertical, 5)
+                                    .background(musicManager.isPlaying ? Color.purple.opacity(0.85) : Color.black.opacity(0.85))
+                                    .foregroundColor(musicManager.isPlaying ? .white : httGold)
+                                    .cornerRadius(8)
+                                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold.opacity(0.75), lineWidth: 1))
+                                }
+                                
+                                Button(action: {
                                     withAnimation(.spring(response: 0.35, dampingFraction: 0.7)) {
                                         manager.isMapEnlarged = false
                                     }
@@ -1081,7 +1098,7 @@ struct ContentView: View {
                         
                         // Right Side Stack: [🔍 搜索] + "缩小" Cockpit + Unobstructed Rotating HTT Compass + Recenter + Zoom [+] / [-] Buttons!
                         VStack(alignment: .trailing, spacing: 6) {
-                            // Row 1: [🔍 搜索] Destination Button + [缩小] Cockpit Button
+                            // Row 1: [🔍 搜索] + [🎵 音乐] + [缩小] Cockpit Button
                             HStack(spacing: 5) {
                                 Button(action: {
                                     showSearchSheet = true
@@ -1092,10 +1109,27 @@ struct ContentView: View {
                                         Text(tr("搜索", "搜尋", "Search"))
                                             .font(.system(size: 11, weight: .heavy))
                                     }
-                                    .padding(.horizontal, 8)
+                                    .padding(.horizontal, 7)
                                     .frame(height: 35)
                                     .background(Color.black.opacity(0.85))
                                     .foregroundColor(.white)
+                                    .cornerRadius(9)
+                                    .overlay(RoundedRectangle(cornerRadius: 9).stroke(httGold.opacity(0.8), lineWidth: 1.2))
+                                }
+                                
+                                Button(action: {
+                                    musicManager.showMusicSheet = true
+                                }) {
+                                    HStack(spacing: 3) {
+                                        Image(systemName: "music.note")
+                                            .font(.system(size: 12, weight: .bold))
+                                        Text(tr("音乐", "音樂", "Music"))
+                                            .font(.system(size: 11, weight: .heavy))
+                                    }
+                                    .padding(.horizontal, 7)
+                                    .frame(height: 35)
+                                    .background(musicManager.isPlaying ? Color.purple.opacity(0.85) : Color.black.opacity(0.85))
+                                    .foregroundColor(musicManager.isPlaying ? .white : httGold)
                                     .cornerRadius(9)
                                     .overlay(RoundedRectangle(cornerRadius: 9).stroke(httGold.opacity(0.8), lineWidth: 1.2))
                                 }
@@ -1192,6 +1226,13 @@ struct ContentView: View {
                         bottomPreNavRouteSelectionCard
                             .padding(.horizontal, 12)
                             .transition(.move(edge: .bottom).combined(with: .opacity))
+                    }
+                    
+                    // Floating K-ON! Music Mini-Player Bar
+                    if musicManager.isPlaying || musicManager.currentSong != nil {
+                        KOnMusicMiniPlayerBar(musicManager: musicManager)
+                            .padding(.horizontal, 12)
+                            .padding(.bottom, 2)
                     }
                     
                     // Bottom Floating Control Island (Speedometer + Speech Bubble + Bottom-Right Mascot!)
@@ -2048,6 +2089,23 @@ struct ContentView: View {
                 .background(httCrimson)
                 .cornerRadius(8)
                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold, lineWidth: 1.5))
+            }
+            
+            Button(action: {
+                musicManager.showMusicSheet = true
+            }) {
+                HStack(spacing: 3) {
+                    Image(systemName: "music.note.list")
+                    Text(tr("音乐馆", "音樂館", "Music"))
+                        .lineLimit(1)
+                }
+                .font(.system(size: 11, weight: .bold))
+                .padding(.horizontal, 7)
+                .padding(.vertical, 6)
+                .background(musicManager.isPlaying ? Color.purple.opacity(0.85) : Color.white.opacity(0.14))
+                .foregroundColor(musicManager.isPlaying ? .white : httGold)
+                .cornerRadius(8)
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold.opacity(0.7), lineWidth: 1))
             }
             
             Spacer(minLength: 2)

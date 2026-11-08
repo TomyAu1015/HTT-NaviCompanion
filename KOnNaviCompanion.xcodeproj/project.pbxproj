@@ -18,6 +18,7 @@
 		1009 /* AppIcon60x60@2x.png in Resources */ = {isa = PBXBuildFile; fileRef = 2010 /* AppIcon60x60@2x.png */; };
 		1010 /* AppIcon60x60@3x.png in Resources */ = {isa = PBXBuildFile; fileRef = 2011 /* AppIcon60x60@3x.png */; };
 		1011 /* AppIcon.png in Resources */ = {isa = PBXBuildFile; fileRef = 2012 /* AppIcon.png */; };
+		1012 /* KOnMusicManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2013 /* KOnMusicManager.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -31,6 +32,7 @@
 		2007 /* mascot_assets.dat */ = {isa = PBXFileReference; lastKnownFileType = file; path = mascot_assets.dat; sourceTree = "<group>"; };
 		2008 /* CarPlaySceneDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CarPlaySceneDelegate.swift; sourceTree = "<group>"; };
 		2012 /* AppIcon.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = AppIcon.png; sourceTree = "<group>"; };
+		2013 /* KOnMusicManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KOnMusicManager.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -60,6 +62,7 @@
 				2003 /* AudioPlayerManager.swift */,
 				2004 /* KeyConfig.swift */,
 				2008 /* CarPlaySceneDelegate.swift */,
+				2013 /* KOnMusicManager.swift */,
 				2005 /* voice_assets.dat */,
 				2007 /* mascot_assets.dat */,
 				2009 /* Assets.xcassets */,
@@ -158,6 +161,7 @@
 				1003 /* AudioPlayerManager.swift in Sources */,
 				1004 /* KeyConfig.swift in Sources */,
 				1007 /* CarPlaySceneDelegate.swift in Sources */,
+				1012 /* KOnMusicManager.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
