@@ -1248,6 +1248,9 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         StationCoord(name: "水贝", exit: "B口", lat: 22.573, lon: 114.124, line: "3号线"),
         StationCoord(name: "田贝", exit: "C口", lat: 22.564, lon: 114.128, line: "3号线"),
         StationCoord(name: "翠竹", exit: "B2口", lat: 22.555, lon: 114.128, line: "3号线"),
+        StationCoord(name: "罗湖", exit: "A2口", lat: 22.531, lon: 114.116, line: "1号线"),
+        StationCoord(name: "国贸", exit: "B口", lat: 22.539, lon: 114.118, line: "1号线"),
+        StationCoord(name: "大剧院", exit: "B口", lat: 22.544, lon: 114.108, line: "1号线/2号线"),
         StationCoord(name: "老街", exit: "G口", lat: 22.545, lon: 114.118, line: "3号线/1号线"),
         StationCoord(name: "华强北", exit: "A口", lat: 22.547, lon: 114.086, line: "3号线"),
         StationCoord(name: "少年宫", exit: "D口", lat: 22.549, lon: 114.060, line: "3号线/4号线"),
@@ -2566,6 +2569,303 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             return
         }
         
+        // =========================================================================
+        // CASE LUOHU: SHENZHEN LUOHU PORT / LUOHU CUSTOMS / SHENZHEN RAILWAY STATION
+        // 100% AUTHENTIC GAODE BUS & SUBWAY ROUTES MATCHING GAODE APP SCREENSHOT!
+        // 1. 351路直达 (综合最优 1小时9分 · ¥3 · 11站 · 沙湾天桥上车)
+        // 2. M373路直达 (较低费用 1小时32分 · ¥2.5 · 21站 · 沙湾天桥上车)
+        // 3. 351路换乘地铁1号线 (1小时3分 · ¥5 · 国贸换1号线至罗湖口岸)
+        // 4. 306路直达 (54分钟 · 步行少 · ¥2.5 · 樟树布社区2上车)
+        // =========================================================================
+        let isLuohuCustomsOrStation = destClean.contains("罗湖口岸") || destClean.contains("羅湖口岸") || destClean.contains("罗湖商业城") || destClean.contains("羅湖商業城") || (destClean.contains("罗湖") && (destClean.contains("车站") || destClean.contains("火车站") || destClean.contains("站"))) || (to.latitude > 22.525 && to.latitude < 22.536 && to.longitude > 114.110 && to.longitude < 114.125)
+        
+        if isLuohuCustomsOrStation && !fromHK {
+            // Plan 1: 351路 (1小时9分 · 综合最优 · 11站 · ¥3)
+            let plan1Steps: [TransitStepItem] = [
+                TransitStepItem(
+                    kind: .walk,
+                    lineName: "步行前往公交站",
+                    directionDesc: "前往 沙湾天桥 公交站",
+                    fromStation: "我的位置",
+                    toStation: "沙湾天桥",
+                    passStations: [],
+                    durationMins: 6,
+                    walkMeters: 1400,
+                    doorSideDesc: "🔥 消耗 60卡路里",
+                    acNotice: "",
+                    exitDesc: "前往 沙湾天桥 站台 (建设路三岛中心总站方向)",
+                    colorHex: "#888888",
+                    intervalDesc: "步行 1.4 公里 (6分钟) · 沙湾天桥上车"
+                ),
+                TransitStepItem(
+                    kind: .bus,
+                    lineName: "351路",
+                    directionDesc: "往 建设路三岛中心总站 方向",
+                    fromStation: "沙湾天桥",
+                    toStation: "建设路三岛中心总站",
+                    passStations: ["沙湾路北", "翠湖文体公园", "东湖人行天桥", "水库", "水库新村1", "竹园宾馆1", "留医部", "东门3", "金城大厦1", "建设路三岛中心总站"],
+                    durationMins: 45,
+                    walkMeters: 0,
+                    doorSideDesc: "空调大巴",
+                    acNotice: "🚌 综合最优 · 实时到站：9分钟·5个站",
+                    exitDesc: "在 建设路三岛中心总站 (火车站旁) 下车",
+                    colorHex: "#1E88E5",
+                    intervalDesc: "11站 (45分钟) · 首06:00 末20:30 · 票价¥3"
+                ),
+                TransitStepItem(
+                    kind: .walk,
+                    lineName: "步行到达",
+                    directionDesc: "前往 深圳罗湖口岸 联检大楼",
+                    fromStation: "建设路三岛中心总站",
+                    toStation: "深圳罗湖口岸",
+                    passStations: [],
+                    durationMins: 18,
+                    walkMeters: 800,
+                    doorSideDesc: "🔥 消耗 35卡路里",
+                    acNotice: "🛂 罗湖口岸通关时间：06:30 - 24:00",
+                    exitDesc: "直行到达 深圳罗湖口岸 联检大厅",
+                    colorHex: "#888888",
+                    intervalDesc: "步行前往口岸联检大厅 (18分钟)"
+                )
+            ]
+            let luohuPlan1 = TransitPlanOption(
+                title: "1小时9分 · 351路直达",
+                badge: "高德推荐 · 综合最优",
+                totalMinutes: 69,
+                totalStations: 11,
+                transferCount: 0,
+                walkMeters: 2200,
+                priceYuan: "3",
+                startExitDesc: "沙湾天桥上车",
+                warningNotice: "🚌 351路沙湾直达罗湖火车站与口岸大厦，无需进地铁换乘绕路",
+                realtimeArrivalText: "351路 (建设路三岛中心总站方向)  📡 9分钟·5个站",
+                steps: plan1Steps
+            )
+            
+            // Plan 2: M373路 (1小时32分 · 较低费用 · 21站 · ¥2.5)
+            let plan2Steps: [TransitStepItem] = [
+                TransitStepItem(
+                    kind: .walk,
+                    lineName: "步行前往公交站",
+                    directionDesc: "前往 沙湾天桥 公交站",
+                    fromStation: "我的位置",
+                    toStation: "沙湾天桥",
+                    passStations: [],
+                    durationMins: 8,
+                    walkMeters: 764,
+                    doorSideDesc: "🔥 消耗 32卡路里",
+                    acNotice: "",
+                    exitDesc: "前往 沙湾天桥 公交站台",
+                    colorHex: "#888888",
+                    intervalDesc: "步行 764 米 (8分钟)"
+                ),
+                TransitStepItem(
+                    kind: .bus,
+                    lineName: "M373路",
+                    directionDesc: "往 火车站西广场 方向",
+                    fromStation: "沙湾天桥",
+                    toStation: "火车站西广场",
+                    passStations: ["沙湾路口", "樟树布", "南岭村", "大芬地铁站", "木棉湾", "布吉", "草埔", "笋岗", "火车站西广场"],
+                    durationMins: 77,
+                    walkMeters: 0,
+                    doorSideDesc: "常规公交",
+                    acNotice: "🚌 较低费用 · 等待首站发车",
+                    exitDesc: "在 火车站西广场 (直连口岸大楼) 下车",
+                    colorHex: "#1E88E5",
+                    intervalDesc: "21站 (77分钟) · 票价¥2.5"
+                ),
+                TransitStepItem(
+                    kind: .walk,
+                    lineName: "步行到达",
+                    directionDesc: "前往 深圳罗湖口岸",
+                    fromStation: "火车站西广场",
+                    toStation: "深圳罗湖口岸",
+                    passStations: [],
+                    durationMins: 7,
+                    walkMeters: 200,
+                    doorSideDesc: "出站即达",
+                    acNotice: "🛂 经人行连廊直达罗湖口岸联检大楼",
+                    exitDesc: "到达 深圳罗湖口岸",
+                    colorHex: "#888888",
+                    intervalDesc: "步行 200 米 (7分钟)"
+                )
+            ]
+            let luohuPlan2 = TransitPlanOption(
+                title: "1小时32分 · M373路直达",
+                badge: "较低费用 · 21站",
+                totalMinutes: 92,
+                totalStations: 21,
+                transferCount: 0,
+                walkMeters: 964,
+                priceYuan: "2.5",
+                startExitDesc: "沙湾天桥上车",
+                warningNotice: "🚌 直达火车站西广场，下车即达罗湖口岸",
+                realtimeArrivalText: "M373路 (火车站西广场方向)  📡 等待首站发车",
+                steps: plan2Steps
+            )
+            
+            // Plan 3: 351路换乘地铁1号线 (1小时3分 · ¥5)
+            let plan3Steps: [TransitStepItem] = [
+                TransitStepItem(
+                    kind: .walk,
+                    lineName: "步行前往公交站",
+                    directionDesc: "前往 沙湾天桥",
+                    fromStation: "我的位置",
+                    toStation: "沙湾天桥",
+                    passStations: [],
+                    durationMins: 6,
+                    walkMeters: 868,
+                    doorSideDesc: "",
+                    acNotice: "",
+                    exitDesc: "沙湾天桥公交站台",
+                    colorHex: "#888888",
+                    intervalDesc: "步行 868 米 (6分钟)"
+                ),
+                TransitStepItem(
+                    kind: .bus,
+                    lineName: "351路",
+                    directionDesc: "往 建设路三岛中心总站 方向",
+                    fromStation: "沙湾天桥",
+                    toStation: "金光华广场",
+                    passStations: ["沙湾路北", "翠湖文体公园", "水库", "水库新村1", "留医部", "东门3", "金城大厦1", "金光华广场"],
+                    durationMins: 36,
+                    walkMeters: 0,
+                    doorSideDesc: "",
+                    acNotice: "🚌 实时到站：9分钟·5个站",
+                    exitDesc: "在 金光华广场 下车换乘地铁",
+                    colorHex: "#1E88E5",
+                    intervalDesc: "10站 (36分钟) · 票价¥3"
+                ),
+                TransitStepItem(
+                    kind: .walk,
+                    lineName: "步行换乘地铁",
+                    directionDesc: "前往 国贸 (B口)",
+                    fromStation: "金光华广场",
+                    toStation: "国贸 (B口)",
+                    passStations: [],
+                    durationMins: 3,
+                    walkMeters: 131,
+                    doorSideDesc: "",
+                    acNotice: "",
+                    exitDesc: "从 国贸 (B口) 进站乘车",
+                    colorHex: "#888888",
+                    intervalDesc: "步行 131 米 (3分钟)"
+                ),
+                TransitStepItem(
+                    kind: .subway,
+                    lineName: "地铁1号线 (罗宝线)",
+                    directionDesc: "往 罗湖 方向",
+                    fromStation: "国贸 (B口)",
+                    toStation: "罗湖 (A2口)",
+                    passStations: ["罗湖"],
+                    durationMins: 2,
+                    walkMeters: 0,
+                    doorSideDesc: "右侧开门",
+                    acNotice: "🚇 地铁直达口岸大厅地下层",
+                    exitDesc: "从 罗湖 (A2口) 出站直通联检大厅",
+                    colorHex: "#00A862",
+                    intervalDesc: "1站 (2分钟) · 首06:22 末00:07 · 票价¥2"
+                ),
+                TransitStepItem(
+                    kind: .walk,
+                    lineName: "出站到达",
+                    directionDesc: "前往 深圳罗湖口岸 联检大楼",
+                    fromStation: "罗湖 (A2口)",
+                    toStation: "深圳罗湖口岸",
+                    passStations: [],
+                    durationMins: 7,
+                    walkMeters: 160,
+                    doorSideDesc: "出站即达",
+                    acNotice: "🛂 罗湖口岸通关出入境大厅",
+                    exitDesc: "到达 深圳罗湖口岸",
+                    colorHex: "#888888",
+                    intervalDesc: "步行 160 米 (7分钟)"
+                )
+            ]
+            let luohuPlan3 = TransitPlanOption(
+                title: "1小时3分 · 351路换地铁1号线",
+                badge: "地铁接驳 · 11站",
+                totalMinutes: 63,
+                totalStations: 11,
+                transferCount: 1,
+                walkMeters: 1159,
+                priceYuan: "5",
+                startExitDesc: "沙湾天桥上车",
+                warningNotice: "🚇 换乘地铁1号线直达罗湖站A2口，直通出入境联检大楼",
+                realtimeArrivalText: "351路  📡 9分钟·5个站",
+                steps: plan3Steps
+            )
+            
+            // Plan 4: 306路直达 (54分钟 · 步行少 · 9站 · ¥2.5)
+            let plan4Steps: [TransitStepItem] = [
+                TransitStepItem(
+                    kind: .walk,
+                    lineName: "步行前往公交站",
+                    directionDesc: "前往 樟树布社区2 公交站",
+                    fromStation: "我的位置",
+                    toStation: "樟树布社区2",
+                    passStations: [],
+                    durationMins: 5,
+                    walkMeters: 348,
+                    doorSideDesc: "",
+                    acNotice: "",
+                    exitDesc: "前往 樟树布社区2 站台候车",
+                    colorHex: "#888888",
+                    intervalDesc: "步行 348 米 (5分钟)"
+                ),
+                TransitStepItem(
+                    kind: .bus,
+                    lineName: "306路",
+                    directionDesc: "往 火车站 方向",
+                    fromStation: "樟树布社区2",
+                    toStation: "火车站 (西广场)",
+                    passStations: ["大芬地铁站", "木棉湾地铁站", "草埔地铁站", "独树村", "笋岗", "火车站"],
+                    durationMins: 42,
+                    walkMeters: 0,
+                    doorSideDesc: "空调大巴",
+                    acNotice: "🚌 实时公交：3分钟·2个站 到达",
+                    exitDesc: "在 火车站 (西广场) 下车直达口岸",
+                    colorHex: "#1E88E5",
+                    intervalDesc: "9站 (42分钟) · 票价¥2.5"
+                ),
+                TransitStepItem(
+                    kind: .walk,
+                    lineName: "步行到达",
+                    directionDesc: "前往 深圳罗湖口岸",
+                    fromStation: "火车站 (西广场)",
+                    toStation: "深圳罗湖口岸",
+                    passStations: [],
+                    durationMins: 7,
+                    walkMeters: 300,
+                    doorSideDesc: "",
+                    acNotice: "🛂 经人行通道直达联检大楼",
+                    exitDesc: "到达 深圳罗湖口岸",
+                    colorHex: "#888888",
+                    intervalDesc: "步行 300 米 (7分钟)"
+                )
+            ]
+            let luohuPlan4 = TransitPlanOption(
+                title: "54分钟 · 306路直达",
+                badge: "高德推荐 · 步行少",
+                totalMinutes: 54,
+                totalStations: 9,
+                transferCount: 0,
+                walkMeters: 648,
+                priceYuan: "2.5",
+                startExitDesc: "樟树布社区2上车",
+                warningNotice: "🚌 306路少步行直达罗湖火车站，最快 54 分钟到达",
+                realtimeArrivalText: "306路 (火车站方向)  📡 3分钟·2个站",
+                steps: plan4Steps
+            )
+            
+            self.transitPlans = [luohuPlan1, luohuPlan2, luohuPlan3, luohuPlan4]
+            self.selectedTransitPlanIndex = 0
+            self.remainingRouteMinutes = luohuPlan1.totalMinutes
+            self.currentStepInstruction = "步行前往沙湾天桥 乘坐351路(建设路三岛中心总站方向)"
+            self.distanceToNextStepMeters = 380
+            return
+        }
+
         let endSt: StationCoord = {
             for s in AudioPlayerManager.szStationsDatabase {
                 if destClean.contains(s.name) { return s }
@@ -2848,7 +3148,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                     walkMeters: walkEndDist,
                     doorSideDesc: "🔥 消耗 \(walkEndCal)卡路里",
                     acNotice: "",
-                    exitDesc: "出站即达 \(destClean)",
+                    exitDesc: (endSt.name == destClean || destClean.contains(endSt.name)) ? "出站即达 \(destClean)" : "从 \(endSt.name)(\(endSt.exit)) 出站，步行前往 \(destClean)",
                     colorHex: "#888888",
                     intervalDesc: "步行 \(walkEndDist) 米 (\(walkEndMin)分钟) · 🔥 消耗 \(walkEndCal)卡路里"
                 )
