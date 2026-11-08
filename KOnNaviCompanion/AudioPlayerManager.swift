@@ -874,8 +874,24 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         let hour = Calendar.current.component(.hour, from: Date())
         let catHint = (rawCategory ?? "") + " " + name
         
-        // 1. SHOPPING MALL & DEPARTMENT STORE (购物中心/商场/百货/商业广场：如福万家购物中心、万象城、天虹、壹方城)
-        if catHint.contains("购物中心") || catHint.contains("購物中心") || catHint.contains("商场") || catHint.contains("商場") || catHint.contains("百货") || catHint.contains("百貨") || catHint.contains("商业广场") || catHint.contains("商業廣場") || catHint.contains("Mall") || catHint.contains("万达") || catHint.contains("大悦城") || catHint.contains("天虹") {
+        // 0. SUBWAY & TRANSIT EXITS (地铁站/出入口/高铁站/口岸：如石硖尾(A出入口)、丹竹头、罗湖、九龙塘) - HIGHEST PRIORITY!
+        if catHint.contains("出入口") || catHint.contains("出口") || catHint.contains("地铁") || catHint.contains("地鐵") || catHint.contains("港铁") || catHint.contains("港鐵") || (catHint.contains("站") && !catHint.contains("加油站") && !catHint.contains("服务站") && !catHint.contains("驿站")) || catHint.contains("口岸") || catHint.contains("机场") || catHint.contains("高鐵") || catHint.contains("高铁") {
+            self.tappedMapCategory = "地铁站/出入口/枢纽"
+            self.tappedMapHours = "06:00-00:30 (随列车时刻)"
+            self.tappedMapIsOpen = (hour >= 6 || hour <= 0)
+            self.tappedMapRating = "4.9"
+            self.tappedMapReviewLabel = "准点极速出行"
+            self.tappedMapTags = ["地铁直达", "刷码拍卡进站", "无障碍电梯", "盲道设施"]
+            self.tappedMapPricePerPerson = "起步¥2/HK$4"
+            self.tappedMapDishes = [
+                DishItem(name: "出入口无障碍电梯与通道指引", price: "A口直通", iconName: "door.left.hand.open", bgHex: "#0288D1", desc: "通往地面街道与公交接驳枢纽 · 设有双向自动扶梯", recommendCount: 680),
+                DishItem(name: "列车首末班车时刻与班次表", price: "06:04首班", iconName: "tram.fill", bgHex: "#0076C0", desc: "高峰期2~3分钟一班 · 支持微信/支付宝/八达通乘车码", recommendCount: 540),
+                DishItem(name: "站内母婴室与卫生间位置", price: "付费区旁", iconName: "figure.walk", bgHex: "#00897B", desc: "设有独立无障碍卫生间及母婴护理台", recommendCount: 420),
+                DishItem(name: "站厅自助充值与票务售卡机", price: "支持乘车码", iconName: "creditcard.fill", bgHex: "#5E35B1", desc: "提供车票购买/交通联合卡充值与人工服务台咨询", recommendCount: 390)
+            ]
+        }
+        // 1. SHOPPING MALL & COMMERCIAL PLAZA (购物中心/商场/百货/商业广场：如福万家购物中心、万象城、天虹、壹方城)
+        else if catHint.contains("购物中心") || catHint.contains("購物中心") || catHint.contains("商场") || catHint.contains("商場") || catHint.contains("百货") || catHint.contains("百貨") || catHint.contains("商业广场") || catHint.contains("商業廣場") || catHint.contains("Mall") || catHint.contains("万达") || catHint.contains("大悦城") || catHint.contains("天虹") {
             self.tappedMapCategory = "购物中心/大型商场"
             self.tappedMapHours = "10:00-22:00"
             self.tappedMapIsOpen = (hour >= 10 && hour <= 22)
@@ -1066,22 +1082,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                 DishItem(name: "手打鲜榨清爽柠檬茶", price: "¥12", iconName: "cup.and.saucer.fill", bgHex: "#2E7D32", desc: "香水柠檬暴打 · 解腻清爽", recommendCount: 310)
             ]
         }
-        // 13. TRANSIT HUB (公交/地铁/机场/车站)
-        else if catHint.contains("地铁") || catHint.contains("站") || catHint.contains("口岸") || catHint.contains("机场") || catHint.contains("公交") {
-            self.tappedMapCategory = "交通枢纽"
-            self.tappedMapHours = "06:00-24:00"
-            self.tappedMapIsOpen = (hour >= 6)
-            self.tappedMapRating = "4.9"
-            self.tappedMapReviewLabel = "准点便捷"
-            self.tappedMapTags = ["官方站点", "实时班次", "无障碍电梯"]
-            self.tappedMapPricePerPerson = "¥2~10"
-            self.tappedMapDishes = [
-                DishItem(name: "首末班车实时时刻表", price: "06:00起", iconName: "tram.fill", bgHex: "#0277BD", desc: "双向列车准点运行 · 间隔约3~5分钟", recommendCount: 520),
-                DishItem(name: "站内便捷换乘通道", price: "直达", iconName: "arrow.triangle.swap", bgHex: "#00838F", desc: "配有垂直电梯与双向扶梯指引", recommendCount: 380),
-                DishItem(name: "自助票务与乘车码闸机", price: "A/B厅", iconName: "creditcard.fill", bgHex: "#283593", desc: "支持微信/支付宝/银联/八达通拍卡", recommendCount: 410),
-                DishItem(name: "母婴室与公共洗手间", price: "B口旁", iconName: "figure.walk", bgHex: "#455A64", desc: "站台东侧及B出入口通道旁均可使用", recommendCount: 290)
-            ]
-        }
+
         // 14. DEFAULT QUALITY MERCHANT (品质商户通用)
         else {
             self.tappedMapCategory = "综合商户/品质生活"
@@ -1103,7 +1104,9 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     }
 
     func getSectionHeaderTitleForPOI() -> String {
-        if tappedMapCategory.contains("购物") || tappedMapCategory.contains("商场") {
+        if tappedMapCategory.contains("地铁") || tappedMapCategory.contains("出入口") || tappedMapCategory.contains("枢纽") {
+            return "出入口與地鐵設施指引 (點擊查看詳情)"
+        } else if tappedMapCategory.contains("购物") || tappedMapCategory.contains("商场") {
             return "商場主力業態與樓層分佈 (點擊查看詳情)"
         } else if tappedMapCategory.contains("住宅") || tappedMapCategory.contains("小区") {
             return "出入口與小區配套 (點擊查看詳情)"
@@ -1179,12 +1182,12 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         let tapLoc = CLLocation(latitude: coord.latitude, longitude: coord.longitude)
         self.isReverseGeocoding = true
         
-        // Pinpoint radius: Strict 28 meters around tap point so finger clicks on "益友便利店" NEVER bleed into "沙湾河花园"!
-        // 1. First probe specifically for Shops & POIs within tight 28m radius
+        // Step 1: Probe specifically for Commercial Shops & Named Businesses in a tight 38m radius
+        // We probe both general POI filter AND common commercial sign keywords (店/超市/商行/小吃/门窗/五金/大药房/便利)
         let req = MKLocalSearch.Request()
         req.resultTypes = .pointOfInterest
         req.pointOfInterestFilter = .includingAll
-        req.region = MKCoordinateRegion(center: coord, latitudinalMeters: 56, longitudinalMeters: 56)
+        req.region = MKCoordinateRegion(center: coord, latitudinalMeters: 76, longitudinalMeters: 76)
         
         MKLocalSearch(request: req).start { [weak self] resp, _ in
             DispatchQueue.main.async {
@@ -1193,94 +1196,100 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                     guard let name = item.name, !name.isEmpty else { return false }
                     let itemLoc = CLLocation(latitude: item.placemark.coordinate.latitude,
                                              longitude: item.placemark.coordinate.longitude)
-                    return tapLoc.distance(from: itemLoc) <= 28.0
+                    return tapLoc.distance(from: itemLoc) <= 42.0
                 }
                 
-                // Priority 1: Actual commercial shops, convenience stores, hardware, charging stations, pharmacies, gyms
-                let realMerchants = allItems.filter { !self.isPureRoadOrBuildingNumber($0.name ?? "") && !($0.name?.contains("花园") ?? false) && !($0.name?.contains("小区") ?? false) }.sorted { a, b in
+                // Pure Commercial Merchants (Strictly exclude background residential estates like 沙湾河花园 / 厦村盛苑 / 小区)
+                let pureShops = allItems.filter { item in
+                    let n = item.name ?? ""
+                    let isEstate = n.contains("花园") || n.contains("花園") || n.contains("小区") || n.contains("小區") || n.contains("盛苑") || n.contains("住宅")
+                    return !isEstate && !self.isPureRoadOrBuildingNumber(n)
+                }.sorted { a, b in
                     let la = CLLocation(latitude: a.placemark.coordinate.latitude, longitude: a.placemark.coordinate.longitude)
                     let lb = CLLocation(latitude: b.placemark.coordinate.latitude, longitude: b.placemark.coordinate.longitude)
                     return tapLoc.distance(from: la) < tapLoc.distance(from: lb)
                 }
                 
-                if let bestMerchant = realMerchants.first, let shopName = bestMerchant.name {
+                if let bestShop = pureShops.first, let shopName = bestShop.name {
                     var addrParts: [String] = []
-                    if let dist = bestMerchant.placemark.subLocality { addrParts.append(dist) }
-                    if let road = bestMerchant.placemark.thoroughfare { addrParts.append(road) }
-                    if let num = bestMerchant.placemark.subThoroughfare { addrParts.append(num) }
-                    let fullAddr = addrParts.isEmpty ? (bestMerchant.placemark.title ?? "") : addrParts.joined(separator: "")
+                    if let dist = bestShop.placemark.subLocality { addrParts.append(dist) }
+                    if let road = bestShop.placemark.thoroughfare { addrParts.append(road) }
+                    if let num = bestShop.placemark.subThoroughfare { addrParts.append(num) }
+                    let fullAddr = addrParts.isEmpty ? (bestShop.placemark.title ?? "") : addrParts.joined(separator: "")
                     self.populatePOIDetails(
                         name: shopName,
-                        coord: bestMerchant.placemark.coordinate,
+                        coord: bestShop.placemark.coordinate,
                         address: fullAddr,
-                        phone: bestMerchant.phoneNumber,
-                        rawCategory: bestMerchant.pointOfInterestCategory?.rawValue
+                        phone: bestShop.phoneNumber,
+                        rawCategory: bestShop.pointOfInterestCategory?.rawValue
                     )
                     return
                 }
                 
-                // Priority 2: Natural-Language specific shop probe in tight radius (Captures 益友便利店, 远叶烟酒行, 兆鑫门窗, 宝佳行商行, etc.)
+                // Step 2: Natural Language Keyword Sweep (Directly hits 益友便利店, 厦园商店, 新家乐生活超市, 宝佳行商行, 兆鑫门窗, 营山名小吃, 永利群商行, etc.)
                 let shopReq = MKLocalSearch.Request()
                 shopReq.naturalLanguageQuery = "店"
-                shopReq.region = MKCoordinateRegion(center: coord, latitudinalMeters: 45, longitudinalMeters: 45)
+                shopReq.region = MKCoordinateRegion(center: coord, latitudinalMeters: 60, longitudinalMeters: 60)
                 MKLocalSearch(request: shopReq).start { [weak self] shopResp, _ in
                     DispatchQueue.main.async {
                         guard let self = self else { return }
-                        let nearbyShops = (shopResp?.mapItems ?? []).filter { item in
-                            guard let name = item.name, !name.isEmpty, !self.isPureRoadOrBuildingNumber(name) else { return false }
+                        let directShops = (shopResp?.mapItems ?? []).filter { item in
+                            guard let name = item.name, !name.isEmpty else { return false }
+                            let isEstate = name.contains("花园") || name.contains("花園") || name.contains("小区") || name.contains("小區") || name.contains("盛苑")
                             let loc = CLLocation(latitude: item.placemark.coordinate.latitude, longitude: item.placemark.coordinate.longitude)
-                            return tapLoc.distance(from: loc) <= 25.0
+                            return !isEstate && !self.isPureRoadOrBuildingNumber(name) && tapLoc.distance(from: loc) <= 35.0
                         }.sorted { a, b in
                             let la = CLLocation(latitude: a.placemark.coordinate.latitude, longitude: a.placemark.coordinate.longitude)
                             let lb = CLLocation(latitude: b.placemark.coordinate.latitude, longitude: b.placemark.coordinate.longitude)
                             return tapLoc.distance(from: la) < tapLoc.distance(from: lb)
                         }
                         
-                        if let bestShop = nearbyShops.first, let shopName = bestShop.name {
+                        if let bestDirectShop = directShops.first, let shopName = bestDirectShop.name {
                             var addrParts: [String] = []
-                            if let dist = bestShop.placemark.subLocality { addrParts.append(dist) }
-                            if let road = bestShop.placemark.thoroughfare { addrParts.append(road) }
-                            if let num = bestShop.placemark.subThoroughfare { addrParts.append(num) }
+                            if let dist = bestDirectShop.placemark.subLocality { addrParts.append(dist) }
+                            if let road = bestDirectShop.placemark.thoroughfare { addrParts.append(road) }
+                            if let num = bestDirectShop.placemark.subThoroughfare { addrParts.append(num) }
                             self.populatePOIDetails(
                                 name: shopName,
-                                coord: bestShop.placemark.coordinate,
+                                coord: bestDirectShop.placemark.coordinate,
                                 address: addrParts.joined(separator: ""),
-                                phone: bestShop.phoneNumber,
-                                rawCategory: bestShop.pointOfInterestCategory?.rawValue
+                                phone: bestDirectShop.phoneNumber,
+                                rawCategory: bestDirectShop.pointOfInterestCategory?.rawValue
                             )
                             return
                         }
                         
-                        // Priority 3: Specific building address or estate (ONLY if clicked within 20m of a real building structure!)
-                        if let firstItem = allItems.first, let itemName = firstItem.name, tapLoc.distance(from: CLLocation(latitude: firstItem.placemark.coordinate.latitude, longitude: firstItem.placemark.coordinate.longitude)) <= 22.0 {
-                            var addrParts: [String] = []
-                            if let dist = firstItem.placemark.subLocality { addrParts.append(dist) }
-                            if let road = firstItem.placemark.thoroughfare { addrParts.append(road) }
-                            if let num = firstItem.placemark.subThoroughfare { addrParts.append(num) }
-                            self.populatePOIDetails(
-                                name: itemName,
-                                coord: firstItem.placemark.coordinate,
-                                address: addrParts.joined(separator: ""),
-                                phone: firstItem.phoneNumber,
-                                rawCategory: firstItem.pointOfInterestCategory?.rawValue
-                            )
-                            return
+                        // Step 3: Specific building address or estate (ONLY if tap did NOT land on a shop, and was directly aimed at an estate / building within 15m)
+                        if let firstItem = allItems.first, let itemName = firstItem.name {
+                            let loc = CLLocation(latitude: firstItem.placemark.coordinate.latitude, longitude: firstItem.placemark.coordinate.longitude)
+                            if tapLoc.distance(from: loc) <= 15.0 {
+                                var addrParts: [String] = []
+                                if let dist = firstItem.placemark.subLocality { addrParts.append(dist) }
+                                if let road = firstItem.placemark.thoroughfare { addrParts.append(road) }
+                                if let num = firstItem.placemark.subThoroughfare { addrParts.append(num) }
+                                self.populatePOIDetails(
+                                    name: itemName,
+                                    coord: firstItem.placemark.coordinate,
+                                    address: addrParts.joined(separator: ""),
+                                    phone: firstItem.phoneNumber,
+                                    rawCategory: firstItem.pointOfInterestCategory?.rawValue
+                                )
+                                return
+                            }
                         }
                         
-                        // Priority 4: Reverse Geocode strictly guarded against water/river/empty street
+                        // Step 4: Reverse Geocode (Strictly reject water/river/empty ground)
                         CLGeocoder().reverseGeocodeLocation(tapLoc) { [weak self] placemarks, _ in
                             DispatchQueue.main.async {
                                 guard let self = self else { return }
                                 self.isReverseGeocoding = false
                                 if let pm = placemarks?.first {
-                                    // Strictly reject water/river/reservoir
                                     if pm.ocean != nil || pm.inlandWater != nil {
                                         self.tappedMapCoord = nil
                                         return
                                     }
                                     
-                                    // Only accept if tap hit a specific building name or area of interest directly within 18m
-                                    if let aoi = pm.areasOfInterest?.first, !aoi.isEmpty, pm.location != nil && tapLoc.distance(from: pm.location!) <= 18.0 {
+                                    if let aoi = pm.areasOfInterest?.first, !aoi.isEmpty, pm.location != nil && tapLoc.distance(from: pm.location!) <= 15.0 {
                                         var parts: [String] = []
                                         if let dist = pm.subLocality { parts.append(dist) }
                                         if let road = pm.thoroughfare { parts.append(road) }
@@ -1293,22 +1302,8 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                                         )
                                         return
                                     }
-                                    
-                                    if let bName = pm.name, !bName.isEmpty, bName != pm.thoroughfare && pm.location != nil && tapLoc.distance(from: pm.location!) <= 18.0 {
-                                        var parts: [String] = []
-                                        if let dist = pm.subLocality { parts.append(dist) }
-                                        if let road = pm.thoroughfare { parts.append(road) }
-                                        if let num = pm.subThoroughfare { parts.append(num) }
-                                        self.populatePOIDetails(
-                                            name: bName,
-                                            coord: coord,
-                                            address: parts.joined(separator: ""),
-                                            phone: nil
-                                        )
-                                        return
-                                    }
                                 }
-                                // Clicked on empty street or blank ground -> Dismiss like GaoDe!
+                                // Empty ground / blank road -> dismiss like GaoDe
                                 self.tappedMapCoord = nil
                             }
                         }
