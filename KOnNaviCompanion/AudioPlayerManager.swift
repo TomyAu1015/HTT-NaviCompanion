@@ -3088,6 +3088,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         // CASE A: SHORT/MEDIUM SURFACE BUS CORRIDOR
         if startSt.name == endSt.name || directMeters <= 5200 {
             let isUserInShawan = (from.latitude >= 22.58 && from.latitude <= 22.64 && from.longitude >= 114.14 && from.longitude <= 114.19)
+            let isShawanArea = isUserInShawan
             let boardBusStop = isUserInShawan ? "沙湾天桥" : "\(startSt.name) 公交站"
             let alightBusStop = destClean.contains("站") ? "\(destClean)1" : "\(destClean)公交站"
             let passStops1 = isUserInShawan ? ["厦村1", "沙岭小区", "丹竹头立交", "丹竹头社区"] : ["中心路中", "文化广场", "花园路口"]
