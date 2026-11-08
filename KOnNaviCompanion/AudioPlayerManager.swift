@@ -691,16 +691,13 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             // Immediately stop any previous voice queue so user never has to wait for old audio to finish!
             stop()
             let newLimit = travelMode.defaultSpeedLimit
-            if travelMode == .transit {
-                let dest = destinationCoord ?? CLLocationCoordinate2D(latitude: 22.61, longitude: 114.15)
-                let title = destinationName.isEmpty ? "丹竹头地铁站" : destinationName
-                generateBuiltInTransitPlans(from: userCoordinate, to: dest, destTitle: title)
-            }
+            speedLimitKmh = newLimit
             if let dest = destinationCoord, !destinationName.isEmpty {
-                speedLimitKmh = newLimit
+                if travelMode == .transit {
+                    generateBuiltInTransitPlans(from: userCoordinate, to: dest, destTitle: destinationName)
+                }
                 calculateAndStartRoute(to: dest, title: destinationName, isReroute: true)
             } else {
-                speedLimitKmh = newLimit
                 announceTravelModeSwitch()
             }
         }
@@ -1182,12 +1179,11 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         let tapLoc = CLLocation(latitude: coord.latitude, longitude: coord.longitude)
         self.isReverseGeocoding = true
         
-        // Step 1: Probe specifically for Commercial Shops & Named Businesses in a tight 38m radius
-        // We probe both general POI filter AND common commercial sign keywords (店/超市/商行/小吃/门窗/五金/大药房/便利)
+        // Exact Point-Of-Interest Search (Tight 24m radius matching Apple MapKit rendered icon touch targets!)
         let req = MKLocalSearch.Request()
         req.resultTypes = .pointOfInterest
         req.pointOfInterestFilter = .includingAll
-        req.region = MKCoordinateRegion(center: coord, latitudinalMeters: 76, longitudinalMeters: 76)
+        req.region = MKCoordinateRegion(center: coord, latitudinalMeters: 48, longitudinalMeters: 48)
         
         MKLocalSearch(request: req).start { [weak self] resp, _ in
             DispatchQueue.main.async {
@@ -1196,11 +1192,11 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                     guard let name = item.name, !name.isEmpty else { return false }
                     let itemLoc = CLLocation(latitude: item.placemark.coordinate.latitude,
                                              longitude: item.placemark.coordinate.longitude)
-                    return tapLoc.distance(from: itemLoc) <= 42.0
+                    return tapLoc.distance(from: itemLoc) <= 24.0
                 }
                 
-                // Pure Commercial Merchants (Strictly exclude background residential estates like 沙湾河花园 / 厦村盛苑 / 小区)
-                let pureShops = allItems.filter { item in
+                // Priority 1: Exact Named Commercial Shop/Store/Facility (益友便利店, 厦园商店, 远叶烟酒行, 宝佳行商行, 四川营山名小吃, 兆鑫门窗, 中源大药房, 充电站, 健身房, etc.)
+                let realShops = allItems.filter { item in
                     let n = item.name ?? ""
                     let isEstate = n.contains("花园") || n.contains("花園") || n.contains("小区") || n.contains("小區") || n.contains("盛苑") || n.contains("住宅")
                     return !isEstate && !self.isPureRoadOrBuildingNumber(n)
@@ -1210,7 +1206,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                     return tapLoc.distance(from: la) < tapLoc.distance(from: lb)
                 }
                 
-                if let bestShop = pureShops.first, let shopName = bestShop.name {
+                if let bestShop = realShops.first, let shopName = bestShop.name {
                     var addrParts: [String] = []
                     if let dist = bestShop.placemark.subLocality { addrParts.append(dist) }
                     if let road = bestShop.placemark.thoroughfare { addrParts.append(road) }
@@ -1226,10 +1222,10 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                     return
                 }
                 
-                // Step 2: Natural Language Keyword Sweep (Directly hits 益友便利店, 厦园商店, 新家乐生活超市, 宝佳行商行, 兆鑫门窗, 营山名小吃, 永利群商行, etc.)
+                // Priority 2: Targeted query for nearby shops that have rendered icon pins (e.g. 益友便利店, 厦园商店)
                 let shopReq = MKLocalSearch.Request()
                 shopReq.naturalLanguageQuery = "店"
-                shopReq.region = MKCoordinateRegion(center: coord, latitudinalMeters: 60, longitudinalMeters: 60)
+                shopReq.region = MKCoordinateRegion(center: coord, latitudinalMeters: 36, longitudinalMeters: 36)
                 MKLocalSearch(request: shopReq).start { [weak self] shopResp, _ in
                     DispatchQueue.main.async {
                         guard let self = self else { return }
@@ -1237,7 +1233,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                             guard let name = item.name, !name.isEmpty else { return false }
                             let isEstate = name.contains("花园") || name.contains("花園") || name.contains("小区") || name.contains("小區") || name.contains("盛苑")
                             let loc = CLLocation(latitude: item.placemark.coordinate.latitude, longitude: item.placemark.coordinate.longitude)
-                            return !isEstate && !self.isPureRoadOrBuildingNumber(name) && tapLoc.distance(from: loc) <= 35.0
+                            return !isEstate && !self.isPureRoadOrBuildingNumber(name) && tapLoc.distance(from: loc) <= 20.0
                         }.sorted { a, b in
                             let la = CLLocation(latitude: a.placemark.coordinate.latitude, longitude: a.placemark.coordinate.longitude)
                             let lb = CLLocation(latitude: b.placemark.coordinate.latitude, longitude: b.placemark.coordinate.longitude)
@@ -1259,54 +1255,28 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                             return
                         }
                         
-                        // Step 3: Specific building address or estate (ONLY if tap did NOT land on a shop, and was directly aimed at an estate / building within 15m)
-                        if let firstItem = allItems.first, let itemName = firstItem.name {
-                            let loc = CLLocation(latitude: firstItem.placemark.coordinate.latitude, longitude: firstItem.placemark.coordinate.longitude)
-                            if tapLoc.distance(from: loc) <= 15.0 {
+                        // Priority 3: Only if tapped directly on an estate/building icon (within tight 12m), open it!
+                        if let estateItem = allItems.first, let itemName = estateItem.name {
+                            let loc = CLLocation(latitude: estateItem.placemark.coordinate.latitude, longitude: estateItem.placemark.coordinate.longitude)
+                            if tapLoc.distance(from: loc) <= 12.0 {
                                 var addrParts: [String] = []
-                                if let dist = firstItem.placemark.subLocality { addrParts.append(dist) }
-                                if let road = firstItem.placemark.thoroughfare { addrParts.append(road) }
-                                if let num = firstItem.placemark.subThoroughfare { addrParts.append(num) }
+                                if let dist = estateItem.placemark.subLocality { addrParts.append(dist) }
+                                if let road = estateItem.placemark.thoroughfare { addrParts.append(road) }
+                                if let num = estateItem.placemark.subThoroughfare { addrParts.append(num) }
                                 self.populatePOIDetails(
                                     name: itemName,
-                                    coord: firstItem.placemark.coordinate,
+                                    coord: estateItem.placemark.coordinate,
                                     address: addrParts.joined(separator: ""),
-                                    phone: firstItem.phoneNumber,
-                                    rawCategory: firstItem.pointOfInterestCategory?.rawValue
+                                    phone: estateItem.phoneNumber,
+                                    rawCategory: estateItem.pointOfInterestCategory?.rawValue
                                 )
                                 return
                             }
                         }
                         
-                        // Step 4: Reverse Geocode (Strictly reject water/river/empty ground)
-                        CLGeocoder().reverseGeocodeLocation(tapLoc) { [weak self] placemarks, _ in
-                            DispatchQueue.main.async {
-                                guard let self = self else { return }
-                                self.isReverseGeocoding = false
-                                if let pm = placemarks?.first {
-                                    if pm.ocean != nil || pm.inlandWater != nil {
-                                        self.tappedMapCoord = nil
-                                        return
-                                    }
-                                    
-                                    if let aoi = pm.areasOfInterest?.first, !aoi.isEmpty, pm.location != nil && tapLoc.distance(from: pm.location!) <= 15.0 {
-                                        var parts: [String] = []
-                                        if let dist = pm.subLocality { parts.append(dist) }
-                                        if let road = pm.thoroughfare { parts.append(road) }
-                                        if let num = pm.subThoroughfare { parts.append(num) }
-                                        self.populatePOIDetails(
-                                            name: aoi,
-                                            coord: coord,
-                                            address: parts.joined(separator: ""),
-                                            phone: nil
-                                        )
-                                        return
-                                    }
-                                }
-                                // Empty ground / blank road -> dismiss like GaoDe
-                                self.tappedMapCoord = nil
-                            }
-                        }
+                        // Priority 4: Like GaoDe, clicking on blank road, pavement, river or empty ground closes any open card!
+                        self.isReverseGeocoding = false
+                        self.tappedMapCoord = nil
                     }
                 }
             }
