@@ -978,22 +978,40 @@ struct ContentView: View {
                             }
                             
                             // "缩小" Return to Cockpit in Landscape
-                            Button(action: {
-                                withAnimation(.spring(response: 0.35, dampingFraction: 0.7)) {
-                                    manager.isMapEnlarged = false
+                            HStack(spacing: 4) {
+                                Button(action: {
+                                    showSearchSheet = true
+                                }) {
+                                    HStack(spacing: 2) {
+                                        Image(systemName: "magnifyingglass")
+                                        Text(tr("搜索", "搜尋", "Search"))
+                                    }
+                                    .font(.system(size: 10, weight: .heavy))
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 5)
+                                    .background(Color.black.opacity(0.85))
+                                    .foregroundColor(.white)
+                                    .cornerRadius(8)
+                                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold.opacity(0.75), lineWidth: 1))
                                 }
-                            }) {
-                                HStack(spacing: 3) {
-                                    Image(systemName: "arrow.down.right.and.arrow.up.left")
-                                    Text(tr("缩小", "縮小", "Cockpit"))
+                                
+                                Button(action: {
+                                    withAnimation(.spring(response: 0.35, dampingFraction: 0.7)) {
+                                        manager.isMapEnlarged = false
+                                    }
+                                }) {
+                                    HStack(spacing: 2) {
+                                        Image(systemName: "arrow.down.right.and.arrow.up.left")
+                                        Text(tr("缩小", "縮小", "Cockpit"))
+                                    }
+                                    .font(.system(size: 10, weight: .bold))
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 5)
+                                    .background(Color.black.opacity(0.82))
+                                    .foregroundColor(httGold)
+                                    .cornerRadius(8)
+                                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold.opacity(0.75), lineWidth: 1))
                                 }
-                                .font(.system(size: 10, weight: .bold))
-                                .padding(.horizontal, 7)
-                                .padding(.vertical, 5)
-                                .background(Color.black.opacity(0.82))
-                                .foregroundColor(httGold)
-                                .cornerRadius(8)
-                                .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold.opacity(0.75), lineWidth: 1))
                             }
                             
                             HStack(spacing: 5) {
@@ -1063,10 +1081,27 @@ struct ContentView: View {
                         
                         Spacer(minLength: 4)
                         
-                        // Right Side Stack: Unobstructed Rotating HTT Compass + "缩小" Cockpit + Recenter + Zoom [+] / [-] Buttons!
-                        VStack(alignment: .trailing, spacing: 7) {
+                        // Right Side Stack: [🔍 搜索] + "缩小" Cockpit + Unobstructed Rotating HTT Compass + Recenter + Zoom [+] / [-] Buttons!
+                        VStack(alignment: .trailing, spacing: 6) {
+                            // Row 1: [🔍 搜索] Destination Button + [缩小] Cockpit Button
                             HStack(spacing: 5) {
-                                // "缩小" Button: Return to Standard Cockpit Stage & Dashboard anytime!
+                                Button(action: {
+                                    showSearchSheet = true
+                                }) {
+                                    HStack(spacing: 3) {
+                                        Image(systemName: "magnifyingglass")
+                                            .font(.system(size: 12, weight: .bold))
+                                        Text(tr("搜索", "搜尋", "Search"))
+                                            .font(.system(size: 11, weight: .heavy))
+                                    }
+                                    .padding(.horizontal, 8)
+                                    .frame(height: 35)
+                                    .background(Color.black.opacity(0.85))
+                                    .foregroundColor(.white)
+                                    .cornerRadius(9)
+                                    .overlay(RoundedRectangle(cornerRadius: 9).stroke(httGold.opacity(0.8), lineWidth: 1.2))
+                                }
+                                
                                 Button(action: {
                                     withAnimation(.spring(response: 0.35, dampingFraction: 0.7)) {
                                         manager.isMapEnlarged = false
@@ -1074,48 +1109,52 @@ struct ContentView: View {
                                 }) {
                                     HStack(spacing: 3) {
                                         Image(systemName: "arrow.down.right.and.arrow.up.left")
-                                            .font(.system(size: 10, weight: .bold))
+                                            .font(.system(size: 11, weight: .bold))
                                         Text(tr("缩小", "縮小", "Cockpit"))
-                                            .font(.system(size: 10, weight: .heavy))
+                                            .font(.system(size: 11, weight: .heavy))
                                     }
-                                    .padding(.horizontal, 7)
-                                    .padding(.vertical, 5)
+                                    .padding(.horizontal, 8)
+                                    .frame(height: 35)
                                     .background(Color.black.opacity(0.85))
                                     .foregroundColor(httGold)
-                                    .cornerRadius(8)
-                                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold.opacity(0.8), lineWidth: 1))
+                                    .cornerRadius(9)
+                                    .overlay(RoundedRectangle(cornerRadius: 9).stroke(httGold.opacity(0.8), lineWidth: 1.2))
                                 }
-
+                            }
+                            
+                            // Row 2: Rotating Compass Arrow + Recenter Button (Enlarged to 35pt, never larger than top mode buttons!)
+                            HStack(spacing: 5) {
                                 Button(action: {
                                     manager.toggleCameraMode()
                                 }) {
                                     ZStack {
                                         Circle()
                                             .fill(Color.black.opacity(0.85))
-                                            .frame(width: 28, height: 28)
+                                            .frame(width: 35, height: 35)
                                             .overlay(Circle().stroke(httGold, lineWidth: 1.5))
                                         Image(systemName: "location.north.fill")
-                                            .font(.system(size: 12, weight: .bold))
+                                            .font(.system(size: 15, weight: .bold))
                                             .foregroundColor(.red)
                                             .rotationEffect(.degrees(manager.cameraMode == .headingUp ? -manager.headingDegrees : 0))
                                     }
                                 }
-                            }
-                            
-                            // Recenter Button on Right Side (Always accessible even in Focused Driving Mode!)
-                            Button(action: {
-                                manager.triggerFastRecenter()
-                            }) {
-                                HStack(spacing: 3) {
-                                    Image(systemName: manager.mapTrackingUser ? "location.north.line.fill" : "location")
-                                    Text(manager.mapTrackingUser ? tr("跟车中", "跟車中", "Locked") : tr("回中", "回中", "Center"))
+                                
+                                Button(action: {
+                                    manager.triggerFastRecenter()
+                                }) {
+                                    HStack(spacing: 3) {
+                                        Image(systemName: manager.mapTrackingUser ? "location.north.line.fill" : "location")
+                                            .font(.system(size: 12, weight: .bold))
+                                        Text(manager.mapTrackingUser ? tr("跟车中", "跟車中", "Locked") : tr("回中", "回中", "Center"))
+                                            .font(.system(size: 11, weight: .heavy))
+                                    }
+                                    .padding(.horizontal, 9)
+                                    .frame(height: 35)
+                                    .background(manager.mapTrackingUser ? Color.green.opacity(0.88) : Color.black.opacity(0.85))
+                                    .foregroundColor(manager.mapTrackingUser ? .black : httGold)
+                                    .cornerRadius(9)
+                                    .overlay(RoundedRectangle(cornerRadius: 9).stroke(httGold.opacity(0.8), lineWidth: 1.2))
                                 }
-                                .font(.system(size: 10, weight: .bold))
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 6)
-                                .background(manager.mapTrackingUser ? Color.green.opacity(0.88) : Color.black.opacity(0.82))
-                                .foregroundColor(manager.mapTrackingUser ? .black : httGold)
-                                .cornerRadius(8)
                             }
                             
                             // Explicit Zoom In [+] / Zoom Out [-] Buttons (High-Contrast Bold Symbols)
@@ -1124,8 +1163,8 @@ struct ContentView: View {
                                     Image(systemName: "plus")
                                         .font(.system(size: 16, weight: .black))
                                         .foregroundColor(httGold)
-                                        .frame(width: 34, height: 34)
-                                        .background(Color.black.opacity(0.82))
+                                        .frame(width: 35, height: 35)
+                                        .background(Color.black.opacity(0.85))
                                         .cornerRadius(8)
                                         .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold.opacity(0.6), lineWidth: 1))
                                 }
@@ -1133,8 +1172,8 @@ struct ContentView: View {
                                     Image(systemName: "minus")
                                         .font(.system(size: 16, weight: .black))
                                         .foregroundColor(httCream)
-                                        .frame(width: 34, height: 34)
-                                        .background(Color.black.opacity(0.82))
+                                        .frame(width: 35, height: 35)
+                                        .background(Color.black.opacity(0.85))
                                         .cornerRadius(8)
                                         .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.25), lineWidth: 1))
                                 }
@@ -1726,48 +1765,48 @@ struct ContentView: View {
     private var electronicEyeAndHighwayHUDStrip: some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack(spacing: 6) {
-                // 1. Electronic Speed Camera Badge (测速电子眼 - Dynamically changes with road limit & alerts!)
-                HStack(spacing: 5) {
+                // 1. Electronic Speed Camera Badge (测速电子眼 - Visibly enlarged circle & typography!)
+                HStack(spacing: 6) {
                     ZStack {
                         Circle()
                             .fill(Color.white)
-                            .frame(width: 24, height: 24)
-                            .overlay(Circle().stroke(Color.red, lineWidth: 3))
+                            .frame(width: 30, height: 30)
+                            .overlay(Circle().stroke(Color.red, lineWidth: 3.5))
                         Text("\(manager.upcomingCameraLimit > 0 ? manager.upcomingCameraLimit : Int(manager.speedLimitKmh))")
-                            .font(.system(size: 9, weight: .black))
+                            .font(.system(size: 13, weight: .black, design: .rounded))
                             .foregroundColor(.black)
                     }
-                    VStack(alignment: .leading, spacing: 0) {
+                    VStack(alignment: .leading, spacing: 1) {
                         Text(tr("测速电子眼", "測速電子眼", "Speed Cam"))
-                            .font(.system(size: 9, weight: .heavy))
+                            .font(.system(size: 11, weight: .heavy))
                             .foregroundColor(.white)
                         Text(manager.upcomingCameraDistance > 0
                              ? manager.formatSmartDistance(manager.upcomingCameraDistance)
                              : tr("全程监控中", "全程監控中", "Active"))
-                            .font(.system(size: 9, weight: .bold, design: .monospaced))
+                            .font(.system(size: 10, weight: .bold, design: .monospaced))
                             .foregroundColor(httGold)
                     }
                 }
-                .padding(.horizontal, 7)
-                .padding(.vertical, 4)
-                .background(Color.black.opacity(0.82))
-                .cornerRadius(9)
-                .overlay(RoundedRectangle(cornerRadius: 9).stroke(Color.red.opacity(0.8), lineWidth: 1.2))
+                .padding(.horizontal, 9)
+                .padding(.vertical, 6)
+                .background(Color.black.opacity(0.85))
+                .cornerRadius(10)
+                .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.red.opacity(0.85), lineWidth: 1.5))
                 
                 // 2. Traffic Congestion Indicator (拥堵/畅通状态)
-                HStack(spacing: 4) {
+                HStack(spacing: 5) {
                     Circle()
                         .fill(manager.isCongested ? Color.orange : Color.green)
-                        .frame(width: 8, height: 8)
+                        .frame(width: 9, height: 9)
                     Text(manager.congestionStatusText)
-                        .font(.system(size: 10, weight: .bold))
+                        .font(.system(size: 11, weight: .heavy))
                         .foregroundColor(manager.isCongested ? .orange : Color(red: 0.4, green: 0.98, blue: 0.65))
                         .fixedSize(horizontal: true, vertical: false)
                 }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 6)
-                .background(Color.black.opacity(0.82))
-                .cornerRadius(9)
+                .padding(.horizontal, 9)
+                .padding(.vertical, 7)
+                .background(Color.black.opacity(0.85))
+                .cornerRadius(10)
                 .overlay(RoundedRectangle(cornerRadius: 9).stroke(manager.isCongested ? Color.orange : Color.green.opacity(0.6), lineWidth: 1))
             }
             
@@ -1933,7 +1972,9 @@ struct ContentView: View {
             
             // Speech Bubble Box
             VStack(alignment: .leading, spacing: 2) {
-                Text(manager.selectedCharacter.roleTag(manager.language))
+                Text(manager.selectedCharacter == .all
+                     ? "\(manager.activeAllMemberChar.displayName(manager.language)) (HTT)"
+                     : manager.selectedCharacter.roleTag(manager.language))
                     .font(.system(size: 9, weight: .bold))
                     .foregroundColor(httCrimson)
                 Text(manager.currentSpeechBubble)
@@ -1948,29 +1989,21 @@ struct ContentView: View {
             .overlay(RoundedRectangle(cornerRadius: 10).stroke(httGold, lineWidth: 1.5))
             .frame(maxWidth: .infinity)
             
-            // Floating Mascot Avatar on Map
-            if manager.selectedCharacter == .all {
-                HStack(alignment: .bottom, spacing: 1) {
-                    ForEach(AudioPlayerManager.CharacterFilter.fiveIndividuals) { member in
-                        if let frame = manager.allMemberFrames[member.charId] {
-                            Image(uiImage: frame)
-                                .interpolation(.none)
-                                .resizable()
-                                .scaledToFit()
-                                .frame(height: 60)
-                                .shadow(radius: 3)
-                                .onTapGesture { manager.triggerCharacterTap(member: member) }
-                        }
-                    }
-                }
-            } else if let sprite = manager.currentSpriteFrame {
+            // Floating Mascot Avatar on Map: When HTT 5-member is selected, displays ONE random member and auto-switches irregularly!
+            let effectiveMascotFrame = (manager.selectedCharacter == .all)
+                ? (manager.allMemberFrames[manager.activeAllMemberChar.charId] ?? manager.currentSpriteFrame)
+                : manager.currentSpriteFrame
+            
+            if let sprite = effectiveMascotFrame {
                 Image(uiImage: sprite)
                     .interpolation(.none)
                     .resizable()
                     .scaledToFit()
-                    .frame(height: 72)
+                    .frame(height: 74)
                     .shadow(radius: 4)
-                    .onTapGesture { manager.triggerCharacterTap() }
+                    .onTapGesture {
+                        manager.triggerCharacterTap(member: manager.activeAllMemberChar)
+                    }
             }
         }
     }
@@ -2313,30 +2346,21 @@ struct ContentView: View {
                         
                         Spacer()
                         
-                        // Mascot on map
+                        // Mascot on map: Single member shown with irregular auto-switch when HTT is active!
                         HStack(alignment: .bottom) {
-                            if manager.selectedCharacter == .all {
-                                HStack(alignment: .bottom, spacing: 1) {
-                                    ForEach(AudioPlayerManager.CharacterFilter.fiveIndividuals) { member in
-                                        if let frame = manager.allMemberFrames[member.charId] {
-                                            Image(uiImage: frame)
-                                                .interpolation(.none)
-                                                .resizable()
-                                                .scaledToFit()
-                                                .frame(height: 64)
-                                                .shadow(radius: 3)
-                                                .onTapGesture { manager.triggerCharacterTap(member: member) }
-                                        }
-                                    }
-                                }
-                            } else if let sprite = manager.currentSpriteFrame {
+                            let effectiveFrame = (manager.selectedCharacter == .all)
+                                ? (manager.allMemberFrames[manager.activeAllMemberChar.charId] ?? manager.currentSpriteFrame)
+                                : manager.currentSpriteFrame
+                            if let sprite = effectiveFrame {
                                 Image(uiImage: sprite)
                                     .interpolation(.none)
                                     .resizable()
                                     .scaledToFit()
-                                    .frame(height: 78)
+                                    .frame(height: 76)
                                     .shadow(radius: 4)
-                                    .onTapGesture { manager.triggerCharacterTap() }
+                                    .onTapGesture {
+                                        manager.triggerCharacterTap(member: manager.activeAllMemberChar)
+                                    }
                             }
                             Spacer()
                         }

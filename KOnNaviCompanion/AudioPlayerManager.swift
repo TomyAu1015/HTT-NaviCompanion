@@ -647,6 +647,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     @Published var walkStepFrame: Int = 0
     @Published var currentNavArrowImage: UIImage? = nil
     @Published var activeAllMemberChar: CharacterFilter = CharacterFilter.fiveIndividuals.randomElement() ?? .yui
+    var nextAllMemberSwitchTick: Int = 45
     @Published var unlockedBirthdayId: Int = 1112
     @Published var mascotOffsetX: CGFloat = 0.0
     @Published var mascotOffsetY: CGFloat = 0.0
@@ -3819,9 +3820,12 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             }
         }
         if selectedCharacter == .all {
-            // Every ~10 seconds (60 ticks), rotate to a random member if not currently speaking
-            if animTick % 60 == 0 && !isPlaying {
-                activeAllMemberChar = CharacterFilter.fiveIndividuals.randomElement() ?? .yui
+            // Irregular random interval switching among the 5 members (7~22s non-fixed cadence)!
+            if animTick >= nextAllMemberSwitchTick && !isPlaying {
+                let others = CharacterFilter.fiveIndividuals.filter { $0 != activeAllMemberChar }
+                activeAllMemberChar = others.randomElement() ?? .yui
+                // Schedule next irregular switch interval: between 7.5s and 22.0s (~46 to 138 ticks at 0.16s/tick)
+                nextAllMemberSwitchTick = animTick + Int.random(in: 46...138)
             }
             currentSpriteFrame = allMemberFrames[activeAllMemberChar.charId] ?? allMemberFrames[1]
         }
@@ -4867,7 +4871,8 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     
     func triggerCharacterTap(member: CharacterFilter? = nil) {
         mascotAction = .special
-        playMascotVoice(for: member ?? selectedCharacter)
+        let target = member ?? ((selectedCharacter == .all) ? activeAllMemberChar : selectedCharacter)
+        playMascotVoice(for: target)
     }
     
     func triggerDepartureGreeting() {
