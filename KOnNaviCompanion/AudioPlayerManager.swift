@@ -838,25 +838,34 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     func isPureRoadOrBuildingNumber(_ text: String) -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty { return true }
-        // If it starts with a shop/brand keyword or ends with a shop suffix, it is a REAL Merchant Name!
-        let merchantKeywords = ["行", "店", "馆", "館", "坊", "厅", "廳", "火锅", "火鍋", "烧烤", "燒烤", "茶", "咖啡", "酒", "烟", "煙", "超市", "百货", "便利", "美发", "美髮", "造型", "理疗", "養生", "养生", "药房", "藥房", "诊所", "医院", "醫院", "小学", "小學", "中学", "学校", "幼儿园", "银行", "銀行", "大厦", "大廈", "广场", "廣場", "中心", "公园", "公園", "公寓", "酒店", "宾馆", "賓館", "麦当劳", "肯德基", "汉堡", "京东", "美宜佳", "钱大妈", "顺丰", "菜鸟", "站", "口岸", "机场", "市場", "市场", "商行", "批发", "干洗"]
-        for kw in merchantKeywords {
+        
+        // Real merchant/facility keywords: If text contains ANY of these, it is a VALID POI!
+        let poiKeywords = ["店", "行", "馆", "館", "坊", "厅", "廳", "火锅", "火鍋", "小吃", "餐厅", "餐廳", "烧烤", "燒烤", "饭店", "飯店", "酒家", "菜馆", "茶", "咖啡", "酒", "烟", "煙", "超市", "百货", "百貨", "便利", "美发", "美髮", "造型", "理疗", "理療", "养生", "養生", "药", "藥", "诊所", "診所", "医院", "醫院", "学校", "學校", "小学", "中学", "幼儿园", "银行", "銀行", "大厦", "大廈", "广场", "廣場", "中心", "公园", "公園", "景区", "景點", "公寓", "酒店", "宾馆", "賓館", "站", "口岸", "机场", "市場", "市场", "商行", "批发", "裝飾", "装饰", "门窗", "門窗", "玻璃", "五金", "机电", "機電", "充电", "充電", "洗车", "洗車", "维修", "維修", "花园", "花園", "小区", "小區", "盛苑", "家园", "家園", "山庄", "山莊", "居", "阁", "閣", "城", "公司", "厂", "廠", "仓", "倉", "院", "处", "所"]
+        for kw in poiKeywords {
             if trimmed.contains(kw) {
                 return false
             }
         }
-        // Check if it looks like "XX路XX号" or "XX街XX号" or "XX号楼" or "XX栋"
-        // If it contains specific building labels, it's a building address
-        if (trimmed.contains("路") || trimmed.contains("街") || trimmed.contains("道") || trimmed.contains("巷") || trimmed.contains("坊")) && (trimmed.hasSuffix("号") || trimmed.hasSuffix("號")) {
+        
+        // Pure Road / Lane / Street / House Number Suffixes (e.g. 厦园一路, 厦园路一番, 龙岗区沙湾路93号, 厦园路12号)
+        let roadSuffixes = ["路", "街", "道", "巷", "弄", "里", "号", "號", "栋", "棟", "座", "单元", "一番", "二番", "三番", "四番", "段", "胡同", "桥", "橋"]
+        for sfx in roadSuffixes {
+            if trimmed.hasSuffix(sfx) {
+                return true
+            }
+        }
+        
+        if (trimmed.contains("路") || trimmed.contains("街") || trimmed.contains("道")) && (trimmed.contains("号") || trimmed.contains("號") || trimmed.contains("段")) {
             return true
         }
+        
         return false
     }
 
     func populatePOIDetails(name: String, coord: CLLocationCoordinate2D, address: String, phone: String?, rawCategory: String? = nil) {
         self.tappedMapCoord = coord
         self.tappedMapTitle = name
-        self.tappedMapAddress = address.isEmpty ? "龙岗区南湾街道夏村社区商业街" : address
+        self.tappedMapAddress = address.isEmpty ? "龙岗区南湾街道商业街" : address
         let walkM = max(25, min(9800, metersBetween(userCoordinate, coord)))
         let walkMin = max(1, Int(Double(walkM) / 58.0))
         if walkM >= 1000 {
@@ -876,23 +885,18 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         let hour = Calendar.current.component(.hour, from: Date())
         let catHint = (rawCategory ?? "") + " " + name
         
-        // 0. SUBWAY & TRANSIT EXITS (地铁站/出入口/高铁站/口岸：如石硖尾(A出入口)、丹竹头、罗湖、九龙塘) - HIGHEST PRIORITY!
+        // 0. SUBWAY & TRANSIT EXITS & BORDER PORTS (地铁站/出入口/高铁站/口岸：如深圳罗湖口岸、石硖尾A口、丹竹头)
         if catHint.contains("出入口") || catHint.contains("出口") || catHint.contains("地铁") || catHint.contains("地鐵") || catHint.contains("港铁") || catHint.contains("港鐵") || (catHint.contains("站") && !catHint.contains("加油站") && !catHint.contains("服务站") && !catHint.contains("驿站")) || catHint.contains("口岸") || catHint.contains("机场") || catHint.contains("高鐵") || catHint.contains("高铁") {
-            self.tappedMapCategory = "地铁站/出入口/枢纽"
-            self.tappedMapHours = "06:00-00:30 (随列车时刻)"
+            self.tappedMapCategory = catHint.contains("口岸") ? "通关口岸/交通枢纽" : "地铁站/出入口/枢纽"
+            self.tappedMapHours = "06:30-00:00 (随通关/列车时刻)"
             self.tappedMapIsOpen = (hour >= 6 || hour <= 0)
             self.tappedMapRating = "4.9"
-            self.tappedMapReviewLabel = "准点极速出行"
-            self.tappedMapTags = ["地铁直达", "刷码拍卡进站", "无障碍电梯", "盲道设施"]
-            self.tappedMapPricePerPerson = "起步¥2/HK$4"
-            self.tappedMapDishes = [
-                DishItem(name: "出入口无障碍电梯与通道指引", price: "A口直通", iconName: "door.left.hand.open", bgHex: "#0288D1", desc: "通往地面街道与公交接驳枢纽 · 设有双向自动扶梯", recommendCount: 680),
-                DishItem(name: "列车首末班车时刻与班次表", price: "06:04首班", iconName: "tram.fill", bgHex: "#0076C0", desc: "高峰期2~3分钟一班 · 支持微信/支付宝/八达通乘车码", recommendCount: 540),
-                DishItem(name: "站内母婴室与卫生间位置", price: "付费区旁", iconName: "figure.walk", bgHex: "#00897B", desc: "设有独立无障碍卫生间及母婴护理台", recommendCount: 420),
-                DishItem(name: "站厅自助充值与票务售卡机", price: "支持乘车码", iconName: "creditcard.fill", bgHex: "#5E35B1", desc: "提供车票购买/交通联合卡充值与人工服务台咨询", recommendCount: 390)
-            ]
+            self.tappedMapReviewLabel = "便捷通关"
+            self.tappedMapTags = ["地铁直达", "自助通关", "无障碍电梯", "盲道设施"]
+            self.tappedMapPricePerPerson = "凭证件通关"
+            self.tappedMapDishes = [] // NO fake commercial dishes!
         }
-        // 1. PARK, SCENIC & NATURE (公园/景区/景点/植物园/绿地：如石硖尾公园、花墟公园、莲花山公园、深圳湾公园) - No fake dishes!
+        // 1. PARK, SCENIC & NATURE (城市公园/绿地/景区：如石硖尾公园、花墟公园、莲花山公园) - No fake dishes!
         else if catHint.contains("公园") || catHint.contains("公園") || catHint.contains("景区") || catHint.contains("景區") || catHint.contains("景点") || catHint.contains("景點") || catHint.contains("植物园") || catHint.contains("植物園") || catHint.contains("自然") || catHint.contains("绿地") || catHint.contains("綠地") || catHint.contains("游乐场") || catHint.contains("遊樂場") {
             self.tappedMapCategory = "城市公园/休闲绿地"
             self.tappedMapHours = "24小时全天开园"
@@ -901,7 +905,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             self.tappedMapReviewLabel = "环境清幽"
             self.tappedMapTags = ["市区难得", "儿童游乐场", "城市公园", "休闲绿地"]
             self.tappedMapPricePerPerson = "免费入园"
-            self.tappedMapDishes = [] // EMPTY! No fake commercial dishes or services on parks!
+            self.tappedMapDishes = [] // EMPTY!
         }
         // 2. GOVERNMENT & PUBLIC OFFICES (派出所/政府/办事处/法院) - No fake dishes!
         else if catHint.contains("派出所") || catHint.contains("警署") || catHint.contains("公安") || catHint.contains("交警") || catHint.contains("政府") || catHint.contains("街道办") || catHint.contains("办事处") || catHint.contains("社区工作站") || catHint.contains("委员会") {
@@ -914,7 +918,86 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             self.tappedMapPricePerPerson = "免费办理"
             self.tappedMapDishes = [] // EMPTY!
         }
-        // 3. SHOPPING MALL & COMMERCIAL PLAZA (购物中心/商场/百货/商业广场：如福万家购物中心、万象城、天虹、壹方城)
+        // 3. DINING, RESTAURANTS, HOTPOT & REGIONAL SNACKS (小吃/餐厅/火锅/烧烤/酒家/面馆：如四川营山名小吃、大牛火锅、潮味517、友缘居) - HIGHEST COMMERCIAL PRIORITY!
+        else if catHint.contains("小吃") || catHint.contains("餐厅") || catHint.contains("餐廳") || catHint.contains("火锅") || catHint.contains("火鍋") || catHint.contains("烧烤") || catHint.contains("燒烤") || catHint.contains("饭店") || catHint.contains("飯店") || catHint.contains("酒家") || catHint.contains("菜馆") || catHint.contains("面") || catHint.contains("麵") || catHint.contains("粉") || catHint.contains("快餐") || catHint.contains("熟食") || catHint.contains("烤鸭") || catHint.contains("卤味") || catHint.contains("包子") || catHint.contains("咖啡") || catHint.contains("饮品") || catHint.contains("奶茶") || catHint.contains("冰室") || catHint.contains("鸭脖") || catHint.contains("锅盔") || catHint.contains("冰淇淋") {
+            self.tappedMapCategory = "餐饮美食/特色小吃"
+            self.tappedMapHours = "09:00-22:30"
+            self.tappedMapIsOpen = (hour >= 9 && hour <= 22)
+            self.tappedMapRating = "4.6"
+            self.tappedMapReviewLabel = "地道风味 · 街坊力荐"
+            self.tappedMapTags = ["现点现做", "街坊口碑", "支持外卖", "明厨亮灶"]
+            self.tappedMapPricePerPerson = "人均 ¥24/人"
+            self.tappedMapDishes = [
+                DishItem(name: "招牌特色主食精选", price: "¥18", iconName: "fork.knife", bgHex: "#EF6C00", desc: "食材新鲜现点现做 · 份量十足老少皆宜", recommendCount: 380),
+                DishItem(name: "地道风味特色小吃", price: "¥12", iconName: "flame.fill", bgHex: "#D84315", desc: "秘制传统风味 · 现做现卖香气浓郁", recommendCount: 290),
+                DishItem(name: "双人超值欢享组合", price: "¥42", iconName: "heart.fill", bgHex: "#C2185B", desc: "含两份主食+特色小食+两杯饮品超实惠", recommendCount: 215),
+                DishItem(name: "招牌清爽解腻茶饮", price: "¥8", iconName: "cup.and.saucer.fill", bgHex: "#2E7D32", desc: "冰镇清爽 · 清凉解渴最佳搭配", recommendCount: 310)
+            ]
+        }
+        // 4. CONVENIENCE STORE & LIFE GROCERY (生活杂货/便利商超：如厦园商店、新家乐生活超市、益友便利店、美宜佳)
+        else if catHint.contains("商店") || catHint.contains("便利") || catHint.contains("超市") || catHint.contains("杂货") || catHint.contains("雜貨") || catHint.contains("小卖部") || catHint.contains("士多") || catHint.contains("生鲜") || catHint.contains("果蔬") || catHint.contains("美宜佳") || catHint.contains("新家乐") {
+            self.tappedMapCategory = "生活杂货/便利商超"
+            self.tappedMapHours = "24小时营业"
+            self.tappedMapIsOpen = true
+            self.tappedMapRating = "4.2"
+            self.tappedMapReviewLabel = "便民实惠"
+            self.tappedMapTags = ["生活杂货", "24小时营业", "冷饮小食", "支持微信支付宝"]
+            self.tappedMapPricePerPerson = "人均 ¥15/人"
+            self.tappedMapDishes = [
+                DishItem(name: "冰镇冷饮 / 矿泉水饮料", price: "¥3起", iconName: "cup.and.saucer.fill", bgHex: "#1565C0", desc: "冷柜常备各类大牌饮料/酸奶/纯净水", recommendCount: 420),
+                DishItem(name: "休闲零食 / 面包烘焙糕点", price: "特惠", iconName: "cart.fill", bgHex: "#EF6C00", desc: "膨化零食/饼干点心/即食熟食", recommendCount: 310),
+                DishItem(name: "日用百货 / 居家清洁洗护", price: "平价", iconName: "house.fill", bgHex: "#2E7D32", desc: "纸巾/电池/毛巾/应急日用常备品", recommendCount: 280),
+                DishItem(name: "应急便利品 / 移动电源", price: "便民", iconName: "bolt.fill", bgHex: "#8E24AA", desc: "共享充电宝租借/雨伞雨衣/便民充值", recommendCount: 260)
+            ]
+        }
+        // 5. HARDWARE & BUILDING MATERIALS & GLASS DECOR (五金/建材/门窗装饰：如兆鑫门窗玻璃装饰、五金机电、水电建材)
+        else if catHint.contains("五金") || catHint.contains("門窗") || catHint.contains("门窗") || catHint.contains("玻璃") || catHint.contains("装饰") || catHint.contains("裝飾") || catHint.contains("建材") || catHint.contains("水电") || catHint.contains("水電") || catHint.contains("锁具") || catHint.contains("油漆") || catHint.contains("铝合金") {
+            self.tappedMapCategory = "五金建材/门窗装潢"
+            self.tappedMapHours = "08:00-20:00"
+            self.tappedMapIsOpen = (hour >= 8 && hour <= 20)
+            self.tappedMapRating = "4.8"
+            self.tappedMapReviewLabel = "做工精细 · 上门测量"
+            self.tappedMapTags = ["上门安装", "全屋定制", "正品保障", "价格公道"]
+            self.tappedMapPricePerPerson = "免费上门量尺"
+            self.tappedMapDishes = [
+                DishItem(name: "铝合金断桥铝门窗定制", price: "按平米计", iconName: "hammer.fill", bgHex: "#5D4037", desc: "高密封隔音隔热 · 优质双层中空钢化玻璃", recommendCount: 380),
+                DishItem(name: "专业玻璃幕墙与淋浴房装潢", price: "上门实测", iconName: "square.split.2x2.fill", bgHex: "#0288D1", desc: "汽车级防爆安全玻璃 · 顺畅推拉静音滑轮", recommendCount: 290),
+                DishItem(name: "家用五金电料与开关插座", price: "批发价", iconName: "wrench.and.screwdriver.fill", bgHex: "#F57C00", desc: "正品国标电线/PPR水管/不锈钢铰链合页", recommendCount: 320),
+                DishItem(name: "智能指纹防盗门锁上门速装", price: "¥480起", iconName: "lock.fill", bgHex: "#388E3C", desc: "半导体指纹识别秒开 · C级真插芯安全防撬", recommendCount: 410)
+            ]
+        }
+        // 6. PHARMACY & CLINIC (药房/诊所：如中源大药房、社康、医院)
+        else if catHint.contains("药房") || catHint.contains("藥房") || catHint.contains("药店") || catHint.contains("藥店") || catHint.contains("大药房") || catHint.contains("大藥房") || catHint.contains("医药") || catHint.contains("醫藥") || catHint.contains("诊所") || catHint.contains("診所") || catHint.contains("社康") || catHint.contains("门诊") {
+            self.tappedMapCategory = "医药健康/社区药房"
+            self.tappedMapHours = "08:00-23:00 (部分24h)"
+            self.tappedMapIsOpen = (hour >= 8 && hour <= 23)
+            self.tappedMapRating = "4.9"
+            self.tappedMapReviewLabel = "专业配药 · 医保定点"
+            self.tappedMapTags = ["医保定点", "执业药师", "夜间售药", "免费测血压"]
+            self.tappedMapPricePerPerson = "支持医保刷卡"
+            self.tappedMapDishes = [
+                DishItem(name: "家庭常备感冒退热与肠胃药", price: "医保价", iconName: "cross.case.fill", bgHex: "#00796B", desc: "常用OTC非处方正品药 · 药师专业用药指导", recommendCount: 450),
+                DishItem(name: "外用跌打损伤与消炎喷雾", price: "平价", iconName: "bandage.fill", bgHex: "#0288D1", desc: "消肿止痛/活血化瘀/创口贴急救护理用品", recommendCount: 330),
+                DishItem(name: "慢病常规用药与中西成药", price: "处方审核", iconName: "pills.fill", bgHex: "#7B1FA2", desc: "降压药/降糖药/心脑血管用药规范处方调配", recommendCount: 290),
+                DishItem(name: "电子血压计与家用血糖仪", price: "特惠", iconName: "heart.text.square.fill", bgHex: "#C2185B", desc: "高清语音大屏全自动测量 · 赠送测试试纸", recommendCount: 210)
+            ]
+        }
+        // 7. EV CHARGING STATION (新能源充电站/超级充电桩)
+        else if catHint.contains("充电") || catHint.contains("充電") || catHint.contains("特来电") || catHint.contains("小桔") || catHint.contains("开迈斯") || catHint.contains("超充") || catHint.contains("快充") || catHint.contains("加油站") {
+            self.tappedMapCategory = "充电补能/新能源"
+            self.tappedMapHours = "24小时全天开放"
+            self.tappedMapIsOpen = true
+            self.tappedMapRating = "4.7"
+            self.tappedMapReviewLabel = "极速补能 · 车位充足"
+            self.tappedMapTags = ["120kW超充", "充电免2小时停车", "即插即充", "洗手间配套"]
+            self.tappedMapPricePerPerson = "平峰¥0.78/度起"
+            self.tappedMapDishes = [
+                DishItem(name: "120kW~240kW液冷直流超充桩", price: "空闲12台", iconName: "bolt.car.fill", bgHex: "#0288D1", desc: "20%充至80%仅需25分钟 · 兼容主流国标协议", recommendCount: 520),
+                DishItem(name: "交流慢充7kW品质充电车位", price: "空闲8台", iconName: "ev.charger.fill", bgHex: "#00796B", desc: "适合夜间平价长充 · 充满自动断电安全保障", recommendCount: 310),
+                DishItem(name: "充电专属免停2小时服务", price: "扫码减免", iconName: "parkingsign.circle.fill", bgHex: "#388E3C", desc: "出场自动识别放行 · 配套司机休息室与卫生间", recommendCount: 460)
+            ]
+        }
+        // 8. SHOPPING MALL (大型商场/购物中心)
         else if catHint.contains("购物中心") || catHint.contains("購物中心") || catHint.contains("商场") || catHint.contains("商場") || catHint.contains("百货") || catHint.contains("百貨") || catHint.contains("商业广场") || catHint.contains("商業廣場") || catHint.contains("Mall") || catHint.contains("万达") || catHint.contains("大悦城") || catHint.contains("天虹") {
             self.tappedMapCategory = "购物中心/大型商场"
             self.tappedMapHours = "10:00-22:00"
@@ -930,8 +1013,8 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                 DishItem(name: "IMAX巨幕影城 / 亲子乐园", price: "顶层", iconName: "film.fill", bgHex: "#C62828", desc: "最新热映大片超高清放映 · 亲子互动游乐天地", recommendCount: 390)
             ]
         }
-        // 2. RESIDENTIAL COMMUNITY / GARDEN ESTATE (小区/花园/社区住宅：如沙湾河花园、厦村盛苑、万科公园里、XX小区、XX花园)
-        else if catHint.contains("花园") || catHint.contains("花園") || catHint.contains("小区") || catHint.contains("小區") || catHint.contains("盛苑") || catHint.contains("住宅") || catHint.contains("居") || catHint.contains("苑") || catHint.contains("村") || catHint.contains("家园") || catHint.contains("华府") || catHint.contains("雅苑") {
+        // 9. RESIDENTIAL COMMUNITY / GARDEN ESTATE (小区/花园/住宅：严格排除任何带有“店/小吃/餐厅/商行/超市”的商户!)
+        else if (catHint.contains("花园") || catHint.contains("花園") || catHint.contains("小区") || catHint.contains("小區") || catHint.contains("盛苑") || catHint.contains("住宅") || catHint.contains("家园") || catHint.contains("华府") || catHint.contains("雅苑")) && !catHint.contains("店") && !catHint.contains("小吃") && !catHint.contains("餐厅") && !catHint.contains("商行") && !catHint.contains("超市") {
             self.tappedMapCategory = "住宅区/品质小区"
             self.tappedMapHours = "全天开放 (门禁管理)"
             self.tappedMapIsOpen = true
@@ -942,187 +1025,21 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             self.tappedMapDishes = [
                 DishItem(name: "东门 / 东1门 (主出入口)", price: "91%人到达", iconName: "door.left.hand.open", bgHex: "#1565C0", desc: "小区主要人行及车辆道闸出口 · 设有快递柜", recommendCount: 520),
                 DishItem(name: "地面 / 地下停车场", price: "5%人到达", iconName: "parkingsign.circle.fill", bgHex: "#2E7D32", desc: "访客车位充裕 · 支持临停车牌识别无感支付", recommendCount: 380),
-                DishItem(name: "社区租房 · 精选优质房源", price: "¥1000/月起", iconName: "house.fill", bgHex: "#EF6C00", desc: "整租1室/2室南北通透 · 高楼层带大阳台采光极佳", recommendCount: 410),
-                DishItem(name: "物业服务中心 · 24h安保", price: "东门旁", iconName: "shield.checkmark.fill", bgHex: "#00838F", desc: "全封闭式智能门禁监控 · 24小时保安值班巡逻", recommendCount: 305)
+                DishItem(name: "社区租房 · 精选优质房源", price: "¥1000/月起", iconName: "house.fill", bgHex: "#EF6C00", desc: "整租1室/2室南北通透 · 高楼层带大阳台采光极佳", recommendCount: 410)
             ]
         }
-        // 3. HARDWARE & BUILDING MATERIALS & GLASS DECOR (五金/建材/门窗装饰：如兆鑫门窗玻璃装饰、五金机电、水电建材)
-        else if catHint.contains("五金") || catHint.contains("門窗") || catHint.contains("门窗") || catHint.contains("玻璃") || catHint.contains("装饰") || catHint.contains("裝飾") || catHint.contains("建材") || catHint.contains("水电") || catHint.contains("水電") || catHint.contains("锁具") || catHint.contains("油漆") || catHint.contains("铝合金") {
-            self.tappedMapCategory = "五金建材/门窗装潢"
-            self.tappedMapHours = "07:30-20:30"
-            self.tappedMapIsOpen = (hour >= 7 && hour <= 20)
-            self.tappedMapRating = "4.8"
-            self.tappedMapReviewLabel = "老师傅质优"
-            self.tappedMapTags = ["定制量尺", "现货直发", "包安装师傅", "老牌五金"]
-            self.tappedMapPricePerPerson = "按件/平米计价"
-            self.tappedMapDishes = [
-                DishItem(name: "断桥铝/双层隔音防爆玻璃门窗", price: "包工料", iconName: "square.split.2x2.fill", bgHex: "#1565C0", desc: "三道密封超强隔音抗台风 · 免费上门精准量尺设计", recommendCount: 320),
-                DishItem(name: "高强度合金门窗滑轮/合页配件", price: "¥15起", iconName: "wrench.and.screwdriver.fill", bgHex: "#455A64", desc: "超耐磨静音滑轮 · 各类非标五金配件齐全现货", recommendCount: 245),
-                DishItem(name: "金刚网防盗防蚊纱窗纱门", price: "¥120/扇", iconName: "shield.fill", bgHex: "#00838F", desc: "304不锈钢加厚网孔 · 防蚊防盗防坠落", recommendCount: 198),
-                DishItem(name: "专业水电管线/五金工具耗材", price: "批发价", iconName: "bolt.fill", bgHex: "#D84315", desc: "国标铜芯电线/PPR水管件/冲击钻打孔工具一站齐", recommendCount: 270)
-            ]
-        }
-        // 4. EV CHARGING STATION (新能源充电站/超级充电桩：如特来电、国家电网、小桔充电、开迈斯)
-        else if catHint.contains("充电") || catHint.contains("充電") || catHint.contains("超充") || catHint.contains("特来电") || catHint.contains("小桔充电") || catHint.contains("快充") || catHint.contains("换电") {
-            self.tappedMapCategory = "新能源充电站/超充"
-            self.tappedMapHours = "24小时对外开放"
-            self.tappedMapIsOpen = true
-            self.tappedMapRating = "4.9"
-            self.tappedMapReviewLabel = "充电极速不排队"
-            self.tappedMapTags = ["120kW超充", "免停车费2小时", "休息室空调", "地锁防占位"]
-            self.tappedMapPricePerPerson = "电费约¥0.85/度"
-            self.tappedMapDishes = [
-                DishItem(name: "120kW~240kW 液冷直流超充桩", price: "空闲8/12", iconName: "bolt.car.fill", bgHex: "#2E7D32", desc: "最高支持800V高压快充 · 充至80%仅需20分钟", recommendCount: 680),
-                DishItem(name: "充电专属免费停车2小时优惠", price: "扫码抵扣", iconName: "parkingsign.circle.fill", bgHex: "#1565C0", desc: "出场自动核销充电减免时长 · 无感抬杆离场", recommendCount: 510),
-                DishItem(name: "车主专属休息室 · 饮水机", price: "免费开放", iconName: "cup.and.saucer.fill", bgHex: "#EF6C00", desc: "配有空调软座/手机快充口/自助售货机及洗手间", recommendCount: 340),
-                DishItem(name: "慢充交流桩 (7kW夜间谷电)", price: "¥0.45/度", iconName: "battery.100.bolt", bgHex: "#00897B", desc: "适合夜间慢充保护电池 · 峰谷电价超实惠", recommendCount: 290)
-            ]
-        }
-        // 5. FITNESS & GYM & SPORTS (健身房/瑜伽馆/游泳池/拳击/体育馆)
-        else if catHint.contains("健身") || catHint.contains("健身房") || catHint.contains("瑜伽") || catHint.contains("普拉提") || catHint.contains("游泳") || catHint.contains("拳击") || catHint.contains("体育") || catHint.contains("运动") || catHint.contains("球馆") {
-            self.tappedMapCategory = "运动健身/体育场馆"
-            self.tappedMapHours = "07:00-23:00"
-            self.tappedMapIsOpen = (hour >= 7 && hour <= 23)
-            self.tappedMapRating = "4.8"
-            self.tappedMapReviewLabel = "器械专业环境好"
-            self.tappedMapTags = ["进口器械", "恒温泳池", "专业私教", "独立淋浴间"]
-            self.tappedMapPricePerPerson = "单次¥38起"
-            self.tappedMapDishes = [
-                DishItem(name: "单人全天通练单次健身体验", price: "¥38", iconName: "figure.run", bgHex: "#C62828", desc: "全场有氧器械/力量器械畅练 · 含恒温淋浴", recommendCount: 410),
-                DishItem(name: "国家职业资格认证1对1私教课", price: "¥260/节", iconName: "figure.cooldown", bgHex: "#1565C0", desc: "体测评估定制减脂增肌塑形方案 · 全程动作纠正", recommendCount: 320),
-                DishItem(name: "恒温水循环室内标准游泳池", price: "深浅分道", iconName: "figure.pool.swim", bgHex: "#0288D1", desc: "28度恒温水质全天杀菌过滤 · 配有救生员监护", recommendCount: 360),
-                DishItem(name: "团课年卡 (瑜伽/搏击/动感单车)", price: "优惠团购", iconName: "figure.dance", bgHex: "#8E24AA", desc: "每周30+节热门团操大课自由预约随心上", recommendCount: 280)
-            ]
-        }
-        // 6. LIQUOR & TOBACCO (烟酒专卖/名酒商行：如梁记烟酒行、远叶烟酒行、绿阁烟酒商行)
-        else if catHint.contains("烟酒") || catHint.contains("煙酒") || catHint.contains("商行") || catHint.contains("名酒") || catHint.contains("茅台") || catHint.contains("五粮液") {
-            self.tappedMapCategory = "烟酒专卖/商行"
-            self.tappedMapHours = "08:00-24:00"
-            self.tappedMapIsOpen = (hour >= 8)
-            self.tappedMapRating = "4.8"
-            self.tappedMapReviewLabel = "正品保障"
-            self.tappedMapTags = ["官方授权", "保真名酒", "同城闪送"]
-            self.tappedMapPricePerPerson = "¥85/人"
-            self.tappedMapDishes = [
-                DishItem(name: "飞天53度酱香典藏", price: "¥1499", iconName: "wineglass.fill", bgHex: "#B71C1C", desc: "店长镇店之宝 · 支持防伪溯源查验", recommendCount: 312),
-                DishItem(name: "五粮浓香八代礼盒", price: "¥960", iconName: "gift.fill", bgHex: "#D84315", desc: "宴请送礼首选 · 原厂正品直供", recommendCount: 245),
-                DishItem(name: "华子硬盒/软盒整条", price: "¥450", iconName: "flame.fill", bgHex: "#C62828", desc: "烟草专卖局认证 · 现货充足", recommendCount: 418),
-                DishItem(name: "正宗潮州凤凰单丛茶", price: "¥168", iconName: "cup.and.saucer.fill", bgHex: "#2E7D32", desc: "高山乌龙蜜兰香 · 耐泡回甘", recommendCount: 156)
-            ]
-        }
-        // 7. CONVENIENCE STORE & SUPERMARKET (便利超市：如益友便利店、厦园商店、美宜佳、京东便利店、宝佳行商行)
-        else if catHint.contains("便利店") || catHint.contains("便利") || catHint.contains("商店") || catHint.contains("超市") || catHint.contains("美宜佳") || catHint.contains("京东") || catHint.contains("7-11") || catHint.contains("全家") || catHint.contains("百货") || catHint.contains("批发行") || catHint.contains("生鲜") {
-            self.tappedMapCategory = "便利超市/便民商店"
-            self.tappedMapHours = "24小时营业"
-            self.tappedMapIsOpen = true
-            self.tappedMapRating = "4.7"
-            self.tappedMapReviewLabel = "方便快捷"
-            self.tappedMapTags = ["24h营业", "外卖闪送", "生活百货", "冷热饮品"]
-            self.tappedMapPricePerPerson = "¥18/人"
-            self.tappedMapDishes = [
-                DishItem(name: "冰镇鲜榨果汁/冷饮热饮", price: "¥5.5起", iconName: "takeoutbag.and.cup.and.straw.fill", bgHex: "#00838F", desc: "冰柜现取 · 第二件半价优惠中", recommendCount: 289),
-                DishItem(name: "现煮关东煮 / 热包子早点", price: "¥2.5起", iconName: "flame.fill", bgHex: "#EF6C00", desc: "热食保温柜现蒸 · 早餐夜宵热腾腾", recommendCount: 204),
-                DishItem(name: "当季新鲜水果零食/粮油日用", price: "平价特惠", iconName: "cart.fill", bgHex: "#2E7D32", desc: "每日凌晨冷链直达 · 街坊日用一应俱全", recommendCount: 176),
-                DishItem(name: "共享充电宝 / 应急便民雨伞", price: "24h自助", iconName: "bolt.fill", bgHex: "#1565C0", desc: "全城通借通还 · 随时归还押金秒退", recommendCount: 132)
-            ]
-        }
-        // 8. PHARMACY & CLINIC (药房/诊所：如中源大药房、社康、医院)
-        else if catHint.contains("药房") || catHint.contains("藥房") || catHint.contains("大药房") || catHint.contains("诊所") || catHint.contains("社康") || catHint.contains("医院") || catHint.contains("医疗") {
-            self.tappedMapCategory = "医药健康/医保"
-            self.tappedMapHours = "07:30-23:30"
-            self.tappedMapIsOpen = (hour >= 7 && hour <= 23)
-            self.tappedMapRating = "4.9"
-            self.tappedMapReviewLabel = "专业放心"
-            self.tappedMapTags = ["医保定点", "执业药师", "24h急送"]
-            self.tappedMapPricePerPerson = "支持医保"
-            self.tappedMapDishes = [
-                DishItem(name: "家庭常备感冒退热包", price: "¥26", iconName: "cross.case.fill", bgHex: "#00897B", desc: "支持深圳一档/二档社保卡直接刷卡", recommendCount: 340),
-                DishItem(name: "医用外科护理急救箱", price: "¥35", iconName: "bandage.fill", bgHex: "#0277BD", desc: "含消毒碘伏/创可贴/无菌纱布", recommendCount: 198),
-                DishItem(name: "维生素C泡腾养生片", price: "¥19.9", iconName: "pills.fill", bgHex: "#F57C00", desc: "增强免疫力 · 甜橙口味", recommendCount: 215),
-                DishItem(name: "免费血压/血糖检测", price: "免费", iconName: "heart.text.square.fill", bgHex: "#C62828", desc: "店内驻店药师提供免费健康咨询", recommendCount: 410)
-            ]
-        }
-        // 9. HAIRDRESSING & BEAUTY (美发/理发/造型：如纯剪一派、名创造型、珍珍美发馆)
-        else if catHint.contains("美发") || catHint.contains("美髮") || catHint.contains("造型") || catHint.contains("纯剪") || catHint.contains("理发") || catHint.contains("沙龙") || catHint.contains("美容") || catHint.contains("美甲") {
-            self.tappedMapCategory = "丽人美发/造型"
-            self.tappedMapHours = "10:00-22:30"
-            self.tappedMapIsOpen = (hour >= 10 && hour <= 22)
-            self.tappedMapRating = "4.7"
-            self.tappedMapReviewLabel = "手艺精湛"
-            self.tappedMapTags = ["总监主理", "无推销", "随时预约"]
-            self.tappedMapPricePerPerson = "¥38/人"
-            self.tappedMapDishes = [
-                DishItem(name: "首席设计师洗剪吹套餐", price: "¥35", iconName: "scissors", bgHex: "#6A1B9A", desc: "根据脸型定制发型 · 含头皮舒缓按摩", recommendCount: 386),
-                DishItem(name: "植物温和染发/挑染", price: "¥168", iconName: "sparkles", bgHex: "#AD1457", desc: "进口温和染膏 · 不伤发质色泽持久", recommendCount: 229),
-                DishItem(name: "韩式气垫纹理烫发", price: "¥198", iconName: "wind", bgHex: "#283593", desc: "自然蓬松显发量 · 易打理", recommendCount: 184),
-                DishItem(name: "氨基酸深层柔顺护理", price: "¥88", iconName: "drop.fill", bgHex: "#00838F", desc: "针对干枯分叉 · 一次恢复丝滑光泽", recommendCount: 150)
-            ]
-        }
-        // 10. MASSAGE & PHYSIOTHERAPY (理疗/养生/足道：如颐养康理疗养生馆)
-        else if catHint.contains("理疗") || catHint.contains("养生") || catHint.contains("養生") || catHint.contains("足道") || catHint.contains("推拿") || catHint.contains("按摩") || catHint.contains("采耳") || catHint.contains("SPA") {
-            self.tappedMapCategory = "休闲养生/理疗"
-            self.tappedMapHours = "11:00-02:00"
-            self.tappedMapIsOpen = (hour >= 11 || hour <= 2)
-            self.tappedMapRating = "4.8"
-            self.tappedMapReviewLabel = "解压舒适"
-            self.tappedMapTags = ["独立包厢", "十年技师", "免费茶点"]
-            self.tappedMapPricePerPerson = "¥88/人"
-            self.tappedMapDishes = [
-                DishItem(name: "古法经络肩颈腰椎推拿", price: "¥88/60分", iconName: "figure.mind.and.body", bgHex: "#2E7D32", desc: "精准疏通淤堵 · 缓解久坐酸痛疲劳", recommendCount: 412),
-                DishItem(name: "草本中药沐足+足底反射", price: "¥78/60分", iconName: "leaf.fill", bgHex: "#558B2F", desc: "艾草老姜泡脚 · 助眠祛湿", recommendCount: 325),
-                DishItem(name: "川式非遗可视舒适采耳", price: "¥58/40分", iconName: "ear.fill", bgHex: "#EF6C00", desc: "孔雀毛轻柔放松 · 含头部指压", recommendCount: 210),
-                DishItem(name: "陈年艾灸温通排湿调理", price: "¥98/45分", iconName: "flame.fill", bgHex: "#D84315", desc: "三年陈艾温灸 · 驱寒暖宫补气", recommendCount: 178)
-            ]
-        }
-        // 11. HOTPOT & BARBECUE & SNACKS (火锅/特色餐饮：如潮味·517、营山名小吃、大牛火锅、黔佬六)
-        else if catHint.contains("火锅") || catHint.contains("火鍋") || catHint.contains("烧烤") || catHint.contains("小吃") || catHint.contains("大排档") || catHint.contains("夜宵") || catHint.contains("潮味") || catHint.contains("砂锅") || catHint.contains("牛肉") {
-            self.tappedMapCategory = "火锅/特色小吃餐饮"
-            self.tappedMapHours = "17:00-06:00"
-            self.tappedMapIsOpen = (hour >= 17 || hour <= 6)
-            self.tappedMapRating = "4.5"
-            self.tappedMapReviewLabel = "好好"
-            self.tappedMapTags = ["地摊烟火气", "外卖服务", "深夜食堂", "食材鲜美"]
-            self.tappedMapPricePerPerson = "¥41/人"
-            self.tappedMapDishes = [
-                DishItem(name: "手打潮汕鲜牛肉丸", price: "¥28", iconName: "flame.fill", bgHex: "#D84315", desc: "每日现打鲜牛肉丸 · 脆弹爆汁", recommendCount: 462),
-                DishItem(name: "秘制招牌卤味小吃", price: "¥18", iconName: "fork.knife", bgHex: "#6D4C41", desc: "老卤慢炖入味 · 绝佳下酒小菜", recommendCount: 318),
-                DishItem(name: "招牌鲜香砂锅/小吃套餐", price: "¥25", iconName: "takeoutbag.and.cup.and.straw.fill", bgHex: "#E65100", desc: "现点现煮滚烫上桌 · 浓郁醇厚", recommendCount: 285),
-                DishItem(name: "爽口脆嫩虎皮凤爪", price: "¥18", iconName: "star.fill", bgHex: "#8D6E63", desc: "一抿脱骨 · 特色必点招牌菜", recommendCount: 356)
-            ]
-        }
-        // 12. GENERAL RESTAURANT / DINING (常规餐饮/快餐美食)
-        else if catHint.contains("餐") || catHint.contains("饭") || catHint.contains("麵") || catHint.contains("面") || catHint.contains("粉") || catHint.contains("麦当劳") || catHint.contains("肯德基") || catHint.contains("汉堡") || catHint.contains("咖啡") || catHint.contains("茶") {
-            self.tappedMapCategory = "餐饮美食/风味小吃"
-            self.tappedMapHours = "08:30-22:30"
-            self.tappedMapIsOpen = (hour >= 8 && hour <= 22)
-            self.tappedMapRating = "4.6"
-            self.tappedMapReviewLabel = "好评如潮"
-            self.tappedMapTags = ["现做现卖", "堂食外卖", "品质商户"]
-            self.tappedMapPricePerPerson = "¥28/人"
-            self.tappedMapDishes = [
-                DishItem(name: "招牌人气必点套餐", price: "¥28", iconName: "star.fill", bgHex: "#D84315", desc: "店内销量冠军 · 街坊回头客力荐", recommendCount: 342),
-                DishItem(name: "现做特色主食精选", price: "¥22", iconName: "fork.knife", bgHex: "#E65100", desc: "食材新鲜现点现做 · 份量十足", recommendCount: 268),
-                DishItem(name: "双人超值欢享组合", price: "¥52", iconName: "heart.fill", bgHex: "#C2185B", desc: "含两份主食+特色小食+两杯饮品", recommendCount: 215),
-                DishItem(name: "手打鲜榨清爽柠檬茶", price: "¥12", iconName: "cup.and.saucer.fill", bgHex: "#2E7D32", desc: "香水柠檬暴打 · 解腻清爽", recommendCount: 310)
-            ]
-        }
-
-        // 14. DEFAULT QUALITY MERCHANT (品质商户通用)
+        // 10. DEFAULT QUALITY VENUE
         else {
-            self.tappedMapCategory = "综合商户/品质生活"
-            self.tappedMapHours = "08:30-22:00"
-            self.tappedMapIsOpen = (hour >= 8 && hour <= 22)
-            self.tappedMapRating = "4.6"
-            self.tappedMapReviewLabel = "好评"
+            self.tappedMapCategory = "精选商户/生活服务"
+            self.tappedMapHours = "09:00-21:30"
+            self.tappedMapIsOpen = (hour >= 9 && hour <= 21)
+            self.tappedMapRating = "4.5"
+            self.tappedMapReviewLabel = "好评推荐"
             self.tappedMapTags = ["高德认证", "街坊推荐", "优质服务"]
-            self.tappedMapPricePerPerson = "¥30/人"
-            self.tappedMapDishes = [
-                DishItem(name: "高德推荐 · 招牌人气体验", price: "¥35", iconName: "star.fill", bgHex: "#D84315", desc: "店长主打招牌 · 用户好评度高达98%", recommendCount: 340),
-                DishItem(name: "超值精选服务组合", price: "¥68", iconName: "heart.fill", bgHex: "#C2185B", desc: "全套高品质尊享服务 · 满足各类生活所需", recommendCount: 260),
-                DishItem(name: "店长力荐必选爆款单品", price: "¥25", iconName: "flame.fill", bgHex: "#E65100", desc: "常客回购力荐 · 现点现发品质保障", recommendCount: 280),
-                DishItem(name: "会员专享尊享折扣券", price: "8.8折", iconName: "tag.fill", bgHex: "#2E7D32", desc: "进店即可使用 · 支持同城闪送配送", recommendCount: 310)
-            ]
+            self.tappedMapPricePerPerson = "品质优选"
+            self.tappedMapDishes = [] // EMPTY: No fake dishes for unspecified places!
         }
+        
         self.showPOIDetailCardExpanded = true
         self.isReverseGeocoding = false
     }
@@ -1206,123 +1123,89 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         let tapLoc = CLLocation(latitude: coord.latitude, longitude: coord.longitude)
         self.isReverseGeocoding = true
         
-        if let explicit = explicitTitle, !explicit.isEmpty {
+        if let explicit = explicitTitle, !explicit.isEmpty, !isPureRoadOrBuildingNumber(explicit) {
             self.isReverseGeocoding = false
             self.populatePOIDetails(name: explicit, coord: coord, address: "", phone: nil, rawCategory: nil)
             return
         }
         
-        // 1. Primary: Use Apple's official native iOS 14+ MKLocalPointsOfInterestRequest (NO naturalLanguageQuery required!)
-        let poiReq = MKLocalPointsOfInterestRequest(center: coord, radius: 100.0)
+        // Exact Point-Of-Interest Search (Strict 48m radius matching finger tap on rendered map icon!)
+        let poiReq = MKLocalPointsOfInterestRequest(center: coord, radius: 48.0)
         poiReq.pointOfInterestFilter = .includingAll
         
         let search = MKLocalSearch(request: poiReq)
         search.start { [weak self] resp, error in
             DispatchQueue.main.async {
                 guard let self = self else { return }
+                self.isReverseGeocoding = false
                 
                 let allItems = (resp?.mapItems ?? []).compactMap { item -> (MKMapItem, Double)? in
                     guard let name = item.name, !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+                    // Filter out pure road names and building numbers (e.g. "厦园一路", "沙湾路93号", "厦园路12号")!
+                    if self.isPureRoadOrBuildingNumber(name) { return nil }
                     let itemLoc = CLLocation(latitude: item.placemark.coordinate.latitude,
                                              longitude: item.placemark.coordinate.longitude)
                     let dist = tapLoc.distance(from: itemLoc)
-                    if dist <= 75.0 {
+                    // Strict 45m touch target matching finger click directly on the POI icon!
+                    if dist <= 45.0 {
                         return (item, dist)
                     }
                     return nil
                 }
                 
-                if !allItems.isEmpty {
-                    self.isReverseGeocoding = false
-                    
-                    // Separate specific shops/venues vs broad estates/residential
-                    let specificShops = allItems.filter { item, _ in
-                        let n = item.name ?? ""
-                        let isEstate = n.contains("花园") || n.contains("花園") || n.contains("小区") || n.contains("小區") || n.contains("盛苑") || n.contains("住宅区") || n.contains("住宅區") || n.contains("家园") || n.contains("新村")
-                        return !isEstate && !self.isPureRoadOrBuildingNumber(n)
-                    }.sorted { $0.1 < $1.1 }
-                    
-                    // Priority 1: Specific shop/venue/port/facility (e.g. 深圳罗湖口岸, 益友便利店, 库迪咖啡, 石硖尾公园)
-                    if let (bestShop, dist) = specificShops.first, dist <= 70.0 {
-                        var addrParts: [String] = []
-                        if let distName = bestShop.placemark.subLocality { addrParts.append(distName) }
-                        if let road = bestShop.placemark.thoroughfare { addrParts.append(road) }
-                        if let num = bestShop.placemark.subThoroughfare { addrParts.append(num) }
-                        let fullAddr = addrParts.isEmpty ? (bestShop.placemark.title ?? "") : addrParts.joined(separator: "")
-                        self.populatePOIDetails(
-                            name: bestShop.name ?? "精选地点",
-                            coord: bestShop.placemark.coordinate,
-                            address: fullAddr,
-                            phone: bestShop.phoneNumber,
-                            rawCategory: bestShop.pointOfInterestCategory?.rawValue
-                        )
-                        return
-                    }
-                    
-                    // Priority 2: Broad estate / building
-                    let sortedAll = allItems.sorted { $0.1 < $1.1 }
-                    if let (bestItem, dist) = sortedAll.first, dist <= 70.0 {
-                        var addrParts: [String] = []
-                        if let distName = bestItem.placemark.subLocality { addrParts.append(distName) }
-                        if let road = bestItem.placemark.thoroughfare { addrParts.append(road) }
-                        if let num = bestItem.placemark.subThoroughfare { addrParts.append(num) }
-                        let fullAddr = addrParts.isEmpty ? (bestItem.placemark.title ?? "") : addrParts.joined(separator: "")
-                        self.populatePOIDetails(
-                            name: bestItem.name ?? "精选地点",
-                            coord: bestItem.placemark.coordinate,
-                            address: fullAddr,
-                            phone: bestItem.phoneNumber,
-                            rawCategory: bestItem.pointOfInterestCategory?.rawValue
-                        )
-                        return
-                    }
+                // EXACT GAODE BEHAVIOR (Video 2):
+                // If user tapped on blank road, pavement, river or empty space:
+                // Close any open card immediately! Do NOT drop a pin! Do NOT show a card!
+                if allItems.isEmpty {
+                    self.tappedMapCoord = nil
+                    return
                 }
                 
-                // 2. Secondary Fallback: CLGeocoder reverse geocode
-                CLGeocoder().reverseGeocodeLocation(tapLoc) { [weak self] placemarks, _ in
-                    DispatchQueue.main.async {
-                        guard let self = self else { return }
-                        self.isReverseGeocoding = false
-                        
-                        guard let pm = placemarks?.first else {
-                            self.tappedMapCoord = nil
-                            return
-                        }
-                        
-                        // If tapped on water/ocean/river, dismiss!
-                        if pm.inlandWater != nil || pm.ocean != nil {
-                            self.tappedMapCoord = nil
-                            return
-                        }
-                        let pName = pm.name ?? ""
-                        if pName.contains("水库") || pName.contains("水庫") || (pName.hasSuffix("河") && !pName.contains("花园") && !pName.contains("小吃") && !pName.contains("店")) {
-                            self.tappedMapCoord = nil
-                            return
-                        }
-                        
-                        var addrParts: [String] = []
-                        if let distName = pm.subLocality { addrParts.append(distName) }
-                        if let road = pm.thoroughfare { addrParts.append(road) }
-                        if let num = pm.subThoroughfare { addrParts.append(num) }
-                        let fullAddr = addrParts.joined(separator: "")
-                        
-                        let finalTitle = (!pName.isEmpty && !self.isPureRoadOrBuildingNumber(pName)) ? pName : (fullAddr.isEmpty ? "精选地点" : fullAddr)
-                        
-                        // If title is just a city/district name, it was blank space!
-                        if finalTitle == pm.locality || finalTitle == pm.subLocality || finalTitle == pm.administrativeArea {
-                            self.tappedMapCoord = nil
-                            return
-                        }
-                        
-                        self.populatePOIDetails(
-                            name: finalTitle,
-                            coord: pm.location?.coordinate ?? coord,
-                            address: fullAddr,
-                            phone: nil,
-                            rawCategory: nil
-                        )
-                    }
+                // Separate into specific commercial shops/venues vs broad estates/residential
+                let specificShops = allItems.filter { item, _ in
+                    let n = item.name ?? ""
+                    let isEstate = (n.contains("花园") || n.contains("花園") || n.contains("小区") || n.contains("小區") || n.contains("盛苑") || n.contains("住宅区")) &&
+                                   !n.contains("店") && !n.contains("小吃") && !n.contains("餐厅") && !n.contains("商行") && !n.contains("超市")
+                    return !isEstate
+                }.sorted { $0.1 < $1.1 }
+                
+                // Priority 1: Specific shop/venue/facility (e.g. 厦园商店, 四川营山名小吃, 友缘居, 深圳罗湖口岸, 石硖尾公园)
+                if let (bestShop, dist) = specificShops.first, dist <= 45.0 {
+                    var addrParts: [String] = []
+                    if let distName = bestShop.placemark.subLocality { addrParts.append(distName) }
+                    if let road = bestShop.placemark.thoroughfare { addrParts.append(road) }
+                    if let num = bestShop.placemark.subThoroughfare { addrParts.append(num) }
+                    let fullAddr = addrParts.isEmpty ? (bestShop.placemark.title ?? "") : addrParts.joined(separator: "")
+                    self.populatePOIDetails(
+                        name: bestShop.name ?? "精选地点",
+                        coord: bestShop.placemark.coordinate,
+                        address: fullAddr,
+                        phone: bestShop.phoneNumber,
+                        rawCategory: bestShop.pointOfInterestCategory?.rawValue
+                    )
+                    return
                 }
+                
+                // Priority 2: Broad estate / building
+                let sortedAll = allItems.sorted { $0.1 < $1.1 }
+                if let (bestItem, dist) = sortedAll.first, dist <= 45.0 {
+                    var addrParts: [String] = []
+                    if let distName = bestItem.placemark.subLocality { addrParts.append(distName) }
+                    if let road = bestItem.placemark.thoroughfare { addrParts.append(road) }
+                    if let num = bestItem.placemark.subThoroughfare { addrParts.append(num) }
+                    let fullAddr = addrParts.isEmpty ? (bestItem.placemark.title ?? "") : addrParts.joined(separator: "")
+                    self.populatePOIDetails(
+                        name: bestItem.name ?? "精选地点",
+                        coord: bestItem.placemark.coordinate,
+                        address: fullAddr,
+                        phone: bestItem.phoneNumber,
+                        rawCategory: bestItem.pointOfInterestCategory?.rawValue
+                    )
+                    return
+                }
+                
+                // If none within 45m, dismiss!
+                self.tappedMapCoord = nil
             }
         }
     }
