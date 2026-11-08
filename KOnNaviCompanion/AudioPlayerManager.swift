@@ -4290,6 +4290,37 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         playVoice(id: activeBaseId() + 39, customQuote: charQuote, clearQueue: true)
     }
     
+    func startFinalTransitWalkingLeg() {
+        guard let destCoord = destinationCoord else { return }
+        self.transitPhase = .walkingToDestination
+        
+        let walkReq = MKDirections.Request()
+        let src = isDemoSimulating
+            ? MKMapItem(placemark: MKPlacemark(coordinate: userCoordinate))
+            : MKMapItem.forCurrentLocation()
+        walkReq.source = src
+        walkReq.destination = MKMapItem(placemark: MKPlacemark(coordinate: destCoord))
+        walkReq.transportType = .walking
+        
+        MKDirections(request: walkReq).calculate { [weak self] resp, _ in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                if let r = resp?.routes.first {
+                    self.activeRoute = r
+                    self.currentStepIndex = 0
+                    self.remainingRouteDistanceKm = r.distance / 1000.0
+                    self.remainingRouteMinutes = max(1, Int(r.expectedTravelTime / 60.0))
+                    let stepText = r.steps.first(where: { !$0.instructions.isEmpty })?.instructions ?? "前往 \(self.destinationName)"
+                    self.currentStepInstruction = "出站步行至 \(self.destinationName) (\(stepText))"
+                    self.distanceToNextStepMeters = r.steps.first?.distance ?? r.distance
+                } else {
+                    self.currentStepInstruction = "出站步行前往 \(self.destinationName)"
+                    self.distanceToNextStepMeters = 300.0
+                }
+            }
+        }
+    }
+    
     func startTransitWalkingNavigation() {
         guard selectedTransitPlanIndex < transitPlans.count else { return }
         let plan = transitPlans[selectedTransitPlanIndex]
@@ -5498,7 +5529,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         transitPlans.removeAll()
         showTransitPlanSheet = false
         announcedStepThresholds.removeAll()
-        isMapEnlarged = false // Automatically restore normal cockpit size!
+        // Stay on enlarged navigation map page (never shrink to cockpit automatically!)
         let base = activeBaseId()
         let modeOff = activeModeOffset()
         playVoice(id: base + modeOff + 38, customQuote: "🏁 これで音声案内は終了だよ！運転お疲れ様♪")
@@ -5520,16 +5551,79 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         self.distanceToNextStepMeters = dist
         self.currentStepInstruction = step.instructions
         
-        // Final Destination Arrival
-        if currentStepIndex == steps.count - 1 && dist <= 40.0 {
+        // 1. TRANSIT MULTI-PHASE STATE MACHINE (GaoDe 1:1 Lifecycle!)
+        if self.travelMode == .transit {
+            if self.transitPhase == .walkingToStation {
+                // Reached boarding station: Auto-transition to In-Vehicle Mode!
+                if dist <= 45.0 {
+                    self.transitPhase = .inTransitVehicle
+                    self.activeRoute = nil
+                    self.currentStepIndex = 0
+                    let line = self.transitActiveLineName.isEmpty ? "公交/地铁" : self.transitActiveLineName
+                    let nextSt = self.transitPassStationsList.first ?? self.transitAlightStationName
+                    let remStops = max(1, self.transitPassStationsList.count)
+                    self.currentStepInstruction = "乘坐 \(line) · 下一站: \(nextSt) (还有 \(remStops) 站)"
+                    
+                    let boardMsg = "🎉 已到达 [\(self.transitBoardingStationName)]！请上车乘坐 [\(line)]！"
+                    self.playVoice(id: self.activeBaseId() + 39, customQuote: boardMsg, clearQueue: true)
+                    return
+                }
+            } else if self.transitPhase == .walkingToDestination {
+                // Reached final destination on foot after transit!
+                if currentStepIndex == steps.count - 1 && dist <= 35.0 {
+                    let base = activeBaseId()
+                    let modeOff = activeModeOffset()
+                    enqueueVoiceCombo([
+                        (base + modeOff + 37, "🎉 顺利到达目的地！(\(destinationName))"),
+                        (base + modeOff + 38, "✨ 全程导航已完成！辛苦啦♪")
+                    ])
+                    self.activeRoute = nil
+                    self.customTransitPolyline = nil
+                    self.destinationCoord = nil
+                    self.destinationName = ""
+                    self.transitPhase = .idle
+                    self.currentStepInstruction = "已到达目的地"
+                    return
+                }
+            }
+        }
+        
+        // 2. DRIVING / E-BIKE / WALKING: Final Destination Arrival
+        if self.travelMode != .transit && currentStepIndex == steps.count - 1 && dist <= 40.0 {
             let base = activeBaseId()
             let modeOff = activeModeOffset()
             enqueueVoiceCombo([
                 (base + modeOff + 37, "🎉 目的地周辺に到着したよ！(\(destinationName))"),
                 (base + modeOff + 38, "✨ これで音声案内は終了だよ！お疲れ様でした♪")
             ])
-            stopRouteGuidance()
+            // Cancel active route but stay on enlarged navigation page!
+            self.activeRoute = nil
+            self.destinationCoord = nil
+            self.destinationName = ""
+            self.currentStepInstruction = "已到达目的地"
             return
+        }
+        
+        // 3. OFF-ROUTE DYNAMIC REROUTING (偏航重新规划 - 100% 对齐高德)
+        if isNavigatingFocused && !isRecalculatingRoute && travelMode != .transit, let dest = destinationCoord {
+            let pts = route.polyline.points()
+            let ptCount = route.polyline.pointCount
+            var minD: Double = 999999.0
+            let stepStride = max(1, ptCount / 80)
+            var i = 0
+            while i < ptCount {
+                let pCoord = pts[i].coordinate
+                let d = currentLoc.distance(from: CLLocation(latitude: pCoord.latitude, longitude: pCoord.longitude))
+                if d < minD { minD = d }
+                i += stepStride
+            }
+            if minD > 70.0 && Date().timeIntervalSince(lastRerouteTime) > 15.0 {
+                lastRerouteTime = Date()
+                let rerouteMsg = "🔄 你已偏离路线，正在为您重新规划路线..."
+                playVoice(id: activeBaseId() + 43, customQuote: rerouteMsg, clearQueue: false)
+                calculateAndStartRoute(to: dest, title: destinationName, isReroute: true)
+                return
+            }
         }
         
         let thresholds: [(limit: Double, tol: Double, distM: Int, label: String)] = [
@@ -5775,12 +5869,22 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                         let remStops = max(1, totalStops - currIdx)
                         self.currentStepInstruction = "\(self.transitActiveLineName) · 当前: \(currSt) ➔ 下一站: \(nextSt) (还有 \(remStops) 站)"
                         
-                        // Destination station arrival warning
+                        // Destination station arrival warning & Alight Transition!
                         if remStops <= 1 {
                             let arriveMsg = "🔔 即将到达下车站 [\(self.transitAlightStationName)]，请提前做好下车准备！"
                             if !self.announcedStepThresholds.contains("TRANSIT_ALIGHT_SOON") {
                                 self.announcedStepThresholds.insert("TRANSIT_ALIGHT_SOON")
                                 self.playVoice(id: self.activeBaseId() + 39, customQuote: arriveMsg, clearQueue: true)
+                            }
+                        }
+                        
+                        // When at alight station: Automatically trigger final pedestrian walking leg to destination!
+                        if currIdx == totalStops - 1 || remStops <= 1 {
+                            let alightMsg = "🔔 已到达下车站 [\(self.transitAlightStationName)]！正在为您开启出站后末段步行导航..."
+                            if !self.announcedStepThresholds.contains("TRANSIT_ALIGHT_NOW") {
+                                self.announcedStepThresholds.insert("TRANSIT_ALIGHT_NOW")
+                                self.playVoice(id: self.activeBaseId() + 39, customQuote: alightMsg, clearQueue: true)
+                                self.startFinalTransitWalkingLeg()
                             }
                         }
                     }

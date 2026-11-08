@@ -871,6 +871,9 @@ struct ContentView: View {
         .sheet(isPresented: $showSoundboardSheet) {
             SoundboardSheetView(manager: manager)
         }
+        .sheet(isPresented: $musicManager.showMusicSheet) {
+            KOnMusicLibraryView(musicManager: musicManager)
+        }
         .sheet(isPresented: $showSearchSheet) {
             DestinationSearchSheetView(manager: manager)
         }
@@ -2930,16 +2933,7 @@ struct ContentView: View {
                     .font(.system(size: 12, weight: .bold, design: .monospaced))
                     .foregroundColor(.white.opacity(0.92))
                 
-                Button(action: {
-                    manager.openGaoDeLivePortal(mode: 3)
-                }) {
-                    HStack(spacing: 2) {
-                        Text("店鋪全部商品與評價")
-                        Image(systemName: "chevron.right")
-                    }
-                    .font(.system(size: 10, weight: .bold))
-                    .foregroundColor(httGold)
-                }
+
                 
                 Spacer()
             }
@@ -2981,61 +2975,6 @@ struct ContentView: View {
                     }
                     .padding(.horizontal, 6)
                 }
-            }
-            
-            if manager.showPOIDetailCardExpanded && !manager.tappedMapDishes.isEmpty {
-                // Row 5: Interactive Category-Matched Products / Dishes Strip (Hidden when dishes empty, e.g. for parks/facilities!)
-                VStack(alignment: .leading, spacing: 5) {
-                    HStack {
-                        Text(manager.getSectionHeaderTitleForPOI())
-                            .font(.system(size: 11, weight: .heavy))
-                            .foregroundColor(.white)
-                        Spacer()
-                        Button(action: {
-                            manager.openGaoDeLivePortal(mode: 3)
-                        }) {
-                            Text("查看全部 (\(manager.tappedMapDishes.count * 12)) >")
-                                .font(.system(size: 10, weight: .bold))
-                                .foregroundColor(httGold)
-                        }
-                    }
-                    
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 8) {
-                            ForEach(manager.tappedMapDishes) { dish in
-                                poiDishCardButton(dish: dish)
-                            }
-                        }
-                    }
-                    
-                    // Inline Dish Detail Banner when a dish/item is clicked!
-                    if let selDish = manager.selectedDishItem, manager.showDishDetailAlert {
-                        HStack(spacing: 8) {
-                            Image(systemName: selDish.iconName)
-                                .foregroundColor(httGold)
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text("\(selDish.name) · \(selDish.price)  (網友推薦 \(selDish.recommendCount)次)")
-                                    .font(.system(size: 11, weight: .black))
-                                    .foregroundColor(.white)
-                                Text(selDish.desc)
-                                    .font(.system(size: 10, weight: .medium))
-                                    .foregroundColor(httCream.opacity(0.9))
-                            }
-                            Spacer()
-                            Button(action: {
-                                manager.showDishDetailAlert = false
-                            }) {
-                                Image(systemName: "xmark.circle.fill")
-                                    .foregroundColor(.gray)
-                            }
-                        }
-                        .padding(8)
-                        .background(Color.orange.opacity(0.18))
-                        .cornerRadius(8)
-                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.orange, lineWidth: 1))
-                    }
-                }
-                .padding(.top, 2)
             }
             
             Divider().background(Color.white.opacity(0.15))
@@ -3329,7 +3268,7 @@ struct ContentView: View {
                     }
                     Spacer(minLength: 0)
                 }
-                .padding(.horizontal, 8)
+                .padding(.horizontal, 4)
                 .padding(.vertical, 7)
                 .frame(maxWidth: .infinity)
                 .background(Color.black.opacity(0.75))
