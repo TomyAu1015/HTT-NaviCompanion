@@ -3076,7 +3076,9 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             self.distanceToNextStepMeters = 380
             return
             }
-        }        let endSt: StationCoord = {
+        }
+        
+        let endSt: StationCoord = {
             for s in AudioPlayerManager.szStationsDatabase {
                 if destClean.contains(s.name) { return s }
             }
