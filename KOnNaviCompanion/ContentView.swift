@@ -170,7 +170,6 @@ struct HTTSmoothMapView: UIViewRepresentable {
             let config = MKStandardMapConfiguration(elevationStyle: .realistic, emphasisStyle: .default)
             config.showsTraffic = true
             config.pointOfInterestFilter = .includingAll
-            config.selectableMapFeatures = [.pointsOfInterest, .physicalFeatures]
             mapView.preferredConfiguration = config
         } else if #available(iOS 13.0, *) {
             mapView.pointOfInterestFilter = .includingAll
@@ -498,18 +497,7 @@ struct HTTSmoothMapView: UIViewRepresentable {
             self.parent = parent
         }
         
-        @available(iOS 16.0, *)
-        func mapView(_ mapView: MKMapView, didSelect feature: MKMapFeatureAnnotation) {
-            DispatchQueue.main.async {
-                self.parent.manager.populatePOIDetails(
-                    name: feature.title ?? "精选地点",
-                    coord: feature.coordinate,
-                    address: feature.subtitle ?? "",
-                    phone: nil,
-                    rawCategory: feature.pointOfInterestCategory?.rawValue
-                )
-            }
-        }
+
         
         func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
             return true
