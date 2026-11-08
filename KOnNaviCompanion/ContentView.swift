@@ -1040,10 +1040,8 @@ struct ContentView: View {
                         
                         if manager.tappedMapCoord != nil {
                             tappedMapPointNavigationCard
-                        }
-                        
-                        // Compact Bottom-Right Pre-Navigation Route Card (Fits 100% inside Landscape height without clipping!)
-                        if !manager.isNavigatingFocused && (manager.activeRoute != nil || manager.customTransitPolyline != nil || !manager.candidateRoutes.isEmpty) {
+                        } else if !manager.isNavigatingFocused && (manager.activeRoute != nil || manager.customTransitPolyline != nil || !manager.candidateRoutes.isEmpty) {
+                            // Compact Bottom-Right Pre-Navigation Route Card
                             landscapeCompactPreNavCard
                         }
                     }
@@ -1184,18 +1182,13 @@ struct ContentView: View {
                     
                     Spacer()
                     
-                    // Anti-Overflow Logic: When selecting/viewing a route, show ONLY the route selection card so it NEVER overflows the screen!
-                    let isSelectingRoute = (manager.activeRoute != nil || manager.customTransitPolyline != nil || !manager.candidateRoutes.isEmpty)
-                    
-                    // Interactive Tapped Named POI Card (Shown when user taps a POI on map and hasn't started route planning!)
-                    if manager.tappedMapCoord != nil && !isSelectingRoute {
+                    // GaoDe 1:1 Interactive System: If user taps ANY location on the map, ALWAYS show the GaoDe POI Detail Card!
+                    if manager.tappedMapCoord != nil {
                         tappedMapPointNavigationCard
                             .padding(.horizontal, 12)
                             .transition(.move(edge: .bottom).combined(with: .opacity))
-                    }
-                    
-                    // Bottom Pre-Navigation Panel: Highway Preference + Candidate Routes + Prominent [🚀 开始导航] Button!
-                    if !manager.isNavigatingFocused && isSelectingRoute {
+                    } else if !manager.isNavigatingFocused && (manager.activeRoute != nil || manager.customTransitPolyline != nil || !manager.candidateRoutes.isEmpty) {
+                        // When user taps [路线] or [导航], POI card is dismissed and route preview is displayed!
                         bottomPreNavRouteSelectionCard
                             .padding(.horizontal, 12)
                             .transition(.move(edge: .bottom).combined(with: .opacity))
@@ -1326,7 +1319,7 @@ struct ContentView: View {
                     .frame(width: 50, height: 50)
                     .overlay(Circle().stroke(httGold, lineWidth: 2))
                 
-                Image(systemName: turnIconName(for: manager.currentStepInstruction))
+                Image(systemName: (manager.travelMode == .transit && manager.transitPhase == .inTransitVehicle) ? "tram.fill" : turnIconName(for: manager.currentStepInstruction))
                     .font(.system(size: 24, weight: .bold))
                     .foregroundColor(httCream)
             }

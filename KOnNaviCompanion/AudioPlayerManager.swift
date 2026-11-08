@@ -549,17 +549,29 @@ class PlaceSearchEngine: NSObject, ObservableObject, MKLocalSearchCompleterDeleg
             isSearching = false
             return
         }
+        // Tight 45km local metropolitan region! Never queries out-of-province cities (Hangzhou/Chengdu/Nanning)!
         completer.region = MKCoordinateRegion(
             center: center,
-            latitudinalMeters: 2500000,
-            longitudinalMeters: 2500000
+            latitudinalMeters: 45000,
+            longitudinalMeters: 45000
         )
         completer.queryFragment = trimmed
     }
     
     func completerDidUpdateResults(_ completer: MKLocalSearchCompleter) {
         DispatchQueue.main.async {
-            self.completions = Array(completer.results.prefix(25))
+            // Demote out-of-province distant completions so local Shenzhen/Dongguan/HK places ALWAYS appear first!
+            let results = completer.results
+            let sorted = results.sorted { a, b in
+                let aSub = a.subtitle
+                let bSub = b.subtitle
+                let aIsDistant = (aSub.contains("浙江") || aSub.contains("四川") || aSub.contains("广西") || aSub.contains("湖南") || aSub.contains("湖北") || aSub.contains("北京") || aSub.contains("上海") || aSub.contains("江苏"))
+                let bIsDistant = (bSub.contains("浙江") || bSub.contains("四川") || bSub.contains("广西") || bSub.contains("湖南") || bSub.contains("湖北") || bSub.contains("北京") || bSub.contains("上海") || bSub.contains("江苏"))
+                if !aIsDistant && bIsDistant { return true }
+                if aIsDistant && !bIsDistant { return false }
+                return false
+            }
+            self.completions = Array(sorted.prefix(25))
         }
     }
     
@@ -576,10 +588,11 @@ class PlaceSearchEngine: NSObject, ObservableObject, MKLocalSearchCompleterDeleg
         let req = MKLocalSearch.Request()
         req.naturalLanguageQuery = trimmed
         req.resultTypes = [.address, .pointOfInterest]
+        // 45km local search radius!
         req.region = MKCoordinateRegion(
             center: center,
-            latitudinalMeters: 2500000,
-            longitudinalMeters: 2500000
+            latitudinalMeters: 45000,
+            longitudinalMeters: 45000
         )
         
         let search = MKLocalSearch(request: req)
@@ -588,7 +601,14 @@ class PlaceSearchEngine: NSObject, ObservableObject, MKLocalSearchCompleterDeleg
             DispatchQueue.main.async {
                 self?.isSearching = false
                 if let items = response?.mapItems, !items.isEmpty {
-                    self?.mapItems = items
+                    let centerLoc = CLLocation(latitude: center.latitude, longitude: center.longitude)
+                    // Sort items by true distance to user location: closest places first!
+                    let sorted = items.sorted { a, b in
+                        let da = CLLocation(latitude: a.placemark.coordinate.latitude, longitude: a.placemark.coordinate.longitude).distance(from: centerLoc)
+                        let db = CLLocation(latitude: b.placemark.coordinate.latitude, longitude: b.placemark.coordinate.longitude).distance(from: centerLoc)
+                        return da < db
+                    }
+                    self?.mapItems = sorted
                 }
             }
         }
@@ -648,6 +668,21 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     @Published var currentNavArrowImage: UIImage? = nil
     @Published var activeAllMemberChar: CharacterFilter = CharacterFilter.fiveIndividuals.randomElement() ?? .yui
     var nextAllMemberSwitchTick: Int = 45
+    
+    enum TransitNavigationPhase: Int {
+        case idle = 0
+        case walkingToStation = 1   // 阶段1: 真实步行至上车站
+        case inTransitVehicle = 2   // 阶段2: 正在乘车 (实时显示当前站/下一站/剩余站数)
+        case walkingToDestination = 3 // 阶段3: 到站后步行至终点
+    }
+    
+    @Published var transitPhase: TransitNavigationPhase = .idle
+    @Published var transitCurrentStationIndex: Int = 0
+    @Published var transitBoardingStationCoord: CLLocationCoordinate2D? = nil
+    @Published var transitBoardingStationName: String = ""
+    @Published var transitAlightStationName: String = ""
+    @Published var transitActiveLineName: String = ""
+    @Published var transitPassStationsList: [String] = []
     @Published var unlockedBirthdayId: Int = 1112
     @Published var mascotOffsetX: CGFloat = 0.0
     @Published var mascotOffsetY: CGFloat = 0.0
@@ -998,14 +1033,14 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                 DishItem(name: "充电专属免停2小时服务", price: "扫码减免", iconName: "parkingsign.circle.fill", bgHex: "#388E3C", desc: "出场自动识别放行 · 配套司机休息室与卫生间", recommendCount: 460)
             ]
         }
-        // 8. SHOPPING MALL (大型商场/购物中心)
-        else if catHint.contains("购物中心") || catHint.contains("購物中心") || catHint.contains("商场") || catHint.contains("商場") || catHint.contains("百货") || catHint.contains("百貨") || catHint.contains("商业广场") || catHint.contains("商業廣場") || catHint.contains("Mall") || catHint.contains("万达") || catHint.contains("大悦城") || catHint.contains("天虹") {
-            self.tappedMapCategory = "购物中心/大型商场"
+        // 8. SHOPPING MALL & COMMERCIAL PLAZA (大型商场/购物中心/佳纷广场/商圈：如东大街佳纷广场、福万家、万象城)
+        else if catHint.contains("购物中心") || catHint.contains("購物中心") || catHint.contains("商场") || catHint.contains("商場") || catHint.contains("百货") || catHint.contains("百貨") || catHint.contains("商业广场") || catHint.contains("商業廣場") || catHint.contains("佳纷") || catHint.contains("佳紛") || catHint.contains("Mall") || catHint.contains("万达") || catHint.contains("大悦城") || catHint.contains("天虹") || (catHint.contains("广场") && !catHint.contains("市民广场") && !catHint.contains("文化广场") && !catHint.contains("休闲广场")) {
+            self.tappedMapCategory = "购物中心/商场"
             self.tappedMapHours = "10:00-22:00"
             self.tappedMapIsOpen = (hour >= 10 && hour <= 22)
-            self.tappedMapRating = "4.7"
-            self.tappedMapReviewLabel = "吃喝玩乐一站式"
-            self.tappedMapTags = ["大型商圈", "地下停车场", "亲子母婴室", "无障碍电梯", "免费WiFi"]
+            self.tappedMapRating = "4.5"
+            self.tappedMapReviewLabel = "布吉商场榜·热门"
+            self.tappedMapTags = ["亲子时光", "商场商圈", "地下停车场", "亲子母婴室"]
             self.tappedMapPricePerPerson = "停车首小时免费"
             self.tappedMapDishes = [
                 DishItem(name: "大型生活超市 · 生鲜特惠", price: "B1层直达", iconName: "cart.fill", bgHex: "#1565C0", desc: "各类生鲜蔬果/进口食品/日用百货全品类特卖", recommendCount: 580),
@@ -1171,6 +1206,12 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                 }.sorted { $0.1 < $1.1 }
                 
                 // Priority 1: Specific shop/venue/facility (e.g. 厦园商店, 四川营山名小吃, 友缘居, 深圳罗湖口岸, 石硖尾公园)
+                // Clear any previous route state so the GaoDe POI Detail Card immediately appears!
+                self.activeRoute = nil
+                self.candidateRoutes = []
+                self.customTransitPolyline = nil
+                self.isNavigatingFocused = false
+                
                 if let (bestShop, dist) = specificShops.first, dist <= 45.0 {
                     var addrParts: [String] = []
                     if let distName = bestShop.placemark.subLocality { addrParts.append(distName) }
@@ -3576,18 +3617,70 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     func startTransitWalkingNavigation() {
         guard selectedTransitPlanIndex < transitPlans.count else { return }
         let plan = transitPlans[selectedTransitPlanIndex]
-        if let dest = destinationCoord {
-            synthesizeTransitPolylineAndApply(from: userCoordinate, to: dest, destTitle: destinationName, plan: plan, isReroute: false)
-        }
         showTransitPlanSheet = false
         isNavigatingFocused = true
         isMapEnlarged = true
         
+        // Find first transit boarding step
+        if let firstTransit = plan.steps.first(where: { $0.kind != .walk }) {
+            self.transitActiveLineName = firstTransit.lineName
+            self.transitBoardingStationName = firstTransit.fromStation
+            self.transitAlightStationName = firstTransit.toStation
+            self.transitPassStationsList = firstTransit.passStations
+            self.transitCurrentStationIndex = 0
+            
+            // Coordinate of boarding station
+            let boardCoord: CLLocationCoordinate2D = {
+                for s in AudioPlayerManager.szStationsDatabase {
+                    if firstTransit.fromStation.contains(s.name) {
+                        return CLLocationCoordinate2D(latitude: s.lat, longitude: s.lon)
+                    }
+                }
+                if firstTransit.fromStation.contains("沙湾天桥") {
+                    return CLLocationCoordinate2D(latitude: 22.5995, longitude: 114.1663)
+                }
+                if firstTransit.fromStation.contains("樟树布") {
+                    return CLLocationCoordinate2D(latitude: 22.6030, longitude: 114.1530)
+                }
+                return CLLocationCoordinate2D(latitude: 22.6110, longitude: 114.1560)
+            }()
+            self.transitBoardingStationCoord = boardCoord
+            self.transitPhase = .walkingToStation
+            
+            // Calculate REAL pedestrian road routing from current GPS to the station!
+            let walkReq = MKDirections.Request()
+            let src = isDemoSimulating
+                ? MKMapItem(placemark: MKPlacemark(coordinate: userCoordinate))
+                : MKMapItem.forCurrentLocation()
+            walkReq.source = src
+            walkReq.destination = MKMapItem(placemark: MKPlacemark(coordinate: boardCoord))
+            walkReq.transportType = .walking
+            
+            MKDirections(request: walkReq).calculate { [weak self] resp, _ in
+                DispatchQueue.main.async {
+                    guard let self = self else { return }
+                    if let r = resp?.routes.first {
+                        self.activeRoute = r
+                        self.currentStepIndex = 0
+                        self.remainingRouteDistanceKm = r.distance / 1000.0
+                        self.remainingRouteMinutes = max(1, Int(r.expectedTravelTime / 60.0))
+                        let stepText = r.steps.first(where: { !$0.instructions.isEmpty })?.instructions ?? "前往 \(self.transitBoardingStationName)"
+                        self.currentStepInstruction = "步行至 \(self.transitBoardingStationName) (\(stepText))"
+                        self.distanceToNextStepMeters = r.steps.first?.distance ?? r.distance
+                    } else {
+                        // Fallback straight route if directions offline
+                        self.currentStepInstruction = "步行前往 \(self.transitBoardingStationName)"
+                        self.distanceToNextStepMeters = Double(self.metersBetween(self.userCoordinate, boardCoord))
+                    }
+                }
+            }
+        }
+        
         let charQuote: String
         switch language {
-        case .zhHans: charQuote = "🚶 [步行导航] 请沿地面蓝色指引线前往车站，随身带好贵重物品哦！"
-        case .zhHant: charQuote = "🚶 [步行導航] 請沿地面藍色指引綫前往車站，隨身帶好貴重物品哦！"
-        case .en: charQuote = "🚶 Follow the walking guidance line to the boarding station!"
+        case .zhHans: charQuote = "🚶 [步行实景导航] 请沿地面蓝色指引线步行前往 [\(transitBoardingStationName)] 乘车！"
+        case .zhHant: charQuote = "🚶 [步行實景導航] 請沿地面藍色指引綫步行前往 [\(transitBoardingStationName)] 乘車！"
+        case .en: charQuote = "🚶 Walking navigation: Head to [\(transitBoardingStationName)]!"
         }
         playVoice(id: activeBaseId() + 39, customQuote: charQuote, clearQueue: true)
     }
@@ -4235,10 +4328,9 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         destinationCoord = destCoord
         destinationName = title
         isRecalculatingRoute = true
-        // Always generate transit plans immediately so they are 100% available without blank sheet!
-        generateBuiltInTransitPlans(from: userCoordinate, to: destCoord, destTitle: title)
         
         if travelMode == .transit {
+            generateBuiltInTransitPlans(from: userCoordinate, to: destCoord, destTitle: title)
             isRecalculatingRoute = false
             let planIndex = (selectedTransitPlanIndex < transitPlans.count) ? selectedTransitPlanIndex : 0
             if !transitPlans.isEmpty {
@@ -4248,6 +4340,8 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             return
         }
         
+        // When driving / e-bike / walking, ensure transit states are cleared!
+        transitPlans = []
         customTransitPolyline = nil
         transitStopAnnotations = []
         
@@ -4968,6 +5062,49 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             let rawSpeed = max(0.0, loc.speed * 3.6)
             if !self.isDemoSimulating {
                 self.currentSpeedKmh = rawSpeed
+            }
+            
+            // TRANSIT NAVIGATION AUTO-SWITCH ENGINE (GaoDe 1:1 Lifecycle!)
+            if self.travelMode == .transit && self.transitPhase != .idle {
+                if self.transitPhase == .walkingToStation, let bCoord = self.transitBoardingStationCoord {
+                    let distToStation = loc.distance(from: CLLocation(latitude: bCoord.latitude, longitude: bCoord.longitude))
+                    self.distanceToNextStepMeters = distToStation
+                    
+                    // Arrived at station (< 55m) or boarded vehicle (speed > 16 km/h) -> Auto-switch to In-Vehicle Mode!
+                    if distToStation <= 55.0 || self.currentSpeedKmh > 16.0 {
+                        self.transitPhase = .inTransitVehicle
+                        self.transitCurrentStationIndex = 0
+                        let line = self.transitActiveLineName.isEmpty ? "公交/地铁" : self.transitActiveLineName
+                        let nextSt = self.transitPassStationsList.first ?? self.transitAlightStationName
+                        let remStops = max(1, self.transitPassStationsList.count)
+                        self.currentStepInstruction = "乘坐 \(line) · 下一站: \(nextSt) (还有 \(remStops) 站)"
+                        
+                        let boardMsg = "🎉 已到达 [\(self.transitBoardingStationName)]！请上车乘坐 [\(line)]！"
+                        self.playVoice(id: self.activeBaseId() + 39, customQuote: boardMsg, clearQueue: true)
+                    }
+                } else if self.transitPhase == .inTransitVehicle {
+                    // In transit vehicle: Track stations along the line!
+                    let totalStops = self.transitPassStationsList.count
+                    if totalStops > 0 {
+                        let stepFraction = min(0.99, max(0.0, self.tripDistanceKm / max(1.0, self.remainingRouteDistanceKm)))
+                        let currIdx = min(totalStops - 1, Int(stepFraction * Double(totalStops)))
+                        self.transitCurrentStationIndex = currIdx
+                        
+                        let currSt = self.transitPassStationsList[currIdx]
+                        let nextSt = (currIdx < totalStops - 1) ? self.transitPassStationsList[currIdx + 1] : self.transitAlightStationName
+                        let remStops = max(1, totalStops - currIdx)
+                        self.currentStepInstruction = "\(self.transitActiveLineName) · 当前: \(currSt) ➔ 下一站: \(nextSt) (还有 \(remStops) 站)"
+                        
+                        // Destination station arrival warning
+                        if remStops <= 1 {
+                            let arriveMsg = "🔔 即将到达下车站 [\(self.transitAlightStationName)]，请提前做好下车准备！"
+                            if !self.announcedStepThresholds.contains("TRANSIT_ALIGHT_SOON") {
+                                self.announcedStepThresholds.insert("TRANSIT_ALIGHT_SOON")
+                                self.playVoice(id: self.activeBaseId() + 39, customQuote: arriveMsg, clearQueue: true)
+                            }
+                        }
+                    }
+                }
             }
             if rawSpeed > self.maxSpeedKmh {
                 self.maxSpeedKmh = rawSpeed
