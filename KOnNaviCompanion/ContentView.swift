@@ -431,7 +431,7 @@ struct HTTSmoothMapView: UIViewRepresentable {
                 pitch: mapView.camera.pitch,
                 heading: mapView.camera.heading
             )
-            mapView.setCamera(cam, animated: false)
+            mapView.setCamera(cam, animated: true)
             return
         }
         
@@ -536,6 +536,15 @@ struct HTTSmoothMapView: UIViewRepresentable {
             let coord = mapView.convert(point, toCoordinateFrom: mapView)
             DispatchQueue.main.async {
                 self.parent.manager.handleMapTap(at: coord)
+            }
+        }
+        
+        func mapView(_ mapView: MKMapView, didSelect view: MKAnnotationView) {
+            guard let annotation = view.annotation, !(annotation is MKUserLocation) else { return }
+            let coord = annotation.coordinate
+            let title = annotation.title ?? nil
+            DispatchQueue.main.async {
+                self.parent.manager.handleMapTap(at: coord, explicitTitle: title ?? nil)
             }
         }
         
@@ -968,10 +977,29 @@ struct ContentView: View {
                                 .cornerRadius(8)
                             }
                             
+                            // "缩小" Return to Cockpit in Landscape
+                            Button(action: {
+                                withAnimation(.spring(response: 0.35, dampingFraction: 0.7)) {
+                                    manager.isMapEnlarged = false
+                                }
+                            }) {
+                                HStack(spacing: 3) {
+                                    Image(systemName: "arrow.down.right.and.arrow.up.left")
+                                    Text(tr("缩小", "縮小", "Cockpit"))
+                                }
+                                .font(.system(size: 10, weight: .bold))
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 5)
+                                .background(Color.black.opacity(0.82))
+                                .foregroundColor(httGold)
+                                .cornerRadius(8)
+                                .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold.opacity(0.75), lineWidth: 1))
+                            }
+                            
                             HStack(spacing: 5) {
                                 Button(action: { manager.zoomMapIn() }) {
-                                    Image(systemName: "plus.magnifyingglass")
-                                        .font(.system(size: 14, weight: .bold))
+                                    Image(systemName: "plus")
+                                        .font(.system(size: 15, weight: .black))
                                         .foregroundColor(httGold)
                                         .frame(width: 32, height: 32)
                                         .background(Color.black.opacity(0.82))
@@ -979,8 +1007,8 @@ struct ContentView: View {
                                         .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold.opacity(0.6), lineWidth: 1))
                                 }
                                 Button(action: { manager.zoomMapOut() }) {
-                                    Image(systemName: "minus.magnifyingglass")
-                                        .font(.system(size: 14, weight: .bold))
+                                    Image(systemName: "minus")
+                                        .font(.system(size: 15, weight: .black))
                                         .foregroundColor(httCream)
                                         .frame(width: 32, height: 32)
                                         .background(Color.black.opacity(0.82))
@@ -1035,12 +1063,32 @@ struct ContentView: View {
                         
                         Spacer(minLength: 4)
                         
-                        // Right Side Stack: Unobstructed Rotating HTT Compass + Recenter + Zoom [+] / [-] Buttons!
+                        // Right Side Stack: Unobstructed Rotating HTT Compass + "缩小" Cockpit + Recenter + Zoom [+] / [-] Buttons!
                         VStack(alignment: .trailing, spacing: 7) {
-                            Button(action: {
-                                manager.toggleCameraMode()
-                            }) {
-                                HStack(spacing: 5) {
+                            HStack(spacing: 5) {
+                                // "缩小" Button: Return to Standard Cockpit Stage & Dashboard anytime!
+                                Button(action: {
+                                    withAnimation(.spring(response: 0.35, dampingFraction: 0.7)) {
+                                        manager.isMapEnlarged = false
+                                    }
+                                }) {
+                                    HStack(spacing: 3) {
+                                        Image(systemName: "arrow.down.right.and.arrow.up.left")
+                                            .font(.system(size: 10, weight: .bold))
+                                        Text(tr("缩小", "縮小", "Cockpit"))
+                                            .font(.system(size: 10, weight: .heavy))
+                                    }
+                                    .padding(.horizontal, 7)
+                                    .padding(.vertical, 5)
+                                    .background(Color.black.opacity(0.85))
+                                    .foregroundColor(httGold)
+                                    .cornerRadius(8)
+                                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold.opacity(0.8), lineWidth: 1))
+                                }
+
+                                Button(action: {
+                                    manager.toggleCameraMode()
+                                }) {
                                     ZStack {
                                         Circle()
                                             .fill(Color.black.opacity(0.85))
@@ -1051,20 +1099,7 @@ struct ContentView: View {
                                             .foregroundColor(.red)
                                             .rotationEffect(.degrees(manager.cameraMode == .headingUp ? -manager.headingDegrees : 0))
                                     }
-                                    VStack(alignment: .leading, spacing: 0) {
-                                        Text(manager.compassDirectionString)
-                                            .font(.system(size: 10, weight: .black))
-                                            .foregroundColor(.white)
-                                        Text(manager.cameraMode.shortTitle(manager.language))
-                                            .font(.system(size: 8, weight: .bold))
-                                            .foregroundColor(httGold)
-                                    }
                                 }
-                                .padding(.horizontal, 7)
-                                .padding(.vertical, 4)
-                                .background(Color.black.opacity(0.82))
-                                .cornerRadius(16)
-                                .overlay(RoundedRectangle(cornerRadius: 16).stroke(httGold.opacity(0.75), lineWidth: 1))
                             }
                             
                             // Recenter Button on Right Side (Always accessible even in Focused Driving Mode!)
@@ -1083,11 +1118,11 @@ struct ContentView: View {
                                 .cornerRadius(8)
                             }
                             
-                            // Explicit Zoom In [+] / Zoom Out [-] Buttons (Strictly zooms in/out at current position!)
+                            // Explicit Zoom In [+] / Zoom Out [-] Buttons (High-Contrast Bold Symbols)
                             VStack(spacing: 4) {
                                 Button(action: { manager.zoomMapIn() }) {
-                                    Image(systemName: "plus.magnifyingglass")
-                                        .font(.system(size: 15, weight: .bold))
+                                    Image(systemName: "plus")
+                                        .font(.system(size: 16, weight: .black))
                                         .foregroundColor(httGold)
                                         .frame(width: 34, height: 34)
                                         .background(Color.black.opacity(0.82))
@@ -1095,8 +1130,8 @@ struct ContentView: View {
                                         .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold.opacity(0.6), lineWidth: 1))
                                 }
                                 Button(action: { manager.zoomMapOut() }) {
-                                    Image(systemName: "minus.magnifyingglass")
-                                        .font(.system(size: 15, weight: .bold))
+                                    Image(systemName: "minus")
+                                        .font(.system(size: 16, weight: .black))
                                         .foregroundColor(httCream)
                                         .frame(width: 34, height: 34)
                                         .background(Color.black.opacity(0.82))
@@ -1110,15 +1145,18 @@ struct ContentView: View {
                     
                     Spacer()
                     
-                    // Interactive Tapped Named POI Card (Appears only when user taps a real shop/place on map!)
-                    if manager.tappedMapCoord != nil {
+                    // Anti-Overflow Logic: When selecting/viewing a route, show ONLY the route selection card so it NEVER overflows the screen!
+                    let isSelectingRoute = (manager.activeRoute != nil || manager.customTransitPolyline != nil || !manager.candidateRoutes.isEmpty)
+                    
+                    // Interactive Tapped Named POI Card (Shown when user taps a POI on map and hasn't started route planning!)
+                    if manager.tappedMapCoord != nil && !isSelectingRoute {
                         tappedMapPointNavigationCard
                             .padding(.horizontal, 12)
                             .transition(.move(edge: .bottom).combined(with: .opacity))
                     }
                     
                     // Bottom Pre-Navigation Panel: Highway Preference + Candidate Routes + Prominent [🚀 开始导航] Button!
-                    if !manager.isNavigatingFocused && (manager.activeRoute != nil || manager.customTransitPolyline != nil || !manager.candidateRoutes.isEmpty) {
+                    if !manager.isNavigatingFocused && isSelectingRoute {
                         bottomPreNavRouteSelectionCard
                             .padding(.horizontal, 12)
                             .transition(.move(edge: .bottom).combined(with: .opacity))
@@ -1637,7 +1675,27 @@ struct ContentView: View {
     
     // Bottom Pre-Navigation Card: Enlarged Highway Strategy (高速优先/不走高速/距离最短) + Separate Candidate Routes Row + Anti-Mistouch [🚀 开始导航] Button!
     private var bottomPreNavRouteSelectionCard: some View {
-        VStack(spacing: 11) {
+        VStack(spacing: 9) {
+            // Destination Title Header Row with Close Route Button
+            HStack(spacing: 6) {
+                Image(systemName: "mappin.and.ellipse")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundColor(httGold)
+                Text(manager.destinationName.isEmpty ? tr("规划路线", "規劃路線", "Planned Route") : manager.destinationName)
+                    .font(.system(size: 14, weight: .black))
+                    .foregroundColor(.white)
+                    .lineLimit(1)
+                Spacer()
+                Button(action: {
+                    manager.stopRouteGuidance()
+                }) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 16))
+                        .foregroundColor(.gray)
+                }
+            }
+            .padding(.bottom, 1)
+            
             // Row 1: Enlarged Full-Width 3-Grid Highway Strategy (Driving) OR Built-In Transit Plans (Transit)
             if manager.travelMode == .driving {
                 highwayPreferenceButtonRow
@@ -2838,8 +2896,8 @@ struct ContentView: View {
                 }
             }
             
-            if manager.showPOIDetailCardExpanded {
-                // Row 5: Interactive Category-Matched Products / Dishes Strip (100% Clickable In-App!)
+            if manager.showPOIDetailCardExpanded && !manager.tappedMapDishes.isEmpty {
+                // Row 5: Interactive Category-Matched Products / Dishes Strip (Hidden when dishes empty, e.g. for parks/facilities!)
                 VStack(alignment: .leading, spacing: 5) {
                     HStack {
                         Text(manager.getSectionHeaderTitleForPOI())

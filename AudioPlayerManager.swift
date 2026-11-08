@@ -797,12 +797,12 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     }
     
     func zoomMapIn() {
-        userZoomDistance = max(100.0, userZoomDistance * 0.62)
+        userZoomDistance = max(80.0, userZoomDistance * 0.58)
         zoomCommandTrigger += 1
     }
     
     func zoomMapOut() {
-        userZoomDistance = min(30000.0, userZoomDistance * 1.55)
+        userZoomDistance = min(50000.0, userZoomDistance * 1.75)
         zoomCommandTrigger += 1
     }
     
@@ -892,7 +892,29 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                 DishItem(name: "站厅自助充值与票务售卡机", price: "支持乘车码", iconName: "creditcard.fill", bgHex: "#5E35B1", desc: "提供车票购买/交通联合卡充值与人工服务台咨询", recommendCount: 390)
             ]
         }
-        // 1. SHOPPING MALL & COMMERCIAL PLAZA (购物中心/商场/百货/商业广场：如福万家购物中心、万象城、天虹、壹方城)
+        // 1. PARK, SCENIC & NATURE (公园/景区/景点/植物园/绿地：如石硖尾公园、花墟公园、莲花山公园、深圳湾公园) - No fake dishes!
+        else if catHint.contains("公园") || catHint.contains("公園") || catHint.contains("景区") || catHint.contains("景區") || catHint.contains("景点") || catHint.contains("景點") || catHint.contains("植物园") || catHint.contains("植物園") || catHint.contains("自然") || catHint.contains("绿地") || catHint.contains("綠地") || catHint.contains("游乐场") || catHint.contains("遊樂場") {
+            self.tappedMapCategory = "城市公园/休闲绿地"
+            self.tappedMapHours = "24小时全天开园"
+            self.tappedMapIsOpen = true
+            self.tappedMapRating = "4.5"
+            self.tappedMapReviewLabel = "环境清幽"
+            self.tappedMapTags = ["市区难得", "儿童游乐场", "城市公园", "休闲绿地"]
+            self.tappedMapPricePerPerson = "免费入园"
+            self.tappedMapDishes = [] // EMPTY! No fake commercial dishes or services on parks!
+        }
+        // 2. GOVERNMENT & PUBLIC OFFICES (派出所/政府/办事处/法院) - No fake dishes!
+        else if catHint.contains("派出所") || catHint.contains("警署") || catHint.contains("公安") || catHint.contains("交警") || catHint.contains("政府") || catHint.contains("街道办") || catHint.contains("办事处") || catHint.contains("社区工作站") || catHint.contains("委员会") {
+            self.tappedMapCategory = "政务机关/公共机构"
+            self.tappedMapHours = "09:00-18:00 (工作日)"
+            self.tappedMapIsOpen = (hour >= 9 && hour <= 18)
+            self.tappedMapRating = "4.9"
+            self.tappedMapReviewLabel = "便民政务"
+            self.tappedMapTags = ["便民窗口", "自助服务终端", "规范严谨", "无障碍通道"]
+            self.tappedMapPricePerPerson = "免费办理"
+            self.tappedMapDishes = [] // EMPTY!
+        }
+        // 3. SHOPPING MALL & COMMERCIAL PLAZA (购物中心/商场/百货/商业广场：如福万家购物中心、万象城、天虹、壹方城)
         else if catHint.contains("购物中心") || catHint.contains("購物中心") || catHint.contains("商场") || catHint.contains("商場") || catHint.contains("百货") || catHint.contains("百貨") || catHint.contains("商业广场") || catHint.contains("商業廣場") || catHint.contains("Mall") || catHint.contains("万达") || catHint.contains("大悦城") || catHint.contains("天虹") {
             self.tappedMapCategory = "购物中心/大型商场"
             self.tappedMapHours = "10:00-22:00"
@@ -1180,83 +1202,127 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         }
     }
 
-    func handleMapTap(at coord: CLLocationCoordinate2D) {
+    func handleMapTap(at coord: CLLocationCoordinate2D, explicitTitle: String? = nil) {
         let tapLoc = CLLocation(latitude: coord.latitude, longitude: coord.longitude)
         self.isReverseGeocoding = true
         
-        // Exact Point-Of-Interest & Address Search matching Apple MapKit rendered icon touch targets!
-        let req = MKLocalSearch.Request()
-        req.resultTypes = [.pointOfInterest, .address]
-        req.pointOfInterestFilter = .includingAll
-        req.region = MKCoordinateRegion(center: coord, latitudinalMeters: 120, longitudinalMeters: 120)
+        if let explicit = explicitTitle, !explicit.isEmpty {
+            self.isReverseGeocoding = false
+            self.populatePOIDetails(name: explicit, coord: coord, address: "", phone: nil, rawCategory: nil)
+            return
+        }
         
-        MKLocalSearch(request: req).start { [weak self] resp, _ in
+        // 1. Primary: Use Apple's official native iOS 14+ MKLocalPointsOfInterestRequest (NO naturalLanguageQuery required!)
+        let poiReq = MKLocalPointsOfInterestRequest(center: coord, radius: 100.0)
+        poiReq.pointOfInterestFilter = .includingAll
+        
+        let search = MKLocalSearch(request: poiReq)
+        search.start { [weak self] resp, error in
             DispatchQueue.main.async {
                 guard let self = self else { return }
-                self.isReverseGeocoding = false
                 
                 let allItems = (resp?.mapItems ?? []).compactMap { item -> (MKMapItem, Double)? in
                     guard let name = item.name, !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
                     let itemLoc = CLLocation(latitude: item.placemark.coordinate.latitude,
                                              longitude: item.placemark.coordinate.longitude)
                     let dist = tapLoc.distance(from: itemLoc)
-                    // Accept POIs within 55 meters of the finger tap (matches standard iOS 44x44pt touch box!)
-                    if dist <= 55.0 {
+                    if dist <= 75.0 {
                         return (item, dist)
                     }
                     return nil
                 }
                 
-                if allItems.isEmpty {
-                    // Like GaoDe: Tapping blank road, empty water/river, or open ground dismisses any open POI detail card!
-                    self.tappedMapCoord = nil
-                    return
+                if !allItems.isEmpty {
+                    self.isReverseGeocoding = false
+                    
+                    // Separate specific shops/venues vs broad estates/residential
+                    let specificShops = allItems.filter { item, _ in
+                        let n = item.name ?? ""
+                        let isEstate = n.contains("花园") || n.contains("花園") || n.contains("小区") || n.contains("小區") || n.contains("盛苑") || n.contains("住宅区") || n.contains("住宅區") || n.contains("家园") || n.contains("新村")
+                        return !isEstate && !self.isPureRoadOrBuildingNumber(n)
+                    }.sorted { $0.1 < $1.1 }
+                    
+                    // Priority 1: Specific shop/venue/port/facility (e.g. 深圳罗湖口岸, 益友便利店, 库迪咖啡, 石硖尾公园)
+                    if let (bestShop, dist) = specificShops.first, dist <= 70.0 {
+                        var addrParts: [String] = []
+                        if let distName = bestShop.placemark.subLocality { addrParts.append(distName) }
+                        if let road = bestShop.placemark.thoroughfare { addrParts.append(road) }
+                        if let num = bestShop.placemark.subThoroughfare { addrParts.append(num) }
+                        let fullAddr = addrParts.isEmpty ? (bestShop.placemark.title ?? "") : addrParts.joined(separator: "")
+                        self.populatePOIDetails(
+                            name: bestShop.name ?? "精选地点",
+                            coord: bestShop.placemark.coordinate,
+                            address: fullAddr,
+                            phone: bestShop.phoneNumber,
+                            rawCategory: bestShop.pointOfInterestCategory?.rawValue
+                        )
+                        return
+                    }
+                    
+                    // Priority 2: Broad estate / building
+                    let sortedAll = allItems.sorted { $0.1 < $1.1 }
+                    if let (bestItem, dist) = sortedAll.first, dist <= 70.0 {
+                        var addrParts: [String] = []
+                        if let distName = bestItem.placemark.subLocality { addrParts.append(distName) }
+                        if let road = bestItem.placemark.thoroughfare { addrParts.append(road) }
+                        if let num = bestItem.placemark.subThoroughfare { addrParts.append(num) }
+                        let fullAddr = addrParts.isEmpty ? (bestItem.placemark.title ?? "") : addrParts.joined(separator: "")
+                        self.populatePOIDetails(
+                            name: bestItem.name ?? "精选地点",
+                            coord: bestItem.placemark.coordinate,
+                            address: fullAddr,
+                            phone: bestItem.phoneNumber,
+                            rawCategory: bestItem.pointOfInterestCategory?.rawValue
+                        )
+                        return
+                    }
                 }
                 
-                // Separate into specific commercial shops/venues vs broad residential complexes/streets
-                let specificShops = allItems.filter { item, _ in
-                    let n = item.name ?? ""
-                    let isEstate = n.contains("花园") || n.contains("花園") || n.contains("小区") || n.contains("小區") || n.contains("盛苑") || n.contains("住宅区") || n.contains("住宅區") || n.contains("家园") || n.contains("新村")
-                    return !isEstate && !self.isPureRoadOrBuildingNumber(n)
-                }.sorted { $0.1 < $1.1 }
-                
-                // Priority 1: If there is a specific shop/venue near the tap (e.g. 益友便利店, 宝佳行商行, 四川营山名小吃, 充电站, 药房, 健身房), pick the nearest shop!
-                if let (bestShop, dist) = specificShops.first, dist <= 48.0 {
-                    var addrParts: [String] = []
-                    if let distName = bestShop.placemark.subLocality { addrParts.append(distName) }
-                    if let road = bestShop.placemark.thoroughfare { addrParts.append(road) }
-                    if let num = bestShop.placemark.subThoroughfare { addrParts.append(num) }
-                    let fullAddr = addrParts.isEmpty ? (bestShop.placemark.title ?? "") : addrParts.joined(separator: "")
-                    self.populatePOIDetails(
-                        name: bestShop.name ?? "精选商家",
-                        coord: bestShop.placemark.coordinate,
-                        address: fullAddr,
-                        phone: bestShop.phoneNumber,
-                        rawCategory: bestShop.pointOfInterestCategory?.rawValue
-                    )
-                    return
+                // 2. Secondary Fallback: CLGeocoder reverse geocode
+                CLGeocoder().reverseGeocodeLocation(tapLoc) { [weak self] placemarks, _ in
+                    DispatchQueue.main.async {
+                        guard let self = self else { return }
+                        self.isReverseGeocoding = false
+                        
+                        guard let pm = placemarks?.first else {
+                            self.tappedMapCoord = nil
+                            return
+                        }
+                        
+                        // If tapped on water/ocean/river, dismiss!
+                        if pm.inlandWater != nil || pm.ocean != nil {
+                            self.tappedMapCoord = nil
+                            return
+                        }
+                        let pName = pm.name ?? ""
+                        if pName.contains("水库") || pName.contains("水庫") || (pName.hasSuffix("河") && !pName.contains("花园") && !pName.contains("小吃") && !pName.contains("店")) {
+                            self.tappedMapCoord = nil
+                            return
+                        }
+                        
+                        var addrParts: [String] = []
+                        if let distName = pm.subLocality { addrParts.append(distName) }
+                        if let road = pm.thoroughfare { addrParts.append(road) }
+                        if let num = pm.subThoroughfare { addrParts.append(num) }
+                        let fullAddr = addrParts.joined(separator: "")
+                        
+                        let finalTitle = (!pName.isEmpty && !self.isPureRoadOrBuildingNumber(pName)) ? pName : (fullAddr.isEmpty ? "精选地点" : fullAddr)
+                        
+                        // If title is just a city/district name, it was blank space!
+                        if finalTitle == pm.locality || finalTitle == pm.subLocality || finalTitle == pm.administrativeArea {
+                            self.tappedMapCoord = nil
+                            return
+                        }
+                        
+                        self.populatePOIDetails(
+                            name: finalTitle,
+                            coord: pm.location?.coordinate ?? coord,
+                            address: fullAddr,
+                            phone: nil,
+                            rawCategory: nil
+                        )
+                    }
                 }
-                
-                // Priority 2: If the user tapped an estate / building or other POI within 45m, open that estate/building!
-                let sortedAll = allItems.sorted { $0.1 < $1.1 }
-                if let (bestItem, dist) = sortedAll.first, dist <= 48.0 {
-                    var addrParts: [String] = []
-                    if let distName = bestItem.placemark.subLocality { addrParts.append(distName) }
-                    if let road = bestItem.placemark.thoroughfare { addrParts.append(road) }
-                    if let num = bestItem.placemark.subThoroughfare { addrParts.append(num) }
-                    let fullAddr = addrParts.isEmpty ? (bestItem.placemark.title ?? "") : addrParts.joined(separator: "")
-                    self.populatePOIDetails(
-                        name: bestItem.name ?? "精选地点",
-                        coord: bestItem.placemark.coordinate,
-                        address: fullAddr,
-                        phone: bestItem.phoneNumber,
-                        rawCategory: bestItem.pointOfInterestCategory?.rawValue
-                    )
-                    return
-                }
-                
-                // If nothing within range: dismiss
-                self.tappedMapCoord = nil
             }
         }
     }
