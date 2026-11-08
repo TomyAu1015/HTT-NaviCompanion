@@ -754,6 +754,7 @@ struct HTTSmoothMapView: UIViewRepresentable {
 // MARK: - Main Content View with Dynamic Auto-Enlarging Navigation HUD
 struct ContentView: View {
     @StateObject private var manager = AudioPlayerManager.shared
+    @ObservedObject private var musicManager = KOnMusicManager.shared
     @State private var showSoundboardSheet: Bool = false
     @State private var showSearchSheet: Bool = false
     @State private var showAlbumSheet: Bool = false
@@ -869,6 +870,9 @@ struct ContentView: View {
         .ignoresSafeArea(.container, edges: .bottom)
         .sheet(isPresented: $showSoundboardSheet) {
             SoundboardSheetView(manager: manager)
+        }
+        .sheet(isPresented: $musicManager.showMusicSheet) {
+            KOnMusicLibraryView(musicManager: musicManager)
         }
         .sheet(isPresented: $showSearchSheet) {
             DestinationSearchSheetView(manager: manager)
@@ -996,6 +1000,22 @@ struct ContentView: View {
                                 }
                                 
                                 Button(action: {
+                                    musicManager.showMusicSheet = true
+                                }) {
+                                    HStack(spacing: 2) {
+                                        Image(systemName: "music.note")
+                                        Text(tr("音乐", "音樂", "Music"))
+                                    }
+                                    .font(.system(size: 10, weight: .heavy))
+                                    .padding(.horizontal, 5)
+                                    .padding(.vertical, 5)
+                                    .background(musicManager.isPlaying ? Color.purple.opacity(0.85) : Color.black.opacity(0.85))
+                                    .foregroundColor(musicManager.isPlaying ? .white : httGold)
+                                    .cornerRadius(8)
+                                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold.opacity(0.75), lineWidth: 1))
+                                }
+                                
+                                Button(action: {
                                     withAnimation(.spring(response: 0.35, dampingFraction: 0.7)) {
                                         manager.isMapEnlarged = false
                                     }
@@ -1081,7 +1101,7 @@ struct ContentView: View {
                         
                         // Right Side Stack: [🔍 搜索] + "缩小" Cockpit + Unobstructed Rotating HTT Compass + Recenter + Zoom [+] / [-] Buttons!
                         VStack(alignment: .trailing, spacing: 6) {
-                            // Row 1: [🔍 搜索] Destination Button + [缩小] Cockpit Button
+                            // Row 1: [🔍 搜索] + [🎵 音乐] + [缩小] Cockpit Button
                             HStack(spacing: 5) {
                                 Button(action: {
                                     showSearchSheet = true
@@ -1092,10 +1112,27 @@ struct ContentView: View {
                                         Text(tr("搜索", "搜尋", "Search"))
                                             .font(.system(size: 11, weight: .heavy))
                                     }
-                                    .padding(.horizontal, 8)
+                                    .padding(.horizontal, 7)
                                     .frame(height: 35)
                                     .background(Color.black.opacity(0.85))
                                     .foregroundColor(.white)
+                                    .cornerRadius(9)
+                                    .overlay(RoundedRectangle(cornerRadius: 9).stroke(httGold.opacity(0.8), lineWidth: 1.2))
+                                }
+                                
+                                Button(action: {
+                                    musicManager.showMusicSheet = true
+                                }) {
+                                    HStack(spacing: 3) {
+                                        Image(systemName: "music.note")
+                                            .font(.system(size: 12, weight: .bold))
+                                        Text(tr("音乐", "音樂", "Music"))
+                                            .font(.system(size: 11, weight: .heavy))
+                                    }
+                                    .padding(.horizontal, 7)
+                                    .frame(height: 35)
+                                    .background(musicManager.isPlaying ? Color.purple.opacity(0.85) : Color.black.opacity(0.85))
+                                    .foregroundColor(musicManager.isPlaying ? .white : httGold)
                                     .cornerRadius(9)
                                     .overlay(RoundedRectangle(cornerRadius: 9).stroke(httGold.opacity(0.8), lineWidth: 1.2))
                                 }
@@ -1192,6 +1229,13 @@ struct ContentView: View {
                         bottomPreNavRouteSelectionCard
                             .padding(.horizontal, 12)
                             .transition(.move(edge: .bottom).combined(with: .opacity))
+                    }
+                    
+                    // Floating K-ON! Music Mini-Player Bar
+                    if musicManager.isPlaying || musicManager.currentSong != nil {
+                        KOnMusicMiniPlayerBar(musicManager: musicManager)
+                            .padding(.horizontal, 12)
+                            .padding(.bottom, 2)
                     }
                     
                     // Bottom Floating Control Island (Speedometer + Speech Bubble + Bottom-Right Mascot!)
@@ -1311,98 +1355,110 @@ struct ContentView: View {
 
     // MARK: - Top Turn-by-Turn Instruction Banner Card
     private var topNavigationBannerCard: some View {
-        HStack(spacing: 12) {
-            // Maneuver Turn Arrow
-            ZStack {
-                Circle()
-                    .fill(httCrimson)
-                    .frame(width: 50, height: 50)
-                    .overlay(Circle().stroke(httGold, lineWidth: 2))
-                
-                Image(systemName: (manager.travelMode == .transit && manager.transitPhase == .inTransitVehicle) ? "tram.fill" : turnIconName(for: manager.currentStepInstruction))
-                    .font(.system(size: 24, weight: .bold))
-                    .foregroundColor(httCream)
-            }
-            
-            // Instruction Text & Total Route Distance/Time
-            VStack(alignment: .leading, spacing: 3) {
-                HStack {
-                    Text(manager.destinationName.isEmpty ? tr("实时路线引导", "即時路線引導", "Route Guidance") : manager.destinationName)
-                        .font(.caption2.bold())
-                        .foregroundColor(httGold)
-                    Spacer()
-                    if manager.remainingRouteDistanceKm > 0 {
-                        Text(String(format: "%.1f km · %d %@", manager.remainingRouteDistanceKm, manager.remainingRouteMinutes, tr("分钟", "分鐘", "min")))
-                            .font(.system(size: 11, weight: .bold, design: .monospaced))
-                            .foregroundColor(httCream.opacity(0.9))
-                    }
+        HStack(alignment: .center, spacing: 10) {
+            // Maneuver Turn Arrow + Step Distance (GaoDe column layout!)
+            VStack(spacing: 2) {
+                ZStack {
+                    Circle()
+                        .fill(httCrimson)
+                        .frame(width: 44, height: 44)
+                        .overlay(Circle().stroke(httGold, lineWidth: 2))
+                    
+                    Image(systemName: (manager.travelMode == .transit && manager.transitPhase == .inTransitVehicle) ? "tram.fill" : turnIconName(for: manager.currentStepInstruction))
+                        .font(.system(size: 22, weight: .bold))
+                        .foregroundColor(httCream)
                 }
                 
+                if manager.distanceToNextStepMeters > 0 {
+                    Text(manager.formatSmartDistance(Int(manager.distanceToNextStepMeters)))
+                        .font(.system(size: 13, weight: .black, design: .monospaced))
+                        .foregroundColor(httGold)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                }
+            }
+            .frame(width: 54)
+            
+            // Middle Info: Primary Maneuver Instruction (up to 2 lines, never clipped!) + Destination & Route ETA
+            VStack(alignment: .leading, spacing: 3) {
+                // Primary Maneuver Instruction (Large bold, prominent like GaoDe)
                 Text(manager.currentStepInstruction.isEmpty
                      ? tr("沿着当前道路直行", "沿著當前道路直行", "Continue straight ahead")
                      : manager.currentStepInstruction)
                     .font(.system(size: 15, weight: .black))
                     .foregroundColor(.white)
-                    .lineLimit(1)
-            }
-            
-            // Step Distance Countdown Badge (Smart km / m format!)
-            if manager.distanceToNextStepMeters > 0 {
-                VStack(spacing: 1) {
-                    Text(manager.formatSmartDistance(Int(manager.distanceToNextStepMeters)))
-                        .font(.system(size: 16, weight: .black, design: .monospaced))
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.85)
+                    .fixedSize(horizontal: false, vertical: true)
+                
+                // Secondary Bar: Destination + Total Remaining Distance & Time (Single clean line)
+                HStack(spacing: 5) {
+                    Text(manager.destinationName.isEmpty ? tr("实时路线引导", "即時路線引導", "Route Guidance") : manager.destinationName)
+                        .font(.system(size: 11, weight: .bold))
                         .foregroundColor(httGold)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    
+                    if manager.remainingRouteDistanceKm > 0 {
+                        Text("·")
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundColor(.gray)
+                        Text(String(format: "%.1f km · %d %@", manager.remainingRouteDistanceKm, manager.remainingRouteMinutes, tr("分钟", "分鐘", "min")))
+                            .font(.system(size: 11, weight: .bold, design: .monospaced))
+                            .foregroundColor(httCream.opacity(0.92))
+                            .lineLimit(1)
+                    }
                 }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 5)
-                .background(Color.black.opacity(0.55))
-                .cornerRadius(8)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
             
-            // In-App Public Transit & Subway Route Detail Button (Only shown when navigating in transit mode!)
-            if manager.travelMode == .transit && manager.destinationCoord != nil {
+            // Trailing Controls: [X] Exit Navigation + [换乘] Transit Plan Button
+            VStack(spacing: 5) {
                 Button(action: {
-                    manager.showTransitPlanSheet = true
+                    withAnimation(.spring(response: 0.35, dampingFraction: 0.7)) {
+                        if manager.activeRoute != nil || manager.customTransitPolyline != nil {
+                            manager.stopRouteGuidance()
+                        } else {
+                            manager.isMapEnlarged = false
+                        }
+                    }
                 }) {
-                    VStack(spacing: 1) {
-                        Image(systemName: "tram.fill")
-                            .font(.system(size: 13, weight: .bold))
-                        Text(tr("换乘方案", "換乘方案", "Transit"))
-                            .font(.system(size: 8, weight: .black))
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 22, weight: .semibold))
+                        .foregroundColor(.red)
+                        .padding(2)
+                        .background(Color.black.opacity(0.6))
+                        .clipShape(Circle())
+                }
+                
+                if manager.travelMode == .transit && manager.destinationCoord != nil {
+                    Button(action: {
+                        manager.showTransitPlanSheet = true
+                    }) {
+                        HStack(spacing: 2) {
+                            Image(systemName: "tram.fill")
+                                .font(.system(size: 9, weight: .bold))
+                            Text(tr("换乘", "換乘", "Plan"))
+                                .font(.system(size: 9, weight: .black))
+                        }
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 3)
+                        .background(Color.purple.opacity(0.92))
+                        .cornerRadius(6)
+                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(httGold, lineWidth: 1))
                     }
-                    .foregroundColor(.white)
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 5)
-                    .background(Color.purple.opacity(0.92))
-                    .cornerRadius(8)
-                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold, lineWidth: 1.2))
                 }
             }
-            
-            // Exit Navigation / Minimize Button
-            Button(action: {
-                withAnimation(.spring(response: 0.35, dampingFraction: 0.7)) {
-                    if manager.activeRoute != nil || manager.customTransitPolyline != nil {
-                        manager.stopRouteGuidance()
-                    } else {
-                        manager.isMapEnlarged = false
-                    }
-                }
-            }) {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.title2)
-                    .foregroundColor(.red)
-                    .padding(4)
-                    .background(Color.black.opacity(0.6))
-                    .clipShape(Circle())
-            }
+            .frame(width: 46)
         }
-        .padding(10)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
         .background(
             RoundedRectangle(cornerRadius: 16)
-                .fill(Color.black.opacity(0.85))
+                .fill(Color.black.opacity(0.88))
                 .overlay(RoundedRectangle(cornerRadius: 16).stroke(httGold, lineWidth: 2))
-                .shadow(color: .black.opacity(0.5), radius: 8)
+                .shadow(color: .black.opacity(0.55), radius: 8)
         )
     }
 
@@ -2036,6 +2092,23 @@ struct ContentView: View {
                 .background(httCrimson)
                 .cornerRadius(8)
                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold, lineWidth: 1.5))
+            }
+            
+            Button(action: {
+                musicManager.showMusicSheet = true
+            }) {
+                HStack(spacing: 3) {
+                    Image(systemName: "music.note.list")
+                    Text(tr("音乐馆", "音樂館", "Music"))
+                        .lineLimit(1)
+                }
+                .font(.system(size: 11, weight: .bold))
+                .padding(.horizontal, 7)
+                .padding(.vertical, 6)
+                .background(musicManager.isPlaying ? Color.purple.opacity(0.85) : Color.white.opacity(0.14))
+                .foregroundColor(musicManager.isPlaying ? .white : httGold)
+                .cornerRadius(8)
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold.opacity(0.7), lineWidth: 1))
             }
             
             Spacer(minLength: 2)
@@ -2860,16 +2933,7 @@ struct ContentView: View {
                     .font(.system(size: 12, weight: .bold, design: .monospaced))
                     .foregroundColor(.white.opacity(0.92))
                 
-                Button(action: {
-                    manager.openGaoDeLivePortal(mode: 3)
-                }) {
-                    HStack(spacing: 2) {
-                        Text("店鋪全部商品與評價")
-                        Image(systemName: "chevron.right")
-                    }
-                    .font(.system(size: 10, weight: .bold))
-                    .foregroundColor(httGold)
-                }
+
                 
                 Spacer()
             }
@@ -2911,61 +2975,6 @@ struct ContentView: View {
                     }
                     .padding(.horizontal, 6)
                 }
-            }
-            
-            if manager.showPOIDetailCardExpanded && !manager.tappedMapDishes.isEmpty {
-                // Row 5: Interactive Category-Matched Products / Dishes Strip (Hidden when dishes empty, e.g. for parks/facilities!)
-                VStack(alignment: .leading, spacing: 5) {
-                    HStack {
-                        Text(manager.getSectionHeaderTitleForPOI())
-                            .font(.system(size: 11, weight: .heavy))
-                            .foregroundColor(.white)
-                        Spacer()
-                        Button(action: {
-                            manager.openGaoDeLivePortal(mode: 3)
-                        }) {
-                            Text("查看全部 (\(manager.tappedMapDishes.count * 12)) >")
-                                .font(.system(size: 10, weight: .bold))
-                                .foregroundColor(httGold)
-                        }
-                    }
-                    
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 8) {
-                            ForEach(manager.tappedMapDishes) { dish in
-                                poiDishCardButton(dish: dish)
-                            }
-                        }
-                    }
-                    
-                    // Inline Dish Detail Banner when a dish/item is clicked!
-                    if let selDish = manager.selectedDishItem, manager.showDishDetailAlert {
-                        HStack(spacing: 8) {
-                            Image(systemName: selDish.iconName)
-                                .foregroundColor(httGold)
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text("\(selDish.name) · \(selDish.price)  (網友推薦 \(selDish.recommendCount)次)")
-                                    .font(.system(size: 11, weight: .black))
-                                    .foregroundColor(.white)
-                                Text(selDish.desc)
-                                    .font(.system(size: 10, weight: .medium))
-                                    .foregroundColor(httCream.opacity(0.9))
-                            }
-                            Spacer()
-                            Button(action: {
-                                manager.showDishDetailAlert = false
-                            }) {
-                                Image(systemName: "xmark.circle.fill")
-                                    .foregroundColor(.gray)
-                            }
-                        }
-                        .padding(8)
-                        .background(Color.orange.opacity(0.18))
-                        .cornerRadius(8)
-                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.orange, lineWidth: 1))
-                    }
-                }
-                .padding(.top, 2)
             }
             
             Divider().background(Color.white.opacity(0.15))
@@ -3259,7 +3268,7 @@ struct ContentView: View {
                     }
                     Spacer(minLength: 0)
                 }
-                .padding(.horizontal, 8)
+                .padding(.horizontal, 4)
                 .padding(.vertical, 7)
                 .frame(maxWidth: .infinity)
                 .background(Color.black.opacity(0.75))

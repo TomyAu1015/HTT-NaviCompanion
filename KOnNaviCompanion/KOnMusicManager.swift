@@ -129,7 +129,7 @@ class KOnMusicManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
     private func setupAudioSession() {
         do {
             let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.playback, mode: .default, options: [.mixWithOthers, .allowBluetooth, .allowBluetoothA2DP, .duckOthers])
+            try session.setCategory(.playback, mode: .default, options: [.mixWithOthers, .allowBluetoothHFP, .allowBluetoothA2DP, .duckOthers])
             try session.setActive(true)
         } catch {
             print("KOnMusicManager audio session init error: \(error)")

@@ -744,6 +744,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     @Published var activeRoute: MKRoute? = nil
     @Published var destinationName: String = ""
     @Published var destinationCoord: CLLocationCoordinate2D? = nil
+    @Published var lastRerouteTime: Date = Date.distantPast
     
     // GaoDe Navigation State Helper: Only true when there is an active destination AND route/guidance
     var hasActiveNavigation: Bool {
