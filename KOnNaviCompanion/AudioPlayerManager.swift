@@ -1224,7 +1224,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             let specificShops = allItems.filter { item, _ in
                 let n = item.name ?? ""
                 return !self.isPureEstate(n)
-            }.sorted { /usr/bin/bash.1 < .1 }
+            }.sorted { $0.1 < $1.1 }
             
             // If a specific shop/merchant was found within 120m of tap
             if let (bestShop, _) = specificShops.first {
@@ -1262,9 +1262,9 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                     // 1. Check placemark.areasOfInterest (often contains specific shops located inside the building!)
                     var chosenName: String? = nil
                     if let aoi = pm.areasOfInterest {
-                        if let specificShop = aoi.first(where: { !self.isPureEstate(/usr/bin/bash) && !self.isPureRoadOrBuildingNumber(/usr/bin/bash) }) {
+                        if let specificShop = aoi.first(where: { !self.isPureEstate($0) && !self.isPureRoadOrBuildingNumber($0) }) {
                             chosenName = specificShop
-                        } else if let anyPOI = aoi.first(where: { !self.isPureRoadOrBuildingNumber(/usr/bin/bash) }) {
+                        } else if let anyPOI = aoi.first(where: { !self.isPureRoadOrBuildingNumber($0) }) {
                             chosenName = anyPOI
                         }
                     }
@@ -1279,7 +1279,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                     // 3. If it's a pure road/street/number or blank ground:
                     // Check if Pass 1 had any broad estate/building within 120m
                     guard let finalName = chosenName, !finalName.isEmpty else {
-                        let sortedAll = allItems.sorted { /usr/bin/bash.1 < .1 }
+                        let sortedAll = allItems.sorted { $0.1 < $1.1 }
                         if let (bestItem, dist) = sortedAll.first, dist <= 120.0 {
                             var addrParts: [String] = []
                             if let distName = bestItem.placemark.subLocality { addrParts.append(distName) }
