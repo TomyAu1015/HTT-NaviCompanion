@@ -186,7 +186,7 @@ class KOnMusicManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
     func setupAndScanLibrary() {
         var baseList = KOnMusicManager.canonicalKOnSongs
         let fm = FileManager.default
-        let audioExtensions = ["mp3", "m4a", "flac", "wav", "aac", "caf", "aiff"]
+        let audioExtensions = ["mp3", "m4a", "mp4", "m4b", "m4r", "flac", "wav", "aac", "caf", "aiff"]
         
         var foundFiles: [URL] = []
         
@@ -247,6 +247,16 @@ class KOnMusicManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
         var customIndex = baseList.count + 1
         for extra in foundFiles where !matchedURLs.contains(extra) {
             let cleanTitle = extra.deletingPathExtension().lastPathComponent
+            var customDurFormatted = "--:--"
+            var customApproxSecs: Double = 240.0
+            let asset = AVURLAsset(url: extra)
+            let durationSecs = CMTimeGetSeconds(asset.duration)
+            if !durationSecs.isNaN && durationSecs > 0 {
+                customApproxSecs = durationSecs
+                let mins = Int(durationSecs) / 60
+                let secs = Int(durationSecs) % 60
+                customDurFormatted = String(format: "%02d:%02d", mins, secs)
+            }
             let customItem = KOnSongItem(
                 trackNumber: customIndex,
                 title: cleanTitle,
@@ -255,7 +265,8 @@ class KOnMusicManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
                 album: "轻音少女导入曲库",
                 category: .insert,
                 vocalistChar: "放课后茶会",
-                durationFormatted: "--:--",
+                durationFormatted: customDurFormatted,
+                approxDurationSeconds: customApproxSecs,
                 fileURL: extra,
                 isCustomImport: true
             )
@@ -289,7 +300,22 @@ class KOnMusicManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
         
         do {
             audioPlayer?.stop()
-            audioPlayer = try AVAudioPlayer(contentsOf: url)
+            do {
+                audioPlayer = try AVAudioPlayer(contentsOf: url)
+            } catch {
+                let ext = url.pathExtension.lowercased()
+                var hint: AVFileType? = nil
+                if ext == "mp4" || ext == "m4v" {
+                    hint = .mp4
+                } else if ext == "m4a" || ext == "m4b" || ext == "m4r" || ext == "aac" {
+                    hint = .m4a
+                }
+                if let hint = hint {
+                    audioPlayer = try AVAudioPlayer(contentsOf: url, fileTypeHint: hint.rawValue)
+                } else {
+                    throw error
+                }
+            }
             audioPlayer?.delegate = self
             audioPlayer?.volume = isDucked ? duckVolume : volume
             audioPlayer?.prepareToPlay()
@@ -488,7 +514,10 @@ struct AudioDocumentPicker: UIViewControllerRepresentable {
     @Environment(\.presentationMode) var presentationMode
     
     func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
-        let types: [UTType] = [.audio, .mp3, .mpeg4Audio, .wav, .aiff]
+        var types: [UTType] = [.audio, .mp3, .mpeg4Audio, .wav, .aiff, .movie]
+        if let mp4Type = UTType(filenameExtension: "mp4") { types.append(mp4Type) }
+        if let m4aType = UTType(filenameExtension: "m4a") { types.append(m4aType) }
+        if let m4bType = UTType(filenameExtension: "m4b") { types.append(m4bType) }
         let picker = UIDocumentPickerViewController(forOpeningContentTypes: types, asCopy: true)
         picker.allowsMultipleSelection = true
         picker.delegate = context.coordinator

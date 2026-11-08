@@ -14,7 +14,7 @@ import shutil
 FILE_ID = "1eHHqrJ8yoI4L5lVLi21WNtBeVZRY3WqT"
 ARCHIVE_NAME = "keion_music.7z"
 TARGET_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "KOnNaviCompanion", "Music")
-AUDIO_EXTS = (".mp3", ".m4a", ".flac", ".wav", ".aac", ".caf", ".aiff")
+AUDIO_EXTS = (".mp3", ".m4a", ".mp4", ".m4b", ".m4r", ".flac", ".wav", ".aac", ".caf", ".aiff")
 
 def main():
     os.makedirs(TARGET_DIR, exist_ok=True)

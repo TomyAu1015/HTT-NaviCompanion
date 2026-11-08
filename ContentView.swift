@@ -849,6 +849,7 @@ struct ContentView: View {
                                 utilityControlGrid
                                 portraitBottomCompanionDock
                             }
+                            .frame(width: geo.size.width - 24)
                             .padding(.horizontal, 12)
                             .padding(.top, 4)
                             .padding(.bottom, 12)
@@ -1093,13 +1094,13 @@ struct ContentView: View {
                             .padding(.horizontal, 12)
                     }
                     
-                    // Electronic Speed Camera + Traffic Congestion + Toll + Service Area HUD Strip + Unobstructed Compass + Zoom [+] / [-]!
+                    // Electronic Speed Camera + Traffic Status (Left) vs Right Side Tool Column
                     HStack(alignment: .top, spacing: 6) {
                         electronicEyeAndHighwayHUDStrip
                         
                         Spacer(minLength: 4)
                         
-                        // Right Side Stack: [🔍 搜索] + "缩小" Cockpit + Unobstructed Rotating HTT Compass + Recenter + Zoom [+] / [-] Buttons!
+                        // Right Side Stack: Top Row [搜索] [🎵 音乐] [缩小] + Vertical Toolbar (Compass, Recenter, Zoom)
                         VStack(alignment: .trailing, spacing: 6) {
                             // Row 1: [🔍 搜索] + [🎵 音乐] + [缩小] Cockpit Button
                             HStack(spacing: 5) {
@@ -1108,16 +1109,16 @@ struct ContentView: View {
                                 }) {
                                     HStack(spacing: 3) {
                                         Image(systemName: "magnifyingglass")
-                                            .font(.system(size: 12, weight: .bold))
+                                            .font(.system(size: 11, weight: .bold))
                                         Text(tr("搜索", "搜尋", "Search"))
                                             .font(.system(size: 11, weight: .heavy))
                                     }
-                                    .padding(.horizontal, 7)
-                                    .frame(height: 35)
+                                    .padding(.horizontal, 6)
+                                    .frame(height: 32)
                                     .background(Color.black.opacity(0.85))
                                     .foregroundColor(.white)
-                                    .cornerRadius(9)
-                                    .overlay(RoundedRectangle(cornerRadius: 9).stroke(httGold.opacity(0.8), lineWidth: 1.2))
+                                    .cornerRadius(8)
+                                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold.opacity(0.8), lineWidth: 1.2))
                                 }
                                 
                                 Button(action: {
@@ -1125,16 +1126,16 @@ struct ContentView: View {
                                 }) {
                                     HStack(spacing: 3) {
                                         Image(systemName: "music.note")
-                                            .font(.system(size: 12, weight: .bold))
+                                            .font(.system(size: 11, weight: .bold))
                                         Text(tr("音乐", "音樂", "Music"))
                                             .font(.system(size: 11, weight: .heavy))
                                     }
-                                    .padding(.horizontal, 7)
-                                    .frame(height: 35)
+                                    .padding(.horizontal, 6)
+                                    .frame(height: 32)
                                     .background(musicManager.isPlaying ? Color.purple.opacity(0.85) : Color.black.opacity(0.85))
                                     .foregroundColor(musicManager.isPlaying ? .white : httGold)
-                                    .cornerRadius(9)
-                                    .overlay(RoundedRectangle(cornerRadius: 9).stroke(httGold.opacity(0.8), lineWidth: 1.2))
+                                    .cornerRadius(8)
+                                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold.opacity(0.8), lineWidth: 1.2))
                                 }
                                 
                                 Button(action: {
@@ -1144,74 +1145,76 @@ struct ContentView: View {
                                 }) {
                                     HStack(spacing: 3) {
                                         Image(systemName: "arrow.down.right.and.arrow.up.left")
-                                            .font(.system(size: 11, weight: .bold))
+                                            .font(.system(size: 10, weight: .bold))
                                         Text(tr("缩小", "縮小", "Cockpit"))
                                             .font(.system(size: 11, weight: .heavy))
                                     }
-                                    .padding(.horizontal, 8)
-                                    .frame(height: 35)
+                                    .padding(.horizontal, 7)
+                                    .frame(height: 32)
                                     .background(Color.black.opacity(0.85))
                                     .foregroundColor(httGold)
-                                    .cornerRadius(9)
-                                    .overlay(RoundedRectangle(cornerRadius: 9).stroke(httGold.opacity(0.8), lineWidth: 1.2))
+                                    .cornerRadius(8)
+                                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold.opacity(0.8), lineWidth: 1.2))
                                 }
                             }
                             
-                            // Row 2: Rotating Compass Arrow + Recenter Button (Enlarged to 35pt, never larger than top mode buttons!)
-                            HStack(spacing: 5) {
+                            // Vertical Tool Strip along right edge: Compass + Recenter + Zoom
+                            VStack(alignment: .trailing, spacing: 5) {
+                                // Compass / Camera Mode Button
                                 Button(action: {
                                     manager.toggleCameraMode()
                                 }) {
                                     ZStack {
                                         Circle()
                                             .fill(Color.black.opacity(0.85))
-                                            .frame(width: 35, height: 35)
+                                            .frame(width: 34, height: 34)
                                             .overlay(Circle().stroke(httGold, lineWidth: 1.5))
                                         Image(systemName: "location.north.fill")
-                                            .font(.system(size: 15, weight: .bold))
+                                            .font(.system(size: 14, weight: .bold))
                                             .foregroundColor(.red)
                                             .rotationEffect(.degrees(manager.cameraMode == .headingUp ? -manager.headingDegrees : 0))
                                     }
                                 }
                                 
+                                // Recenter / Follow-car Button
                                 Button(action: {
                                     manager.triggerFastRecenter()
                                 }) {
                                     HStack(spacing: 3) {
                                         Image(systemName: manager.mapTrackingUser ? "location.north.line.fill" : "location")
-                                            .font(.system(size: 12, weight: .bold))
+                                            .font(.system(size: 11, weight: .bold))
                                         Text(manager.mapTrackingUser ? tr("跟车中", "跟車中", "Locked") : tr("回中", "回中", "Center"))
-                                            .font(.system(size: 11, weight: .heavy))
+                                            .font(.system(size: 10, weight: .heavy))
                                     }
-                                    .padding(.horizontal, 9)
-                                    .frame(height: 35)
+                                    .padding(.horizontal, 7)
+                                    .frame(height: 30)
                                     .background(manager.mapTrackingUser ? Color.green.opacity(0.88) : Color.black.opacity(0.85))
                                     .foregroundColor(manager.mapTrackingUser ? .black : httGold)
-                                    .cornerRadius(9)
-                                    .overlay(RoundedRectangle(cornerRadius: 9).stroke(httGold.opacity(0.8), lineWidth: 1.2))
+                                    .cornerRadius(8)
+                                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold.opacity(0.8), lineWidth: 1.2))
                                 }
-                            }
-                            
-                            // Explicit Zoom In [+] / Zoom Out [-] Buttons (High-Contrast Bold Symbols)
-                            VStack(spacing: 4) {
-                                Button(action: { manager.zoomMapIn() }) {
-                                    Image(systemName: "plus")
-                                        .font(.system(size: 16, weight: .black))
-                                        .foregroundColor(httGold)
-                                        .frame(width: 35, height: 35)
-                                        .background(Color.black.opacity(0.85))
-                                        .cornerRadius(8)
-                                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold.opacity(0.6), lineWidth: 1))
+                                
+                                // High-Contrast Bold Zoom [+] / [-] Capsule
+                                VStack(spacing: 1) {
+                                    Button(action: { manager.zoomMapIn() }) {
+                                        Image(systemName: "plus")
+                                            .font(.system(size: 14, weight: .black))
+                                            .foregroundColor(httGold)
+                                            .frame(width: 34, height: 28)
+                                    }
+                                    Divider()
+                                        .background(Color.white.opacity(0.3))
+                                        .frame(width: 24)
+                                    Button(action: { manager.zoomMapOut() }) {
+                                        Image(systemName: "minus")
+                                            .font(.system(size: 14, weight: .black))
+                                            .foregroundColor(httCream)
+                                            .frame(width: 34, height: 28)
+                                    }
                                 }
-                                Button(action: { manager.zoomMapOut() }) {
-                                    Image(systemName: "minus")
-                                        .font(.system(size: 16, weight: .black))
-                                        .foregroundColor(httCream)
-                                        .frame(width: 35, height: 35)
-                                        .background(Color.black.opacity(0.85))
-                                        .cornerRadius(8)
-                                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.25), lineWidth: 1))
-                                }
+                                .background(Color.black.opacity(0.85))
+                                .cornerRadius(8)
+                                .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold.opacity(0.7), lineWidth: 1))
                             }
                         }
                     }
@@ -1812,89 +1815,80 @@ struct ContentView: View {
     
     // Electronic Speed Camera (测速电子眼) + Congestion (路况拥堵) + Service Area (服务区) + Toll Station (收费站) HUD Strip
     private var electronicEyeAndHighwayHUDStrip: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            HStack(spacing: 6) {
-                // 1. Electronic Speed Camera Badge (测速电子眼 - Visibly enlarged circle & typography!)
-                HStack(spacing: 6) {
-                    ZStack {
-                        Circle()
-                            .fill(Color.white)
-                            .frame(width: 30, height: 30)
-                            .overlay(Circle().stroke(Color.red, lineWidth: 3.5))
-                        Text("\(manager.upcomingCameraLimit > 0 ? manager.upcomingCameraLimit : Int(manager.speedLimitKmh))")
-                            .font(.system(size: 13, weight: .black, design: .rounded))
-                            .foregroundColor(.black)
-                    }
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(tr("测速电子眼", "測速電子眼", "Speed Cam"))
-                            .font(.system(size: 11, weight: .heavy))
-                            .foregroundColor(.white)
-                        Text(manager.upcomingCameraDistance > 0
-                             ? manager.formatSmartDistance(manager.upcomingCameraDistance)
-                             : tr("全程监控中", "全程監控中", "Active"))
-                            .font(.system(size: 10, weight: .bold, design: .monospaced))
-                            .foregroundColor(httGold)
-                    }
-                }
-                .padding(.horizontal, 9)
-                .padding(.vertical, 6)
-                .background(Color.black.opacity(0.85))
-                .cornerRadius(10)
-                .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.red.opacity(0.85), lineWidth: 1.5))
-                
-                // 2. Traffic Congestion Indicator (拥堵/畅通状态)
-                HStack(spacing: 5) {
+        VStack(alignment: .leading, spacing: 4) {
+            // 1. Electronic Speed Camera Badge (测速电子眼)
+            HStack(spacing: 5) {
+                ZStack {
                     Circle()
-                        .fill(manager.isCongested ? Color.orange : Color.green)
-                        .frame(width: 9, height: 9)
-                    Text(manager.congestionStatusText)
-                        .font(.system(size: 11, weight: .heavy))
-                        .foregroundColor(manager.isCongested ? .orange : Color(red: 0.4, green: 0.98, blue: 0.65))
-                        .fixedSize(horizontal: true, vertical: false)
+                        .fill(Color.white)
+                        .frame(width: 26, height: 26)
+                        .overlay(Circle().stroke(Color.red, lineWidth: 3))
+                    Text("\(manager.upcomingCameraLimit > 0 ? manager.upcomingCameraLimit : Int(manager.speedLimitKmh))")
+                        .font(.system(size: 11, weight: .black, design: .rounded))
+                        .foregroundColor(.black)
                 }
-                .padding(.horizontal, 9)
-                .padding(.vertical, 7)
-                .background(Color.black.opacity(0.85))
-                .cornerRadius(10)
-                .overlay(RoundedRectangle(cornerRadius: 9).stroke(manager.isCongested ? Color.orange : Color.green.opacity(0.6), lineWidth: 1))
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(tr("测速电子眼", "測速電子眼", "Speed Cam"))
+                        .font(.system(size: 10, weight: .heavy))
+                        .foregroundColor(.white)
+                    Text(manager.upcomingCameraDistance > 0
+                         ? manager.formatSmartDistance(manager.upcomingCameraDistance)
+                         : tr("全程监控中", "全程監控中", "Active"))
+                        .font(.system(size: 9, weight: .bold, design: .monospaced))
+                        .foregroundColor(httGold)
+                }
             }
+            .padding(.horizontal, 7)
+            .padding(.vertical, 4)
+            .background(Color.black.opacity(0.85))
+            .cornerRadius(8)
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.red.opacity(0.85), lineWidth: 1.2))
+            
+            // 2. Traffic Congestion Indicator (拥堵/畅通状态)
+            HStack(spacing: 4) {
+                Circle()
+                    .fill(manager.isCongested ? Color.orange : Color.green)
+                    .frame(width: 8, height: 8)
+                Text(manager.congestionStatusText)
+                    .font(.system(size: 10, weight: .heavy))
+                    .foregroundColor(manager.isCongested ? .orange : Color(red: 0.4, green: 0.98, blue: 0.65))
+            }
+            .padding(.horizontal, 7)
+            .padding(.vertical, 4)
+            .background(Color.black.opacity(0.85))
+            .cornerRadius(8)
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(manager.isCongested ? Color.orange : Color.green.opacity(0.6), lineWidth: 1))
             
             // 3. Highway Service Area (服务区) & Toll Station (收费站) Badges
-            // STRICT RULE: Only show when driving on highway AND upcoming distance > 0! NEVER show if no highway or no service area/toll!
             if manager.travelMode == .driving && (manager.upcomingServiceAreaDist > 0 || manager.upcomingTollDistance > 0) {
-                HStack(spacing: 6) {
-                    // Service Area: Displays exact name (e.g. 沙湾服务区) and refreshes sequentially after passing!
+                HStack(spacing: 5) {
                     if manager.upcomingServiceAreaDist > 0 {
-                        HStack(spacing: 4) {
+                        HStack(spacing: 3) {
                             Image(systemName: "cup.and.saucer.fill")
-                                .font(.system(size: 9, weight: .bold))
+                                .font(.system(size: 8, weight: .bold))
                                 .foregroundColor(.cyan)
                             Text("\(manager.upcomingServiceAreaName.isEmpty ? tr("服务区", "服務區", "SA") : manager.upcomingServiceAreaName): \(manager.formatSmartDistance(manager.upcomingServiceAreaDist))")
-                                .font(.system(size: 9, weight: .bold))
+                                .font(.system(size: 8, weight: .bold))
                                 .foregroundColor(.white)
-                                .fixedSize(horizontal: true, vertical: false)
                         }
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 4)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
                         .background(Color.blue.opacity(0.85))
-                        .cornerRadius(7)
+                        .cornerRadius(6)
                     }
-                    
-                    // Toll Station: Only displays if highway toll station is ahead!
                     if manager.upcomingTollDistance > 0 {
-                        HStack(spacing: 4) {
-                            Image(systemName: "yensign.circle.fill")
-                                .font(.system(size: 10, weight: .bold))
-                                .foregroundColor(httGold)
-                            Text("\(manager.upcomingTollName.isEmpty ? tr("收费站", "收費站", "Toll") : manager.upcomingTollName): \(manager.formatSmartDistance(manager.upcomingTollDistance))")
-                                .font(.system(size: 9, weight: .bold))
+                        HStack(spacing: 3) {
+                            Image(systemName: "dollarsign.circle.fill")
+                                .font(.system(size: 8, weight: .bold))
+                                .foregroundColor(.yellow)
+                            Text("\(tr("收费站", "收費站", "Toll")): \(manager.formatSmartDistance(manager.upcomingTollDistance))")
+                                .font(.system(size: 8, weight: .bold))
                                 .foregroundColor(.white)
-                                .fixedSize(horizontal: true, vertical: false)
                         }
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 4)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
                         .background(Color.orange.opacity(0.85))
-                        .cornerRadius(7)
+                        .cornerRadius(6)
                     }
                 }
             }
@@ -1903,90 +1897,39 @@ struct ContentView: View {
     
     // 4 Travel Modes + Camera Mode + Outfit Bar (Shown before pressing [开始导航])
     private var travelModeSelectorBar: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 7) {
-                ForEach(NavigationTravelMode.allCases) { mode in
-                    let isSelected = (manager.travelMode == mode)
-                    Button(action: {
-                        // Instantaneous switch: Cancel previous audio queue immediately without waiting!
-                        manager.stop()
-                        manager.travelMode = mode
-                    }) {
-                        HStack(spacing: 5) {
-                            Image(systemName: mode.icon)
-                                .font(.system(size: 15, weight: .bold))
-                            Text(mode.title(manager.language))
-                                .font(.system(size: 13, weight: .heavy))
-                                .lineLimit(1)
-                                .fixedSize(horizontal: true, vertical: false)
-                        }
-                        .padding(.horizontal, 13)
-                        .padding(.vertical, 8)
-                        .frame(minHeight: 40)
-                        .background(
-                            isSelected
-                            ? LinearGradient(colors: [Color(red: 0.95, green: 0.22, blue: 0.26), httCrimson], startPoint: .top, endPoint: .bottom)
-                            : LinearGradient(colors: [Color.black.opacity(0.85), Color(white: 0.12).opacity(0.85)], startPoint: .top, endPoint: .bottom)
-                        )
-                        .foregroundColor(isSelected ? .white : httCream.opacity(0.95))
-                        .cornerRadius(10)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 10)
-                                .stroke(isSelected ? httGold : Color.white.opacity(0.28), lineWidth: isSelected ? 2 : 1)
-                        )
-                        .shadow(color: isSelected ? httCrimson.opacity(0.55) : Color.black.opacity(0.4), radius: isSelected ? 4 : 2, x: 0, y: 2)
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(PlainButtonStyle())
-                }
-                
-                // Camera Mode Toggle: 地图动 (Heading Up) vs 车标动 (North Up)
+        HStack(spacing: 5) {
+            ForEach(NavigationTravelMode.allCases) { mode in
+                let isSelected = (manager.travelMode == mode)
                 Button(action: {
-                    manager.toggleCameraMode()
+                    manager.stop()
+                    manager.travelMode = mode
                 }) {
                     HStack(spacing: 4) {
-                        Image(systemName: manager.cameraMode.icon)
+                        Image(systemName: mode.icon)
                             .font(.system(size: 13, weight: .bold))
-                        Text(manager.cameraMode.title(manager.language))
-                            .font(.system(size: 12, weight: .bold))
+                        Text(mode.title(manager.language))
+                            .font(.system(size: 11, weight: .heavy))
                             .lineLimit(1)
-                            .fixedSize(horizontal: true, vertical: false)
+                            .minimumScaleFactor(0.75)
                     }
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 8)
-                    .frame(minHeight: 40)
-                    .background(Color.blue.opacity(0.85))
-                    .foregroundColor(.white)
-                    .cornerRadius(10)
-                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(httGold.opacity(0.7), lineWidth: 1.2))
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(PlainButtonStyle())
-                
-                // Outfit Switcher Button
-                Button(action: {
-                    showOutfitPopup = true
-                }) {
-                    HStack(spacing: 4) {
-                        Image(systemName: manager.arrowOutfit.icon)
-                            .font(.system(size: 13, weight: .bold))
-                        Text(manager.arrowOutfit.title(manager.language))
-                            .font(.system(size: 12, weight: .bold))
-                            .lineLimit(1)
-                            .fixedSize(horizontal: true, vertical: false)
-                    }
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 8)
-                    .frame(minHeight: 40)
-                    .background(Color.black.opacity(0.85))
-                    .foregroundColor(httGold)
-                    .cornerRadius(10)
-                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(httGold.opacity(0.7), lineWidth: 1.2))
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 36)
+                    .background(
+                        isSelected
+                        ? LinearGradient(colors: [Color(red: 0.95, green: 0.22, blue: 0.26), httCrimson], startPoint: .top, endPoint: .bottom)
+                        : LinearGradient(colors: [Color.black.opacity(0.85), Color(white: 0.12).opacity(0.85)], startPoint: .top, endPoint: .bottom)
+                    )
+                    .foregroundColor(isSelected ? .white : httCream.opacity(0.95))
+                    .cornerRadius(9)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 9)
+                            .stroke(isSelected ? httGold : Color.white.opacity(0.28), lineWidth: isSelected ? 1.8 : 1)
+                    )
+                    .shadow(color: isSelected ? httCrimson.opacity(0.55) : Color.black.opacity(0.4), radius: isSelected ? 4 : 2, x: 0, y: 2)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(PlainButtonStyle())
             }
-            .padding(.vertical, 2)
         }
     }
     
@@ -2070,24 +2013,23 @@ struct ContentView: View {
     
     // MARK: - STANDARD COCKPIT COMPONENTS (When Not In Full Screen)
     private var topBezelBar: some View {
-        HStack(spacing: 5) {
+        HStack(spacing: 4) {
             Button(action: {
                 withAnimation { manager.showMapMode.toggle() }
             }) {
-                HStack(spacing: 4) {
+                HStack(spacing: 3) {
                     Image(systemName: manager.showMapMode ? "map.fill" : "cup.and.saucer.fill")
                         .font(.system(size: 11, weight: .bold))
                         .foregroundColor(httGold)
                     Text(manager.showMapMode
-                         ? tr("地图模式(点切舞台)", "地圖模式(點切舞台)", "Map(Tap Stage)")
-                         : tr("舞台模式(点切地图)", "舞台模式(點切地圖)", "Stage(Tap Map)"))
+                         ? tr("地图模式", "地圖模式", "Map Mode")
+                         : tr("舞台模式", "舞台模式", "Stage Mode"))
                         .font(.system(size: 11, weight: .heavy, design: .rounded))
                         .foregroundColor(httCream)
                         .lineLimit(1)
-                        .minimumScaleFactor(0.72)
-                        .fixedSize(horizontal: true, vertical: false)
+                        .minimumScaleFactor(0.8)
                 }
-                .padding(.horizontal, 7)
+                .padding(.horizontal, 6)
                 .padding(.vertical, 6)
                 .background(httCrimson)
                 .cornerRadius(8)
@@ -2099,11 +2041,13 @@ struct ContentView: View {
             }) {
                 HStack(spacing: 3) {
                     Image(systemName: "music.note.list")
-                    Text(tr("音乐馆", "音樂館", "Music"))
+                        .font(.system(size: 11, weight: .bold))
+                    Text(tr("音乐", "音樂", "Music"))
+                        .font(.system(size: 11, weight: .bold))
                         .lineLimit(1)
+                        .minimumScaleFactor(0.8)
                 }
-                .font(.system(size: 11, weight: .bold))
-                .padding(.horizontal, 7)
+                .padding(.horizontal, 6)
                 .padding(.vertical, 6)
                 .background(musicManager.isPlaying ? Color.purple.opacity(0.85) : Color.white.opacity(0.14))
                 .foregroundColor(musicManager.isPlaying ? .white : httGold)
@@ -2125,12 +2069,13 @@ struct ContentView: View {
             } label: {
                 HStack(spacing: 2) {
                     Image(systemName: "globe")
+                        .font(.system(size: 10))
                     Text(manager.language.rawValue)
+                        .font(.system(size: 11, weight: .bold))
                         .lineLimit(1)
-                        .fixedSize(horizontal: true, vertical: false)
+                        .minimumScaleFactor(0.8)
                 }
-                .font(.system(size: 11, weight: .bold))
-                .padding(.horizontal, 7)
+                .padding(.horizontal, 6)
                 .padding(.vertical, 6)
                 .background(Color.white.opacity(0.14))
                 .foregroundColor(httGold)
@@ -2142,35 +2087,37 @@ struct ContentView: View {
             }) {
                 HStack(spacing: 2) {
                     Image(systemName: "flip.horizontal.fill")
+                        .font(.system(size: 10))
                     Text(manager.isHUDMirrored ? tr("镜像", "鏡像", "Flip") : "HUD")
+                        .font(.system(size: 11, weight: .bold))
                         .lineLimit(1)
-                        .fixedSize(horizontal: true, vertical: false)
+                        .minimumScaleFactor(0.8)
                 }
-                .font(.system(size: 11, weight: .bold))
-                .padding(.horizontal, 7)
+                .padding(.horizontal, 6)
                 .padding(.vertical, 6)
                 .background(manager.isHUDMirrored ? httGold : Color.white.opacity(0.12))
                 .foregroundColor(manager.isHUDMirrored ? .black : httCream)
                 .cornerRadius(8)
             }
             
-            // RM-500HTT Official Album & Arrow Outfit Button (Never truncates!)
+            // RM-500HTT Official Album & Arrow Outfit Button (Never clips!)
             Button(action: { showAlbumSheet = true }) {
                 HStack(spacing: 3) {
                     if let iconImg = manager.getRM500UIImage("rm_btn_icon_on") {
                         Image(uiImage: iconImg)
                             .resizable()
                             .scaledToFit()
-                            .frame(width: 16, height: 16)
+                            .frame(width: 14, height: 14)
                     } else {
                         Image(systemName: "photo.on.rectangle.angled")
+                            .font(.system(size: 10))
                     }
                     Text(tr("相册/车标", "相冊/車標", "Album"))
                         .font(.system(size: 11, weight: .heavy))
                         .lineLimit(1)
-                        .fixedSize(horizontal: true, vertical: false)
+                        .minimumScaleFactor(0.8)
                 }
-                .padding(.horizontal, 8)
+                .padding(.horizontal, 6)
                 .padding(.vertical, 6)
                 .background(Color.pink.opacity(0.88))
                 .foregroundColor(.white)
@@ -2178,6 +2125,7 @@ struct ContentView: View {
                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold, lineWidth: 1))
             }
         }
+        .frame(maxWidth: .infinity)
     }
     
     private var speedometerCockpit: some View {
@@ -2298,7 +2246,7 @@ struct ContentView: View {
                         .overlay(RoundedRectangle(cornerRadius: 16).stroke(httGold, lineWidth: 2))
                     
                     VStack(spacing: 4) {
-                        HStack(spacing: 5) {
+                        HStack(spacing: 4) {
                             Button(action: { showSearchSheet = true }) {
                                 HStack(spacing: 4) {
                                     Image(systemName: "magnifyingglass")
@@ -2309,58 +2257,37 @@ struct ContentView: View {
                                         .font(.system(size: 10, weight: .bold))
                                         .foregroundColor(.white)
                                         .lineLimit(1)
-                                    Spacer()
+                                    Spacer(minLength: 0)
                                 }
-                                .padding(.horizontal, 7)
+                                .padding(.horizontal, 6)
                                 .padding(.vertical, 5)
                                 .background(Color.black.opacity(0.78))
                                 .cornerRadius(7)
                                 .overlay(RoundedRectangle(cornerRadius: 7).stroke(httGold.opacity(0.7), lineWidth: 1))
                             }
                             
-                            // Demo simulation toggle button (Accessible in compact cockpit mode!)
+                            // Demo simulation toggle button
                             Button(action: {
                                 manager.toggleDemoSimulation()
                             }) {
-                                HStack(spacing: 3) {
+                                HStack(spacing: 2) {
                                     Image(systemName: manager.isDemoSimulating ? "stop.fill" : "play.fill")
                                     Text(manager.isDemoSimulating ? tr("停止", "停止", "Stop") : tr("模拟", "模擬", "Demo"))
                                 }
                                 .font(.system(size: 10, weight: .bold))
-                                .padding(.horizontal, 6)
+                                .padding(.horizontal, 5)
                                 .padding(.vertical, 5)
                                 .background(manager.isDemoSimulating ? Color.orange : Color.purple.opacity(0.85))
                                 .foregroundColor(.white)
                                 .cornerRadius(7)
                             }
                             
-                            // Zoom In [+] / Out [-] in compact mode!
-                            Button(action: { manager.zoomMapIn() }) {
-                                Image(systemName: "plus.magnifyingglass")
-                                    .font(.system(size: 10, weight: .bold))
-                                    .padding(.horizontal, 5)
-                                    .padding(.vertical, 5)
-                                    .background(Color.black.opacity(0.78))
-                                    .foregroundColor(httGold)
-                                    .cornerRadius(7)
-                            }
-                            
-                            Button(action: { manager.zoomMapOut() }) {
-                                Image(systemName: "minus.magnifyingglass")
-                                    .font(.system(size: 10, weight: .bold))
-                                    .padding(.horizontal, 5)
-                                    .padding(.vertical, 5)
-                                    .background(Color.black.opacity(0.78))
-                                    .foregroundColor(httCream)
-                                    .cornerRadius(7)
-                            }
-                            
-                            // Fast Recenter Button in compact mode!
+                            // Fast Recenter Button
                             Button(action: {
                                 manager.triggerFastRecenter()
                             }) {
                                 Image(systemName: manager.mapTrackingUser ? "location.north.line.fill" : "location")
-                                    .font(.system(size: 11, weight: .bold))
+                                    .font(.system(size: 10, weight: .bold))
                                     .padding(.horizontal, 6)
                                     .padding(.vertical, 5)
                                     .background(manager.mapTrackingUser ? Color.green.opacity(0.85) : Color.black.opacity(0.75))
@@ -2368,7 +2295,7 @@ struct ContentView: View {
                                     .cornerRadius(7)
                             }
                             
-                            // Camera Mode Toggle in compact map (地图动 / 车标动)
+                            // Camera Mode Toggle
                             Button(action: {
                                 manager.toggleCameraMode()
                             }) {
@@ -3249,27 +3176,29 @@ struct ContentView: View {
                 }
             }
             
-            // Row 2: RM-500HTT Outfit (Tap=Cycle, LongPress=Wardrobe) + Camera Mode (地图动/车标动) + Birthday Special + Trip Reset
-            HStack(spacing: 6) {
+            // Row 2: RM-500HTT Outfit + Camera Mode + Birthday Special
+            HStack(spacing: 5) {
                 // Outfit Button: Tap to cycle, Long-press to open Beautified Wardrobe Popup!
-                HStack(spacing: 5) {
+                HStack(spacing: 4) {
                     Image(systemName: manager.arrowOutfit.icon)
-                        .font(.system(size: 12, weight: .bold))
+                        .font(.system(size: 11, weight: .bold))
                         .foregroundColor(httGold)
                     VStack(alignment: .leading, spacing: 1) {
-                        Text(tr("车标换装(长按选)", "車標換裝(長按選)", "Outfit(Hold)"))
+                        Text(tr("车标换装", "車標換裝", "Outfit"))
                             .font(.system(size: 10, weight: .heavy))
                             .foregroundColor(.white)
                             .lineLimit(1)
+                            .minimumScaleFactor(0.8)
                         Text(manager.arrowOutfit.title(manager.language))
-                            .font(.system(size: 9, weight: .bold))
+                            .font(.system(size: 8, weight: .bold))
                             .foregroundColor(httGold)
                             .lineLimit(1)
+                            .minimumScaleFactor(0.8)
                     }
                     Spacer(minLength: 0)
                 }
-                .padding(.horizontal, 4)
-                .padding(.vertical, 7)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 6)
                 .frame(maxWidth: .infinity)
                 .background(Color.black.opacity(0.75))
                 .cornerRadius(10)
@@ -3289,29 +3218,31 @@ struct ContentView: View {
                 }) {
                     HStack(spacing: 4) {
                         Image(systemName: manager.cameraMode.icon)
-                            .font(.system(size: 12, weight: .bold))
+                            .font(.system(size: 11, weight: .bold))
                             .foregroundColor(.cyan)
                         VStack(alignment: .leading, spacing: 1) {
-                            Text(tr("导航视角模式", "導航視角模式", "Nav View"))
+                            Text(tr("视角模式", "視角模式", "Camera"))
                                 .font(.system(size: 10, weight: .heavy))
                                 .foregroundColor(.white)
                                 .lineLimit(1)
+                                .minimumScaleFactor(0.8)
                             Text(manager.cameraMode.title(manager.language))
                                 .font(.system(size: 8, weight: .bold))
                                 .foregroundColor(.cyan)
                                 .lineLimit(1)
+                                .minimumScaleFactor(0.8)
                         }
                         Spacer(minLength: 0)
                     }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 7)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 6)
                     .frame(maxWidth: .infinity)
                     .background(Color.black.opacity(0.75))
                     .cornerRadius(10)
                     .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.cyan.opacity(0.6), lineWidth: 1.2))
                 }
                 
-                // Birthday Special Voice Button
+                // Birthday Special Voice Button [特典音] (Never clips!)
                 Button(action: {
                     manager.triggerBirthdaySpecialVoice()
                 }) {
@@ -3320,18 +3251,18 @@ struct ContentView: View {
                             Image(uiImage: giftImg)
                                 .resizable()
                                 .scaledToFit()
-                                .frame(width: 18, height: 18)
+                                .frame(width: 16, height: 16)
                         } else {
                             Image(systemName: "gift.fill")
-                                .font(.system(size: 13, weight: .bold))
+                                .font(.system(size: 12, weight: .bold))
                                 .foregroundColor(.pink)
                         }
                         Text(tr("特典音", "特典音", "Gift"))
                             .font(.system(size: 9, weight: .bold))
                             .foregroundColor(.white)
+                            .lineLimit(1)
                     }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 6)
+                    .frame(width: 52, height: 38)
                     .background(Color(red: 0.72, green: 0.22, blue: 0.48).opacity(0.88))
                     .cornerRadius(10)
                     .overlay(RoundedRectangle(cornerRadius: 10).stroke(httGold.opacity(0.65), lineWidth: 1.2))
