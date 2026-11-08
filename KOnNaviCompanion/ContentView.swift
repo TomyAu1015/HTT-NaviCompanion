@@ -898,7 +898,9 @@ struct ContentView: View {
                 HStack(alignment: .top, spacing: 10) {
                     // LEFT COLUMN (Compact Control Stack: Top Turn Card + Lanes/Lights + Travel Modes + SpeedCam/ServiceArea)
                     VStack(alignment: .leading, spacing: 5) {
-                        topNavigationBannerCard
+                        if manager.hasActiveNavigation {
+                            topNavigationBannerCard
+                        }
                         
                         if manager.activeRoute != nil || manager.customTransitPolyline != nil || manager.isDemoSimulating {
                             laneGuidanceAndTrafficLightBar
@@ -1008,10 +1010,12 @@ struct ContentView: View {
             } else {
                 // PORTRAIT LAYOUT: Kept 100% Identical as requested!
                 VStack(spacing: 5) {
-                    // Top Navigation Guidance Card
-                    topNavigationBannerCard
-                        .padding(.horizontal, 12)
-                        .padding(.top, 8)
+                    // Top Navigation Guidance Card (Hidden when no active navigation!)
+                    if manager.hasActiveNavigation {
+                        topNavigationBannerCard
+                            .padding(.horizontal, 12)
+                            .padding(.top, 8)
+                    }
                     
                     // Multi-Lane Guidance Bar (3~4 Lanes: Recommended in Bright White, Others in Dimmed Gray) + Traffic Light Countdown!
                     if manager.activeRoute != nil || manager.customTransitPolyline != nil || manager.isDemoSimulating {
@@ -1285,8 +1289,8 @@ struct ContentView: View {
                 .cornerRadius(8)
             }
             
-            // In-App Public Transit & Subway Route Detail Button (Zero External App Jumping!)
-            if manager.travelMode == .transit {
+            // In-App Public Transit & Subway Route Detail Button (Only shown when navigating in transit mode!)
+            if manager.travelMode == .transit && manager.destinationCoord != nil {
                 Button(action: {
                     manager.showTransitPlanSheet = true
                 }) {
@@ -1754,77 +1758,89 @@ struct ContentView: View {
     // 4 Travel Modes + Camera Mode + Outfit Bar (Shown before pressing [开始导航])
     private var travelModeSelectorBar: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 6) {
+            HStack(spacing: 7) {
                 ForEach(NavigationTravelMode.allCases) { mode in
+                    let isSelected = (manager.travelMode == mode)
                     Button(action: {
-                        withAnimation {
-                            manager.travelMode = mode
-                        }
+                        // Instantaneous switch: Cancel previous audio queue immediately without waiting!
+                        manager.stop()
+                        manager.travelMode = mode
                     }) {
-                        HStack(spacing: 4) {
+                        HStack(spacing: 5) {
                             Image(systemName: mode.icon)
-                                .font(.system(size: 11, weight: .bold))
+                                .font(.system(size: 15, weight: .bold))
                             Text(mode.title(manager.language))
-                                .font(.system(size: 11, weight: .bold))
+                                .font(.system(size: 13, weight: .heavy))
                                 .lineLimit(1)
                                 .fixedSize(horizontal: true, vertical: false)
                         }
-                        .padding(.horizontal, 9)
-                        .padding(.vertical, 6)
+                        .padding(.horizontal, 13)
+                        .padding(.vertical, 8)
+                        .frame(minHeight: 40)
                         .background(
-                            manager.travelMode == mode
-                            ? httCrimson
-                            : Color.black.opacity(0.72)
+                            isSelected
+                            ? LinearGradient(colors: [Color(red: 0.95, green: 0.22, blue: 0.26), httCrimson], startPoint: .top, endPoint: .bottom)
+                            : LinearGradient(colors: [Color.black.opacity(0.85), Color(white: 0.12).opacity(0.85)], startPoint: .top, endPoint: .bottom)
                         )
-                        .foregroundColor(.white)
-                        .cornerRadius(8)
+                        .foregroundColor(isSelected ? .white : httCream.opacity(0.95))
+                        .cornerRadius(10)
                         .overlay(
-                            RoundedRectangle(cornerRadius: 8)
-                                .stroke(manager.travelMode == mode ? httGold : Color.white.opacity(0.22), lineWidth: 1)
+                            RoundedRectangle(cornerRadius: 10)
+                                .stroke(isSelected ? httGold : Color.white.opacity(0.28), lineWidth: isSelected ? 2 : 1)
                         )
+                        .shadow(color: isSelected ? httCrimson.opacity(0.55) : Color.black.opacity(0.4), radius: isSelected ? 4 : 2, x: 0, y: 2)
+                        .contentShape(Rectangle())
                     }
+                    .buttonStyle(PlainButtonStyle())
                 }
                 
                 // Camera Mode Toggle: 地图动 (Heading Up) vs 车标动 (North Up)
                 Button(action: {
                     manager.toggleCameraMode()
                 }) {
-                    HStack(spacing: 3) {
+                    HStack(spacing: 4) {
                         Image(systemName: manager.cameraMode.icon)
+                            .font(.system(size: 13, weight: .bold))
                         Text(manager.cameraMode.title(manager.language))
+                            .font(.system(size: 12, weight: .bold))
                             .lineLimit(1)
                             .fixedSize(horizontal: true, vertical: false)
                     }
-                    .font(.system(size: 10, weight: .bold))
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 6)
-                    .background(Color.blue.opacity(0.82))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .frame(minHeight: 40)
+                    .background(Color.blue.opacity(0.85))
                     .foregroundColor(.white)
-                    .cornerRadius(8)
-                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold.opacity(0.6), lineWidth: 1))
+                    .cornerRadius(10)
+                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(httGold.opacity(0.7), lineWidth: 1.2))
+                    .contentShape(Rectangle())
                 }
+                .buttonStyle(PlainButtonStyle())
                 
                 // Outfit Switcher Button
                 Button(action: {
-                    withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
-                        showOutfitPopup = true
-                    }
+                    showOutfitPopup = true
                 }) {
-                    HStack(spacing: 3) {
+                    HStack(spacing: 4) {
                         Image(systemName: manager.arrowOutfit.icon)
+                            .font(.system(size: 13, weight: .bold))
                         Text(manager.arrowOutfit.title(manager.language))
+                            .font(.system(size: 12, weight: .bold))
                             .lineLimit(1)
                             .fixedSize(horizontal: true, vertical: false)
                     }
-                    .font(.system(size: 10, weight: .bold))
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 6)
-                    .background(Color.black.opacity(0.78))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .frame(minHeight: 40)
+                    .background(Color.black.opacity(0.85))
                     .foregroundColor(httGold)
-                    .cornerRadius(8)
-                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold.opacity(0.6), lineWidth: 1))
+                    .cornerRadius(10)
+                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(httGold.opacity(0.7), lineWidth: 1.2))
+                    .contentShape(Rectangle())
                 }
+                .buttonStyle(PlainButtonStyle())
             }
+            .padding(.vertical, 2)
         }
     }
     
@@ -3117,27 +3133,35 @@ struct ContentView: View {
             // Row 1: 4 Travel Modes Direct Switcher (Car / e-Bike / Walk / Transit)
             HStack(spacing: 5) {
                 ForEach(NavigationTravelMode.allCases) { mode in
+                    let isSelected = (manager.travelMode == mode)
                     Button(action: {
+                        manager.stop()
                         manager.travelMode = mode
                     }) {
-                        HStack(spacing: 3) {
+                        HStack(spacing: 4) {
                             Image(systemName: mode.icon)
-                                .font(.system(size: 10, weight: .bold))
+                                .font(.system(size: 14, weight: .bold))
                             Text(mode.title(manager.language))
-                                .font(.system(size: 10, weight: .bold))
+                                .font(.system(size: 12, weight: .heavy))
                                 .lineLimit(1)
                                 .minimumScaleFactor(0.8)
                         }
                         .frame(maxWidth: .infinity)
-                        .padding(.vertical, 7)
-                        .background(manager.travelMode == mode ? httCrimson : Color.black.opacity(0.65))
-                        .foregroundColor(manager.travelMode == mode ? .white : httCream)
-                        .cornerRadius(8)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 8)
-                                .stroke(manager.travelMode == mode ? httGold : Color.white.opacity(0.18), lineWidth: 1.2)
+                        .padding(.vertical, 8)
+                        .background(
+                            isSelected
+                            ? LinearGradient(colors: [Color(red: 0.95, green: 0.22, blue: 0.26), httCrimson], startPoint: .top, endPoint: .bottom)
+                            : LinearGradient(colors: [Color.black.opacity(0.8), Color(white: 0.15).opacity(0.8)], startPoint: .top, endPoint: .bottom)
                         )
+                        .foregroundColor(isSelected ? .white : httCream)
+                        .cornerRadius(9)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 9)
+                                .stroke(isSelected ? httGold : Color.white.opacity(0.25), lineWidth: isSelected ? 1.8 : 1)
+                        )
+                        .contentShape(Rectangle())
                     }
+                    .buttonStyle(PlainButtonStyle())
                 }
             }
             
@@ -3889,7 +3913,33 @@ struct InAppTransitPlanSheetView: View {
                     Divider().background(Color.white.opacity(0.15))
                     
                     // 2. Active Plan Detailed Station & Transfer Timeline (高德同款：支持跨城火车卡片、顺风车卡片、城际铁路与市内地铁公交)
-                    if manager.selectedTransitPlanIndex < manager.transitPlans.count {
+                    if manager.transitPlans.isEmpty || manager.destinationCoord == nil {
+                        VStack(spacing: 14) {
+                            Spacer()
+                            Image(systemName: "tram.fill")
+                                .font(.system(size: 44))
+                                .foregroundColor(httGold)
+                            Text("暂无有效导航目的地")
+                                .font(.system(size: 17, weight: .black))
+                                .foregroundColor(.white)
+                            Text("请先在地图上点击选择目的地，或输入搜索终点并点击【路线/导航】，即可自动规划推荐公交地铁换乘方案。")
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundColor(.gray)
+                                .multilineTextAlignment(.center)
+                                .padding(.horizontal, 28)
+                            Button(action: { dismiss() }) {
+                                Text("返回地图选点")
+                                    .font(.system(size: 14, weight: .bold))
+                                    .foregroundColor(.black)
+                                    .padding(.horizontal, 20)
+                                    .padding(.vertical, 8)
+                                    .background(httGold)
+                                    .cornerRadius(18)
+                            }
+                            Spacer()
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else if manager.selectedTransitPlanIndex < manager.transitPlans.count {
                         let activePlan = manager.transitPlans[manager.selectedTransitPlanIndex]
                         
                         ScrollView(.vertical, showsIndicators: true) {

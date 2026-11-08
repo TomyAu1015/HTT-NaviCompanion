@@ -708,6 +708,11 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     @Published var activeRoute: MKRoute? = nil
     @Published var destinationName: String = ""
     @Published var destinationCoord: CLLocationCoordinate2D? = nil
+    
+    // GaoDe Navigation State Helper: Only true when there is an active destination AND route/guidance
+    var hasActiveNavigation: Bool {
+        return destinationCoord != nil && (activeRoute != nil || customTransitPolyline != nil || isNavigatingFocused || isDemoSimulating)
+    }
     @Published var currentStepIndex: Int = 0
     @Published var currentStepInstruction: String = ""
     @Published var distanceToNextStepMeters: Double = 0.0
@@ -1179,41 +1184,51 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         let tapLoc = CLLocation(latitude: coord.latitude, longitude: coord.longitude)
         self.isReverseGeocoding = true
         
-        // Exact Point-Of-Interest Search (Tight 24m radius matching Apple MapKit rendered icon touch targets!)
+        // Exact Point-Of-Interest & Address Search matching Apple MapKit rendered icon touch targets!
         let req = MKLocalSearch.Request()
-        req.resultTypes = .pointOfInterest
+        req.resultTypes = [.pointOfInterest, .address]
         req.pointOfInterestFilter = .includingAll
-        req.region = MKCoordinateRegion(center: coord, latitudinalMeters: 48, longitudinalMeters: 48)
+        req.region = MKCoordinateRegion(center: coord, latitudinalMeters: 120, longitudinalMeters: 120)
         
         MKLocalSearch(request: req).start { [weak self] resp, _ in
             DispatchQueue.main.async {
                 guard let self = self else { return }
-                let allItems = (resp?.mapItems ?? []).filter { item in
-                    guard let name = item.name, !name.isEmpty else { return false }
+                self.isReverseGeocoding = false
+                
+                let allItems = (resp?.mapItems ?? []).compactMap { item -> (MKMapItem, Double)? in
+                    guard let name = item.name, !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
                     let itemLoc = CLLocation(latitude: item.placemark.coordinate.latitude,
                                              longitude: item.placemark.coordinate.longitude)
-                    return tapLoc.distance(from: itemLoc) <= 24.0
+                    let dist = tapLoc.distance(from: itemLoc)
+                    // Accept POIs within 55 meters of the finger tap (matches standard iOS 44x44pt touch box!)
+                    if dist <= 55.0 {
+                        return (item, dist)
+                    }
+                    return nil
                 }
                 
-                // Priority 1: Exact Named Commercial Shop/Store/Facility (益友便利店, 厦园商店, 远叶烟酒行, 宝佳行商行, 四川营山名小吃, 兆鑫门窗, 中源大药房, 充电站, 健身房, etc.)
-                let realShops = allItems.filter { item in
+                if allItems.isEmpty {
+                    // Like GaoDe: Tapping blank road, empty water/river, or open ground dismisses any open POI detail card!
+                    self.tappedMapCoord = nil
+                    return
+                }
+                
+                // Separate into specific commercial shops/venues vs broad residential complexes/streets
+                let specificShops = allItems.filter { item, _ in
                     let n = item.name ?? ""
-                    let isEstate = n.contains("花园") || n.contains("花園") || n.contains("小区") || n.contains("小區") || n.contains("盛苑") || n.contains("住宅")
+                    let isEstate = n.contains("花园") || n.contains("花園") || n.contains("小区") || n.contains("小區") || n.contains("盛苑") || n.contains("住宅区") || n.contains("住宅區") || n.contains("家园") || n.contains("新村")
                     return !isEstate && !self.isPureRoadOrBuildingNumber(n)
-                }.sorted { a, b in
-                    let la = CLLocation(latitude: a.placemark.coordinate.latitude, longitude: a.placemark.coordinate.longitude)
-                    let lb = CLLocation(latitude: b.placemark.coordinate.latitude, longitude: b.placemark.coordinate.longitude)
-                    return tapLoc.distance(from: la) < tapLoc.distance(from: lb)
-                }
+                }.sorted { $0.1 < $1.1 }
                 
-                if let bestShop = realShops.first, let shopName = bestShop.name {
+                // Priority 1: If there is a specific shop/venue near the tap (e.g. 益友便利店, 宝佳行商行, 四川营山名小吃, 充电站, 药房, 健身房), pick the nearest shop!
+                if let (bestShop, dist) = specificShops.first, dist <= 48.0 {
                     var addrParts: [String] = []
-                    if let dist = bestShop.placemark.subLocality { addrParts.append(dist) }
+                    if let distName = bestShop.placemark.subLocality { addrParts.append(distName) }
                     if let road = bestShop.placemark.thoroughfare { addrParts.append(road) }
                     if let num = bestShop.placemark.subThoroughfare { addrParts.append(num) }
                     let fullAddr = addrParts.isEmpty ? (bestShop.placemark.title ?? "") : addrParts.joined(separator: "")
                     self.populatePOIDetails(
-                        name: shopName,
+                        name: bestShop.name ?? "精选商家",
                         coord: bestShop.placemark.coordinate,
                         address: fullAddr,
                         phone: bestShop.phoneNumber,
@@ -1222,63 +1237,26 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                     return
                 }
                 
-                // Priority 2: Targeted query for nearby shops that have rendered icon pins (e.g. 益友便利店, 厦园商店)
-                let shopReq = MKLocalSearch.Request()
-                shopReq.naturalLanguageQuery = "店"
-                shopReq.region = MKCoordinateRegion(center: coord, latitudinalMeters: 36, longitudinalMeters: 36)
-                MKLocalSearch(request: shopReq).start { [weak self] shopResp, _ in
-                    DispatchQueue.main.async {
-                        guard let self = self else { return }
-                        let directShops = (shopResp?.mapItems ?? []).filter { item in
-                            guard let name = item.name, !name.isEmpty else { return false }
-                            let isEstate = name.contains("花园") || name.contains("花園") || name.contains("小区") || name.contains("小區") || name.contains("盛苑")
-                            let loc = CLLocation(latitude: item.placemark.coordinate.latitude, longitude: item.placemark.coordinate.longitude)
-                            return !isEstate && !self.isPureRoadOrBuildingNumber(name) && tapLoc.distance(from: loc) <= 20.0
-                        }.sorted { a, b in
-                            let la = CLLocation(latitude: a.placemark.coordinate.latitude, longitude: a.placemark.coordinate.longitude)
-                            let lb = CLLocation(latitude: b.placemark.coordinate.latitude, longitude: b.placemark.coordinate.longitude)
-                            return tapLoc.distance(from: la) < tapLoc.distance(from: lb)
-                        }
-                        
-                        if let bestDirectShop = directShops.first, let shopName = bestDirectShop.name {
-                            var addrParts: [String] = []
-                            if let dist = bestDirectShop.placemark.subLocality { addrParts.append(dist) }
-                            if let road = bestDirectShop.placemark.thoroughfare { addrParts.append(road) }
-                            if let num = bestDirectShop.placemark.subThoroughfare { addrParts.append(num) }
-                            self.populatePOIDetails(
-                                name: shopName,
-                                coord: bestDirectShop.placemark.coordinate,
-                                address: addrParts.joined(separator: ""),
-                                phone: bestDirectShop.phoneNumber,
-                                rawCategory: bestDirectShop.pointOfInterestCategory?.rawValue
-                            )
-                            return
-                        }
-                        
-                        // Priority 3: Only if tapped directly on an estate/building icon (within tight 12m), open it!
-                        if let estateItem = allItems.first, let itemName = estateItem.name {
-                            let loc = CLLocation(latitude: estateItem.placemark.coordinate.latitude, longitude: estateItem.placemark.coordinate.longitude)
-                            if tapLoc.distance(from: loc) <= 12.0 {
-                                var addrParts: [String] = []
-                                if let dist = estateItem.placemark.subLocality { addrParts.append(dist) }
-                                if let road = estateItem.placemark.thoroughfare { addrParts.append(road) }
-                                if let num = estateItem.placemark.subThoroughfare { addrParts.append(num) }
-                                self.populatePOIDetails(
-                                    name: itemName,
-                                    coord: estateItem.placemark.coordinate,
-                                    address: addrParts.joined(separator: ""),
-                                    phone: estateItem.phoneNumber,
-                                    rawCategory: estateItem.pointOfInterestCategory?.rawValue
-                                )
-                                return
-                            }
-                        }
-                        
-                        // Priority 4: Like GaoDe, clicking on blank road, pavement, river or empty ground closes any open card!
-                        self.isReverseGeocoding = false
-                        self.tappedMapCoord = nil
-                    }
+                // Priority 2: If the user tapped an estate / building or other POI within 45m, open that estate/building!
+                let sortedAll = allItems.sorted { $0.1 < $1.1 }
+                if let (bestItem, dist) = sortedAll.first, dist <= 48.0 {
+                    var addrParts: [String] = []
+                    if let distName = bestItem.placemark.subLocality { addrParts.append(distName) }
+                    if let road = bestItem.placemark.thoroughfare { addrParts.append(road) }
+                    if let num = bestItem.placemark.subThoroughfare { addrParts.append(num) }
+                    let fullAddr = addrParts.isEmpty ? (bestItem.placemark.title ?? "") : addrParts.joined(separator: "")
+                    self.populatePOIDetails(
+                        name: bestItem.name ?? "精选地点",
+                        coord: bestItem.placemark.coordinate,
+                        address: fullAddr,
+                        phone: bestItem.phoneNumber,
+                        rawCategory: bestItem.pointOfInterestCategory?.rawValue
+                    )
+                    return
                 }
+                
+                // If nothing within range: dismiss
+                self.tappedMapCoord = nil
             }
         }
     }
@@ -1356,8 +1334,11 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     }
     
     func refreshTransitPlansForCurrentLocation(force: Bool = false) {
-        let dest = destinationCoord ?? CLLocationCoordinate2D(latitude: 22.611, longitude: 114.156)
-        let title = destinationName.isEmpty ? "丹竹头 (地铁站)" : destinationName
+        guard let dest = destinationCoord, !destinationName.isEmpty else {
+            // NEVER generate fake transit plans to Danzhutou when no destination is set!
+            return
+        }
+        let title = destinationName
         
         if !force, let last = lastTransitGenLocation {
             let moved = hypot(userCoordinate.latitude - last.latitude, userCoordinate.longitude - last.longitude)
@@ -4487,6 +4468,8 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         destinationCoord = nil
         destinationName = ""
         currentStepInstruction = ""
+        transitPlans.removeAll()
+        showTransitPlanSheet = false
         announcedStepThresholds.removeAll()
         isMapEnlarged = false // Automatically restore normal cockpit size!
         let base = activeBaseId()
