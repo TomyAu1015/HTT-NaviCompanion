@@ -4840,7 +4840,8 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             if Date().timeIntervalSince(self.lastValidGPSTime) > 18.0 && !self.isDemoSimulating {
                 if !self.isGPSSignalPoor {
                     self.isGPSSignalPoor = true
-                    if Date().timeIntervalSince(self.lastGPSAlertTime) > 60.0 {
+                    // Only auto-announce GPS lost when actively navigating!
+                    if (self.isNavigatingFocused || self.hasActiveNavigation) && Date().timeIntervalSince(self.lastGPSAlertTime) > 60.0 {
                         self.lastGPSAlertTime = Date()
                         self.triggerGPSSignalPoorAlert()
                     }
@@ -5990,7 +5991,8 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             if loc.horizontalAccuracy < 0 || loc.horizontalAccuracy > 65.0 {
                 if !self.isGPSSignalPoor {
                     self.isGPSSignalPoor = true
-                    if Date().timeIntervalSince(self.lastGPSAlertTime) > 45.0 {
+                    // Only auto-announce GPS lost when actively navigating!
+                    if (self.isNavigatingFocused || self.hasActiveNavigation) && Date().timeIntervalSince(self.lastGPSAlertTime) > 45.0 {
                         self.lastGPSAlertTime = Date()
                         self.triggerGPSSignalPoorAlert()
                     }
@@ -5999,7 +6001,10 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             } else {
                 if self.isGPSSignalPoor {
                     self.isGPSSignalPoor = false
-                    self.triggerGPSSignalRecovered()
+                    // Only auto-announce GPS recovered when actively navigating!
+                    if (self.isNavigatingFocused || self.hasActiveNavigation) {
+                        self.triggerGPSSignalRecovered()
+                    }
                 }
                 self.lastValidGPSTime = Date()
             }
@@ -6091,7 +6096,8 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         DispatchQueue.main.async {
             if !self.isGPSSignalPoor && !self.isDemoSimulating {
                 self.isGPSSignalPoor = true
-                if Date().timeIntervalSince(self.lastGPSAlertTime) > 45.0 {
+                // Only auto-announce GPS lost when actively navigating!
+                if (self.isNavigatingFocused || self.hasActiveNavigation) && Date().timeIntervalSince(self.lastGPSAlertTime) > 45.0 {
                     self.lastGPSAlertTime = Date()
                     self.triggerGPSSignalPoorAlert()
                 }
@@ -6306,6 +6312,14 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         playVoice(id: chosenId, customQuote: msg)
     }
     
+    func triggerGPSSignalManualBroadcast() {
+        if isGPSSignalPoor {
+            triggerGPSSignalPoorAlert()
+        } else {
+            triggerGPSSignalRecovered()
+        }
+    }
+
     func triggerGPSSignalPoorAlert() {
         let base = activeBaseId()
         let offset = (selectedCharacter == .all) ? 140 : ([44, 92, 140].randomElement()!)
