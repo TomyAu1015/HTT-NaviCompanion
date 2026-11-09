@@ -1,0 +1,89 @@
+name: Build TrollStore IPA (with CarPlay)
+
+on:
+  push:
+    branches: [ main, master ]
+    paths-ignore:
+      - 'android/**'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Show Xcode Version
+        run: xcodebuild -version
+
+      - name: Generate Mugi App Icons
+        run: |
+          if [ -f "generate_icons.py" ]; then
+            python3 generate_icons.py
+          fi
+
+      - name: Download and Embed K-ON Music from Google Drive
+        run: |
+          if [ -f "download_drive_music.py" ]; then
+            python3 download_drive_music.py || true
+          fi
+
+      - name: Auto-Sync Nested Uploads Safeguard
+        run: |
+          if [ -d "KOnNaviCompanion/KOnNaviCompanion" ]; then
+            echo "Detected nested KOnNaviCompanion/KOnNaviCompanion, syncing to main folder..."
+            cp -rf KOnNaviCompanion/KOnNaviCompanion/* KOnNaviCompanion/
+            rm -rf KOnNaviCompanion/KOnNaviCompanion
+          fi
+
+      - name: Build iOS App
+        run: |
+          xcodebuild clean build             -project KOnNaviCompanion.xcodeproj             -target KOnNaviCompanion             -configuration Release             -sdk iphoneos             SYMROOT=build             CODE_SIGN_IDENTITY=""             CODE_SIGNING_REQUIRED=NO             CODE_SIGNING_ALLOWED=NO
+
+      - name: Compile Assets.car and Copy App Icons for TrollStore
+        run: |
+          mkdir -p build/Release-iphoneos/KOnNaviCompanion.app
+          if [ -d "KOnNaviCompanion/Assets.xcassets" ]; then
+            xcrun actool KOnNaviCompanion/Assets.xcassets               --compile build/Release-iphoneos/KOnNaviCompanion.app               --platform iphoneos               --minimum-deployment-target 15.0               --app-icon AppIcon               --output-partial-info-plist build/asset-info.plist || true
+          fi
+          cp KOnNaviCompanion/AppIcon*.png build/Release-iphoneos/KOnNaviCompanion.app/ 2>/dev/null || true
+          cp KOnNaviCompanion/Icon*.png build/Release-iphoneos/KOnNaviCompanion.app/ 2>/dev/null || true
+          cp KOnNaviCompanion/qr_* build/Release-iphoneos/KOnNaviCompanion.app/ 2>/dev/null || true
+          
+          if [ -d "KOnNaviCompanion/Music" ]; then
+            mkdir -p build/Release-iphoneos/KOnNaviCompanion.app/Music
+            cp -r KOnNaviCompanion/Music/* build/Release-iphoneos/KOnNaviCompanion.app/Music/ 2>/dev/null || true
+          fi
+
+          if [ -f "KOnNaviCompanion/Entitlements.plist" ]; then
+            codesign --force --sign - --entitlements KOnNaviCompanion/Entitlements.plist --timestamp=none build/Release-iphoneos/KOnNaviCompanion.app
+          else
+            codesign --force --sign - --timestamp=none build/Release-iphoneos/KOnNaviCompanion.app
+          fi
+
+      - name: Package IPA for TrollStore
+        run: |
+          if [ -f "build/Release-iphoneos/KOnNaviCompanion.app/KOnNaviCompanion" ]; then
+            strip -r -u -x build/Release-iphoneos/KOnNaviCompanion.app/KOnNaviCompanion 2>/dev/null || true
+          fi
+          mkdir -p Payload
+          cp -r build/Release-iphoneos/KOnNaviCompanion.app Payload/
+          cp KOnNaviCompanion/AppIcon*.png Payload/KOnNaviCompanion.app/ 2>/dev/null || true
+          cp KOnNaviCompanion/Icon*.png Payload/KOnNaviCompanion.app/ 2>/dev/null || true
+          cp KOnNaviCompanion/iTunesArtwork* Payload/KOnNaviCompanion.app/ 2>/dev/null || true
+          cp KOnNaviCompanion/qr_* Payload/KOnNaviCompanion.app/ 2>/dev/null || true
+          cp KOnNaviCompanion/iTunesArtwork . 2>/dev/null || true
+          cp KOnNaviCompanion/iTunesArtwork@2x . 2>/dev/null || true
+          if [ -d "KOnNaviCompanion/Music" ]; then
+            mkdir -p Payload/KOnNaviCompanion.app/Music
+            cp -r KOnNaviCompanion/Music/* Payload/KOnNaviCompanion.app/Music/ 2>/dev/null || true
+          fi
+          zip -r -9 KOnNaviCompanion.ipa Payload iTunesArtwork iTunesArtwork@2x
+
+      - name: Upload TrollStore IPA Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: KOnNaviCompanion-TrollStore
+          path: KOnNaviCompanion.ipa
+          retention-days: 30
