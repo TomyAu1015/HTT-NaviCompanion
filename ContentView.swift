@@ -549,9 +549,13 @@ struct HTTSmoothMapView: UIViewRepresentable {
         }
         
         func mapView(_ mapView: MKMapView, didUpdate userLocation: MKUserLocation) {
-            guard userLocation.location != nil, !parent.manager.isDemoSimulating else { return }
+            guard let loc = userLocation.location, !parent.manager.isDemoSimulating else { return }
             DispatchQueue.main.async {
-                self.parent.manager.userCoordinate = userLocation.coordinate
+                let newCoord = CoordinateConverter.wgs84ToGCJ02(loc.coordinate)
+                self.parent.manager.userCoordinate = newCoord
+                if self.parent.manager.travelMode == .transit {
+                    self.parent.manager.refreshTransitPlansForCurrentLocation(force: false)
+                }
             }
         }
         
@@ -834,7 +838,8 @@ struct ContentView: View {
                             }
                             .padding(.leading, leadingNotchPad)
                             .padding(.trailing, trailingSafePad)
-                            .padding(.vertical, 4)
+                            .padding(.top, 4)
+                            .padding(.bottom, max(geo.safeAreaInsets.bottom + 8, 26))
                         }
                         .scaleEffect(x: manager.isHUDMirrored ? -1 : 1, y: 1)
                         .onAppear { manager.stageWalkBound = 85.0 }
@@ -3461,6 +3466,7 @@ struct DestinationSearchSheetView: View {
                             ForEach(searchEngine.mapItems, id: \.self) { item in
                                 Button(action: {
                                     manager.travelMode = selectedMode
+                                    manager.isMapEnlarged = true
                                     manager.showMapMode = true
                                     manager.startRouteGuidance(to: item)
                                     dismiss()
@@ -3502,6 +3508,8 @@ struct DestinationSearchSheetView: View {
                             ForEach(searchEngine.completions, id: \.self) { comp in
                                 Button(action: {
                                     manager.travelMode = selectedMode
+                                    manager.isMapEnlarged = true
+                                    manager.showMapMode = true
                                     searchEngine.resolveAndStartNavigation(for: comp, manager: manager) {
                                         dismiss()
                                     }
