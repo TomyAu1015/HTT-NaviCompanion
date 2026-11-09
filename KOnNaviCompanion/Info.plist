@@ -121,9 +121,14 @@
 		<string>weixin</string>
 		<string>alipays</string>
 		<string>diditaxi</string>
+		<string>douyin</string>
+		<string>snssdk1128</string>
+		<string>instagram</string>
 	</array>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+		<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>保存作者反馈与交流二维码到系统相册，方便扫码添加</string>
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
 	<string>用于在后台与CarPlay导航共存时持续监测车速并播报放课后茶会伴侣提醒</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
