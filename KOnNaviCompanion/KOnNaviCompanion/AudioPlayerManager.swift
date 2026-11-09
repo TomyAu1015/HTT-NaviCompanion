@@ -652,6 +652,25 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     static let shared = AudioPlayerManager()
     
     @Published var language: AppLanguage = .zhHans
+
+    // MARK: - App Metadata & Author Information (多语言制作作者与版本)
+    var appVersion: String { "1.0" }
+    
+    var appAuthorName: String {
+        switch language {
+        case .zhHans: return "君殇"
+        case .zhHant: return "Tomy"
+        case .en: return "Tomy"
+        }
+    }
+    
+    var appAuthorLabel: String {
+        switch language {
+        case .zhHans: return "制作作者：君殇"
+        case .zhHant: return "製作作者：Tomy"
+        case .en: return "Author: Tomy"
+        }
+    }
     
     // Playback & Voice Queue State
     @Published var isPlaying: Bool = false
@@ -5706,9 +5725,9 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                     self.transitPhase = .inTransitVehicle
                     self.customTransitPolyline = nil
                     self.currentStepIndex = 0
-                    if let dest = self.destinationCoord {
+                    if let dest = self.destinationCoord, let boardCoord = self.transitBoardingStationCoord {
                         let busReq = MKDirections.Request()
-                        busReq.source = MKMapItem(placemark: MKPlacemark(coordinate: self.transitBoardingStationCoord))
+                        busReq.source = MKMapItem(placemark: MKPlacemark(coordinate: boardCoord))
                         busReq.destination = MKMapItem(placemark: MKPlacemark(coordinate: dest))
                         busReq.transportType = .automobile
                         MKDirections(request: busReq).calculate { [weak self] resp, _ in
