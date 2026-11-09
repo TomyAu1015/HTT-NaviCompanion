@@ -4360,7 +4360,8 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         if isDemoSimulating {
             roadReq.source = MKMapItem(placemark: MKPlacemark(coordinate: from))
         } else {
-            roadReq.source = MKMapItem.forCurrentLocation()
+            // When real GPS is active, prefer coordinate from userCoordinate so origin is 100% matched to road!
+            roadReq.source = MKMapItem(placemark: MKPlacemark(coordinate: userCoordinate))
         }
         roadReq.destination = MKMapItem(placemark: MKPlacemark(coordinate: to))
         roadReq.transportType = .automobile
@@ -4370,6 +4371,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 if let roadRoute = resp?.routes.first {
+                    roadRoute.polyline.title = "TRANSIT_BUS_BLUE"
                     self.activeRoute = roadRoute
                     self.customTransitPolyline = nil
                     self.remainingRouteDistanceKm = roadRoute.distance / 1000.0
@@ -4383,13 +4385,14 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                     self.triggerDepartureGreeting(title: destTitle, isReroute: false)
                 } else {
                     let walkReq = MKDirections.Request()
-                    walkReq.source = MKMapItem(placemark: MKPlacemark(coordinate: from))
+                    walkReq.source = MKMapItem(placemark: MKPlacemark(coordinate: self.userCoordinate))
                     walkReq.destination = MKMapItem(placemark: MKPlacemark(coordinate: to))
                     walkReq.transportType = .walking
                     MKDirections(request: walkReq).calculate { [weak self] walkResp, _ in
                         DispatchQueue.main.async {
                             guard let self = self else { return }
                             if let walkRoute = walkResp?.routes.first {
+                                walkRoute.polyline.title = "WALKING_BLUE"
                                 self.activeRoute = walkRoute
                                 self.customTransitPolyline = nil
                                 self.remainingRouteDistanceKm = walkRoute.distance / 1000.0
@@ -4763,8 +4766,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         locationManager.requestAlwaysAuthorization()
         locationManager.startUpdatingLocation()
         if let current = locationManager.location {
-            let newCoord = CoordinateConverter.wgs84ToGCJ02(current.coordinate)
-            self.userCoordinate = newCoord
+            self.userCoordinate = current.coordinate
         }
         if CLLocationManager.headingAvailable() {
             locationManager.headingFilter = kCLHeadingFilterNone
@@ -5956,9 +5958,8 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         
         DispatchQueue.main.async {
             if !self.isDemoSimulating {
-                // Convert WGS-84 GPS coordinate to GCJ-02 Mars coordinate for China MapKit alignment
-                let newCoord = CoordinateConverter.wgs84ToGCJ02(loc.coordinate)
-                self.userCoordinate = newCoord
+                // Native Apple MapKit handles GPS coordinate alignment directly; pass raw coordinate to prevent double-shift!
+                self.userCoordinate = loc.coordinate
                 
                 // Auto-refresh transit plans if user moved to a new station location!
                 if self.travelMode == .transit {
@@ -6479,7 +6480,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             if scheme == "baidumap" && !coordType.contains("gcj") && !coordType.contains("wgs") {
                 finalCoord = CoordinateConverter.bd09ToGCJ02(lat: la, lon: lo)
             } else if coordType.contains("wgs") {
-                finalCoord = CoordinateConverter.wgs84ToGCJ02(finalCoord)
+                // Native Apple MapKit handles WGS coordinate directly
             }
             let finalTitle = (parsedName?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false) ? parsedName! : "外部App导入目的地"
             

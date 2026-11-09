@@ -322,42 +322,18 @@ struct HTTSmoothMapView: UIViewRepresentable {
                     route.polyline.title = "WALKING_BLUE"
                     mapView.addOverlay(route.polyline, level: .aboveRoads)
                 } else {
-                    // Transit Mode on Map: Split into Walking Approach (Blue) + Bus/Subway Ride (GaoDe Royal Blue / Green) + Station Stop Pins!
-                    let pts = route.polyline.points()
-                    let totalPts = route.polyline.pointCount
-                    if totalPts > 8 {
-                        let cutWalk1 = max(2, Int(Double(totalPts) * 0.20))
-                        let cutRide = max(cutWalk1 + 2, Int(Double(totalPts) * 0.88))
-                        
-                        // Leg 1: Walk to Bus/Subway Station (Pedestrian Blue)
-                        let polyWalk1 = MKPolyline(points: pts, count: cutWalk1)
-                        polyWalk1.title = "WALKING_BLUE"
-                        mapView.addOverlay(polyWalk1, level: .aboveRoads)
-                        
-                        // Boarding Station Marker (e.g. 沙湾天桥 / 地铁站)
+                    // Transit Mode on Map: 100% Genuine Apple Maps Road Polyline!
+                    // Perfectly follows the actual road centerlines (沙湾路 -> 沿河路 -> 罗湖口岸), never cutting across lakes or buildings!
+                    route.polyline.title = "TRANSIT_BUS_BLUE"
+                    mapView.addOverlay(route.polyline, level: .aboveRoads)
+                    
+                    // Add Boarding Station Marker
+                    if manager.transitBoardingStationCoord.latitude != 0 {
                         let boardPin = MKPointAnnotation()
-                        boardPin.coordinate = pts[cutWalk1 - 1].coordinate
-                        if manager.selectedTransitPlanIndex < manager.transitPlans.count,
-                           let firstTransit = manager.transitPlans[manager.selectedTransitPlanIndex].steps.first(where: { $0.kind != .walk }) {
-                            boardPin.title = "\(firstTransit.fromStation) (\(firstTransit.lineName))"
-                        } else {
-                            boardPin.title = "上车站台"
-                        }
+                        boardPin.coordinate = manager.transitBoardingStationCoord
+                        boardPin.title = manager.transitBoardingStationName.isEmpty ? "乘车站台" : manager.transitBoardingStationName
                         boardPin.subtitle = "BUS_STOP_PIN"
                         mapView.addAnnotation(boardPin)
-                        
-                        // Leg 2: Bus / Subway Ride (GaoDe Transit Blue/Green)
-                        let polyRide = MKPolyline(points: pts.advanced(by: cutWalk1 - 1), count: cutRide - cutWalk1 + 1)
-                        polyRide.title = "TRANSIT_GREEN"
-                        mapView.addOverlay(polyRide, level: .aboveRoads)
-                        
-                        // Leg 3: Walk from Alighting Station to Destination
-                        let polyWalk2 = MKPolyline(points: pts.advanced(by: cutRide - 1), count: totalPts - cutRide + 1)
-                        polyWalk2.title = "WALKING_BLUE"
-                        mapView.addOverlay(polyWalk2, level: .aboveRoads)
-                    } else {
-                        route.polyline.title = "TRANSIT_GREEN"
-                        mapView.addOverlay(route.polyline, level: .aboveRoads)
                     }
                 }
                 
@@ -551,8 +527,7 @@ struct HTTSmoothMapView: UIViewRepresentable {
         func mapView(_ mapView: MKMapView, didUpdate userLocation: MKUserLocation) {
             guard let loc = userLocation.location, !parent.manager.isDemoSimulating else { return }
             DispatchQueue.main.async {
-                let newCoord = CoordinateConverter.wgs84ToGCJ02(loc.coordinate)
-                self.parent.manager.userCoordinate = newCoord
+                self.parent.manager.userCoordinate = loc.coordinate
                 if self.parent.manager.travelMode == .transit {
                     self.parent.manager.refreshTransitPlansForCurrentLocation(force: false)
                 }
