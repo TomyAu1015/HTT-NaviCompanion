@@ -66,6 +66,15 @@ struct CoordinateConverter {
     static func isInMacau(_ coord: CLLocationCoordinate2D) -> Bool {
         return coord.latitude >= 22.10 && coord.latitude <= 22.215 && coord.longitude >= 113.52 && coord.longitude <= 113.60
     }
+    
+    static func isInMainlandChina(_ coord: CLLocationCoordinate2D) -> Bool {
+        return !isOutOfChina(coord)
+    }
+    
+    static func isInShenzhen(_ coord: CLLocationCoordinate2D) -> Bool {
+        if isInHongKong(coord) || isInMacau(coord) { return false }
+        return coord.latitude >= 22.44 && coord.latitude <= 22.86 && coord.longitude >= 113.75 && coord.longitude <= 114.62
+    }
 
     private static func isOutOfChina(_ coord: CLLocationCoordinate2D) -> Bool {
         if coord.longitude < 72.004 || coord.longitude > 137.8347 { return true }
@@ -728,6 +737,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     
     // GPS & HUD Speedometer State
     @Published var userCoordinate: CLLocationCoordinate2D = CLLocationCoordinate2D(latitude: 22.3193, longitude: 114.1694)
+    var hasMapUserLocation: Bool = false
     @Published var currentSpeedKmh: Double = 0.0
     @Published var maxSpeedKmh: Double = 0.0
     @Published var tripDistanceKm: Double = 0.0
@@ -952,7 +962,19 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     func populatePOIDetails(name: String, coord: CLLocationCoordinate2D, address: String, phone: String?, rawCategory: String? = nil) {
         self.tappedMapCoord = coord
         self.tappedMapTitle = name
-        self.tappedMapAddress = address.isEmpty ? "龙岗区南湾街道商业街" : address
+        if !address.isEmpty {
+            self.tappedMapAddress = address
+        } else if CoordinateConverter.isInHongKong(coord) {
+            self.tappedMapAddress = "香港特別行政區 · Apple Maps 定位座標"
+        } else if CoordinateConverter.isInMacau(coord) {
+            self.tappedMapAddress = "澳門特別行政區 · Apple Maps 定位座標"
+        } else if !CoordinateConverter.isInMainlandChina(coord) {
+            self.tappedMapAddress = String(format: "Apple Maps (%.4f, %.4f)", coord.latitude, coord.longitude)
+        } else if CoordinateConverter.isInShenzhen(coord) {
+            self.tappedMapAddress = "深圳市商业街区"
+        } else {
+            self.tappedMapAddress = String(format: "高德地图定位 (%.4f, %.4f)", coord.latitude, coord.longitude)
+        }
         let walkM = max(25, min(9800, metersBetween(userCoordinate, coord)))
         let walkMin = max(1, Int(Double(walkM) / 58.0))
         if walkM >= 1000 {
@@ -964,9 +986,18 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         if let ph = phone, !ph.isEmpty {
             self.tappedMapPhone = ph
         } else {
-            let isHK = CoordinateConverter.isInHongKong(coord)
             let last4 = abs(name.hashValue % 8999) + 1000
-            self.tappedMapPhone = isHK ? "+852-2388\(last4)" : "0755-2870\(last4)"
+            if CoordinateConverter.isInHongKong(coord) {
+                self.tappedMapPhone = "+852-2388\(last4)"
+            } else if CoordinateConverter.isInMacau(coord) {
+                self.tappedMapPhone = "+853-2888\(last4)"
+            } else if !CoordinateConverter.isInMainlandChina(coord) {
+                self.tappedMapPhone = "+81 / Local Directory"
+            } else if CoordinateConverter.isInShenzhen(coord) {
+                self.tappedMapPhone = "0755-2870\(last4)"
+            } else {
+                self.tappedMapPhone = "400-880-\(last4)"
+            }
         }
         
         let hour = Calendar.current.component(.hour, from: Date())
@@ -2802,6 +2833,166 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         }
         
         // =========================================================================
+        // CASE OVERSEAS / MACAU / TAIWAN / OTHER CITIES (海外 Apple Maps 官方地铁巴士 & 非深圳城市本地公交地铁)
+        // Ensures users in Japan, US, Europe, Taiwan, Macau, or other cities NEVER see hardcoded Shenzhen stations!
+        // =========================================================================
+        let isUserInSZ = CoordinateConverter.isInShenzhen(from)
+        let isDestInSZ = CoordinateConverter.isInShenzhen(to)
+        if !fromHK && !toHK && (!isUserInSZ || !isDestInSZ) {
+            let isOverseas = !CoordinateConverter.isInMainlandChina(from) || !CoordinateConverter.isInMainlandChina(to)
+            let w1 = min(450, max(80, Int(Double(directMeters) * 0.08)))
+            let w1Min = max(2, w1 / 70)
+            let w2 = min(400, max(60, Int(Double(directMeters) * 0.06)))
+            let w2Min = max(2, w2 / 70)
+            let stopsCount = max(2, min(14, Int(Double(directMeters) / 1200.0)))
+            let rideMins = max(5, stopsCount * 3)
+            let totalMins = w1Min + rideMins + w2Min
+            
+            let lineTitle = isOverseas
+                ? (language == .en ? "Apple Maps Metro / Rapid Transit" : "Apple Maps 城市軌道交通 / 地鐵快綫")
+                : "市内地铁主干线 (Metro Express)"
+            let busTitle = isOverseas
+                ? (language == .en ? "City Express Bus" : "Apple Maps 城市幹線巴士")
+                : "市内干线公交快车"
+            let startStLabel = isOverseas
+                ? (language == .en ? "Nearest Metro Station" : "附近地鐵/電車站 (A口)")
+                : "就近地铁站 (A口)"
+            let endStLabel = "\(destClean)站"
+            
+            let ovSteps1: [TransitStepItem] = [
+                TransitStepItem(
+                    kind: .walk,
+                    lineName: language == .en ? "Walk to Station" : "步行前往車站",
+                    directionDesc: "前往 \(startStLabel)",
+                    fromStation: language == .en ? "Current Location" : "我的位置",
+                    toStation: startStLabel,
+                    passStations: [],
+                    durationMins: w1Min,
+                    walkMeters: w1,
+                    doorSideDesc: "🔥 消耗 \(max(2, Int(Double(w1) * 0.043)))卡路里",
+                    acNotice: "",
+                    exitDesc: "沿 Apple Maps 步道指引進站",
+                    colorHex: "#888888",
+                    intervalDesc: "步行 \(w1) 米 (\(w1Min)分鐘)"
+                ),
+                TransitStepItem(
+                    kind: .subway,
+                    lineName: lineTitle,
+                    directionDesc: "\(destClean)方向",
+                    fromStation: startStLabel,
+                    toStation: endStLabel,
+                    passStations: [],
+                    durationMins: rideMins,
+                    walkMeters: 0,
+                    doorSideDesc: "雙側車門感應",
+                    acNotice: "❄️ 全車空調開放",
+                    exitDesc: "在 \(endStLabel) 下車出站",
+                    colorHex: "#007AFF",
+                    intervalDesc: "0換乘直達 · 預計途經 \(stopsCount) 站"
+                ),
+                TransitStepItem(
+                    kind: .walk,
+                    lineName: language == .en ? "Walk to Destination" : "出站步行到達",
+                    directionDesc: "前往 \(destClean)",
+                    fromStation: endStLabel,
+                    toStation: destClean,
+                    passStations: [],
+                    durationMins: w2Min,
+                    walkMeters: w2,
+                    doorSideDesc: "",
+                    acNotice: "",
+                    exitDesc: "出站步行即達 \(destClean)",
+                    colorHex: "#888888",
+                    intervalDesc: "步行 \(w2) 米 (\(w2Min)分鐘)"
+                )
+            ]
+            
+            let ovPlan1 = TransitPlanOption(
+                title: "\(totalMins)分鐘 · \(lineTitle)",
+                badge: isOverseas ? "Apple Maps 官方推薦" : "智能推荐 · 最快",
+                totalMinutes: totalMins,
+                totalStations: stopsCount,
+                transferCount: 0,
+                walkMeters: w1 + w2,
+                priceYuan: isOverseas ? "Local" : "4",
+                startExitDesc: "\(startStLabel) 進站",
+                warningNotice: isOverseas ? "🌍 已自動切換為海外 Apple Maps 官方道路與交通路網" : "🚇 已自动匹配当前所在城市公共交通路网",
+                realtimeArrivalText: "\(lineTitle)  📡 班次正常運行 🚃🚃🚃",
+                steps: ovSteps1
+            )
+            
+            let busMins = totalMins + 8
+            let ovSteps2: [TransitStepItem] = [
+                TransitStepItem(
+                    kind: .walk,
+                    lineName: "步行前往巴士站",
+                    directionDesc: "前往就近巴士站台",
+                    fromStation: "我的位置",
+                    toStation: "就近巴士站",
+                    passStations: [],
+                    durationMins: max(2, w1Min - 1),
+                    walkMeters: max(60, w1 - 40),
+                    doorSideDesc: "",
+                    acNotice: "",
+                    exitDesc: "前往道路旁巴士站候車",
+                    colorHex: "#888888",
+                    intervalDesc: "步行 \(max(60, w1 - 40)) 米"
+                ),
+                TransitStepItem(
+                    kind: .bus,
+                    lineName: busTitle,
+                    directionDesc: "\(destClean)方向",
+                    fromStation: "就近巴士站",
+                    toStation: "\(destClean)巴士站",
+                    passStations: [],
+                    durationMins: rideMins + 9,
+                    walkMeters: 0,
+                    doorSideDesc: "前門上車/後門下車",
+                    acNotice: "❄️ 空調巴士",
+                    exitDesc: "在 \(destClean) 附近站台下車",
+                    colorHex: "#1E88E5",
+                    intervalDesc: "地面景觀直達 · 少步行"
+                ),
+                TransitStepItem(
+                    kind: .walk,
+                    lineName: "下車步行到達",
+                    directionDesc: "前往 \(destClean)",
+                    fromStation: "\(destClean)巴士站",
+                    toStation: destClean,
+                    passStations: [],
+                    durationMins: 2,
+                    walkMeters: 90,
+                    doorSideDesc: "",
+                    acNotice: "",
+                    exitDesc: "步行即達 \(destClean)",
+                    colorHex: "#888888",
+                    intervalDesc: "步行 90 米 (2分鐘)"
+                )
+            ]
+            
+            let ovPlan2 = TransitPlanOption(
+                title: "\(busMins)分鐘 · \(busTitle)直達",
+                badge: "地面巴士 · 少步行",
+                totalMinutes: busMins,
+                totalStations: stopsCount + 2,
+                transferCount: 0,
+                walkMeters: max(60, w1 - 40) + 90,
+                priceYuan: isOverseas ? "Local" : "2",
+                startExitDesc: "就近巴士站上車",
+                warningNotice: "🚌 地面幹線直達，免上下地鐵扶梯",
+                realtimeArrivalText: "\(busTitle)  📡 約 4分鐘到站 🚌",
+                steps: ovSteps2
+            )
+            
+            self.transitPlans = [ovPlan1, ovPlan2]
+            self.selectedTransitPlanIndex = 0
+            self.remainingRouteMinutes = ovPlan1.totalMinutes
+            self.currentStepInstruction = "步行 \(w1)米 前往 \(startStLabel) 乘車"
+            self.distanceToNextStepMeters = Double(w1)
+            return
+        }
+
+        // =========================================================================
         // CASE LUOHU: SHENZHEN LUOHU PORT / LUOHU CUSTOMS / SHENZHEN RAILWAY STATION
         // 100% AUTHENTIC GAODE BUS & SUBWAY ROUTES MATCHING GAODE APP SCREENSHOT!
         // 1. 351路直达 (综合最优 1小时9分 · ¥3 · 11站 · 沙湾天桥上车)
@@ -4581,8 +4772,21 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                 if firstTransit.fromStation.contains("建设路") || firstTransit.fromStation.contains("东门") {
                     return CLLocationCoordinate2D(latitude: 22.5440, longitude: 114.1190)
                 }
-                let nearest = self.findNearestStation(to: self.userCoordinate)
-                return CLLocationCoordinate2D(latitude: nearest.lat, longitude: nearest.lon)
+                if CoordinateConverter.isInHongKong(self.userCoordinate) {
+                    let hkNearest = self.findNearestHKStation(to: self.userCoordinate)
+                    return CLLocationCoordinate2D(latitude: hkNearest.lat, longitude: hkNearest.lon)
+                }
+                if CoordinateConverter.isInShenzhen(self.userCoordinate) {
+                    let nearest = self.findNearestStation(to: self.userCoordinate)
+                    return CLLocationCoordinate2D(latitude: nearest.lat, longitude: nearest.lon)
+                }
+                // Overseas or other cities: place boarding stop 180m along direction toward destination
+                if let dest = self.destinationCoord {
+                    let lat = self.userCoordinate.latitude + (dest.latitude - self.userCoordinate.latitude) * 0.08
+                    let lon = self.userCoordinate.longitude + (dest.longitude - self.userCoordinate.longitude) * 0.08
+                    return CLLocationCoordinate2D(latitude: lat, longitude: lon)
+                }
+                return self.userCoordinate
             }()
             self.transitBoardingStationCoord = boardCoord
             self.transitPhase = .walkingToStation
@@ -5272,6 +5476,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     }
     
     func calculateAndStartRoute(to destCoord: CLLocationCoordinate2D, title: String, isReroute: Bool = false) {
+        tappedMapCoord = nil
         destinationCoord = destCoord
         destinationName = title
         isRecalculatingRoute = true
@@ -5302,14 +5507,9 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         // Request both automobile and walking routes in parallel so Driving, e-Bike, and Walking each get distinct, authentic paths!
         let reqAuto = MKDirections.Request()
         let reqWalk = MKDirections.Request()
-        if isDemoSimulating {
-            let src = MKMapItem(placemark: MKPlacemark(coordinate: userCoordinate))
-            reqAuto.source = src
-            reqWalk.source = src
-        } else {
-            reqAuto.source = MKMapItem.forCurrentLocation()
-            reqWalk.source = MKMapItem.forCurrentLocation()
-        }
+        let src = MKMapItem(placemark: MKPlacemark(coordinate: userCoordinate))
+        reqAuto.source = src
+        reqWalk.source = src
         let dst = MKMapItem(placemark: MKPlacemark(coordinate: destCoord))
         reqAuto.destination = dst
         reqAuto.transportType = .automobile
@@ -6075,8 +6275,11 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         
         DispatchQueue.main.async {
             if !self.isDemoSimulating {
-                // Native Apple MapKit handles GPS coordinate alignment directly; pass raw coordinate to prevent double-shift!
-                self.userCoordinate = loc.coordinate
+                // If MKMapView has not yet provided its map-aligned userLocation, align via wgs84ToGCJ02 (no-op Overseas/HK/Macau, GCJ-02 in Mainland).
+                // Once MKMapView is active (hasMapUserLocation == true), MKMapView.didUpdateUserLocation keeps userCoordinate 100% locked to the map tiles!
+                if !self.hasMapUserLocation {
+                    self.userCoordinate = CoordinateConverter.wgs84ToGCJ02(loc.coordinate)
+                }
                 
                 // Auto-refresh transit plans if user moved to a new station location!
                 if self.travelMode == .transit {

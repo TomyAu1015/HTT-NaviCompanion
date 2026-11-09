@@ -124,6 +124,8 @@
 		<string>douyin</string>
 		<string>snssdk1128</string>
 		<string>instagram</string>
+		<string>bilibili</string>
+		<string>xhsdiscover</string>
 	</array>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
