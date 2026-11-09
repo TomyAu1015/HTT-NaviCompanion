@@ -217,7 +217,7 @@ struct HTTSmoothMapView: UIViewRepresentable {
             mapView.removeOverlays(mapView.overlays)
             mapView.removeAnnotations(mapView.annotations.filter { !($0 is MKUserLocation) })
             
-            if manager.travelMode == .transit, let transitPoly = manager.customTransitPolyline {
+            if manager.travelMode == .transit, manager.activeRoute == nil, let transitPoly = manager.customTransitPolyline {
                 // Public Transit Mode: Draw synchronized transit route with realistic colored segments & station pins!
                 mapView.addAnnotations(manager.transitStopAnnotations)
                 
@@ -322,42 +322,18 @@ struct HTTSmoothMapView: UIViewRepresentable {
                     route.polyline.title = "WALKING_BLUE"
                     mapView.addOverlay(route.polyline, level: .aboveRoads)
                 } else {
-                    // Transit Mode on Map: Split into Walking Approach (Blue) + Bus/Subway Ride (GaoDe Royal Blue / Green) + Station Stop Pins!
-                    let pts = route.polyline.points()
-                    let totalPts = route.polyline.pointCount
-                    if totalPts > 8 {
-                        let cutWalk1 = max(2, Int(Double(totalPts) * 0.20))
-                        let cutRide = max(cutWalk1 + 2, Int(Double(totalPts) * 0.88))
-                        
-                        // Leg 1: Walk to Bus/Subway Station (Pedestrian Blue)
-                        let polyWalk1 = MKPolyline(points: pts, count: cutWalk1)
-                        polyWalk1.title = "WALKING_BLUE"
-                        mapView.addOverlay(polyWalk1, level: .aboveRoads)
-                        
-                        // Boarding Station Marker (e.g. 沙湾天桥 / 地铁站)
+                    // Transit Mode on Map: 100% Genuine Apple Maps Road Polyline!
+                    // Perfectly follows the actual road centerlines (沙湾路 -> 沿河路 -> 罗湖口岸), never cutting across lakes or buildings!
+                    route.polyline.title = "TRANSIT_BUS_BLUE"
+                    mapView.addOverlay(route.polyline, level: .aboveRoads)
+                    
+                    // Add Boarding Station Marker
+                    if manager.transitBoardingStationCoord.latitude != 0 {
                         let boardPin = MKPointAnnotation()
-                        boardPin.coordinate = pts[cutWalk1 - 1].coordinate
-                        if manager.selectedTransitPlanIndex < manager.transitPlans.count,
-                           let firstTransit = manager.transitPlans[manager.selectedTransitPlanIndex].steps.first(where: { $0.kind != .walk }) {
-                            boardPin.title = "\(firstTransit.fromStation) (\(firstTransit.lineName))"
-                        } else {
-                            boardPin.title = "上车站台"
-                        }
+                        boardPin.coordinate = manager.transitBoardingStationCoord
+                        boardPin.title = manager.transitBoardingStationName.isEmpty ? "乘车站台" : manager.transitBoardingStationName
                         boardPin.subtitle = "BUS_STOP_PIN"
                         mapView.addAnnotation(boardPin)
-                        
-                        // Leg 2: Bus / Subway Ride (GaoDe Transit Blue/Green)
-                        let polyRide = MKPolyline(points: pts.advanced(by: cutWalk1 - 1), count: cutRide - cutWalk1 + 1)
-                        polyRide.title = "TRANSIT_GREEN"
-                        mapView.addOverlay(polyRide, level: .aboveRoads)
-                        
-                        // Leg 3: Walk from Alighting Station to Destination
-                        let polyWalk2 = MKPolyline(points: pts.advanced(by: cutRide - 1), count: totalPts - cutRide + 1)
-                        polyWalk2.title = "WALKING_BLUE"
-                        mapView.addOverlay(polyWalk2, level: .aboveRoads)
-                    } else {
-                        route.polyline.title = "TRANSIT_GREEN"
-                        mapView.addOverlay(route.polyline, level: .aboveRoads)
                     }
                 }
                 
@@ -551,8 +527,7 @@ struct HTTSmoothMapView: UIViewRepresentable {
         func mapView(_ mapView: MKMapView, didUpdate userLocation: MKUserLocation) {
             guard let loc = userLocation.location, !parent.manager.isDemoSimulating else { return }
             DispatchQueue.main.async {
-                let newCoord = CoordinateConverter.wgs84ToGCJ02(loc.coordinate)
-                self.parent.manager.userCoordinate = newCoord
+                self.parent.manager.userCoordinate = loc.coordinate
                 if self.parent.manager.travelMode == .transit {
                     self.parent.manager.refreshTransitPlansForCurrentLocation(force: false)
                 }
@@ -761,6 +736,7 @@ struct ContentView: View {
     @ObservedObject private var musicManager = KOnMusicManager.shared
     @State private var showSoundboardSheet: Bool = false
     @State private var showSearchSheet: Bool = false
+    @State private var showAboutSheet: Bool = false
     @State private var showAlbumSheet: Bool = false
     @State private var showOutfitPopup: Bool = false
     @State private var showCautionSplash: Bool = false
@@ -853,6 +829,39 @@ struct ContentView: View {
                                 characterSelectorStrip
                                 utilityControlGrid
                                 portraitBottomCompanionDock
+                                
+                                // Prominent Author & Version Badge (优雅呈现作者与版本)
+                                Button(action: { showAboutSheet = true }) {
+                                    HStack(spacing: 6) {
+                                        Image(systemName: "sparkles")
+                                            .font(.system(size: 9))
+                                            .foregroundColor(httGold)
+                                        Text(manager.appAuthorLabel)
+                                            .font(.system(size: 11, weight: .black))
+                                            .foregroundColor(httGold)
+                                        Text("·")
+                                            .foregroundColor(.gray)
+                                        Text("v\(manager.appVersion)")
+                                            .font(.system(size: 11, weight: .bold, design: .monospaced))
+                                            .foregroundColor(.white.opacity(0.85))
+                                        Text("·")
+                                            .foregroundColor(.gray)
+                                        HStack(spacing: 3) {
+                                            Image(systemName: "ladybug.fill")
+                                                .font(.system(size: 9))
+                                                .foregroundColor(.orange)
+                                            Text(tr("BUG反馈", "BUG反饋", "Feedback"))
+                                                .font(.system(size: 11, weight: .bold))
+                                                .foregroundColor(Color(red: 0.4, green: 0.8, blue: 1.0))
+                                        }
+                                    }
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 5)
+                                    .background(Color.black.opacity(0.45))
+                                    .cornerRadius(8)
+                                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold.opacity(0.45), lineWidth: 1))
+                                }
+                                .padding(.top, 2)
                             }
                             .frame(width: geo.size.width - 24)
                             .padding(.horizontal, 12)
@@ -882,6 +891,9 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showSearchSheet) {
             DestinationSearchSheetView(manager: manager)
+        }
+        .sheet(isPresented: $showAboutSheet) {
+            AboutAndFeedbackSheetView(manager: manager)
         }
         .sheet(isPresented: $showAlbumSheet) {
             RM500AlbumAndOutfitSheetView(manager: manager)
@@ -2094,6 +2106,25 @@ struct ContentView: View {
                 .foregroundColor(.white)
                 .cornerRadius(8)
                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold, lineWidth: 1))
+            }
+            
+            // Dedicated About & Bug Feedback Button (明显且精致)
+            Button(action: { showAboutSheet = true }) {
+                HStack(spacing: 2) {
+                    Image(systemName: "ladybug.fill")
+                        .font(.system(size: 10))
+                        .foregroundColor(.orange)
+                    Text(tr("反馈", "反饋", "Info"))
+                        .font(.system(size: 11, weight: .bold))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                }
+                .padding(.horizontal, 6)
+                .padding(.vertical, 6)
+                .background(Color.white.opacity(0.12))
+                .foregroundColor(httCream)
+                .cornerRadius(8)
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold.opacity(0.6), lineWidth: 1))
             }
         }
         .frame(maxWidth: .infinity)
@@ -3388,6 +3419,11 @@ struct DestinationSearchSheetView: View {
                                     manager.showMapMode = true
                                     manager.startRouteGuidance(to: item)
                                     dismiss()
+                                    if selectedMode == .transit {
+                                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                                            manager.showTransitPlanSheet = true
+                                        }
+                                    }
                                 }) {
                                     HStack(spacing: 10) {
                                         Image(systemName: selectedMode.icon)
@@ -3430,6 +3466,11 @@ struct DestinationSearchSheetView: View {
                                     manager.showMapMode = true
                                     searchEngine.resolveAndStartNavigation(for: comp, manager: manager) {
                                         dismiss()
+                                        if selectedMode == .transit {
+                                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                                                manager.showTransitPlanSheet = true
+                                            }
+                                        }
                                     }
                                 }) {
                                     HStack(spacing: 10) {
@@ -3591,8 +3632,9 @@ struct RM500AlbumAndOutfitSheetView: View {
         NavigationView {
             VStack(spacing: 12) {
                 Picker("Mode", selection: $selectedTab) {
-                    Text("RM-500HTT 导航箭头换装").tag(0)
-                    Text("放課後ティータイム 纪念相册 (36枚)").tag(1)
+                    Text("导航换装").tag(0)
+                    Text("纪念相册").tag(1)
+                    Text(manager.language == .en ? "Author & Feedback" : (manager.language == .zhHant ? "製作作者與反饋" : "制作作者与BUG反馈")).tag(2)
                 }
                 .pickerStyle(.segmented)
                 .padding(.horizontal)
@@ -3701,6 +3743,12 @@ struct RM500AlbumAndOutfitSheetView: View {
                             }
                         }
                         .padding(.bottom, 20)
+                    }
+                } else if selectedTab == 2 {
+                    // Tab 2: Author & Bug Feedback (制作作者与BUG反馈)
+                    ScrollView {
+                        AboutAndFeedbackContentView(manager: manager)
+                            .padding(.top, 6)
                     }
                 } else {
                     // Tab 1: Official RM-500HTT 36 Memorial Album CGs
@@ -5423,5 +5471,329 @@ struct InAppTrainTicketScheduleSheetView: View {
         .padding(12)
         .background(Color.white.opacity(0.08))
         .cornerRadius(12)
+    }
+}
+
+
+// MARK: - About & Bug Feedback Views (放课后茶会 · 制作作者与BUG反馈详情面板)
+struct AboutAndFeedbackSheetView: View {
+    @ObservedObject var manager: AudioPlayerManager
+    @Environment(\.dismiss) private var dismiss
+    
+    private let httGold = Color(red: 0.88, green: 0.68, blue: 0.24)
+    private let httCrimson = Color(red: 0.78, green: 0.18, blue: 0.22)
+    private let httCream = Color(red: 0.99, green: 0.96, blue: 0.90)
+    
+    var body: some View {
+        NavigationView {
+            ScrollView {
+                AboutAndFeedbackContentView(manager: manager)
+                    .padding(.vertical, 8)
+            }
+            .background(Color(UIColor.systemGroupedBackground))
+            .navigationTitle(manager.language == .en ? "About & Feedback" : (manager.language == .zhHant ? "關於與BUG反饋" : "关于与BUG反馈"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button(manager.language == .en ? "Done" : "关闭") {
+                        dismiss()
+                    }
+                    .font(.body.bold())
+                }
+            }
+        }
+    }
+}
+
+struct AboutAndFeedbackContentView: View {
+    @ObservedObject var manager: AudioPlayerManager
+    @State private var copyToastText: String? = nil
+    
+    private let httGold = Color(red: 0.88, green: 0.68, blue: 0.24)
+    private let httCrimson = Color(red: 0.78, green: 0.18, blue: 0.22)
+    private let httCream = Color(red: 0.99, green: 0.96, blue: 0.90)
+    
+    private func loadLocalQR(named: String) -> UIImage? {
+        if let img = UIImage(named: named) { return img }
+        if let path = Bundle.main.path(forResource: named, ofType: "png"), let img = UIImage(contentsOfFile: path) { return img }
+        if let path = Bundle.main.path(forResource: named, ofType: "jpg"), let img = UIImage(contentsOfFile: path) { return img }
+        return nil
+    }
+    
+    var body: some View {
+        VStack(spacing: 16) {
+            // 1. App Header Card (放课后茶会伴侣 v1.0 + 作者署名)
+            VStack(spacing: 8) {
+                // App Avatar
+                if let appIcon = UIImage(named: "AppIcon60x60@2x") ?? UIImage(named: "AppIcon") {
+                    Image(uiImage: appIcon)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 76, height: 76)
+                        .cornerRadius(18)
+                        .overlay(RoundedRectangle(cornerRadius: 18).stroke(httGold, lineWidth: 2))
+                        .shadow(color: .black.opacity(0.35), radius: 8, y: 3)
+                } else {
+                    Image(systemName: "music.note.house.fill")
+                        .font(.system(size: 42))
+                        .foregroundColor(httGold)
+                }
+                
+                Text(manager.language == .en ? "HTT Navi Companion" : "放课后茶会伴侣")
+                    .font(.system(size: 20, weight: .black))
+                    .foregroundColor(.primary)
+                
+                HStack(spacing: 8) {
+                    // Version 1.0 Badge
+                    Text("版本 1.0 (v\(manager.appVersion))")
+                        .font(.system(size: 11, weight: .bold, design: .monospaced))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(Color.blue.opacity(0.15))
+                        .foregroundColor(.blue)
+                        .cornerRadius(6)
+                    
+                    // Author Badge (多语言严谨区分: 简体为君殇，繁体/英文为Tomy)
+                    Text(manager.appAuthorLabel)
+                        .font(.system(size: 11, weight: .black))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(httCrimson.opacity(0.18))
+                        .foregroundColor(httCrimson)
+                        .cornerRadius(6)
+                }
+                
+                Text(manager.language == .en
+                     ? "K-ON! After School Tea Time Exclusive In-Car Navigation & Companion System"
+                     : "放课后茶会 (HTT) 专属定制车载导航与桌面伴侣系统")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 16)
+            }
+            .padding()
+            .frame(maxWidth: .infinity)
+            .background(Color(UIColor.secondarySystemGroupedBackground))
+            .cornerRadius(16)
+            .padding(.horizontal)
+            
+            // Toast notification
+            if let toast = copyToastText {
+                HStack(spacing: 6) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundColor(.green)
+                    Text(toast)
+                        .font(.system(size: 12, weight: .bold))
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+                .background(Color.black.opacity(0.85))
+                .foregroundColor(.white)
+                .cornerRadius(20)
+                .transition(.scale.combined(with: .opacity))
+            }
+            
+            // 2. Feedback Channel 1: 抖音平台 (附图 P1)
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 8) {
+                    Image(systemName: "play.tv.fill")
+                        .foregroundColor(Color.pink)
+                        .font(.title3)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("抖音平台：不懂二次元的君殇")
+                            .font(.system(size: 15, weight: .black))
+                            .foregroundColor(.primary)
+                        Text("抖音号：363314224")
+                            .font(.system(size: 12, weight: .bold, design: .monospaced))
+                            .foregroundColor(.secondary)
+                    }
+                    Spacer()
+                    Button(action: {
+                        UIPasteboard.general.string = "363314224"
+                        withAnimation { copyToastText = "已复制抖音号：363314224" }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                            withAnimation { copyToastText = nil }
+                        }
+                    }) {
+                        Text("复制抖音号")
+                            .font(.system(size: 11, weight: .bold))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background(Color.pink.opacity(0.18))
+                            .foregroundColor(.pink)
+                            .cornerRadius(6)
+                    }
+                }
+                
+                Text("可在抖音 App 搜索关注私信反馈使用中的 BUG 与功能建议，或直接扫描下方二维码：")
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+                
+                // Douyin QR Poster (附图 P1)
+                HStack {
+                    Spacer()
+                    if let img = loadLocalQR(named: "qr_douyin") {
+                        Image(uiImage: img)
+                            .resizable()
+                            .scaledToFit()
+                            .frame(maxWidth: 240, maxHeight: 340)
+                            .cornerRadius(14)
+                            .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.gray.opacity(0.2), lineWidth: 1))
+                            .shadow(color: .black.opacity(0.12), radius: 6, y: 2)
+                    } else {
+                        VStack(spacing: 6) {
+                            Image(systemName: "qrcode")
+                                .font(.system(size: 44))
+                                .foregroundColor(.pink)
+                            Text("抖音搜索：不懂二次元的君殇")
+                                .font(.caption.bold())
+                        }
+                        .frame(width: 220, height: 160)
+                        .background(Color(UIColor.tertiarySystemGroupedBackground))
+                        .cornerRadius(12)
+                    }
+                    Spacer()
+                }
+            }
+            .padding(14)
+            .background(Color(UIColor.secondarySystemGroupedBackground))
+            .cornerRadius(16)
+            .padding(.horizontal)
+            
+            // 3. Feedback Channel 2: Instagram (附图 P2)
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 8) {
+                    Image(systemName: "camera.circle.fill")
+                        .foregroundColor(Color.purple)
+                        .font(.title3)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Instagram：tomy.au1015")
+                            .font(.system(size: 15, weight: .black))
+                            .foregroundColor(.primary)
+                        Text("@tomy.au1015")
+                            .font(.system(size: 12, weight: .bold, design: .monospaced))
+                            .foregroundColor(.secondary)
+                    }
+                    Spacer()
+                    HStack(spacing: 6) {
+                        Button(action: {
+                            UIPasteboard.general.string = "tomy.au1015"
+                            withAnimation { copyToastText = "已复制 Instagram：tomy.au1015" }
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                                withAnimation { copyToastText = nil }
+                            }
+                        }) {
+                            Text("复制账号")
+                                .font(.system(size: 11, weight: .bold))
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 5)
+                                .background(Color.purple.opacity(0.15))
+                                .foregroundColor(.purple)
+                                .cornerRadius(6)
+                        }
+                        
+                        Button(action: {
+                            if let url = URL(string: "instagram://user?username=tomy.au1015"), UIApplication.shared.canOpenURL(url) {
+                                UIApplication.shared.open(url)
+                            } else if let web = URL(string: "https://www.instagram.com/tomy.au1015/") {
+                                UIApplication.shared.open(web)
+                            }
+                        }) {
+                            Text("打开")
+                                .font(.system(size: 11, weight: .bold))
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 5)
+                                .background(Color.purple)
+                                .foregroundColor(.white)
+                                .cornerRadius(6)
+                        }
+                    }
+                }
+                
+                Text("Overseas or Hong Kong users can follow & DM on Instagram for bug reporting:")
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+                
+                // Instagram QR (附图 P2)
+                HStack {
+                    Spacer()
+                    if let img = loadLocalQR(named: "qr_instagram") {
+                        Image(uiImage: img)
+                            .resizable()
+                            .scaledToFit()
+                            .frame(maxWidth: 220, maxHeight: 300)
+                            .cornerRadius(14)
+                            .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.gray.opacity(0.2), lineWidth: 1))
+                            .shadow(color: .black.opacity(0.12), radius: 6, y: 2)
+                    } else {
+                        VStack(spacing: 6) {
+                            Image(systemName: "qrcode")
+                                .font(.system(size: 44))
+                                .foregroundColor(.purple)
+                            Text("IG: @tomy.au1015")
+                                .font(.caption.bold())
+                        }
+                        .frame(width: 220, height: 160)
+                        .background(Color(UIColor.tertiarySystemGroupedBackground))
+                        .cornerRadius(12)
+                    }
+                    Spacer()
+                }
+            }
+            .padding(14)
+            .background(Color(UIColor.secondarySystemGroupedBackground))
+            .cornerRadius(16)
+            .padding(.horizontal)
+            
+            // 4. More Channels & Tech Engine Details
+            VStack(alignment: .leading, spacing: 8) {
+                Text("其他关注与技术信息")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundColor(.secondary)
+                
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Bilibili (B站)")
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundColor(.primary)
+                        Text("小君殇")
+                            .font(.system(size: 12, weight: .heavy))
+                            .foregroundColor(httGold)
+                    }
+                    Spacer()
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("小红书")
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundColor(.primary)
+                        Text("小君殇")
+                            .font(.system(size: 12, weight: .heavy))
+                            .foregroundColor(httCrimson)
+                    }
+                    Spacer()
+                    VStack(alignment: .trailing, spacing: 3) {
+                        Text("地图核心")
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundColor(.primary)
+                        Text("Apple MapKit")
+                            .font(.system(size: 12, weight: .heavy))
+                            .foregroundColor(.blue)
+                    }
+                }
+                .padding(12)
+                .background(Color(UIColor.tertiarySystemGroupedBackground))
+                .cornerRadius(10)
+                
+                Text("Copyright © 2026 君殇 (Tomy). All rights reserved.")
+                    .font(.system(size: 10))
+                    .foregroundColor(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .padding(.top, 4)
+            }
+            .padding(14)
+            .background(Color(UIColor.secondarySystemGroupedBackground))
+            .cornerRadius(16)
+            .padding(.horizontal)
+            .padding(.bottom, 16)
+        }
     }
 }
