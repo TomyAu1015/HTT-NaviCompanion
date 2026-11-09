@@ -767,6 +767,8 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     @Published var destinationCoord: CLLocationCoordinate2D? = nil
     @Published var lastRerouteTime: Date = Date.distantPast
     private var activeGeocodeWorkItem: DispatchWorkItem? = nil
+    private var currentTapRequestId: Int = 0
+    private var currentTapResolvedByPOI: Bool = false
     
     // GaoDe Navigation State Helper: Only true when there is an active destination AND route/guidance
     var hasActiveNavigation: Bool {
@@ -1223,23 +1225,35 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             return exp
         }()
         
-        self.tappedMapCoord = coord
         let tapLoc = CLLocation(latitude: coord.latitude, longitude: coord.longitude)
+        
+        // Prevent duplicate re-entrant tap at the exact same spot (< 2m) from resetting an already-resolved title
+        if cleanExplicit == nil,
+           let prevCoord = self.tappedMapCoord,
+           !self.tappedMapTitle.isEmpty,
+           self.tappedMapTitle != "正在获取地点..." {
+            let prevLoc = CLLocation(latitude: prevCoord.latitude, longitude: prevCoord.longitude)
+            if tapLoc.distance(from: prevLoc) < 2.0 {
+                return
+            }
+        }
+        
+        self.currentTapRequestId += 1
+        let reqId = self.currentTapRequestId
+        self.currentTapResolvedByPOI = false
+        self.tappedMapCoord = coord
         
         // If an explicit POI title is already known (e.g. user tapped an annotation pin or search result)
         if let explicit = cleanExplicit, !isPureRoadOrBuildingNumber(explicit) {
+            self.currentTapResolvedByPOI = true
             self.tappedMapTitle = explicit
             self.isReverseGeocoding = false
             self.populatePOIDetails(name: explicit, coord: coord, address: "", phone: nil, rawCategory: nil)
             return
         }
         
-        // If title already resolved for this location, don't revert to placeholder
-        if cleanExplicit != nil {
-            self.tappedMapTitle = cleanExplicit!
-        } else if self.tappedMapTitle.isEmpty || self.tappedMapTitle == "地图标记点" {
-            self.tappedMapTitle = "正在获取地点..."
-        }
+        // Always reset for a genuinely new map tap so tapping a 2nd/3rd place always updates cleanly!
+        self.tappedMapTitle = cleanExplicit ?? "正在获取地点..."
         self.tappedMapAddress = "定位解析中..."
         self.isReverseGeocoding = true
         
@@ -1248,25 +1262,41 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             self.candidateRoutes = []
         }
         
-        // 1. Fast Apple Maps Local POI Search around tap coordinate (80m radius for instant POI recognition)
-        let localReq = MKLocalSearch.Request()
-        localReq.region = MKCoordinateRegion(center: coord, latitudinalMeters: 80, longitudinalMeters: 80)
-        localReq.resultTypes = .pointOfInterest
-        let localSearch = MKLocalSearch(request: localReq)
+        // 1. Native Apple Maps MKLocalPointsOfInterestRequest (Works without query string, zero MKErrorDomain error 4!)
+        let poiReq = MKLocalPointsOfInterestRequest(center: coord, radius: 55.0)
+        poiReq.pointOfInterestFilter = .includingAll
+        let localSearch = MKLocalSearch(request: poiReq)
         localSearch.start { [weak self] resp, _ in
             DispatchQueue.main.async {
-                guard let self = self,
-                      let currentTapped = self.tappedMapCoord,
-                      abs(currentTapped.latitude - coord.latitude) < 0.0008,
-                      abs(currentTapped.longitude - coord.longitude) < 0.0008 else { return }
-                if let poiItem = resp?.mapItems.first, let poiName = poiItem.name, !poiName.isEmpty {
+                guard let self = self, self.currentTapRequestId == reqId else { return }
+                let candidates = (resp?.mapItems ?? []).compactMap { item -> (MKMapItem, Double)? in
+                    guard let name = item.name?.trimmingCharacters(in: .whitespacesAndNewlines),
+                          !name.isEmpty,
+                          !self.isPureRoadOrBuildingNumber(name) else { return nil }
+                    let d = tapLoc.distance(from: CLLocation(latitude: item.placemark.coordinate.latitude,
+                                                             longitude: item.placemark.coordinate.longitude))
+                    return d <= 52.0 ? (item, d) : nil
+                }
+                
+                // Prioritize specific shops/stations/facilities over generic residential estates
+                let specificShops = candidates.filter { !self.isPureEstate($0.0.name ?? "") }.sorted { $0.1 < $1.1 }
+                let bestMatch = specificShops.first ?? candidates.sorted { $0.1 < $1.1 }.first
+                
+                if let (poiItem, _) = bestMatch, let poiName = poiItem.name {
+                    self.currentTapResolvedByPOI = true
                     self.isReverseGeocoding = false
                     var addrParts: [String] = []
                     if let dist = poiItem.placemark.subLocality { addrParts.append(dist) }
                     if let road = poiItem.placemark.thoroughfare { addrParts.append(road) }
                     if let num = poiItem.placemark.subThoroughfare { addrParts.append(num) }
-                    let addr = addrParts.joined(separator: "")
-                    self.populatePOIDetails(name: poiName, coord: coord, address: addr, phone: poiItem.phoneNumber, rawCategory: nil)
+                    let addr = addrParts.isEmpty ? (poiItem.placemark.title ?? "") : addrParts.joined(separator: "")
+                    self.populatePOIDetails(
+                        name: poiName,
+                        coord: coord,
+                        address: addr,
+                        phone: poiItem.phoneNumber,
+                        rawCategory: poiItem.pointOfInterestCategory?.rawValue
+                    )
                 }
             }
         }
@@ -1276,10 +1306,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         let workItem = DispatchWorkItem { [weak self] in
             CLGeocoder().reverseGeocodeLocation(tapLoc) { placemarks, _ in
                 DispatchQueue.main.async {
-                    guard let self = self,
-                          let currentTapped = self.tappedMapCoord,
-                          abs(currentTapped.latitude - coord.latitude) < 0.0008,
-                          abs(currentTapped.longitude - coord.longitude) < 0.0008 else { return }
+                    guard let self = self, self.currentTapRequestId == reqId else { return }
                     self.isReverseGeocoding = false
                     
                     if let pm = placemarks?.first {
@@ -1298,9 +1325,11 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                         if let num = pm.subThoroughfare { addrParts.append(num) }
                         let fullAddr = addrParts.isEmpty ? (pm.name ?? "") : addrParts.joined(separator: "")
                         
-                        // If tappedMapTitle was already resolved by POI search or explicit title, don't overwrite with street name!
-                        if self.tappedMapTitle != "正在获取地点..." && !self.tappedMapTitle.isEmpty {
-                            if !fullAddr.isEmpty { self.tappedMapAddress = fullAddr }
+                        // If MKLocalPointsOfInterestRequest already found the exact shop/POI for THIS tap, keep its title!
+                        if self.currentTapResolvedByPOI {
+                            if !fullAddr.isEmpty && (self.tappedMapAddress.isEmpty || self.tappedMapAddress == "定位解析中..." || self.tappedMapAddress == "龙岗区南湾街道商业街") {
+                                self.tappedMapAddress = fullAddr
+                            }
                             return
                         }
                         
@@ -1312,17 +1341,15 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                             phone: nil,
                             rawCategory: nil
                         )
-                    } else {
+                    } else if !self.currentTapResolvedByPOI {
                         // Geocoding offline or no placemark: never leave stuck on "正在获取地点..."!
-                        if self.tappedMapTitle == "正在获取地点..." || self.tappedMapTitle.isEmpty {
-                            self.populatePOIDetails(
-                                name: "地图标记点",
-                                coord: coord,
-                                address: "已选定地图坐标位置",
-                                phone: nil,
-                                rawCategory: nil
-                            )
-                        }
+                        self.populatePOIDetails(
+                            name: "地图标记点",
+                            coord: coord,
+                            address: "已选定地图坐标位置",
+                            phone: nil,
+                            rawCategory: nil
+                        )
                     }
                 }
             }
@@ -5765,7 +5792,26 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         let dist = currentLoc.distance(from: stepEndLoc)
         
         self.distanceToNextStepMeters = dist
-        self.currentStepInstruction = step.instructions
+        if !step.instructions.isEmpty {
+            self.currentStepInstruction = step.instructions
+        }
+        
+        // Dynamically update remaining route distance, ETA minutes, camera distance, and highway SA/Toll distances!
+        let futureStepsDist = steps.dropFirst(currentStepIndex + 1).reduce(0.0) { $0 + $1.distance }
+        let totalRemainMeters = max(0.0, dist + futureStepsDist)
+        self.remainingRouteDistanceKm = totalRemainMeters / 1000.0
+        if route.distance > 0 {
+            let ratio = max(0.02, min(1.0, totalRemainMeters / route.distance))
+            if self.travelMode == .ebike {
+                self.remainingRouteMinutes = max(1, Int((totalRemainMeters / 1000.0) / 22.0 * 60.0))
+            } else if self.travelMode == .walking {
+                self.remainingRouteMinutes = max(1, Int((totalRemainMeters / 1000.0) / 4.8 * 60.0))
+            } else if self.travelMode != .transit {
+                self.remainingRouteMinutes = max(1, Int((route.expectedTravelTime * ratio) / 60.0))
+            }
+            let traveledM = max(0, Int(route.distance - totalRemainMeters))
+            self.updateUpcomingServiceAreaAndToll(traveledMeters: traveledM)
+        }
         
         // 1. TRANSIT MULTI-PHASE STATE MACHINE (GaoDe 1:1 Lifecycle!)
         if self.travelMode == .transit {
@@ -5883,7 +5929,9 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         if dist <= 25.0 && currentStepIndex < steps.count - 1 {
             currentStepIndex += 1
             let nextStep = steps[currentStepIndex]
-            currentStepInstruction = nextStep.instructions
+            if !nextStep.instructions.isEmpty {
+                currentStepInstruction = nextStep.instructions
+            }
             updateRoadLanes(for: currentStepInstruction)
             evaluateRoadSpeedLimitAndNotify(for: currentStepInstruction)
         }

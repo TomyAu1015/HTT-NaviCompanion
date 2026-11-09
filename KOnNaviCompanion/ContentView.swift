@@ -358,6 +358,7 @@ struct HTTSmoothMapView: UIViewRepresentable {
             }
             
             if let tapped = manager.tappedMapCoord {
+                context.coordinator.lastTappedTitle = manager.tappedMapTitle
                 let tappedPin = MKPointAnnotation()
                 tappedPin.coordinate = tapped
                 tappedPin.title = manager.tappedMapTitle
@@ -376,6 +377,16 @@ struct HTTSmoothMapView: UIViewRepresentable {
                     heading: camHeading
                 )
                 mapView.setCamera(camera, animated: false)
+            }
+        }
+        
+        // 1.5 Update TAPPED_PIN annotation title in-place once reverse geocoding / POI lookup finishes
+        if context.coordinator.lastTappedTitle != manager.tappedMapTitle {
+            context.coordinator.lastTappedTitle = manager.tappedMapTitle
+            for anno in mapView.annotations {
+                if let pt = anno as? MKPointAnnotation, pt.subtitle == "TAPPED_PIN" {
+                    pt.title = manager.tappedMapTitle
+                }
             }
         }
         
@@ -461,6 +472,7 @@ struct HTTSmoothMapView: UIViewRepresentable {
         var lastCandidateCount: Int = 0
         var lastTappedLat: Double? = nil
         var lastTappedLon: Double? = nil
+        var lastTappedTitle: String = ""
         var isUserInteracting: Bool = false
         var lastRecenterTrigger: Int = 0
         var lastZoomTrigger: Int = 0
@@ -971,7 +983,7 @@ struct ContentView: View {
                 let leadingNotchPad: CGFloat = max(geo.safeAreaInsets.leading + 8, 44)
                 let trailingSafePad: CGFloat = max(geo.safeAreaInsets.trailing + 8, 16)
                 let usableW = max(480, geo.size.width - leadingNotchPad - trailingSafePad)
-                let leftPanelW = min(340, usableW * 0.44)
+                let leftPanelW = min(355, max(300, usableW * 0.46))
                 
                 HStack(alignment: .top, spacing: 10) {
                     // LEFT COLUMN (Compact Control Stack: Top Turn Card + Lanes/Lights + Travel Modes + SpeedCam/ServiceArea)
@@ -2060,7 +2072,7 @@ struct ContentView: View {
                     .frame(height: 74)
                     .shadow(radius: 4)
                     .onTapGesture {
-                        manager.triggerCharacterTap(member: manager.activeAllMemberChar)
+                        manager.triggerCharacterTap()
                     }
             }
         }
@@ -2420,7 +2432,7 @@ struct ContentView: View {
                                     .frame(height: 76)
                                     .shadow(radius: 4)
                                     .onTapGesture {
-                                        manager.triggerCharacterTap(member: manager.activeAllMemberChar)
+                                        manager.triggerCharacterTap()
                                     }
                             }
                             Spacer()
@@ -3820,10 +3832,7 @@ struct RM500AlbumAndOutfitSheetView: View {
                     }
                 } else if selectedTab == 2 {
                     // Tab 2: Author & Bug Feedback (制作作者与BUG反馈)
-                    ScrollView {
-                        AboutAndFeedbackContentView(manager: manager)
-                            .padding(.top, 6)
-                    }
+                    AboutAndFeedbackContentView(manager: manager)
                 } else {
                     // Tab 1: Official RM-500HTT 36 Memorial Album CGs
                     ScrollView {
@@ -5582,11 +5591,8 @@ struct AboutAndFeedbackSheetView: View {
     
     var body: some View {
         NavigationView {
-            ScrollView {
-                AboutAndFeedbackContentView(manager: manager)
-                    .padding(.vertical, 8)
-            }
-            .background(Color(UIColor.systemGroupedBackground))
+            AboutAndFeedbackContentView(manager: manager)
+                .background(Color(UIColor.systemGroupedBackground))
             .navigationTitle(manager.language == .en ? "About & Feedback" : (manager.language == .zhHant ? "關於與BUG反饋" : "关于与BUG反馈"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -5629,8 +5635,9 @@ struct AboutAndFeedbackContentView: View {
     
     var body: some View {
         ZStack {
-            VStack(spacing: 16) {
-                // 1. App Header Card (放课后茶会伴侣 v1.0 + 作者署名)
+            ScrollView {
+                VStack(spacing: 16) {
+                    // 1. App Header Card (放课后茶会伴侣 v1.0 + 作者署名)
                 VStack(spacing: 8) {
                     // App Avatar
                     if let appIcon = UIImage(named: "AppIcon60x60@2x") ?? UIImage(named: "AppIcon") {
@@ -5716,20 +5723,40 @@ struct AboutAndFeedbackContentView: View {
                                 .foregroundColor(.secondary)
                         }
                         Spacer()
-                        Button(action: {
-                            UIPasteboard.general.string = "363314224"
-                            withAnimation { copyToastText = "已复制抖音号：363314224" }
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
-                                withAnimation { copyToastText = nil }
+                        HStack(spacing: 6) {
+                            Button(action: {
+                                UIPasteboard.general.string = "363314224"
+                                withAnimation { copyToastText = "已复制抖音号：363314224" }
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                                    withAnimation { copyToastText = nil }
+                                }
+                            }) {
+                                Text("复制抖音号")
+                                    .font(.system(size: 11, weight: .bold))
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 5)
+                                    .background(Color.pink.opacity(0.18))
+                                    .foregroundColor(.pink)
+                                    .cornerRadius(6)
                             }
-                        }) {
-                            Text("复制抖音号")
-                                .font(.system(size: 11, weight: .bold))
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 5)
-                                .background(Color.pink.opacity(0.18))
-                                .foregroundColor(.pink)
-                                .cornerRadius(6)
+                            
+                            Button(action: {
+                                if let url = URL(string: "snssdk1128://"), UIApplication.shared.canOpenURL(url) {
+                                    UIApplication.shared.open(url)
+                                } else if let url2 = URL(string: "douyin://"), UIApplication.shared.canOpenURL(url2) {
+                                    UIApplication.shared.open(url2)
+                                } else if let web = URL(string: "https://www.douyin.com/") {
+                                    UIApplication.shared.open(web)
+                                }
+                            }) {
+                                Text("打开")
+                                    .font(.system(size: 11, weight: .bold))
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 5)
+                                    .background(Color.pink)
+                                    .foregroundColor(.white)
+                                    .cornerRadius(6)
+                            }
                         }
                     }
                     
@@ -5950,6 +5977,8 @@ struct AboutAndFeedbackContentView: View {
                 .cornerRadius(16)
                 .padding(.horizontal)
                 .padding(.bottom, 16)
+                }
+                .padding(.vertical, 8)
             }
             
             // 5. Fullscreen Click-to-Open QR Code Viewer Modal (点击打开全屏大图预览与操作)

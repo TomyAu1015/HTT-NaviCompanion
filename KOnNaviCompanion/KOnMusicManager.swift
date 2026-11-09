@@ -305,8 +305,10 @@ class KOnMusicManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
         
         if currentSong == nil, let firstAvailable = playlist.first(where: { $0.isAvailable }) {
             self.currentSong = firstAvailable
+            self.duration = firstAvailable.approxDurationSeconds
         } else if currentSong == nil, let first = playlist.first {
             self.currentSong = first
+            self.duration = first.approxDurationSeconds
         }
     }
     
@@ -324,14 +326,26 @@ class KOnMusicManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
             let decData = Data(decBytes)
             do {
                 audioPlayer?.stop()
-                audioPlayer = try AVAudioPlayer(data: decData)
+                if let p = try? AVAudioPlayer(data: decData) {
+                    audioPlayer = p
+                } else if let p = try? AVAudioPlayer(data: decData, fileTypeHint: AVFileType.mp4.rawValue) {
+                    audioPlayer = p
+                } else if let p = try? AVAudioPlayer(data: decData, fileTypeHint: AVFileType.m4a.rawValue) {
+                    audioPlayer = p
+                } else if let p = try? AVAudioPlayer(data: decData, fileTypeHint: AVFileType.mp3.rawValue) {
+                    audioPlayer = p
+                } else {
+                    let tmpURL = FileManager.default.temporaryDirectory.appendingPathComponent("kon_active_track.mp4")
+                    try decData.write(to: tmpURL, options: .atomic)
+                    audioPlayer = try AVAudioPlayer(contentsOf: tmpURL, fileTypeHint: AVFileType.mp4.rawValue)
+                }
                 audioPlayer?.delegate = self
                 audioPlayer?.volume = isDucked ? duckVolume : volume
                 audioPlayer?.prepareToPlay()
                 audioPlayer?.play()
                 
                 self.isPlaying = true
-                self.duration = audioPlayer?.duration ?? song.approxDurationSeconds
+                self.duration = (audioPlayer?.duration ?? 0) > 0 ? (audioPlayer?.duration ?? song.approxDurationSeconds) : song.approxDurationSeconds
                 self.currentTime = 0.0
                 self.progress = 0.0
                 self.libraryStatusMessage = "正在播放: \(song.title)"
@@ -1031,74 +1045,87 @@ struct KOnMusicMiniPlayerBar: View {
     @ObservedObject var musicManager = KOnMusicManager.shared
     
     var body: some View {
-        Button(action: {
-            musicManager.showMusicSheet = true
-        }) {
-            HStack(spacing: 10) {
-                // Spinning vinyl mini icon
-                ZStack {
-                    Circle()
-                        .fill(Color.black)
-                        .frame(width: 32, height: 32)
-                        .overlay(Circle().stroke(httGold, lineWidth: 1.5))
+        HStack(spacing: 10) {
+            // Left area: Tap to open full music library sheet
+            Button(action: {
+                musicManager.showMusicSheet = true
+            }) {
+                HStack(spacing: 10) {
+                    // Spinning vinyl mini icon
+                    ZStack {
+                        Circle()
+                            .fill(Color.black)
+                            .frame(width: 32, height: 32)
+                            .overlay(Circle().stroke(httGold, lineWidth: 1.5))
+                        
+                        Circle()
+                            .fill(httCrimson)
+                            .frame(width: 12, height: 12)
+                        
+                        Image(systemName: "music.note")
+                            .font(.system(size: 9, weight: .black))
+                            .foregroundColor(httCream)
+                    }
+                    .rotationEffect(.degrees(musicManager.discRotationDegrees))
                     
-                    Circle()
-                        .fill(httCrimson)
-                        .frame(width: 12, height: 12)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(musicManager.currentSong?.title ?? "放课后茶会音乐库")
+                            .font(.system(size: 11, weight: .black))
+                            .foregroundColor(httCream)
+                            .lineLimit(1)
+                        let totalDur = musicManager.duration > 0 ? musicManager.duration : (musicManager.currentSong?.approxDurationSeconds ?? 250)
+                        Text("\(musicManager.currentSong?.vocalistChar ?? "HTT") · \(musicManager.formatTime(musicManager.currentTime)) / \(musicManager.formatTime(totalDur))")
+                            .font(.system(size: 9, weight: .medium, design: .monospaced))
+                            .foregroundColor(httGold)
+                            .lineLimit(1)
+                    }
                     
-                    Image(systemName: "music.note")
-                        .font(.system(size: 9, weight: .black))
-                        .foregroundColor(httCream)
+                    Spacer(minLength: 4)
                 }
-                .rotationEffect(.degrees(musicManager.discRotationDegrees))
-                
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(musicManager.currentSong?.title ?? "放课后茶会音乐库")
-                        .font(.system(size: 11, weight: .black))
-                        .foregroundColor(httCream)
-                        .lineLimit(1)
-                    Text("\(musicManager.currentSong?.vocalistChar ?? "HTT") · \(musicManager.formatTime(musicManager.currentTime)) / \(musicManager.formatTime(musicManager.duration))")
-                        .font(.system(size: 9, weight: .medium))
-                        .foregroundColor(httGold)
-                        .lineLimit(1)
-                }
-                
-                Spacer()
-                
-                // Play / Pause button
-                Button(action: {
-                    musicManager.playOrPause()
-                }) {
-                    Image(systemName: musicManager.isPlaying ? "pause.circle.fill" : "play.circle.fill")
-                        .font(.system(size: 22))
-                        .foregroundColor(httGold)
-                }
-                .buttonStyle(BorderlessButtonStyle())
-                
-                // Next track button
-                Button(action: {
-                    musicManager.nextTrack()
-                }) {
-                    Image(systemName: "forward.fill")
-                        .font(.system(size: 14))
-                        .foregroundColor(httCream)
-                }
-                .buttonStyle(BorderlessButtonStyle())
-                
-                // Expand sheet icon
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(PlainButtonStyle())
+            
+            // Play / Pause button (Independent sibling button, never swallowed by outer tap!)
+            Button(action: {
+                musicManager.playOrPause()
+            }) {
+                Image(systemName: musicManager.isPlaying ? "pause.circle.fill" : "play.circle.fill")
+                    .font(.system(size: 24))
+                    .foregroundColor(httGold)
+                    .padding(.horizontal, 2)
+            }
+            .buttonStyle(PlainButtonStyle())
+            
+            // Next track button
+            Button(action: {
+                musicManager.nextTrack()
+            }) {
+                Image(systemName: "forward.fill")
+                    .font(.system(size: 15))
+                    .foregroundColor(httCream)
+                    .padding(.horizontal, 4)
+            }
+            .buttonStyle(PlainButtonStyle())
+            
+            // Expand sheet button
+            Button(action: {
+                musicManager.showMusicSheet = true
+            }) {
                 Image(systemName: "chevron.up")
                     .font(.system(size: 11, weight: .bold))
                     .foregroundColor(.gray)
+                    .padding(.leading, 2)
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 5)
-            .background(
-                RoundedRectangle(cornerRadius: 12)
-                    .fill(Color.black.opacity(0.9))
-                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(httGold.opacity(0.8), lineWidth: 1.2))
-                    .shadow(color: .black.opacity(0.5), radius: 6)
-            )
+            .buttonStyle(PlainButtonStyle())
         }
-        .buttonStyle(PlainButtonStyle())
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color.black.opacity(0.9))
+                .overlay(RoundedRectangle(cornerRadius: 12).stroke(httGold.opacity(0.8), lineWidth: 1.2))
+                .shadow(color: .black.opacity(0.5), radius: 6)
+        )
     }
 }
