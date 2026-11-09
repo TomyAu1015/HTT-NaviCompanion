@@ -1,0 +1,79 @@
+name: Build Android APK
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - 'android/**'
+      - '.github/workflows/build-apk.yml'
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build-apk:
+    name: Build Android APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Prepare Assets from iOS Directory
+        run: |
+          mkdir -p android/app/src/main/assets
+          if [ -f "KOnNaviCompanion/voice_assets.dat" ]; then
+            echo "Copying voice_assets.dat..."
+            cp KOnNaviCompanion/voice_assets.dat android/app/src/main/assets/
+          fi
+          if [ -f "KOnNaviCompanion/mascot_assets.dat" ]; then
+            echo "Copying mascot_assets.dat..."
+            cp KOnNaviCompanion/mascot_assets.dat android/app/src/main/assets/
+          fi
+          if [ -d "KOnNaviCompanion/Music" ]; then
+            echo "Copying Music folder..."
+            mkdir -p android/app/src/main/assets/Music
+            cp -r KOnNaviCompanion/Music/* android/app/src/main/assets/Music/ || true
+          fi
+          ls -la android/app/src/main/assets/
+
+      - name: Build with Gradle
+        run: |
+          cd android
+          gradle assembleDebug --stacktrace
+
+      - name: Collect APK Output
+        run: |
+          mkdir -p output_apks
+          find android/app/build/outputs/apk -name "*.apk" -exec cp {} output_apks/ \;
+          ls -la output_apks/
+
+      - name: Upload Android APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: HTT-NaviCompanion-Android-APK
+          path: output_apks/*.apk
+          retention-days: 14
+
+      - name: Create GitHub Release on Tag
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          name: 放课后茶会伴侣 Android ${{ github.ref_name }}
+          files: output_apks/*.apk
+          draft: false
+          prerelease: false
+          generate_release_notes: true
