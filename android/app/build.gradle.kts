@@ -6,12 +6,12 @@ plugins {
 
 android {
     namespace = "com.tomy.httnavicompanion"
-    compileSdk = 35
+    compileSdk = 34
 
     defaultConfig {
         applicationId = "com.tomy.httnavicompanion"
         minSdk = 26
-        targetSdk = 35
+        targetSdk = 34
         versionCode = 1
         versionName = "1.0.0"
 
@@ -49,8 +49,7 @@ android {
 
     sourceSets {
         getByName("main") {
-            // Support loading assets directly from sibling iOS directory if available
-            assets.srcDirs("src/main/assets", "../../KOnNaviCompanion")
+            assets.srcDirs("src/main/assets")
         }
     }
 }

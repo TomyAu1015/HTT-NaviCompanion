@@ -53,7 +53,7 @@ jobs:
       - name: Build with Gradle
         run: |
           cd android
-          gradle assembleDebug --stacktrace
+          gradle assembleDebug --no-daemon --stacktrace
 
       - name: Collect APK Output
         run: |
