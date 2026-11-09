@@ -652,6 +652,25 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     static let shared = AudioPlayerManager()
     
     @Published var language: AppLanguage = .zhHans
+
+    // MARK: - App Metadata & Author Information (多语言制作作者与版本)
+    var appVersion: String { "1.0" }
+    
+    var appAuthorName: String {
+        switch language {
+        case .zhHans: return "君殇"
+        case .zhHant: return "Tomy"
+        case .en: return "Tomy"
+        }
+    }
+    
+    var appAuthorLabel: String {
+        switch language {
+        case .zhHans: return "制作作者：君殇"
+        case .zhHant: return "製作作者：Tomy"
+        case .en: return "Author: Tomy"
+        }
+    }
     
     // Playback & Voice Queue State
     @Published var isPlaying: Bool = false
@@ -1194,33 +1213,73 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             return
         }
         
-        // BUG 4 FIX: Instant UI feedback in <16ms! No more 2-5 second freezing!
-        let tapLoc = CLLocation(latitude: coord.latitude, longitude: coord.longitude)
+        // Filter out placeholder strings from explicit title
+        let cleanExplicit: String? = {
+            guard let exp = explicitTitle?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !exp.isEmpty,
+                  exp != "正在获取地点...",
+                  exp != "定位解析中...",
+                  exp != "地图标记点" else { return nil }
+            return exp
+        }()
+        
         self.tappedMapCoord = coord
-        self.tappedMapTitle = explicitTitle ?? "正在获取地点..."
-        self.tappedMapAddress = "定位解析中..."
-        self.isReverseGeocoding = true
+        let tapLoc = CLLocation(latitude: coord.latitude, longitude: coord.longitude)
         
         // If an explicit POI title is already known (e.g. user tapped an annotation pin or search result)
-        if let explicit = explicitTitle, !explicit.isEmpty, !isPureRoadOrBuildingNumber(explicit) {
+        if let explicit = cleanExplicit, !isPureRoadOrBuildingNumber(explicit) {
+            self.tappedMapTitle = explicit
             self.isReverseGeocoding = false
             self.populatePOIDetails(name: explicit, coord: coord, address: "", phone: nil, rawCategory: nil)
             return
         }
+        
+        // If title already resolved for this location, don't revert to placeholder
+        if cleanExplicit != nil {
+            self.tappedMapTitle = cleanExplicit!
+        } else if self.tappedMapTitle.isEmpty || self.tappedMapTitle == "地图标记点" {
+            self.tappedMapTitle = "正在获取地点..."
+        }
+        self.tappedMapAddress = "定位解析中..."
+        self.isReverseGeocoding = true
         
         // Only clear candidate routes if not actively previewing
         if activeRoute == nil && customTransitPolyline == nil {
             self.candidateRoutes = []
         }
         
-        // Asynchronous non-blocking reverse geocoding with task cancellation
+        // 1. Fast Apple Maps Local POI Search around tap coordinate (80m radius for instant POI recognition)
+        let localReq = MKLocalSearch.Request()
+        localReq.region = MKCoordinateRegion(center: coord, latitudinalMeters: 80, longitudinalMeters: 80)
+        localReq.resultTypes = .pointOfInterest
+        let localSearch = MKLocalSearch(request: localReq)
+        localSearch.start { [weak self] resp, _ in
+            DispatchQueue.main.async {
+                guard let self = self,
+                      let currentTapped = self.tappedMapCoord,
+                      abs(currentTapped.latitude - coord.latitude) < 0.0008,
+                      abs(currentTapped.longitude - coord.longitude) < 0.0008 else { return }
+                if let poiItem = resp?.mapItems.first, let poiName = poiItem.name, !poiName.isEmpty {
+                    self.isReverseGeocoding = false
+                    var addrParts: [String] = []
+                    if let dist = poiItem.placemark.subLocality { addrParts.append(dist) }
+                    if let road = poiItem.placemark.thoroughfare { addrParts.append(road) }
+                    if let num = poiItem.placemark.subThoroughfare { addrParts.append(num) }
+                    let addr = addrParts.joined(separator: "")
+                    self.populatePOIDetails(name: poiName, coord: coord, address: addr, phone: poiItem.phoneNumber, rawCategory: nil)
+                }
+            }
+        }
+        
+        // 2. Asynchronous non-blocking reverse geocoding with task cancellation
         activeGeocodeWorkItem?.cancel()
         let workItem = DispatchWorkItem { [weak self] in
             CLGeocoder().reverseGeocodeLocation(tapLoc) { placemarks, _ in
                 DispatchQueue.main.async {
                     guard let self = self,
-                          self.tappedMapCoord?.latitude == coord.latitude,
-                          self.tappedMapCoord?.longitude == coord.longitude else { return }
+                          let currentTapped = self.tappedMapCoord,
+                          abs(currentTapped.latitude - coord.latitude) < 0.0008,
+                          abs(currentTapped.longitude - coord.longitude) < 0.0008 else { return }
                     self.isReverseGeocoding = false
                     
                     if let pm = placemarks?.first {
@@ -1239,22 +1298,31 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                         if let num = pm.subThoroughfare { addrParts.append(num) }
                         let fullAddr = addrParts.isEmpty ? (pm.name ?? "") : addrParts.joined(separator: "")
                         
+                        // If tappedMapTitle was already resolved by POI search or explicit title, don't overwrite with street name!
+                        if self.tappedMapTitle != "正在获取地点..." && !self.tappedMapTitle.isEmpty {
+                            if !fullAddr.isEmpty { self.tappedMapAddress = fullAddr }
+                            return
+                        }
+                        
                         let finalName = chosenName ?? pm.name ?? (fullAddr.isEmpty ? "地图标记点" : fullAddr)
                         self.populatePOIDetails(
                             name: finalName,
-                            coord: pm.location?.coordinate ?? coord,
+                            coord: coord,
                             address: fullAddr,
                             phone: nil,
                             rawCategory: nil
                         )
                     } else {
-                        self.populatePOIDetails(
-                            name: "地图标记点",
-                            coord: coord,
-                            address: "",
-                            phone: nil,
-                            rawCategory: nil
-                        )
+                        // Geocoding offline or no placemark: never leave stuck on "正在获取地点..."!
+                        if self.tappedMapTitle == "正在获取地点..." || self.tappedMapTitle.isEmpty {
+                            self.populatePOIDetails(
+                                name: "地图标记点",
+                                coord: coord,
+                                address: "已选定地图坐标位置",
+                                phone: nil,
+                                rawCategory: nil
+                            )
+                        }
                     }
                 }
             }
@@ -4353,13 +4421,67 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         self.triggerDepartureGreeting(title: destTitle, isReroute: isReroute)
     }
 
+
+    func calculateTransitAppleMapsRoute(from: CLLocationCoordinate2D, to: CLLocationCoordinate2D, destTitle: String, plan: TransitPlanOption?) {
+        self.customTransitPolyline = nil
+        let roadReq = MKDirections.Request()
+        if isDemoSimulating {
+            roadReq.source = MKMapItem(placemark: MKPlacemark(coordinate: from))
+        } else {
+            // When real GPS is active, prefer coordinate from userCoordinate so origin is 100% matched to road!
+            roadReq.source = MKMapItem(placemark: MKPlacemark(coordinate: userCoordinate))
+        }
+        roadReq.destination = MKMapItem(placemark: MKPlacemark(coordinate: to))
+        roadReq.transportType = .automobile
+        roadReq.requestsAlternateRoutes = false
+        
+        MKDirections(request: roadReq).calculate { [weak self] resp, _ in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                if let roadRoute = resp?.routes.first {
+                    roadRoute.polyline.title = "TRANSIT_BUS_BLUE"
+                    self.activeRoute = roadRoute
+                    self.customTransitPolyline = nil
+                    self.remainingRouteDistanceKm = roadRoute.distance / 1000.0
+                    if let p = plan {
+                        self.remainingRouteMinutes = p.totalMinutes
+                    } else {
+                        self.remainingRouteMinutes = max(1, Int(roadRoute.expectedTravelTime / 60.0))
+                    }
+                    self.candidateRoutes = [roadRoute]
+                    self.selectedRouteIndex = 0
+                    self.triggerDepartureGreeting(title: destTitle, isReroute: false)
+                } else {
+                    let walkReq = MKDirections.Request()
+                    walkReq.source = MKMapItem(placemark: MKPlacemark(coordinate: self.userCoordinate))
+                    walkReq.destination = MKMapItem(placemark: MKPlacemark(coordinate: to))
+                    walkReq.transportType = .walking
+                    MKDirections(request: walkReq).calculate { [weak self] walkResp, _ in
+                        DispatchQueue.main.async {
+                            guard let self = self else { return }
+                            if let walkRoute = walkResp?.routes.first {
+                                walkRoute.polyline.title = "WALKING_BLUE"
+                                self.activeRoute = walkRoute
+                                self.customTransitPolyline = nil
+                                self.remainingRouteDistanceKm = walkRoute.distance / 1000.0
+                                if let p = plan {
+                                    self.remainingRouteMinutes = p.totalMinutes
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     func selectTransitPlan(at index: Int) {
         guard index >= 0 && index < transitPlans.count else { return }
         selectedTransitPlanIndex = index
         let plan = transitPlans[index]
         remainingRouteMinutes = plan.totalMinutes
         if let dest = destinationCoord {
-            synthesizeTransitPolylineAndApply(from: userCoordinate, to: dest, destTitle: destinationName, plan: plan, isReroute: true)
+            calculateTransitAppleMapsRoute(from: userCoordinate, to: dest, destTitle: destinationName, plan: plan)
         }
         let charQuote: String
         switch language {
@@ -4712,8 +4834,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         locationManager.requestAlwaysAuthorization()
         locationManager.startUpdatingLocation()
         if let current = locationManager.location {
-            let newCoord = CoordinateConverter.wgs84ToGCJ02(current.coordinate)
-            self.userCoordinate = newCoord
+            self.userCoordinate = current.coordinate
         }
         if CLLocationManager.headingAvailable() {
             locationManager.headingFilter = kCLHeadingFilterNone
@@ -4768,7 +4889,8 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             if Date().timeIntervalSince(self.lastValidGPSTime) > 18.0 && !self.isDemoSimulating {
                 if !self.isGPSSignalPoor {
                     self.isGPSSignalPoor = true
-                    if Date().timeIntervalSince(self.lastGPSAlertTime) > 60.0 {
+                    // Only auto-announce GPS lost when actively navigating!
+                    if (self.isNavigatingFocused || self.hasActiveNavigation) && Date().timeIntervalSince(self.lastGPSAlertTime) > 60.0 {
                         self.lastGPSAlertTime = Date()
                         self.triggerGPSSignalPoorAlert()
                     }
@@ -5135,7 +5257,12 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             let planIndex = (selectedTransitPlanIndex < transitPlans.count) ? selectedTransitPlanIndex : 0
             if !transitPlans.isEmpty {
                 selectedTransitPlanIndex = planIndex
-                synthesizeTransitPolylineAndApply(from: userCoordinate, to: destCoord, destTitle: title, plan: transitPlans[planIndex], isReroute: isReroute)
+            }
+            calculateTransitAppleMapsRoute(from: userCoordinate, to: destCoord, destTitle: title, plan: (!transitPlans.isEmpty ? transitPlans[selectedTransitPlanIndex] : nil))
+            if !isReroute {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+                    self?.showTransitPlanSheet = true
+                }
             }
             return
         }
@@ -5646,8 +5773,23 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                 // Reached boarding station: Auto-transition to In-Vehicle Mode!
                 if dist <= 45.0 {
                     self.transitPhase = .inTransitVehicle
-                    self.activeRoute = nil
+                    self.customTransitPolyline = nil
                     self.currentStepIndex = 0
+                    if let dest = self.destinationCoord, let boardCoord = self.transitBoardingStationCoord {
+                        let busReq = MKDirections.Request()
+                        busReq.source = MKMapItem(placemark: MKPlacemark(coordinate: boardCoord))
+                        busReq.destination = MKMapItem(placemark: MKPlacemark(coordinate: dest))
+                        busReq.transportType = .automobile
+                        MKDirections(request: busReq).calculate { [weak self] resp, _ in
+                            DispatchQueue.main.async {
+                                guard let self = self else { return }
+                                if let r = resp?.routes.first {
+                                    self.activeRoute = r
+                                    self.customTransitPolyline = nil
+                                }
+                            }
+                        }
+                    }
                     let line = self.transitActiveLineName.isEmpty ? "公交/地铁" : self.transitActiveLineName
                     let nextSt = self.transitPassStationsList.first ?? self.transitAlightStationName
                     let remStops = max(1, self.transitPassStationsList.count)
@@ -5885,9 +6027,8 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         
         DispatchQueue.main.async {
             if !self.isDemoSimulating {
-                // Convert WGS-84 GPS coordinate to GCJ-02 Mars coordinate for China MapKit alignment
-                let newCoord = CoordinateConverter.wgs84ToGCJ02(loc.coordinate)
-                self.userCoordinate = newCoord
+                // Native Apple MapKit handles GPS coordinate alignment directly; pass raw coordinate to prevent double-shift!
+                self.userCoordinate = loc.coordinate
                 
                 // Auto-refresh transit plans if user moved to a new station location!
                 if self.travelMode == .transit {
@@ -5899,7 +6040,8 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             if loc.horizontalAccuracy < 0 || loc.horizontalAccuracy > 65.0 {
                 if !self.isGPSSignalPoor {
                     self.isGPSSignalPoor = true
-                    if Date().timeIntervalSince(self.lastGPSAlertTime) > 45.0 {
+                    // Only auto-announce GPS lost when actively navigating!
+                    if (self.isNavigatingFocused || self.hasActiveNavigation) && Date().timeIntervalSince(self.lastGPSAlertTime) > 45.0 {
                         self.lastGPSAlertTime = Date()
                         self.triggerGPSSignalPoorAlert()
                     }
@@ -5908,7 +6050,10 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             } else {
                 if self.isGPSSignalPoor {
                     self.isGPSSignalPoor = false
-                    self.triggerGPSSignalRecovered()
+                    // Only auto-announce GPS recovered when actively navigating!
+                    if (self.isNavigatingFocused || self.hasActiveNavigation) {
+                        self.triggerGPSSignalRecovered()
+                    }
                 }
                 self.lastValidGPSTime = Date()
             }
@@ -6000,7 +6145,8 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         DispatchQueue.main.async {
             if !self.isGPSSignalPoor && !self.isDemoSimulating {
                 self.isGPSSignalPoor = true
-                if Date().timeIntervalSince(self.lastGPSAlertTime) > 45.0 {
+                // Only auto-announce GPS lost when actively navigating!
+                if (self.isNavigatingFocused || self.hasActiveNavigation) && Date().timeIntervalSince(self.lastGPSAlertTime) > 45.0 {
                     self.lastGPSAlertTime = Date()
                     self.triggerGPSSignalPoorAlert()
                 }
@@ -6215,6 +6361,14 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         playVoice(id: chosenId, customQuote: msg)
     }
     
+    func triggerGPSSignalManualBroadcast() {
+        if isGPSSignalPoor {
+            triggerGPSSignalPoorAlert()
+        } else {
+            triggerGPSSignalRecovered()
+        }
+    }
+
     func triggerGPSSignalPoorAlert() {
         let base = activeBaseId()
         let offset = (selectedCharacter == .all) ? 140 : ([44, 92, 140].randomElement()!)
@@ -6408,7 +6562,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             if scheme == "baidumap" && !coordType.contains("gcj") && !coordType.contains("wgs") {
                 finalCoord = CoordinateConverter.bd09ToGCJ02(lat: la, lon: lo)
             } else if coordType.contains("wgs") {
-                finalCoord = CoordinateConverter.wgs84ToGCJ02(finalCoord)
+                // Native Apple MapKit handles WGS coordinate directly
             }
             let finalTitle = (parsedName?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false) ? parsedName! : "外部App导入目的地"
             

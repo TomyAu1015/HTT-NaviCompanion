@@ -217,7 +217,7 @@ struct HTTSmoothMapView: UIViewRepresentable {
             mapView.removeOverlays(mapView.overlays)
             mapView.removeAnnotations(mapView.annotations.filter { !($0 is MKUserLocation) })
             
-            if manager.travelMode == .transit, let transitPoly = manager.customTransitPolyline {
+            if manager.travelMode == .transit, manager.activeRoute == nil, let transitPoly = manager.customTransitPolyline {
                 // Public Transit Mode: Draw synchronized transit route with realistic colored segments & station pins!
                 mapView.addAnnotations(manager.transitStopAnnotations)
                 
@@ -322,42 +322,18 @@ struct HTTSmoothMapView: UIViewRepresentable {
                     route.polyline.title = "WALKING_BLUE"
                     mapView.addOverlay(route.polyline, level: .aboveRoads)
                 } else {
-                    // Transit Mode on Map: Split into Walking Approach (Blue) + Bus/Subway Ride (GaoDe Royal Blue / Green) + Station Stop Pins!
-                    let pts = route.polyline.points()
-                    let totalPts = route.polyline.pointCount
-                    if totalPts > 8 {
-                        let cutWalk1 = max(2, Int(Double(totalPts) * 0.20))
-                        let cutRide = max(cutWalk1 + 2, Int(Double(totalPts) * 0.88))
-                        
-                        // Leg 1: Walk to Bus/Subway Station (Pedestrian Blue)
-                        let polyWalk1 = MKPolyline(points: pts, count: cutWalk1)
-                        polyWalk1.title = "WALKING_BLUE"
-                        mapView.addOverlay(polyWalk1, level: .aboveRoads)
-                        
-                        // Boarding Station Marker (e.g. 沙湾天桥 / 地铁站)
+                    // Transit Mode on Map: 100% Genuine Apple Maps Road Polyline!
+                    // Perfectly follows the actual road centerlines (沙湾路 -> 沿河路 -> 罗湖口岸), never cutting across lakes or buildings!
+                    route.polyline.title = "TRANSIT_BUS_BLUE"
+                    mapView.addOverlay(route.polyline, level: .aboveRoads)
+                    
+                    // Add Boarding Station Marker
+                    if let boardCoord = manager.transitBoardingStationCoord {
                         let boardPin = MKPointAnnotation()
-                        boardPin.coordinate = pts[cutWalk1 - 1].coordinate
-                        if manager.selectedTransitPlanIndex < manager.transitPlans.count,
-                           let firstTransit = manager.transitPlans[manager.selectedTransitPlanIndex].steps.first(where: { $0.kind != .walk }) {
-                            boardPin.title = "\(firstTransit.fromStation) (\(firstTransit.lineName))"
-                        } else {
-                            boardPin.title = "上车站台"
-                        }
+                        boardPin.coordinate = boardCoord
+                        boardPin.title = manager.transitBoardingStationName.isEmpty ? "乘车站台" : manager.transitBoardingStationName
                         boardPin.subtitle = "BUS_STOP_PIN"
                         mapView.addAnnotation(boardPin)
-                        
-                        // Leg 2: Bus / Subway Ride (GaoDe Transit Blue/Green)
-                        let polyRide = MKPolyline(points: pts.advanced(by: cutWalk1 - 1), count: cutRide - cutWalk1 + 1)
-                        polyRide.title = "TRANSIT_GREEN"
-                        mapView.addOverlay(polyRide, level: .aboveRoads)
-                        
-                        // Leg 3: Walk from Alighting Station to Destination
-                        let polyWalk2 = MKPolyline(points: pts.advanced(by: cutRide - 1), count: totalPts - cutRide + 1)
-                        polyWalk2.title = "WALKING_BLUE"
-                        mapView.addOverlay(polyWalk2, level: .aboveRoads)
-                    } else {
-                        route.polyline.title = "TRANSIT_GREEN"
-                        mapView.addOverlay(route.polyline, level: .aboveRoads)
                     }
                 }
                 
@@ -385,7 +361,7 @@ struct HTTSmoothMapView: UIViewRepresentable {
                 let tappedPin = MKPointAnnotation()
                 tappedPin.coordinate = tapped
                 tappedPin.title = manager.tappedMapTitle
-                tappedPin.subtitle = ""
+                tappedPin.subtitle = "TAPPED_PIN"
                 mapView.addAnnotation(tappedPin)
             }
             
@@ -541,6 +517,10 @@ struct HTTSmoothMapView: UIViewRepresentable {
         
         func mapView(_ mapView: MKMapView, didSelect view: MKAnnotationView) {
             guard let annotation = view.annotation, !(annotation is MKUserLocation) else { return }
+            // Ignore temporary tapped pin or loading placeholder to prevent loop
+            if annotation.subtitle == "TAPPED_PIN" || annotation.title == "正在获取地点..." || annotation.title == "定位解析中..." {
+                return
+            }
             let coord = annotation.coordinate
             let title = annotation.title ?? nil
             DispatchQueue.main.async {
@@ -548,11 +528,18 @@ struct HTTSmoothMapView: UIViewRepresentable {
             }
         }
         
+        // Prevent didTapMap gesture from firing when tapping directly on annotation pins
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+            if touch.view is MKAnnotationView || touch.view?.superview is MKAnnotationView {
+                return false
+            }
+            return true
+        }
+        
         func mapView(_ mapView: MKMapView, didUpdate userLocation: MKUserLocation) {
             guard let loc = userLocation.location, !parent.manager.isDemoSimulating else { return }
             DispatchQueue.main.async {
-                let newCoord = CoordinateConverter.wgs84ToGCJ02(loc.coordinate)
-                self.parent.manager.userCoordinate = newCoord
+                self.parent.manager.userCoordinate = loc.coordinate
                 if self.parent.manager.travelMode == .transit {
                     self.parent.manager.refreshTransitPlansForCurrentLocation(force: false)
                 }
@@ -761,6 +748,7 @@ struct ContentView: View {
     @ObservedObject private var musicManager = KOnMusicManager.shared
     @State private var showSoundboardSheet: Bool = false
     @State private var showSearchSheet: Bool = false
+    @State private var showAboutSheet: Bool = false
     @State private var showAlbumSheet: Bool = false
     @State private var showOutfitPopup: Bool = false
     @State private var showCautionSplash: Bool = false
@@ -817,19 +805,54 @@ struct ContentView: View {
                                 topBezelBar
                                     .frame(width: usableW)
                                 HStack(alignment: .top, spacing: usableW * 0.02) {
-                                    // Left Column: Speedometer + 3 Tactical Buttons + Cruise/Route
+                                    // Left Column: Speedometer + Tactical Buttons + Cruise/Nav + Outfit/Camera/Gift + Author Bar!
+                                    // Fully utilizes left open space and avoids Home Indicator!
                                     VStack(spacing: 7) {
                                         speedometerCockpit
                                         utilityControlGrid
+                                        outfitCameraGiftRow
+                                        
+                                        // Landscape Author & Feedback Bar (横屏左侧署名与反馈)
+                                        Button(action: { showAboutSheet = true }) {
+                                            HStack(spacing: 6) {
+                                                Image(systemName: "sparkles")
+                                                    .font(.system(size: 9))
+                                                    .foregroundColor(httGold)
+                                                Text(manager.appAuthorLabel)
+                                                    .font(.system(size: 11, weight: .black))
+                                                    .foregroundColor(httGold)
+                                                Text("·")
+                                                    .foregroundColor(.gray)
+                                                Text("v\(manager.appVersion)")
+                                                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                                                    .foregroundColor(.white.opacity(0.85))
+                                                Text("·")
+                                                    .foregroundColor(.gray)
+                                                HStack(spacing: 3) {
+                                                    Image(systemName: "ladybug.fill")
+                                                        .font(.system(size: 9))
+                                                        .foregroundColor(.orange)
+                                                    Text(tr("BUG反馈", "BUG反饋", "Feedback"))
+                                                        .font(.system(size: 11, weight: .bold))
+                                                        .foregroundColor(Color(red: 0.4, green: 0.8, blue: 1.0))
+                                                }
+                                            }
+                                            .padding(.horizontal, 10)
+                                            .padding(.vertical, 5)
+                                            .frame(maxWidth: .infinity)
+                                            .background(Color.black.opacity(0.55))
+                                            .cornerRadius(8)
+                                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold.opacity(0.45), lineWidth: 1))
+                                        }
                                     }
                                     .frame(width: leftColW)
                                     
-                                    // Right Column: Map/Stage + Speech Bubble + Character Strip + Quick Travel & Outfit Dock (Fills right side completely!)
+                                    // Right Column: Map/Stage + Speech Bubble + Character Strip + Travel Modes Row (No bottom clutter!)
                                     VStack(spacing: 6) {
                                         mainStageOrMapSection(stageWidth: rightColW, stageHeight: 165)
                                         characterSelectorStrip
                                             .frame(width: rightColW)
-                                        portraitBottomCompanionDock
+                                        travelModesRow
                                             .frame(width: rightColW)
                                     }
                                     .frame(width: rightColW)
@@ -853,6 +876,39 @@ struct ContentView: View {
                                 characterSelectorStrip
                                 utilityControlGrid
                                 portraitBottomCompanionDock
+                                
+                                // Prominent Author & Version Badge (优雅呈现作者与版本)
+                                Button(action: { showAboutSheet = true }) {
+                                    HStack(spacing: 6) {
+                                        Image(systemName: "sparkles")
+                                            .font(.system(size: 9))
+                                            .foregroundColor(httGold)
+                                        Text(manager.appAuthorLabel)
+                                            .font(.system(size: 11, weight: .black))
+                                            .foregroundColor(httGold)
+                                        Text("·")
+                                            .foregroundColor(.gray)
+                                        Text("v\(manager.appVersion)")
+                                            .font(.system(size: 11, weight: .bold, design: .monospaced))
+                                            .foregroundColor(.white.opacity(0.85))
+                                        Text("·")
+                                            .foregroundColor(.gray)
+                                        HStack(spacing: 3) {
+                                            Image(systemName: "ladybug.fill")
+                                                .font(.system(size: 9))
+                                                .foregroundColor(.orange)
+                                            Text(tr("BUG反馈", "BUG反饋", "Feedback"))
+                                                .font(.system(size: 11, weight: .bold))
+                                                .foregroundColor(Color(red: 0.4, green: 0.8, blue: 1.0))
+                                        }
+                                    }
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 5)
+                                    .background(Color.black.opacity(0.45))
+                                    .cornerRadius(8)
+                                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold.opacity(0.45), lineWidth: 1))
+                                }
+                                .padding(.top, 2)
                             }
                             .frame(width: geo.size.width - 24)
                             .padding(.horizontal, 12)
@@ -882,6 +938,9 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showSearchSheet) {
             DestinationSearchSheetView(manager: manager)
+        }
+        .sheet(isPresented: $showAboutSheet) {
+            AboutAndFeedbackSheetView(manager: manager)
         }
         .sheet(isPresented: $showAlbumSheet) {
             RM500AlbumAndOutfitSheetView(manager: manager)
@@ -1470,93 +1529,112 @@ struct ContentView: View {
         )
     }
 
-    // MARK: - Multi-Lane Indicator (左转/直行/右转 白灰高亮) + Real-Time Traffic Light Countdown (红绿灯倒计时)
+    // MARK: - Multi-Lane Indicator (左转/直行/右转 白灰高亮) + Real-Time Traffic Light Countdown (红绿灯倒计时 - 绝不变形与折行)
     private var laneGuidanceAndTrafficLightBar: some View {
-        HStack(spacing: 10) {
-            // 1. Multi-Lane Indicator Box (Recommended lane = Bright White, Other lanes = Gray)
+        HStack(spacing: 6) {
+            // 1. Multi-Lane Indicator Box (紧凑高亮车道框，节省空间给红绿灯)
             HStack(spacing: 0) {
                 ForEach(Array(manager.currentRoadLanes.enumerated()), id: \.element.id) { idx, lane in
                     HStack(spacing: 0) {
-                        VStack(spacing: 2) {
+                        VStack(spacing: 1) {
                             Image(systemName: lane.iconName)
-                                .font(.system(size: 16, weight: .black))
+                                .font(.system(size: 13, weight: .black))
                                 .foregroundColor(lane.isRecommended ? .white : Color.gray.opacity(0.45))
-                                .shadow(color: lane.isRecommended ? httGold.opacity(0.8) : .clear, radius: 3)
+                                .shadow(color: lane.isRecommended ? httGold.opacity(0.8) : .clear, radius: 2)
                             Text(lane.label)
                                 .font(.system(size: 8, weight: .bold))
                                 .foregroundColor(lane.isRecommended ? httGold : Color.gray.opacity(0.45))
                         }
-                        .frame(width: 36, height: 38)
-                        .background(lane.isRecommended ? httCrimson.opacity(0.75) : Color.clear)
-                        .cornerRadius(6)
+                        .frame(width: 28, height: 32)
+                        .background(lane.isRecommended ? httCrimson.opacity(0.85) : Color.clear)
+                        .cornerRadius(5)
                         
                         if idx < manager.currentRoadLanes.count - 1 {
                             Rectangle()
                                 .fill(Color.white.opacity(0.2))
-                                .frame(width: 1, height: 24)
-                                .padding(.horizontal, 2)
+                                .frame(width: 1, height: 18)
+                                .padding(.horizontal, 1)
                         }
                     }
                 }
             }
-            .padding(.horizontal, 6)
+            .padding(.horizontal, 4)
             .padding(.vertical, 3)
-            .background(Color.black.opacity(0.86))
-            .cornerRadius(10)
-            .overlay(RoundedRectangle(cornerRadius: 10).stroke(httGold.opacity(0.8), lineWidth: 1.5))
+            .background(Color.black.opacity(0.88))
+            .cornerRadius(8)
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold.opacity(0.75), lineWidth: 1.2))
+            .fixedSize(horizontal: true, vertical: false)
             
-            // 2. Real-Time Traffic Light Countdown Box (红绿灯倒计时)
+            // 2. Real-Time Traffic Light Countdown Box (高德同款真·红绿灯倒计时: 圆灯固定正圆不变形，倒计时单行大字不折行)
             HStack(spacing: 6) {
+                // 3 LED Bulbs (🔴 🟡 🟢) in a dedicated dark capsule housing
                 HStack(spacing: 4) {
                     Circle()
                         .fill(manager.trafficLightPhase == .red ? Color.red : Color.red.opacity(0.25))
-                        .frame(width: 10, height: 10)
+                        .frame(width: 9, height: 9)
+                        .aspectRatio(1.0, contentMode: .fit)
+                        .shadow(color: manager.trafficLightPhase == .red ? Color.red : .clear, radius: 3)
                     Circle()
                         .fill(manager.trafficLightPhase == .yellow ? Color.yellow : Color.yellow.opacity(0.25))
-                        .frame(width: 10, height: 10)
+                        .frame(width: 9, height: 9)
+                        .aspectRatio(1.0, contentMode: .fit)
+                        .shadow(color: manager.trafficLightPhase == .yellow ? Color.yellow : .clear, radius: 3)
                     Circle()
-                        .fill(manager.trafficLightPhase == .green ? Color.green : Color.green.opacity(0.25))
-                        .frame(width: 10, height: 10)
+                        .fill(manager.trafficLightPhase == .green ? Color(red: 0.15, green: 0.95, blue: 0.35) : Color.green.opacity(0.25))
+                        .frame(width: 9, height: 9)
+                        .aspectRatio(1.0, contentMode: .fit)
+                        .shadow(color: manager.trafficLightPhase == .green ? Color.green : .clear, radius: 3)
                 }
-                .padding(.horizontal, 6)
-                .padding(.vertical, 5)
-                .background(Color.black)
-                .cornerRadius(8)
+                .padding(.horizontal, 5)
+                .padding(.vertical, 4)
+                .background(Color(white: 0.12))
+                .cornerRadius(6)
                 
-                Text("\(manager.trafficLightSeconds)s")
-                    .font(.system(size: 14, weight: .black, design: .monospaced))
-                    .foregroundColor(
-                        manager.trafficLightPhase == .red ? .red :
-                        (manager.trafficLightPhase == .yellow ? .yellow : .green)
-                    )
+                // Clear, bold digital countdown timer that NEVER wraps or truncates!
+                HStack(alignment: .firstTextBaseline, spacing: 1) {
+                    Text("\(manager.trafficLightSeconds)")
+                        .font(.system(size: 16, weight: .black, design: .monospaced))
+                    Text("s")
+                        .font(.system(size: 10, weight: .bold))
+                }
+                .foregroundColor(
+                    manager.trafficLightPhase == .red ? Color.red :
+                    (manager.trafficLightPhase == .yellow ? Color.yellow : Color(red: 0.2, green: 0.98, blue: 0.45))
+                )
+                .shadow(color: (manager.trafficLightPhase == .red ? Color.red : (manager.trafficLightPhase == .yellow ? Color.yellow : Color.green)).opacity(0.55), radius: 3)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 5)
-            .background(Color.black.opacity(0.86))
-            .cornerRadius(10)
-            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.white.opacity(0.25), lineWidth: 1.2))
+            .background(Color.black.opacity(0.92))
+            .cornerRadius(8)
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.35), lineWidth: 1.2))
+            .fixedSize(horizontal: true, vertical: false)
             
-            Spacer()
+            Spacer(minLength: 4)
             
-            // If in Focused Driving Mode, provide a subtle [路线选项] button to re-open route preferences if needed
+            // 3. Compact Route Preference / Settings button (路线设置)
             if manager.isNavigatingFocused {
                 Button(action: {
                     withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
                         manager.exitFocusedNavigationToOverview()
                     }
                 }) {
-                    HStack(spacing: 3) {
+                    HStack(spacing: 2) {
                         Image(systemName: "slider.horizontal.3")
-                        Text(tr("路线设置", "路線設置", "Options"))
+                            .font(.system(size: 9, weight: .bold))
+                        Text(tr("设置", "設置", "Opt"))
+                            .font(.system(size: 10, weight: .bold))
                     }
-                    .font(.system(size: 10, weight: .bold))
-                    .padding(.horizontal, 8)
+                    .padding(.horizontal, 7)
                     .padding(.vertical, 6)
-                    .background(Color.black.opacity(0.78))
+                    .background(Color.black.opacity(0.85))
                     .foregroundColor(httGold)
                     .cornerRadius(8)
-                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold.opacity(0.5), lineWidth: 1))
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold.opacity(0.65), lineWidth: 1))
                 }
+                .fixedSize(horizontal: true, vertical: false)
             }
         }
     }
@@ -1708,64 +1786,30 @@ struct ContentView: View {
     }
     
     private var bottomPreNavActionRow: some View {
-        HStack(spacing: 8) {
-            Button(action: {
-                manager.openGaoDeLivePortal(mode: 0)
-            }) {
-                VStack(spacing: 1) {
-                    Image(systemName: "figure.wave")
-                        .font(.system(size: 13, weight: .bold))
-                    Text(tr("高德打车", "高德打車", "Taxi"))
-                        .font(.system(size: 9, weight: .black))
-                }
-                .foregroundColor(.white)
-                .frame(width: 54, height: 42)
-                .background(Color.orange.opacity(0.28))
-                .cornerRadius(11)
-                .overlay(RoundedRectangle(cornerRadius: 11).stroke(Color.orange, lineWidth: 1.2))
+        Button(action: {
+            withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) {
+                manager.startFocusedNavigation()
             }
-            
-            Button(action: {
-                manager.openGaoDeLivePortal(mode: 1)
-            }) {
-                VStack(spacing: 1) {
-                    Image(systemName: "car.2.fill")
-                        .font(.system(size: 12, weight: .bold))
-                    Text(tr("顺风车", "順風車", "Hitch"))
-                        .font(.system(size: 9, weight: .black))
-                }
-                .foregroundColor(httCream)
-                .frame(width: 50, height: 42)
-                .background(Color.white.opacity(0.14))
-                .cornerRadius(11)
-                .overlay(RoundedRectangle(cornerRadius: 11).stroke(Color.white.opacity(0.3), lineWidth: 1))
+        }) {
+            HStack(spacing: 8) {
+                Image(systemName: "location.north.circle.fill")
+                    .font(.title3)
+                Text(tr("开始导航 · 专注驾驶", "開始導航 · 專注駕駛", "Start Navigation"))
+                    .font(.system(size: 15, weight: .black))
+                    .lineLimit(1)
             }
-            
-            Button(action: {
-                withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) {
-                    manager.startFocusedNavigation()
-                }
-            }) {
-                HStack(spacing: 6) {
-                    Image(systemName: "location.north.circle.fill")
-                        .font(.title3)
-                    Text(tr("开始导航 · 专注驾驶", "開始導航 · 專注駕駛", "Start Navigation"))
-                        .font(.system(size: 15, weight: .black))
-                        .lineLimit(1)
-                }
-                .frame(maxWidth: .infinity, minHeight: 42)
-                .padding(.vertical, 4)
-                .background(
-                    LinearGradient(
-                        colors: [httCrimson, Color(red: 0.92, green: 0.25, blue: 0.30)],
-                        startPoint: .leading,
-                        endPoint: .trailing
-                    )
+            .frame(maxWidth: .infinity, minHeight: 44)
+            .padding(.vertical, 4)
+            .background(
+                LinearGradient(
+                    colors: [httCrimson, Color(red: 0.92, green: 0.25, blue: 0.30)],
+                    startPoint: .leading,
+                    endPoint: .trailing
                 )
-                .foregroundColor(.white)
-                .cornerRadius(11)
-                .overlay(RoundedRectangle(cornerRadius: 11).stroke(httGold, lineWidth: 1.5))
-            }
+            )
+            .foregroundColor(.white)
+            .cornerRadius(11)
+            .overlay(RoundedRectangle(cornerRadius: 11).stroke(httGold, lineWidth: 1.5))
         }
     }
     
@@ -1863,6 +1907,23 @@ struct ContentView: View {
             .background(Color.black.opacity(0.85))
             .cornerRadius(8)
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(manager.isCongested ? Color.orange : Color.green.opacity(0.6), lineWidth: 1))
+            
+            // 3. Enlarged Navigation GPS Status Indicator (放大导航 GPS 状态，点按可播报)
+            Button(action: { manager.triggerGPSSignalManualBroadcast() }) {
+                HStack(spacing: 4) {
+                    Image(systemName: manager.isGPSSignalPoor ? "antenna.radiowaves.left.and.right.slash" : "antenna.radiowaves.left.and.right")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundColor(manager.isGPSSignalPoor ? .orange : Color(red: 0.4, green: 0.98, blue: 0.65))
+                    Text(manager.isGPSSignalPoor ? tr("GPS弱", "GPS弱", "GPS Weak") : tr("GPS正常", "GPS正常", "GPS Good"))
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundColor(manager.isGPSSignalPoor ? .orange : Color(red: 0.4, green: 0.98, blue: 0.65))
+                }
+                .padding(.horizontal, 7)
+                .padding(.vertical, 4)
+                .background(Color.black.opacity(0.85))
+                .cornerRadius(8)
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(manager.isGPSSignalPoor ? Color.orange.opacity(0.8) : Color.green.opacity(0.6), lineWidth: 1))
+            }
             
             // 3. Highway Service Area (服务区) & Toll Station (收费站) Badges
             if manager.travelMode == .driving && (manager.upcomingServiceAreaDist > 0 || manager.upcomingTollDistance > 0) {
@@ -2129,6 +2190,8 @@ struct ContentView: View {
                 .cornerRadius(8)
                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold, lineWidth: 1))
             }
+            
+
         }
         .frame(maxWidth: .infinity)
     }
@@ -2912,54 +2975,8 @@ struct ContentView: View {
             Divider().background(Color.white.opacity(0.15))
             
             // Row 6: Bottom Action Bar matching GaoDe Screenshot 5 (搜周边 · 顺风车 · 打车[红包] · 导航 · 路线)
-            HStack(spacing: 8) {
-                // 1. 高德顺风车 (Hitchhike)
-                Button(action: {
-                    manager.openGaoDeLivePortal(mode: 1)
-                }) {
-                    VStack(spacing: 1) {
-                        Image(systemName: "car.2.fill")
-                            .font(.system(size: 13, weight: .bold))
-                        Text("順風車")
-                            .font(.system(size: 9, weight: .bold))
-                    }
-                    .foregroundColor(httCream)
-                    .frame(width: 44, height: 36)
-                    .background(Color.white.opacity(0.10))
-                    .cornerRadius(9)
-                }
-                
-                // 2. 高德聚合打车 (Ride-Hailing with Red Packet Badge)
-                Button(action: {
-                    manager.openGaoDeLivePortal(mode: 0)
-                }) {
-                    ZStack(alignment: .topTrailing) {
-                        VStack(spacing: 1) {
-                            Image(systemName: "figure.wave")
-                                .font(.system(size: 13, weight: .bold))
-                            Text("打車")
-                                .font(.system(size: 9, weight: .bold))
-                        }
-                        .foregroundColor(.white)
-                        .frame(width: 46, height: 36)
-                        .background(Color.orange.opacity(0.25))
-                        .cornerRadius(9)
-                        .overlay(RoundedRectangle(cornerRadius: 9).stroke(Color.orange, lineWidth: 1))
-                        
-                        Text("紅包")
-                            .font(.system(size: 7, weight: .black))
-                            .foregroundColor(.white)
-                            .padding(.horizontal, 3)
-                            .padding(.vertical, 1)
-                            .background(Color.red)
-                            .cornerRadius(3)
-                            .offset(x: 4, y: -4)
-                    }
-                }
-                
-                Spacer()
-                
-                // 3. 路线 (View Multi-Mode Route & Transit Sheet)
+            HStack(spacing: 10) {
+                // 1. 路线 (View Multi-Mode Route & Transit Sheet)
                 Button(action: {
                     guard let coord = manager.tappedMapCoord else { return }
                     let title = manager.tappedMapTitle.isEmpty ? "目的地" : manager.tappedMapTitle
@@ -2970,31 +2987,29 @@ struct ContentView: View {
                     }
                 }) {
                     Text(tr("路线", "路線", "Routes"))
-                        .font(.system(size: 13, weight: .black))
+                        .font(.system(size: 14, weight: .black))
                         .foregroundColor(.white)
-                        .padding(.horizontal, 16)
-                        .frame(height: 36)
+                        .frame(maxWidth: .infinity, minHeight: 38)
                         .background(Color.white.opacity(0.18))
-                        .cornerRadius(18)
-                        .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.white.opacity(0.35), lineWidth: 1))
+                        .cornerRadius(10)
+                        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.white.opacity(0.35), lineWidth: 1))
                 }
                 
-                // 4. 导航 (Start Immediate Turn-by-Turn Navigation)
+                // 2. 导航 (Start Immediate Turn-by-Turn Navigation)
                 Button(action: {
                     manager.startNavigationToTappedPoint()
                     manager.startFocusedNavigation()
                 }) {
-                    HStack(spacing: 4) {
+                    HStack(spacing: 5) {
                         Image(systemName: "location.north.fill")
-                            .font(.system(size: 12, weight: .bold))
+                            .font(.system(size: 13, weight: .bold))
                         Text(tr("导航", "導航", "Start"))
-                            .font(.system(size: 13, weight: .black))
+                            .font(.system(size: 14, weight: .black))
                     }
                     .foregroundColor(.white)
-                    .padding(.horizontal, 18)
-                    .frame(height: 36)
+                    .frame(maxWidth: .infinity, minHeight: 38)
                     .background(LinearGradient(colors: [Color.blue, Color(red: 0.0, green: 0.48, blue: 0.98)], startPoint: .leading, endPoint: .trailing))
-                    .cornerRadius(18)
+                    .cornerRadius(10)
                     .shadow(color: Color.blue.opacity(0.4), radius: 4)
                 }
             }
@@ -3144,59 +3159,97 @@ struct ContentView: View {
     }
 
     // MARK: - Portrait & Landscape Bottom RM-500HTT Quick Feature Dock
-    private var portraitBottomCompanionDock: some View {
-        VStack(spacing: 7) {
-            // Row 1: 4 Travel Modes Direct Switcher (Car / e-Bike / Walk / Transit)
-            HStack(spacing: 5) {
-                ForEach(NavigationTravelMode.allCases) { mode in
-                    let isSelected = (manager.travelMode == mode)
-                    Button(action: {
-                        manager.stop()
-                        manager.travelMode = mode
-                    }) {
-                        HStack(spacing: 4) {
-                            Image(systemName: mode.icon)
-                                .font(.system(size: 14, weight: .bold))
-                            Text(mode.title(manager.language))
-                                .font(.system(size: 12, weight: .heavy))
-                                .lineLimit(1)
-                                .minimumScaleFactor(0.8)
-                        }
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 8)
-                        .background(
-                            isSelected
-                            ? LinearGradient(colors: [Color(red: 0.95, green: 0.22, blue: 0.26), httCrimson], startPoint: .top, endPoint: .bottom)
-                            : LinearGradient(colors: [Color.black.opacity(0.8), Color(white: 0.15).opacity(0.8)], startPoint: .top, endPoint: .bottom)
-                        )
-                        .foregroundColor(isSelected ? .white : httCream)
-                        .cornerRadius(9)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 9)
-                                .stroke(isSelected ? httGold : Color.white.opacity(0.25), lineWidth: isSelected ? 1.8 : 1)
-                        )
-                        .contentShape(Rectangle())
+        // Row 1: 4 Travel Modes Direct Switcher (Car / e-Bike / Walk / Transit)
+    private var travelModesRow: some View {
+        HStack(spacing: 5) {
+            ForEach(NavigationTravelMode.allCases) { mode in
+                let isSelected = (manager.travelMode == mode)
+                Button(action: {
+                    manager.stop()
+                    manager.travelMode = mode
+                }) {
+                    HStack(spacing: 4) {
+                        Image(systemName: mode.icon)
+                            .font(.system(size: 14, weight: .bold))
+                        Text(mode.title(manager.language))
+                            .font(.system(size: 12, weight: .heavy))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.8)
                     }
-                    .buttonStyle(PlainButtonStyle())
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 8)
+                    .background(
+                        isSelected
+                        ? LinearGradient(colors: [Color(red: 0.95, green: 0.22, blue: 0.26), httCrimson], startPoint: .top, endPoint: .bottom)
+                        : LinearGradient(colors: [Color.black.opacity(0.8), Color(white: 0.15).opacity(0.8)], startPoint: .top, endPoint: .bottom)
+                    )
+                    .foregroundColor(isSelected ? .white : httCream)
+                    .cornerRadius(9)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 9)
+                            .stroke(isSelected ? httGold : Color.white.opacity(0.25), lineWidth: isSelected ? 1.8 : 1)
+                    )
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(PlainButtonStyle())
+            }
+        }
+    }
+
+    // Row 2: RM-500HTT Outfit + Camera Mode + Birthday Special
+    private var outfitCameraGiftRow: some View {
+        HStack(spacing: 5) {
+            // Outfit Button: Tap to cycle, Long-press to open Beautified Wardrobe Popup!
+            HStack(spacing: 4) {
+                Image(systemName: manager.arrowOutfit.icon)
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundColor(httGold)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(tr("车标换装", "車標換裝", "Outfit"))
+                        .font(.system(size: 10, weight: .heavy))
+                        .foregroundColor(.white)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                    Text(manager.arrowOutfit.title(manager.language))
+                        .font(.system(size: 8, weight: .bold))
+                        .foregroundColor(httGold)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 6)
+            .padding(.vertical, 6)
+            .frame(maxWidth: .infinity)
+            .background(Color.black.opacity(0.75))
+            .cornerRadius(10)
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(httGold.opacity(0.7), lineWidth: 1.2))
+            .onTapGesture {
+                manager.cycleNextArrowOutfit()
+            }
+            .onLongPressGesture(minimumDuration: 0.35) {
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
+                    showOutfitPopup = true
                 }
             }
             
-            // Row 2: RM-500HTT Outfit + Camera Mode + Birthday Special
-            HStack(spacing: 5) {
-                // Outfit Button: Tap to cycle, Long-press to open Beautified Wardrobe Popup!
+            // Camera Mode Button: Switch between 地图动 (Heading Up) and 车标动 (North Up)
+            Button(action: {
+                manager.toggleCameraMode()
+            }) {
                 HStack(spacing: 4) {
-                    Image(systemName: manager.arrowOutfit.icon)
+                    Image(systemName: manager.cameraMode.icon)
                         .font(.system(size: 11, weight: .bold))
-                        .foregroundColor(httGold)
+                        .foregroundColor(.cyan)
                     VStack(alignment: .leading, spacing: 1) {
-                        Text(tr("车标换装", "車標換裝", "Outfit"))
+                        Text(tr("视角模式", "視角模式", "Camera"))
                             .font(.system(size: 10, weight: .heavy))
                             .foregroundColor(.white)
                             .lineLimit(1)
                             .minimumScaleFactor(0.8)
-                        Text(manager.arrowOutfit.title(manager.language))
+                        Text(manager.cameraMode.title(manager.language))
                             .font(.system(size: 8, weight: .bold))
-                            .foregroundColor(httGold)
+                            .foregroundColor(.cyan)
                             .lineLimit(1)
                             .minimumScaleFactor(0.8)
                     }
@@ -3207,72 +3260,42 @@ struct ContentView: View {
                 .frame(maxWidth: .infinity)
                 .background(Color.black.opacity(0.75))
                 .cornerRadius(10)
-                .overlay(RoundedRectangle(cornerRadius: 10).stroke(httGold.opacity(0.7), lineWidth: 1.2))
-                .onTapGesture {
-                    manager.cycleNextArrowOutfit()
-                }
-                .onLongPressGesture(minimumDuration: 0.35) {
-                    withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
-                        showOutfitPopup = true
-                    }
-                }
-                
-                // Camera Mode Button: Switch between 地图动 (Heading Up) and 车标动 (North Up)
-                Button(action: {
-                    manager.toggleCameraMode()
-                }) {
-                    HStack(spacing: 4) {
-                        Image(systemName: manager.cameraMode.icon)
-                            .font(.system(size: 11, weight: .bold))
-                            .foregroundColor(.cyan)
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(tr("视角模式", "視角模式", "Camera"))
-                                .font(.system(size: 10, weight: .heavy))
-                                .foregroundColor(.white)
-                                .lineLimit(1)
-                                .minimumScaleFactor(0.8)
-                            Text(manager.cameraMode.title(manager.language))
-                                .font(.system(size: 8, weight: .bold))
-                                .foregroundColor(.cyan)
-                                .lineLimit(1)
-                                .minimumScaleFactor(0.8)
-                        }
-                        Spacer(minLength: 0)
-                    }
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 6)
-                    .frame(maxWidth: .infinity)
-                    .background(Color.black.opacity(0.75))
-                    .cornerRadius(10)
-                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.cyan.opacity(0.6), lineWidth: 1.2))
-                }
-                
-                // Birthday Special Voice Button [特典音] (Never clips!)
-                Button(action: {
-                    manager.triggerBirthdaySpecialVoice()
-                }) {
-                    VStack(spacing: 2) {
-                        if let giftImg = manager.getRM500UIImage("rm_gift_yui") {
-                            Image(uiImage: giftImg)
-                                .resizable()
-                                .scaledToFit()
-                                .frame(width: 16, height: 16)
-                        } else {
-                            Image(systemName: "gift.fill")
-                                .font(.system(size: 12, weight: .bold))
-                                .foregroundColor(.pink)
-                        }
-                        Text(tr("特典音", "特典音", "Gift"))
-                            .font(.system(size: 9, weight: .bold))
-                            .foregroundColor(.white)
-                            .lineLimit(1)
-                    }
-                    .frame(width: 52, height: 38)
-                    .background(Color(red: 0.72, green: 0.22, blue: 0.48).opacity(0.88))
-                    .cornerRadius(10)
-                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(httGold.opacity(0.65), lineWidth: 1.2))
-                }
+                .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.cyan.opacity(0.6), lineWidth: 1.2))
             }
+            
+            // Birthday Special Voice Button [特典音] (Never clips!)
+            Button(action: {
+                manager.triggerBirthdaySpecialVoice()
+            }) {
+                VStack(spacing: 2) {
+                    if let giftImg = manager.getRM500UIImage("rm_gift_yui") {
+                        Image(uiImage: giftImg)
+                            .resizable()
+                            .scaledToFit()
+                            .frame(width: 16, height: 16)
+                    } else {
+                        Image(systemName: "gift.fill")
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundColor(.pink)
+                    }
+                    Text(tr("特典音", "特典音", "Gift"))
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundColor(.white)
+                        .lineLimit(1)
+                }
+                .frame(width: 52, height: 38)
+                .background(Color(red: 0.72, green: 0.22, blue: 0.48).opacity(0.88))
+                .cornerRadius(10)
+                .overlay(RoundedRectangle(cornerRadius: 10).stroke(httGold.opacity(0.65), lineWidth: 1.2))
+            }
+        }
+    }
+
+    // Portrait Combined Dock (竖屏保持原样不动)
+    private var portraitBottomCompanionDock: some View {
+        VStack(spacing: 7) {
+            travelModesRow
+            outfitCameraGiftRow
         }
     }
 
@@ -3470,6 +3493,11 @@ struct DestinationSearchSheetView: View {
                                     manager.showMapMode = true
                                     manager.startRouteGuidance(to: item)
                                     dismiss()
+                                    if selectedMode == .transit {
+                                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                                            manager.showTransitPlanSheet = true
+                                        }
+                                    }
                                 }) {
                                     HStack(spacing: 10) {
                                         Image(systemName: selectedMode.icon)
@@ -3512,6 +3540,11 @@ struct DestinationSearchSheetView: View {
                                     manager.showMapMode = true
                                     searchEngine.resolveAndStartNavigation(for: comp, manager: manager) {
                                         dismiss()
+                                        if selectedMode == .transit {
+                                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                                                manager.showTransitPlanSheet = true
+                                            }
+                                        }
                                     }
                                 }) {
                                     HStack(spacing: 10) {
@@ -3673,8 +3706,9 @@ struct RM500AlbumAndOutfitSheetView: View {
         NavigationView {
             VStack(spacing: 12) {
                 Picker("Mode", selection: $selectedTab) {
-                    Text("RM-500HTT 导航箭头换装").tag(0)
-                    Text("放課後ティータイム 纪念相册 (36枚)").tag(1)
+                    Text("导航换装").tag(0)
+                    Text("纪念相册").tag(1)
+                    Text(manager.language == .en ? "Author & Feedback" : (manager.language == .zhHant ? "製作作者與反饋" : "制作作者与BUG反馈")).tag(2)
                 }
                 .pickerStyle(.segmented)
                 .padding(.horizontal)
@@ -3783,6 +3817,12 @@ struct RM500AlbumAndOutfitSheetView: View {
                             }
                         }
                         .padding(.bottom, 20)
+                    }
+                } else if selectedTab == 2 {
+                    // Tab 2: Author & Bug Feedback (制作作者与BUG反馈)
+                    ScrollView {
+                        AboutAndFeedbackContentView(manager: manager)
+                            .padding(.top, 6)
                     }
                 } else {
                     // Tab 1: Official RM-500HTT 36 Memorial Album CGs
@@ -4293,44 +4333,7 @@ struct InAppTransitPlanSheetView: View {
                                         .cornerRadius(12)
                                         .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.blue.opacity(0.45), lineWidth: 1))
                                         
-                                        // 4. Quick Action Bar for Real GaoDe Ride-Hailing & Hitchhike Login
-                                        HStack(spacing: 10) {
-                                            Button(action: {
-                                                dismiss()
-                                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                                                    manager.openGaoDeLivePortal(mode: 0)
-                                                }
-                                            }) {
-                                                HStack(spacing: 5) {
-                                                    Image(systemName: "figure.wave")
-                                                    Text("高德聚合打車 (實時叫車)")
-                                                        .font(.system(size: 12, weight: .black))
-                                                }
-                                                .foregroundColor(.white)
-                                                .frame(maxWidth: .infinity)
-                                                .padding(.vertical, 9)
-                                                .background(Color.orange.opacity(0.85))
-                                                .cornerRadius(9)
-                                            }
-                                            
-                                            Button(action: {
-                                                dismiss()
-                                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                                                    manager.openGaoDeLivePortal(mode: 1)
-                                                }
-                                            }) {
-                                                HStack(spacing: 5) {
-                                                    Image(systemName: "car.2.fill")
-                                                    Text("高德跨城順風車")
-                                                        .font(.system(size: 12, weight: .black))
-                                                }
-                                                .foregroundColor(.white)
-                                                .frame(maxWidth: .infinity)
-                                                .padding(.vertical, 9)
-                                                .background(Color.blue.opacity(0.75))
-                                                .cornerRadius(9)
-                                            }
-                                        }
+
                                     }
                                     .padding(.horizontal)
                                     .padding(.top, 8)
@@ -4749,9 +4752,7 @@ struct GaoDeLiveWebPortalSheetView: View {
                 
                 VStack(spacing: 0) {
                     // 1. Top 4-Tab Switcher (🚕 聚合打车 / 🚗 顺风车 / 🚄 班次票务 / 🏪 商家详情)
-                    HStack(spacing: 8) {
-                        portalTabButton(title: "🚕 聚合打車", mode: 0)
-                        portalTabButton(title: "🚗 順風車", mode: 1)
+                    HStack(spacing: 12) {
                         portalTabButton(title: "🚄 班次票務", mode: 2)
                         portalTabButton(title: "🏪 商家詳情", mode: 3)
                     }
@@ -5544,5 +5545,537 @@ struct InAppTrainTicketScheduleSheetView: View {
         .padding(12)
         .background(Color.white.opacity(0.08))
         .cornerRadius(12)
+    }
+}
+
+
+// MARK: - About & Bug Feedback Views (放课后茶会 · 制作作者与BUG反馈详情面板)
+struct AuthorQRCodeAssets {
+    // P1: Douyin Square QR Code (@不懂二次元的君殇 - 官方最新头像版)
+    static let douyinSquareBase64 = "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"
+    
+    // P2: Instagram Square QR Code (@tomy.au1015 - 官方正方形版)
+    static let instagramSquareBase64 = "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"
+    
+    static var douyinImage: UIImage? {
+        if let d = Data(base64Encoded: douyinSquareBase64) {
+            return UIImage(data: d)
+        }
+        return nil
+    }
+    
+    static var instagramImage: UIImage? {
+        if let d = Data(base64Encoded: instagramSquareBase64) {
+            return UIImage(data: d)
+        }
+        return nil
+    }
+}
+
+struct AboutAndFeedbackSheetView: View {
+    @ObservedObject var manager: AudioPlayerManager
+    @Environment(\.dismiss) private var dismiss
+    
+    private let httGold = Color(red: 0.88, green: 0.68, blue: 0.24)
+    private let httCrimson = Color(red: 0.78, green: 0.18, blue: 0.22)
+    private let httCream = Color(red: 0.99, green: 0.96, blue: 0.90)
+    
+    var body: some View {
+        NavigationView {
+            ScrollView {
+                AboutAndFeedbackContentView(manager: manager)
+                    .padding(.vertical, 8)
+            }
+            .background(Color(UIColor.systemGroupedBackground))
+            .navigationTitle(manager.language == .en ? "About & Feedback" : (manager.language == .zhHant ? "關於與BUG反饋" : "关于与BUG反馈"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button(manager.language == .en ? "Done" : "关闭") {
+                        dismiss()
+                    }
+                    .font(.body.bold())
+                }
+            }
+        }
+    }
+}
+
+// Helper class for saving QR code images to iOS Photos album
+class PhotoAlbumSaver: NSObject {
+    var onComplete: ((Bool) -> Void)?
+    
+    func save(_ image: UIImage, completion: @escaping (Bool) -> Void) {
+        self.onComplete = completion
+        UIImageWriteToSavedPhotosAlbum(image, self, #selector(didFinishSavingWithError), nil)
+    }
+    
+    @objc func didFinishSavingWithError(_ image: UIImage, didFinishSavingWithError error: Error?, contextInfo: UnsafeRawPointer) {
+        onComplete?(error == nil)
+    }
+}
+
+struct AboutAndFeedbackContentView: View {
+    @ObservedObject var manager: AudioPlayerManager
+    @State private var copyToastText: String? = nil
+    @State private var previewImage: UIImage? = nil
+    @State private var previewTitle: String = ""
+    @State private var previewPlatform: String = ""
+    @State private var albumSaver = PhotoAlbumSaver()
+    
+    private let httGold = Color(red: 0.88, green: 0.68, blue: 0.24)
+    private let httCrimson = Color(red: 0.78, green: 0.18, blue: 0.22)
+    private let httCream = Color(red: 0.99, green: 0.96, blue: 0.90)
+    
+    var body: some View {
+        ZStack {
+            VStack(spacing: 16) {
+                // 1. App Header Card (放课后茶会伴侣 v1.0 + 作者署名)
+                VStack(spacing: 8) {
+                    // App Avatar
+                    if let appIcon = UIImage(named: "AppIcon60x60@2x") ?? UIImage(named: "AppIcon") {
+                        Image(uiImage: appIcon)
+                            .resizable()
+                            .scaledToFit()
+                            .frame(width: 76, height: 76)
+                            .cornerRadius(18)
+                            .overlay(RoundedRectangle(cornerRadius: 18).stroke(httGold, lineWidth: 2))
+                            .shadow(color: .black.opacity(0.35), radius: 8, y: 3)
+                    } else {
+                        Image(systemName: "music.note.house.fill")
+                            .font(.system(size: 42))
+                            .foregroundColor(httGold)
+                    }
+                    
+                    Text(manager.language == .en ? "HTT Navi Companion" : "放课后茶会伴侣")
+                        .font(.system(size: 20, weight: .black))
+                        .foregroundColor(.primary)
+                    
+                    HStack(spacing: 8) {
+                        // Version 1.0 Badge
+                        Text("版本 1.0 (v\(manager.appVersion))")
+                            .font(.system(size: 11, weight: .bold, design: .monospaced))
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background(Color.blue.opacity(0.15))
+                            .foregroundColor(.blue)
+                            .cornerRadius(6)
+                        
+                        // Author Badge (多语言严谨区分: 简体为君殇，繁体/英文为Tomy)
+                        Text(manager.appAuthorLabel)
+                            .font(.system(size: 11, weight: .black))
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background(httCrimson.opacity(0.18))
+                            .foregroundColor(httCrimson)
+                            .cornerRadius(6)
+                    }
+                    
+                    Text(manager.language == .en
+                         ? "K-ON! After School Tea Time Exclusive In-Car Navigation & Companion System"
+                         : "放课后茶会 (HTT) 专属定制车载导航与桌面伴侣系统")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 16)
+                }
+                .padding()
+                .frame(maxWidth: .infinity)
+                .background(Color(UIColor.secondarySystemGroupedBackground))
+                .cornerRadius(16)
+                .padding(.horizontal)
+                
+                // Toast notification
+                if let toast = copyToastText {
+                    HStack(spacing: 6) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundColor(.green)
+                        Text(toast)
+                            .font(.system(size: 12, weight: .bold))
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+                    .background(Color.black.opacity(0.85))
+                    .foregroundColor(.white)
+                    .cornerRadius(20)
+                    .transition(.scale.combined(with: .opacity))
+                }
+                
+                // 2. Feedback Channel 1: 抖音平台 (附图 P1 - 点击可直接放大打开)
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "play.tv.fill")
+                            .foregroundColor(Color.pink)
+                            .font(.title3)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("抖音平台：不懂二次元的君殇")
+                                .font(.system(size: 15, weight: .black))
+                                .foregroundColor(.primary)
+                            Text("抖音号：363314224")
+                                .font(.system(size: 12, weight: .bold, design: .monospaced))
+                                .foregroundColor(.secondary)
+                        }
+                        Spacer()
+                        Button(action: {
+                            UIPasteboard.general.string = "363314224"
+                            withAnimation { copyToastText = "已复制抖音号：363314224" }
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                                withAnimation { copyToastText = nil }
+                            }
+                        }) {
+                            Text("复制抖音号")
+                                .font(.system(size: 11, weight: .bold))
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 5)
+                                .background(Color.pink.opacity(0.18))
+                                .foregroundColor(.pink)
+                                .cornerRadius(6)
+                        }
+                    }
+                    
+                    Text("可在抖音 App 搜索关注私信反馈使用中的 BUG 与功能建议，点击下方图片可直接打开大图或保存：")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                    
+                    // Clickable Douyin Square QR Image (点击放大打开)
+                    HStack {
+                        Spacer()
+                        Button(action: {
+                            previewImage = AuthorQRCodeAssets.douyinImage
+                            previewTitle = "抖音平台：不懂二次元的君殇"
+                            previewPlatform = "douyin"
+                        }) {
+                            ZStack(alignment: .bottomTrailing) {
+                                if let img = AuthorQRCodeAssets.douyinImage {
+                                    Image(uiImage: img)
+                                        .resizable()
+                                        .scaledToFit()
+                                        .frame(width: 220, height: 220)
+                                        .cornerRadius(14)
+                                        .overlay(RoundedRectangle(cornerRadius: 14).stroke(httGold.opacity(0.55), lineWidth: 1.5))
+                                        .shadow(color: .black.opacity(0.18), radius: 6, y: 2)
+                                } else {
+                                    VStack(spacing: 6) {
+                                        Image(systemName: "qrcode")
+                                            .font(.system(size: 44))
+                                            .foregroundColor(.pink)
+                                        Text("抖音搜索：不懂二次元的君殇")
+                                            .font(.caption.bold())
+                                    }
+                                    .frame(width: 220, height: 220)
+                                    .background(Color(UIColor.tertiarySystemGroupedBackground))
+                                    .cornerRadius(14)
+                                }
+                                
+                                // Click to Open Badge
+                                HStack(spacing: 3) {
+                                    Image(systemName: "arrow.up.left.and.arrow.down.right")
+                                        .font(.system(size: 9, weight: .black))
+                                    Text("点击打开")
+                                        .font(.system(size: 10, weight: .bold))
+                                }
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 3.5)
+                                .background(Color.black.opacity(0.78))
+                                .foregroundColor(.white)
+                                .cornerRadius(6)
+                                .overlay(RoundedRectangle(cornerRadius: 6).stroke(httGold.opacity(0.6), lineWidth: 0.8))
+                                .padding(8)
+                            }
+                        }
+                        .buttonStyle(PlainButtonStyle())
+                        Spacer()
+                    }
+                }
+                .padding(14)
+                .background(Color(UIColor.secondarySystemGroupedBackground))
+                .cornerRadius(16)
+                .padding(.horizontal)
+                
+                // 3. Feedback Channel 2: Instagram (附图 P2 - 点击可直接放大打开)
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "camera.circle.fill")
+                            .foregroundColor(Color.purple)
+                            .font(.title3)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Instagram：tomy.au1015")
+                                .font(.system(size: 15, weight: .black))
+                                .foregroundColor(.primary)
+                            Text("@tomy.au1015")
+                                .font(.system(size: 12, weight: .bold, design: .monospaced))
+                                .foregroundColor(.secondary)
+                        }
+                        Spacer()
+                        HStack(spacing: 6) {
+                            Button(action: {
+                                UIPasteboard.general.string = "tomy.au1015"
+                                withAnimation { copyToastText = "已复制 Instagram：tomy.au1015" }
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                                    withAnimation { copyToastText = nil }
+                                }
+                            }) {
+                                Text("复制账号")
+                                    .font(.system(size: 11, weight: .bold))
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 5)
+                                    .background(Color.purple.opacity(0.15))
+                                    .foregroundColor(.purple)
+                                    .cornerRadius(6)
+                            }
+                            
+                            Button(action: {
+                                if let url = URL(string: "instagram://user?username=tomy.au1015"), UIApplication.shared.canOpenURL(url) {
+                                    UIApplication.shared.open(url)
+                                } else if let web = URL(string: "https://www.instagram.com/tomy.au1015/") {
+                                    UIApplication.shared.open(web)
+                                }
+                            }) {
+                                Text("打开")
+                                    .font(.system(size: 11, weight: .bold))
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 5)
+                                    .background(Color.purple)
+                                    .foregroundColor(.white)
+                                    .cornerRadius(6)
+                            }
+                        }
+                    }
+                    
+                    Text("Overseas or Hong Kong users can follow & DM on Instagram for bug reporting:")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                    
+                    // Clickable Instagram Square QR Image (点击放大打开)
+                    HStack {
+                        Spacer()
+                        Button(action: {
+                            previewImage = AuthorQRCodeAssets.instagramImage
+                            previewTitle = "Instagram：tomy.au1015"
+                            previewPlatform = "instagram"
+                        }) {
+                            ZStack(alignment: .bottomTrailing) {
+                                if let img = AuthorQRCodeAssets.instagramImage {
+                                    Image(uiImage: img)
+                                        .resizable()
+                                        .scaledToFit()
+                                        .frame(width: 220, height: 220)
+                                        .cornerRadius(14)
+                                        .overlay(RoundedRectangle(cornerRadius: 14).stroke(httGold.opacity(0.55), lineWidth: 1.5))
+                                        .shadow(color: .black.opacity(0.18), radius: 6, y: 2)
+                                } else {
+                                    VStack(spacing: 6) {
+                                        Image(systemName: "qrcode")
+                                            .font(.system(size: 44))
+                                            .foregroundColor(.purple)
+                                        Text("IG: @tomy.au1015")
+                                            .font(.caption.bold())
+                                    }
+                                    .frame(width: 220, height: 220)
+                                    .background(Color(UIColor.tertiarySystemGroupedBackground))
+                                    .cornerRadius(14)
+                                }
+                                
+                                // Click to Open Badge
+                                HStack(spacing: 3) {
+                                    Image(systemName: "arrow.up.left.and.arrow.down.right")
+                                        .font(.system(size: 9, weight: .black))
+                                    Text("点击打开")
+                                        .font(.system(size: 10, weight: .bold))
+                                }
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 3.5)
+                                .background(Color.black.opacity(0.78))
+                                .foregroundColor(.white)
+                                .cornerRadius(6)
+                                .overlay(RoundedRectangle(cornerRadius: 6).stroke(httGold.opacity(0.6), lineWidth: 0.8))
+                                .padding(8)
+                            }
+                        }
+                        .buttonStyle(PlainButtonStyle())
+                        Spacer()
+                    }
+                }
+                .padding(14)
+                .background(Color(UIColor.secondarySystemGroupedBackground))
+                .cornerRadius(16)
+                .padding(.horizontal)
+                
+                // 4. More Channels & Tech Engine Details
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("其他关注与技术信息")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundColor(.secondary)
+                    
+                    HStack(spacing: 12) {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("Bilibili (B站)")
+                                .font(.system(size: 11, weight: .bold))
+                                .foregroundColor(.primary)
+                            Text("小君殇")
+                                .font(.system(size: 12, weight: .heavy))
+                                .foregroundColor(httGold)
+                        }
+                        Spacer()
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("小红书")
+                                .font(.system(size: 11, weight: .bold))
+                                .foregroundColor(.primary)
+                            Text("小君殇")
+                                .font(.system(size: 12, weight: .heavy))
+                                .foregroundColor(httCrimson)
+                        }
+                        Spacer()
+                        VStack(alignment: .trailing, spacing: 3) {
+                            Text("地图核心")
+                                .font(.system(size: 11, weight: .bold))
+                                .foregroundColor(.primary)
+                            Text("Apple MapKit")
+                                .font(.system(size: 12, weight: .heavy))
+                                .foregroundColor(.blue)
+                        }
+                    }
+                    .padding(12)
+                    .background(Color(UIColor.tertiarySystemGroupedBackground))
+                    .cornerRadius(10)
+                    
+                    Text("Copyright © 2026 君殇 (Tomy). All rights reserved.")
+                        .font(.system(size: 10))
+                        .foregroundColor(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .center)
+                        .padding(.top, 4)
+                }
+                .padding(14)
+                .background(Color(UIColor.secondarySystemGroupedBackground))
+                .cornerRadius(16)
+                .padding(.horizontal)
+                .padding(.bottom, 16)
+            }
+            
+            // 5. Fullscreen Click-to-Open QR Code Viewer Modal (点击打开全屏大图预览与操作)
+            if let pImg = previewImage {
+                ZStack {
+                    Color.black.opacity(0.85)
+                        .ignoresSafeArea()
+                        .onTapGesture {
+                            withAnimation { previewImage = nil }
+                        }
+                    
+                    VStack(spacing: 16) {
+                        // Header
+                        HStack {
+                            Text(previewTitle)
+                                .font(.system(size: 16, weight: .black))
+                                .foregroundColor(.white)
+                            Spacer()
+                            Button(action: {
+                                withAnimation { previewImage = nil }
+                            }) {
+                                Image(systemName: "xmark.circle.fill")
+                                    .font(.system(size: 24))
+                                    .foregroundColor(.white.opacity(0.75))
+                            }
+                        }
+                        .padding(.horizontal, 20)
+                        
+                        // Large Crisp Square QR Image
+                        Image(uiImage: pImg)
+                            .resizable()
+                            .scaledToFit()
+                            .frame(maxWidth: 320, maxHeight: 320)
+                            .cornerRadius(18)
+                            .overlay(RoundedRectangle(cornerRadius: 18).stroke(httGold, lineWidth: 2))
+                            .shadow(color: .black, radius: 12, y: 4)
+                        
+                        // Action Buttons Bar
+                        VStack(spacing: 10) {
+                            HStack(spacing: 12) {
+                                // Save to Album
+                                Button(action: {
+                                    albumSaver.save(pImg) { success in
+                                        withAnimation {
+                                            copyToastText = success ? "已成功保存二维码到相册！" : "请在系统设置中允许相册写入权限"
+                                        }
+                                        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+                                            withAnimation { copyToastText = nil }
+                                        }
+                                    }
+                                }) {
+                                    HStack(spacing: 5) {
+                                        Image(systemName: "square.and.arrow.down")
+                                        Text("保存到相册")
+                                    }
+                                    .font(.system(size: 13, weight: .bold))
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 10)
+                                    .background(Color.white.opacity(0.18))
+                                    .foregroundColor(.white)
+                                    .cornerRadius(10)
+                                }
+                                
+                                // Copy Account
+                                Button(action: {
+                                    let acct = (previewPlatform == "douyin") ? "363314224" : "tomy.au1015"
+                                    UIPasteboard.general.string = acct
+                                    withAnimation { copyToastText = "已复制账号：\(acct)" }
+                                    DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                                        withAnimation { copyToastText = nil }
+                                    }
+                                }) {
+                                    HStack(spacing: 5) {
+                                        Image(systemName: "doc.on.doc")
+                                        Text("复制账号")
+                                    }
+                                    .font(.system(size: 13, weight: .bold))
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 10)
+                                    .background(Color.white.opacity(0.18))
+                                    .foregroundColor(.white)
+                                    .cornerRadius(10)
+                                }
+                            }
+                            
+                            // Direct App Jump
+                            Button(action: {
+                                if previewPlatform == "douyin" {
+                                    if let url = URL(string: "douyin://"), UIApplication.shared.canOpenURL(url) {
+                                        UIApplication.shared.open(url)
+                                    } else if let web = URL(string: "https://www.douyin.com/") {
+                                        UIApplication.shared.open(web)
+                                    }
+                                } else {
+                                    if let url = URL(string: "instagram://user?username=tomy.au1015"), UIApplication.shared.canOpenURL(url) {
+                                        UIApplication.shared.open(url)
+                                    } else if let web = URL(string: "https://www.instagram.com/tomy.au1015/") {
+                                        UIApplication.shared.open(web)
+                                    }
+                                }
+                            }) {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "arrow.up.right.square.fill")
+                                    Text(previewPlatform == "douyin" ? "打开抖音 App" : "打开 Instagram App")
+                                }
+                                .font(.system(size: 14, weight: .black))
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 12)
+                                .background(previewPlatform == "douyin" ? Color.pink : Color.purple)
+                                .foregroundColor(.white)
+                                .cornerRadius(10)
+                            }
+                        }
+                        .padding(.horizontal, 20)
+                    }
+                    .padding(.vertical, 24)
+                    .background(
+                        RoundedRectangle(cornerRadius: 22)
+                            .fill(Color(red: 0.12, green: 0.12, blue: 0.15))
+                            .overlay(RoundedRectangle(cornerRadius: 22).stroke(httGold.opacity(0.7), lineWidth: 1.5))
+                    )
+                    .padding(.horizontal, 24)
+                }
+                .transition(.opacity)
+                .zIndex(999)
+            }
+        }
     }
 }

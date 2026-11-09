@@ -1529,93 +1529,112 @@ struct ContentView: View {
         )
     }
 
-    // MARK: - Multi-Lane Indicator (左转/直行/右转 白灰高亮) + Real-Time Traffic Light Countdown (红绿灯倒计时)
+    // MARK: - Multi-Lane Indicator (左转/直行/右转 白灰高亮) + Real-Time Traffic Light Countdown (红绿灯倒计时 - 绝不变形与折行)
     private var laneGuidanceAndTrafficLightBar: some View {
-        HStack(spacing: 10) {
-            // 1. Multi-Lane Indicator Box (Recommended lane = Bright White, Other lanes = Gray)
+        HStack(spacing: 6) {
+            // 1. Multi-Lane Indicator Box (紧凑高亮车道框，节省空间给红绿灯)
             HStack(spacing: 0) {
                 ForEach(Array(manager.currentRoadLanes.enumerated()), id: \.element.id) { idx, lane in
                     HStack(spacing: 0) {
-                        VStack(spacing: 2) {
+                        VStack(spacing: 1) {
                             Image(systemName: lane.iconName)
-                                .font(.system(size: 16, weight: .black))
+                                .font(.system(size: 13, weight: .black))
                                 .foregroundColor(lane.isRecommended ? .white : Color.gray.opacity(0.45))
-                                .shadow(color: lane.isRecommended ? httGold.opacity(0.8) : .clear, radius: 3)
+                                .shadow(color: lane.isRecommended ? httGold.opacity(0.8) : .clear, radius: 2)
                             Text(lane.label)
                                 .font(.system(size: 8, weight: .bold))
                                 .foregroundColor(lane.isRecommended ? httGold : Color.gray.opacity(0.45))
                         }
-                        .frame(width: 36, height: 38)
-                        .background(lane.isRecommended ? httCrimson.opacity(0.75) : Color.clear)
-                        .cornerRadius(6)
+                        .frame(width: 28, height: 32)
+                        .background(lane.isRecommended ? httCrimson.opacity(0.85) : Color.clear)
+                        .cornerRadius(5)
                         
                         if idx < manager.currentRoadLanes.count - 1 {
                             Rectangle()
                                 .fill(Color.white.opacity(0.2))
-                                .frame(width: 1, height: 24)
-                                .padding(.horizontal, 2)
+                                .frame(width: 1, height: 18)
+                                .padding(.horizontal, 1)
                         }
                     }
                 }
             }
-            .padding(.horizontal, 6)
+            .padding(.horizontal, 4)
             .padding(.vertical, 3)
-            .background(Color.black.opacity(0.86))
-            .cornerRadius(10)
-            .overlay(RoundedRectangle(cornerRadius: 10).stroke(httGold.opacity(0.8), lineWidth: 1.5))
+            .background(Color.black.opacity(0.88))
+            .cornerRadius(8)
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold.opacity(0.75), lineWidth: 1.2))
+            .fixedSize(horizontal: true, vertical: false)
             
-            // 2. Real-Time Traffic Light Countdown Box (红绿灯倒计时)
+            // 2. Real-Time Traffic Light Countdown Box (高德同款真·红绿灯倒计时: 圆灯固定正圆不变形，倒计时单行大字不折行)
             HStack(spacing: 6) {
+                // 3 LED Bulbs (🔴 🟡 🟢) in a dedicated dark capsule housing
                 HStack(spacing: 4) {
                     Circle()
                         .fill(manager.trafficLightPhase == .red ? Color.red : Color.red.opacity(0.25))
-                        .frame(width: 10, height: 10)
+                        .frame(width: 9, height: 9)
+                        .aspectRatio(1.0, contentMode: .fit)
+                        .shadow(color: manager.trafficLightPhase == .red ? Color.red : .clear, radius: 3)
                     Circle()
                         .fill(manager.trafficLightPhase == .yellow ? Color.yellow : Color.yellow.opacity(0.25))
-                        .frame(width: 10, height: 10)
+                        .frame(width: 9, height: 9)
+                        .aspectRatio(1.0, contentMode: .fit)
+                        .shadow(color: manager.trafficLightPhase == .yellow ? Color.yellow : .clear, radius: 3)
                     Circle()
-                        .fill(manager.trafficLightPhase == .green ? Color.green : Color.green.opacity(0.25))
-                        .frame(width: 10, height: 10)
+                        .fill(manager.trafficLightPhase == .green ? Color(red: 0.15, green: 0.95, blue: 0.35) : Color.green.opacity(0.25))
+                        .frame(width: 9, height: 9)
+                        .aspectRatio(1.0, contentMode: .fit)
+                        .shadow(color: manager.trafficLightPhase == .green ? Color.green : .clear, radius: 3)
                 }
-                .padding(.horizontal, 6)
-                .padding(.vertical, 5)
-                .background(Color.black)
-                .cornerRadius(8)
+                .padding(.horizontal, 5)
+                .padding(.vertical, 4)
+                .background(Color(white: 0.12))
+                .cornerRadius(6)
                 
-                Text("\(manager.trafficLightSeconds)s")
-                    .font(.system(size: 14, weight: .black, design: .monospaced))
-                    .foregroundColor(
-                        manager.trafficLightPhase == .red ? .red :
-                        (manager.trafficLightPhase == .yellow ? .yellow : .green)
-                    )
+                // Clear, bold digital countdown timer that NEVER wraps or truncates!
+                HStack(alignment: .firstTextBaseline, spacing: 1) {
+                    Text("\(manager.trafficLightSeconds)")
+                        .font(.system(size: 16, weight: .black, design: .monospaced))
+                    Text("s")
+                        .font(.system(size: 10, weight: .bold))
+                }
+                .foregroundColor(
+                    manager.trafficLightPhase == .red ? Color.red :
+                    (manager.trafficLightPhase == .yellow ? Color.yellow : Color(red: 0.2, green: 0.98, blue: 0.45))
+                )
+                .shadow(color: (manager.trafficLightPhase == .red ? Color.red : (manager.trafficLightPhase == .yellow ? Color.yellow : Color.green)).opacity(0.55), radius: 3)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 5)
-            .background(Color.black.opacity(0.86))
-            .cornerRadius(10)
-            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.white.opacity(0.25), lineWidth: 1.2))
+            .background(Color.black.opacity(0.92))
+            .cornerRadius(8)
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.35), lineWidth: 1.2))
+            .fixedSize(horizontal: true, vertical: false)
             
-            Spacer()
+            Spacer(minLength: 4)
             
-            // If in Focused Driving Mode, provide a subtle [路线选项] button to re-open route preferences if needed
+            // 3. Compact Route Preference / Settings button (路线设置)
             if manager.isNavigatingFocused {
                 Button(action: {
                     withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
                         manager.exitFocusedNavigationToOverview()
                     }
                 }) {
-                    HStack(spacing: 3) {
+                    HStack(spacing: 2) {
                         Image(systemName: "slider.horizontal.3")
-                        Text(tr("路线设置", "路線設置", "Options"))
+                            .font(.system(size: 9, weight: .bold))
+                        Text(tr("设置", "設置", "Opt"))
+                            .font(.system(size: 10, weight: .bold))
                     }
-                    .font(.system(size: 10, weight: .bold))
-                    .padding(.horizontal, 8)
+                    .padding(.horizontal, 7)
                     .padding(.vertical, 6)
-                    .background(Color.black.opacity(0.78))
+                    .background(Color.black.opacity(0.85))
                     .foregroundColor(httGold)
                     .cornerRadius(8)
-                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold.opacity(0.5), lineWidth: 1))
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold.opacity(0.65), lineWidth: 1))
                 }
+                .fixedSize(horizontal: true, vertical: false)
             }
         }
     }
