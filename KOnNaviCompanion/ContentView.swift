@@ -328,9 +328,9 @@ struct HTTSmoothMapView: UIViewRepresentable {
                     mapView.addOverlay(route.polyline, level: .aboveRoads)
                     
                     // Add Boarding Station Marker
-                    if manager.transitBoardingStationCoord.latitude != 0 {
+                    if let boardCoord = manager.transitBoardingStationCoord {
                         let boardPin = MKPointAnnotation()
-                        boardPin.coordinate = manager.transitBoardingStationCoord
+                        boardPin.coordinate = boardCoord
                         boardPin.title = manager.transitBoardingStationName.isEmpty ? "乘车站台" : manager.transitBoardingStationName
                         boardPin.subtitle = "BUS_STOP_PIN"
                         mapView.addAnnotation(boardPin)

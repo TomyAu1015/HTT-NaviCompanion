@@ -5725,9 +5725,9 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                     self.transitPhase = .inTransitVehicle
                     self.customTransitPolyline = nil
                     self.currentStepIndex = 0
-                    if let dest = self.destinationCoord {
+                    if let dest = self.destinationCoord, let boardCoord = self.transitBoardingStationCoord {
                         let busReq = MKDirections.Request()
-                        busReq.source = MKMapItem(placemark: MKPlacemark(coordinate: self.transitBoardingStationCoord))
+                        busReq.source = MKMapItem(placemark: MKPlacemark(coordinate: boardCoord))
                         busReq.destination = MKMapItem(placemark: MKPlacemark(coordinate: dest))
                         busReq.transportType = .automobile
                         MKDirections(request: busReq).calculate { [weak self] resp, _ in
