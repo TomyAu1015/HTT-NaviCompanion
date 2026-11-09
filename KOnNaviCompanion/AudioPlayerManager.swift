@@ -1213,33 +1213,73 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             return
         }
         
-        // BUG 4 FIX: Instant UI feedback in <16ms! No more 2-5 second freezing!
-        let tapLoc = CLLocation(latitude: coord.latitude, longitude: coord.longitude)
+        // Filter out placeholder strings from explicit title
+        let cleanExplicit: String? = {
+            guard let exp = explicitTitle?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !exp.isEmpty,
+                  exp != "正在获取地点...",
+                  exp != "定位解析中...",
+                  exp != "地图标记点" else { return nil }
+            return exp
+        }()
+        
         self.tappedMapCoord = coord
-        self.tappedMapTitle = explicitTitle ?? "正在获取地点..."
-        self.tappedMapAddress = "定位解析中..."
-        self.isReverseGeocoding = true
+        let tapLoc = CLLocation(latitude: coord.latitude, longitude: coord.longitude)
         
         // If an explicit POI title is already known (e.g. user tapped an annotation pin or search result)
-        if let explicit = explicitTitle, !explicit.isEmpty, !isPureRoadOrBuildingNumber(explicit) {
+        if let explicit = cleanExplicit, !isPureRoadOrBuildingNumber(explicit) {
+            self.tappedMapTitle = explicit
             self.isReverseGeocoding = false
             self.populatePOIDetails(name: explicit, coord: coord, address: "", phone: nil, rawCategory: nil)
             return
         }
+        
+        // If title already resolved for this location, don't revert to placeholder
+        if cleanExplicit != nil {
+            self.tappedMapTitle = cleanExplicit!
+        } else if self.tappedMapTitle.isEmpty || self.tappedMapTitle == "地图标记点" {
+            self.tappedMapTitle = "正在获取地点..."
+        }
+        self.tappedMapAddress = "定位解析中..."
+        self.isReverseGeocoding = true
         
         // Only clear candidate routes if not actively previewing
         if activeRoute == nil && customTransitPolyline == nil {
             self.candidateRoutes = []
         }
         
-        // Asynchronous non-blocking reverse geocoding with task cancellation
+        // 1. Fast Apple Maps Local POI Search around tap coordinate (80m radius for instant POI recognition)
+        let localReq = MKLocalSearch.Request()
+        localReq.region = MKCoordinateRegion(center: coord, latitudinalMeters: 80, longitudinalMeters: 80)
+        localReq.resultTypes = .pointOfInterest
+        let localSearch = MKLocalSearch(request: localReq)
+        localSearch.start { [weak self] resp, _ in
+            DispatchQueue.main.async {
+                guard let self = self,
+                      let currentTapped = self.tappedMapCoord,
+                      abs(currentTapped.latitude - coord.latitude) < 0.0008,
+                      abs(currentTapped.longitude - coord.longitude) < 0.0008 else { return }
+                if let poiItem = resp?.mapItems.first, let poiName = poiItem.name, !poiName.isEmpty {
+                    self.isReverseGeocoding = false
+                    var addrParts: [String] = []
+                    if let dist = poiItem.placemark.subLocality { addrParts.append(dist) }
+                    if let road = poiItem.placemark.thoroughfare { addrParts.append(road) }
+                    if let num = poiItem.placemark.subThoroughfare { addrParts.append(num) }
+                    let addr = addrParts.joined(separator: "")
+                    self.populatePOIDetails(name: poiName, coord: coord, address: addr, phone: poiItem.phoneNumber, rawCategory: nil)
+                }
+            }
+        }
+        
+        // 2. Asynchronous non-blocking reverse geocoding with task cancellation
         activeGeocodeWorkItem?.cancel()
         let workItem = DispatchWorkItem { [weak self] in
             CLGeocoder().reverseGeocodeLocation(tapLoc) { placemarks, _ in
                 DispatchQueue.main.async {
                     guard let self = self,
-                          self.tappedMapCoord?.latitude == coord.latitude,
-                          self.tappedMapCoord?.longitude == coord.longitude else { return }
+                          let currentTapped = self.tappedMapCoord,
+                          abs(currentTapped.latitude - coord.latitude) < 0.0008,
+                          abs(currentTapped.longitude - coord.longitude) < 0.0008 else { return }
                     self.isReverseGeocoding = false
                     
                     if let pm = placemarks?.first {
@@ -1258,22 +1298,31 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                         if let num = pm.subThoroughfare { addrParts.append(num) }
                         let fullAddr = addrParts.isEmpty ? (pm.name ?? "") : addrParts.joined(separator: "")
                         
+                        // If tappedMapTitle was already resolved by POI search or explicit title, don't overwrite with street name!
+                        if self.tappedMapTitle != "正在获取地点..." && !self.tappedMapTitle.isEmpty {
+                            if !fullAddr.isEmpty { self.tappedMapAddress = fullAddr }
+                            return
+                        }
+                        
                         let finalName = chosenName ?? pm.name ?? (fullAddr.isEmpty ? "地图标记点" : fullAddr)
                         self.populatePOIDetails(
                             name: finalName,
-                            coord: pm.location?.coordinate ?? coord,
+                            coord: coord,
                             address: fullAddr,
                             phone: nil,
                             rawCategory: nil
                         )
                     } else {
-                        self.populatePOIDetails(
-                            name: "地图标记点",
-                            coord: coord,
-                            address: "",
-                            phone: nil,
-                            rawCategory: nil
-                        )
+                        // Geocoding offline or no placemark: never leave stuck on "正在获取地点..."!
+                        if self.tappedMapTitle == "正在获取地点..." || self.tappedMapTitle.isEmpty {
+                            self.populatePOIDetails(
+                                name: "地图标记点",
+                                coord: coord,
+                                address: "已选定地图坐标位置",
+                                phone: nil,
+                                rawCategory: nil
+                            )
+                        }
                     }
                 }
             }

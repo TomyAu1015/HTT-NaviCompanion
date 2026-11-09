@@ -361,7 +361,7 @@ struct HTTSmoothMapView: UIViewRepresentable {
                 let tappedPin = MKPointAnnotation()
                 tappedPin.coordinate = tapped
                 tappedPin.title = manager.tappedMapTitle
-                tappedPin.subtitle = ""
+                tappedPin.subtitle = "TAPPED_PIN"
                 mapView.addAnnotation(tappedPin)
             }
             
@@ -517,11 +517,23 @@ struct HTTSmoothMapView: UIViewRepresentable {
         
         func mapView(_ mapView: MKMapView, didSelect view: MKAnnotationView) {
             guard let annotation = view.annotation, !(annotation is MKUserLocation) else { return }
+            // Ignore temporary tapped pin or loading placeholder to prevent loop
+            if annotation.subtitle == "TAPPED_PIN" || annotation.title == "正在获取地点..." || annotation.title == "定位解析中..." {
+                return
+            }
             let coord = annotation.coordinate
             let title = annotation.title ?? nil
             DispatchQueue.main.async {
                 self.parent.manager.handleMapTap(at: coord, explicitTitle: title ?? nil)
             }
+        }
+        
+        // Prevent didTapMap gesture from firing when tapping directly on annotation pins
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+            if touch.view is MKAnnotationView || touch.view?.superview is MKAnnotationView {
+                return false
+            }
+            return true
         }
         
         func mapView(_ mapView: MKMapView, didUpdate userLocation: MKUserLocation) {
