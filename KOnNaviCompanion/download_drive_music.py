@@ -117,10 +117,8 @@ def main():
         
     import json
     header_json = json.dumps(index_meta)
-    full_header = f"KON_ENC_MUSIC_V1
-{header_json}
-HEADER_END
-".encode("utf-8")
+    header_text = "KON_ENC_MUSIC_V1\n" + header_json + "\nHEADER_END\n"
+    full_header = header_text.encode("utf-8")
     
     with open(container_path, "wb") as out_f:
         out_f.write(full_header)

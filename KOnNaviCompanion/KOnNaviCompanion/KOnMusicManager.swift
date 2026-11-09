@@ -555,6 +555,62 @@ class KOnMusicManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
         let secs = s % 60
         return String(format: "%02d:%02d", mins, secs)
     }
+
+        private func parseAndLoadEncryptedContainer(_ data: Data, baseList: inout [KOnSongItem]) {
+        let markerData = Data([0x48, 0x45, 0x41, 0x44, 0x45, 0x52, 0x5F, 0x45, 0x4E, 0x44, 0x0A]) // "HEADER_END\n"
+        guard let headerEnd = data.range(of: markerData) else { return }
+        let headerData = data.subdata(in: 0..<headerEnd.lowerBound)
+        guard let headerStr = String(data: headerData, encoding: .utf8) else { return }
+        let newlineData = "\n"
+        let headerLines = headerStr.components(separatedBy: newlineData)
+        guard headerLines.first == "KON_ENC_MUSIC_V1", headerLines.count >= 2 else { return }
+        let jsonStr = headerLines[1]
+        guard let jsonData = jsonStr.data(using: .utf8),
+              let items = try? JSONSerialization.jsonObject(with: jsonData) as? [[String: Any]] else { return }
+        
+        let binaryBaseOffset = headerEnd.upperBound
+        for entry in items {
+            guard let fname = entry["filename"] as? String,
+                  let offset = entry["offset"] as? Int,
+                  let length = entry["length"] as? Int else { continue }
+            let absStart = binaryBaseOffset + offset
+            let absEnd = absStart + length
+            guard absEnd <= data.count else { continue }
+            let trackEncData = data.subdata(in: absStart..<absEnd)
+            
+            let lowerFname = fname.lowercased()
+            if let idx = baseList.firstIndex(where: {
+                let t = $0.title.lowercased()
+                let r = $0.titleRomaji.lowercased()
+                return lowerFname.contains(t) || lowerFname.contains(r) ||
+                       (t.contains("cagayake") && lowerFname.contains("cagayake")) ||
+                       (t.contains("lazy") && lowerFname.contains("lazy")) ||
+                       (t.contains("fuwa") && lowerFname.contains("fuwa")) ||
+                       (t.contains("maniac") && lowerFname.contains("maniac")) ||
+                       (t.contains("listen") && lowerFname.contains("listen")) ||
+                       (t.contains("miracle") && lowerFname.contains("miracle")) ||
+                       (t.contains("thank you") && lowerFname.contains("thank you")) ||
+                       (t.contains("u&i") && lowerFname.contains("u&i")) ||
+                       (t.contains("相遇天使") && (lowerFname.contains("相遇天使") || lowerFname.contains("天使")))
+            }) {
+                baseList[idx].encryptedDataBlock = trackEncData
+            } else {
+                let cleanTitle = (fname as NSString).deletingPathExtension
+                let customItem = KOnSongItem(
+                    trackNumber: baseList.count + 1,
+                    title: cleanTitle,
+                    titleRomaji: cleanTitle,
+                    artist: "放课后茶会 / 内置曲库",
+                    album: "放课后茶会 独立音乐馆",
+                    category: .insert,
+                    vocalistChar: "放课后茶会",
+                    durationFormatted: "--:--",
+                    encryptedDataBlock: trackEncData
+                )
+                baseList.append(customItem)
+            }
+        }
+    }
 }
 
 // MARK: - Audio Document Picker for SwiftUI
@@ -1045,61 +1101,4 @@ struct KOnMusicMiniPlayerBar: View {
         }
         .buttonStyle(PlainButtonStyle())
     }
-
-    private func parseAndLoadEncryptedContainer(_ data: Data, baseList: inout [KOnSongItem]) {
-        guard let headerEnd = data.range(of: Data("HEADER_END
-".utf8)) else { return }
-        let headerData = data.subdata(in: 0..<headerEnd.lowerBound)
-        guard let headerStr = String(data: headerData, encoding: .utf8) else { return }
-        let lines = headerStr.components(separatedBy: "
-")
-        guard lines.first == "KON_ENC_MUSIC_V1", lines.count >= 2 else { return }
-        let jsonStr = lines[1]
-        guard let jsonData = jsonStr.data(using: .utf8),
-              let items = try? JSONSerialization.jsonObject(with: jsonData) as? [[String: Any]] else { return }
-        
-        let binaryBaseOffset = headerEnd.upperBound
-        for entry in items {
-            guard let fname = entry["filename"] as? String,
-                  let offset = entry["offset"] as? Int,
-                  let length = entry["length"] as? Int else { continue }
-            let absStart = binaryBaseOffset + offset
-            let absEnd = absStart + length
-            guard absEnd <= data.count else { continue }
-            let trackEncData = data.subdata(in: absStart..<absEnd)
-            
-            let lowerFname = fname.lowercased()
-            if let idx = baseList.firstIndex(where: {
-                let t = /usr/bin/bash.title.lowercased()
-                let r = /usr/bin/bash.titleRomaji.lowercased()
-                return lowerFname.contains(t) || lowerFname.contains(r) ||
-                       (t.contains("cagayake") && lowerFname.contains("cagayake")) ||
-                       (t.contains("lazy") && lowerFname.contains("lazy")) ||
-                       (t.contains("fuwa") && lowerFname.contains("fuwa")) ||
-                       (t.contains("maniac") && lowerFname.contains("maniac")) ||
-                       (t.contains("listen") && lowerFname.contains("listen")) ||
-                       (t.contains("miracle") && lowerFname.contains("miracle")) ||
-                       (t.contains("thank you") && lowerFname.contains("thank you")) ||
-                       (t.contains("u&i") && lowerFname.contains("u&i")) ||
-                       (t.contains("相遇天使") && (lowerFname.contains("相遇天使") || lowerFname.contains("天使")))
-            }) {
-                baseList[idx].encryptedDataBlock = trackEncData
-            } else {
-                let cleanTitle = (fname as NSString).deletingPathExtension
-                let customItem = KOnSongItem(
-                    trackNumber: baseList.count + 1,
-                    title: cleanTitle,
-                    titleRomaji: cleanTitle,
-                    artist: "放课后茶会 / 内置曲库",
-                    album: "放课后茶会 独立音乐馆",
-                    category: .insert,
-                    vocalistChar: "放课后茶会",
-                    durationFormatted: "--:--",
-                    encryptedDataBlock: trackEncData
-                )
-                baseList.append(customItem)
-            }
-        }
-    }
-
 }
