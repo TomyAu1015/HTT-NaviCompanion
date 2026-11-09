@@ -1226,7 +1226,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                     if let pm = placemarks?.first {
                         var chosenName: String? = nil
                         if let aoi = pm.areasOfInterest {
-                            chosenName = aoi.first(where: { !self.isPureEstate(/usr/bin/bash) && !self.isPureRoadOrBuildingNumber(/usr/bin/bash) }) ?? aoi.first
+                            chosenName = aoi.first(where: { !self.isPureEstate($0) && !self.isPureRoadOrBuildingNumber($0) }) ?? aoi.first
                         }
                         if chosenName == nil, let pmName = pm.name, !pmName.isEmpty {
                             if !self.isPureRoadOrBuildingNumber(pmName) {
