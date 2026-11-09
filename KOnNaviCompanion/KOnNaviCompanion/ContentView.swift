@@ -217,7 +217,7 @@ struct HTTSmoothMapView: UIViewRepresentable {
             mapView.removeOverlays(mapView.overlays)
             mapView.removeAnnotations(mapView.annotations.filter { !($0 is MKUserLocation) })
             
-            if manager.travelMode == .transit, let transitPoly = manager.customTransitPolyline {
+            if manager.travelMode == .transit, manager.activeRoute == nil, let transitPoly = manager.customTransitPolyline {
                 // Public Transit Mode: Draw synchronized transit route with realistic colored segments & station pins!
                 mapView.addAnnotations(manager.transitStopAnnotations)
                 
@@ -3388,6 +3388,11 @@ struct DestinationSearchSheetView: View {
                                     manager.showMapMode = true
                                     manager.startRouteGuidance(to: item)
                                     dismiss()
+                                    if selectedMode == .transit {
+                                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                                            manager.showTransitPlanSheet = true
+                                        }
+                                    }
                                 }) {
                                     HStack(spacing: 10) {
                                         Image(systemName: selectedMode.icon)
@@ -3430,6 +3435,11 @@ struct DestinationSearchSheetView: View {
                                     manager.showMapMode = true
                                     searchEngine.resolveAndStartNavigation(for: comp, manager: manager) {
                                         dismiss()
+                                        if selectedMode == .transit {
+                                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                                                manager.showTransitPlanSheet = true
+                                            }
+                                        }
                                     }
                                 }) {
                                     HStack(spacing: 10) {

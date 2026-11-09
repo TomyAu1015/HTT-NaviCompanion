@@ -4353,13 +4353,64 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         self.triggerDepartureGreeting(title: destTitle, isReroute: isReroute)
     }
 
+
+    func calculateTransitAppleMapsRoute(from: CLLocationCoordinate2D, to: CLLocationCoordinate2D, destTitle: String, plan: TransitPlanOption?) {
+        self.customTransitPolyline = nil
+        let roadReq = MKDirections.Request()
+        if isDemoSimulating {
+            roadReq.source = MKMapItem(placemark: MKPlacemark(coordinate: from))
+        } else {
+            roadReq.source = MKMapItem.forCurrentLocation()
+        }
+        roadReq.destination = MKMapItem(placemark: MKPlacemark(coordinate: to))
+        roadReq.transportType = .automobile
+        roadReq.requestsAlternateRoutes = false
+        
+        MKDirections(request: roadReq).calculate { [weak self] resp, _ in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                if let roadRoute = resp?.routes.first {
+                    self.activeRoute = roadRoute
+                    self.customTransitPolyline = nil
+                    self.remainingRouteDistanceKm = roadRoute.distance / 1000.0
+                    if let p = plan {
+                        self.remainingRouteMinutes = p.totalMinutes
+                    } else {
+                        self.remainingRouteMinutes = max(1, Int(roadRoute.expectedTravelTime / 60.0))
+                    }
+                    self.candidateRoutes = [roadRoute]
+                    self.selectedRouteIndex = 0
+                    self.triggerDepartureGreeting(title: destTitle, isReroute: false)
+                } else {
+                    let walkReq = MKDirections.Request()
+                    walkReq.source = MKMapItem(placemark: MKPlacemark(coordinate: from))
+                    walkReq.destination = MKMapItem(placemark: MKPlacemark(coordinate: to))
+                    walkReq.transportType = .walking
+                    MKDirections(request: walkReq).calculate { [weak self] walkResp, _ in
+                        DispatchQueue.main.async {
+                            guard let self = self else { return }
+                            if let walkRoute = walkResp?.routes.first {
+                                self.activeRoute = walkRoute
+                                self.customTransitPolyline = nil
+                                self.remainingRouteDistanceKm = walkRoute.distance / 1000.0
+                                if let p = plan {
+                                    self.remainingRouteMinutes = p.totalMinutes
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     func selectTransitPlan(at index: Int) {
         guard index >= 0 && index < transitPlans.count else { return }
         selectedTransitPlanIndex = index
         let plan = transitPlans[index]
         remainingRouteMinutes = plan.totalMinutes
         if let dest = destinationCoord {
-            synthesizeTransitPolylineAndApply(from: userCoordinate, to: dest, destTitle: destinationName, plan: plan, isReroute: true)
+            calculateTransitAppleMapsRoute(from: userCoordinate, to: dest, destTitle: destinationName, plan: plan)
         }
         let charQuote: String
         switch language {
@@ -5135,7 +5186,12 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             let planIndex = (selectedTransitPlanIndex < transitPlans.count) ? selectedTransitPlanIndex : 0
             if !transitPlans.isEmpty {
                 selectedTransitPlanIndex = planIndex
-                synthesizeTransitPolylineAndApply(from: userCoordinate, to: destCoord, destTitle: title, plan: transitPlans[planIndex], isReroute: isReroute)
+            }
+            calculateTransitAppleMapsRoute(from: userCoordinate, to: destCoord, destTitle: title, plan: (!transitPlans.isEmpty ? transitPlans[selectedTransitPlanIndex] : nil))
+            if !isReroute {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+                    self?.showTransitPlanSheet = true
+                }
             }
             return
         }
@@ -5646,8 +5702,23 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                 // Reached boarding station: Auto-transition to In-Vehicle Mode!
                 if dist <= 45.0 {
                     self.transitPhase = .inTransitVehicle
-                    self.activeRoute = nil
+                    self.customTransitPolyline = nil
                     self.currentStepIndex = 0
+                    if let dest = self.destinationCoord {
+                        let busReq = MKDirections.Request()
+                        busReq.source = MKMapItem(placemark: MKPlacemark(coordinate: self.transitBoardingStationCoord))
+                        busReq.destination = MKMapItem(placemark: MKPlacemark(coordinate: dest))
+                        busReq.transportType = .automobile
+                        MKDirections(request: busReq).calculate { [weak self] resp, _ in
+                            DispatchQueue.main.async {
+                                guard let self = self else { return }
+                                if let r = resp?.routes.first {
+                                    self.activeRoute = r
+                                    self.customTransitPolyline = nil
+                                }
+                            }
+                        }
+                    }
                     let line = self.transitActiveLineName.isEmpty ? "公交/地铁" : self.transitActiveLineName
                     let nextSt = self.transitPassStationsList.first ?? self.transitAlightStationName
                     let remStops = max(1, self.transitPassStationsList.count)
