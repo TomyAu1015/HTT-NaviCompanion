@@ -1708,64 +1708,30 @@ struct ContentView: View {
     }
     
     private var bottomPreNavActionRow: some View {
-        HStack(spacing: 8) {
-            Button(action: {
-                manager.openGaoDeLivePortal(mode: 0)
-            }) {
-                VStack(spacing: 1) {
-                    Image(systemName: "figure.wave")
-                        .font(.system(size: 13, weight: .bold))
-                    Text(tr("高德打车", "高德打車", "Taxi"))
-                        .font(.system(size: 9, weight: .black))
-                }
-                .foregroundColor(.white)
-                .frame(width: 54, height: 42)
-                .background(Color.orange.opacity(0.28))
-                .cornerRadius(11)
-                .overlay(RoundedRectangle(cornerRadius: 11).stroke(Color.orange, lineWidth: 1.2))
+        Button(action: {
+            withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) {
+                manager.startFocusedNavigation()
             }
-            
-            Button(action: {
-                manager.openGaoDeLivePortal(mode: 1)
-            }) {
-                VStack(spacing: 1) {
-                    Image(systemName: "car.2.fill")
-                        .font(.system(size: 12, weight: .bold))
-                    Text(tr("顺风车", "順風車", "Hitch"))
-                        .font(.system(size: 9, weight: .black))
-                }
-                .foregroundColor(httCream)
-                .frame(width: 50, height: 42)
-                .background(Color.white.opacity(0.14))
-                .cornerRadius(11)
-                .overlay(RoundedRectangle(cornerRadius: 11).stroke(Color.white.opacity(0.3), lineWidth: 1))
+        }) {
+            HStack(spacing: 8) {
+                Image(systemName: "location.north.circle.fill")
+                    .font(.title3)
+                Text(tr("开始导航 · 专注驾驶", "開始導航 · 專注駕駛", "Start Navigation"))
+                    .font(.system(size: 15, weight: .black))
+                    .lineLimit(1)
             }
-            
-            Button(action: {
-                withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) {
-                    manager.startFocusedNavigation()
-                }
-            }) {
-                HStack(spacing: 6) {
-                    Image(systemName: "location.north.circle.fill")
-                        .font(.title3)
-                    Text(tr("开始导航 · 专注驾驶", "開始導航 · 專注駕駛", "Start Navigation"))
-                        .font(.system(size: 15, weight: .black))
-                        .lineLimit(1)
-                }
-                .frame(maxWidth: .infinity, minHeight: 42)
-                .padding(.vertical, 4)
-                .background(
-                    LinearGradient(
-                        colors: [httCrimson, Color(red: 0.92, green: 0.25, blue: 0.30)],
-                        startPoint: .leading,
-                        endPoint: .trailing
-                    )
+            .frame(maxWidth: .infinity, minHeight: 44)
+            .padding(.vertical, 4)
+            .background(
+                LinearGradient(
+                    colors: [httCrimson, Color(red: 0.92, green: 0.25, blue: 0.30)],
+                    startPoint: .leading,
+                    endPoint: .trailing
                 )
-                .foregroundColor(.white)
-                .cornerRadius(11)
-                .overlay(RoundedRectangle(cornerRadius: 11).stroke(httGold, lineWidth: 1.5))
-            }
+            )
+            .foregroundColor(.white)
+            .cornerRadius(11)
+            .overlay(RoundedRectangle(cornerRadius: 11).stroke(httGold, lineWidth: 1.5))
         }
     }
     
@@ -2912,54 +2878,8 @@ struct ContentView: View {
             Divider().background(Color.white.opacity(0.15))
             
             // Row 6: Bottom Action Bar matching GaoDe Screenshot 5 (搜周边 · 顺风车 · 打车[红包] · 导航 · 路线)
-            HStack(spacing: 8) {
-                // 1. 高德顺风车 (Hitchhike)
-                Button(action: {
-                    manager.openGaoDeLivePortal(mode: 1)
-                }) {
-                    VStack(spacing: 1) {
-                        Image(systemName: "car.2.fill")
-                            .font(.system(size: 13, weight: .bold))
-                        Text("順風車")
-                            .font(.system(size: 9, weight: .bold))
-                    }
-                    .foregroundColor(httCream)
-                    .frame(width: 44, height: 36)
-                    .background(Color.white.opacity(0.10))
-                    .cornerRadius(9)
-                }
-                
-                // 2. 高德聚合打车 (Ride-Hailing with Red Packet Badge)
-                Button(action: {
-                    manager.openGaoDeLivePortal(mode: 0)
-                }) {
-                    ZStack(alignment: .topTrailing) {
-                        VStack(spacing: 1) {
-                            Image(systemName: "figure.wave")
-                                .font(.system(size: 13, weight: .bold))
-                            Text("打車")
-                                .font(.system(size: 9, weight: .bold))
-                        }
-                        .foregroundColor(.white)
-                        .frame(width: 46, height: 36)
-                        .background(Color.orange.opacity(0.25))
-                        .cornerRadius(9)
-                        .overlay(RoundedRectangle(cornerRadius: 9).stroke(Color.orange, lineWidth: 1))
-                        
-                        Text("紅包")
-                            .font(.system(size: 7, weight: .black))
-                            .foregroundColor(.white)
-                            .padding(.horizontal, 3)
-                            .padding(.vertical, 1)
-                            .background(Color.red)
-                            .cornerRadius(3)
-                            .offset(x: 4, y: -4)
-                    }
-                }
-                
-                Spacer()
-                
-                // 3. 路线 (View Multi-Mode Route & Transit Sheet)
+            HStack(spacing: 10) {
+                // 1. 路线 (View Multi-Mode Route & Transit Sheet)
                 Button(action: {
                     guard let coord = manager.tappedMapCoord else { return }
                     let title = manager.tappedMapTitle.isEmpty ? "目的地" : manager.tappedMapTitle
@@ -2970,31 +2890,29 @@ struct ContentView: View {
                     }
                 }) {
                     Text(tr("路线", "路線", "Routes"))
-                        .font(.system(size: 13, weight: .black))
+                        .font(.system(size: 14, weight: .black))
                         .foregroundColor(.white)
-                        .padding(.horizontal, 16)
-                        .frame(height: 36)
+                        .frame(maxWidth: .infinity, minHeight: 38)
                         .background(Color.white.opacity(0.18))
-                        .cornerRadius(18)
-                        .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.white.opacity(0.35), lineWidth: 1))
+                        .cornerRadius(10)
+                        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.white.opacity(0.35), lineWidth: 1))
                 }
                 
-                // 4. 导航 (Start Immediate Turn-by-Turn Navigation)
+                // 2. 导航 (Start Immediate Turn-by-Turn Navigation)
                 Button(action: {
                     manager.startNavigationToTappedPoint()
                     manager.startFocusedNavigation()
                 }) {
-                    HStack(spacing: 4) {
+                    HStack(spacing: 5) {
                         Image(systemName: "location.north.fill")
-                            .font(.system(size: 12, weight: .bold))
+                            .font(.system(size: 13, weight: .bold))
                         Text(tr("导航", "導航", "Start"))
-                            .font(.system(size: 13, weight: .black))
+                            .font(.system(size: 14, weight: .black))
                     }
                     .foregroundColor(.white)
-                    .padding(.horizontal, 18)
-                    .frame(height: 36)
+                    .frame(maxWidth: .infinity, minHeight: 38)
                     .background(LinearGradient(colors: [Color.blue, Color(red: 0.0, green: 0.48, blue: 0.98)], startPoint: .leading, endPoint: .trailing))
-                    .cornerRadius(18)
+                    .cornerRadius(10)
                     .shadow(color: Color.blue.opacity(0.4), radius: 4)
                 }
             }
@@ -4293,44 +4211,7 @@ struct InAppTransitPlanSheetView: View {
                                         .cornerRadius(12)
                                         .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.blue.opacity(0.45), lineWidth: 1))
                                         
-                                        // 4. Quick Action Bar for Real GaoDe Ride-Hailing & Hitchhike Login
-                                        HStack(spacing: 10) {
-                                            Button(action: {
-                                                dismiss()
-                                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                                                    manager.openGaoDeLivePortal(mode: 0)
-                                                }
-                                            }) {
-                                                HStack(spacing: 5) {
-                                                    Image(systemName: "figure.wave")
-                                                    Text("高德聚合打車 (實時叫車)")
-                                                        .font(.system(size: 12, weight: .black))
-                                                }
-                                                .foregroundColor(.white)
-                                                .frame(maxWidth: .infinity)
-                                                .padding(.vertical, 9)
-                                                .background(Color.orange.opacity(0.85))
-                                                .cornerRadius(9)
-                                            }
-                                            
-                                            Button(action: {
-                                                dismiss()
-                                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                                                    manager.openGaoDeLivePortal(mode: 1)
-                                                }
-                                            }) {
-                                                HStack(spacing: 5) {
-                                                    Image(systemName: "car.2.fill")
-                                                    Text("高德跨城順風車")
-                                                        .font(.system(size: 12, weight: .black))
-                                                }
-                                                .foregroundColor(.white)
-                                                .frame(maxWidth: .infinity)
-                                                .padding(.vertical, 9)
-                                                .background(Color.blue.opacity(0.75))
-                                                .cornerRadius(9)
-                                            }
-                                        }
+
                                     }
                                     .padding(.horizontal)
                                     .padding(.top, 8)
@@ -4749,9 +4630,7 @@ struct GaoDeLiveWebPortalSheetView: View {
                 
                 VStack(spacing: 0) {
                     // 1. Top 4-Tab Switcher (🚕 聚合打车 / 🚗 顺风车 / 🚄 班次票务 / 🏪 商家详情)
-                    HStack(spacing: 8) {
-                        portalTabButton(title: "🚕 聚合打車", mode: 0)
-                        portalTabButton(title: "🚗 順風車", mode: 1)
+                    HStack(spacing: 12) {
                         portalTabButton(title: "🚄 班次票務", mode: 2)
                         portalTabButton(title: "🏪 商家詳情", mode: 3)
                     }

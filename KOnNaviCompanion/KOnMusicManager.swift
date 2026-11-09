@@ -58,8 +58,9 @@ struct KOnSongItem: Identifiable, Equatable, Hashable {
     var approxDurationSeconds: Double
     var fileURL: URL?
     var isCustomImport: Bool
+    var encryptedDataBlock: Data?
     
-    var isAvailable: Bool { fileURL != nil }
+    var isAvailable: Bool { fileURL != nil || encryptedDataBlock != nil }
     
     init(
         id: UUID = UUID(),
@@ -73,7 +74,8 @@ struct KOnSongItem: Identifiable, Equatable, Hashable {
         durationFormatted: String,
         approxDurationSeconds: Double = 240,
         fileURL: URL? = nil,
-        isCustomImport: Bool = false
+        isCustomImport: Bool = false,
+        encryptedDataBlock: Data? = nil
     ) {
         self.id = id
         self.trackNumber = trackNumber
@@ -87,6 +89,7 @@ struct KOnSongItem: Identifiable, Equatable, Hashable {
         self.approxDurationSeconds = approxDurationSeconds
         self.fileURL = fileURL
         self.isCustomImport = isCustomImport
+        self.encryptedDataBlock = encryptedDataBlock
     }
 }
 
@@ -186,6 +189,24 @@ class KOnMusicManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
     func setupAndScanLibrary() {
         var baseList = KOnMusicManager.canonicalKOnSongs
         let fm = FileManager.default
+        
+        // 0. Load Anti-Extract Encrypted Music Container (music_assets.dat)
+        let encContainerName = "music_assets.dat"
+        var containerURL: URL? = nil
+        if let bundleContainer = Bundle.main.url(forResource: "music_assets", withExtension: "dat", subdirectory: "Music") {
+            containerURL = bundleContainer
+        } else if let bundleContainerRoot = Bundle.main.url(forResource: "music_assets", withExtension: "dat") {
+            containerURL = bundleContainerRoot
+        } else {
+            let docContainer = musicDocumentsDirectory.appendingPathComponent(encContainerName)
+            if fm.fileExists(atPath: docContainer.path) {
+                containerURL = docContainer
+            }
+        }
+        
+        if let cURL = containerURL, let containerData = try? Data(contentsOf: cURL) {
+            parseAndLoadEncryptedContainer(containerData, baseList: &baseList)
+        }
         let audioExtensions = ["mp3", "m4a", "mp4", "m4b", "m4r", "flac", "wav", "aac", "caf", "aiff"]
         
         var foundFiles: [URL] = []
@@ -292,6 +313,34 @@ class KOnMusicManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
     // MARK: - Playback Controls
     func playSong(_ song: KOnSongItem) {
         self.currentSong = song
+        
+        // 1. Play from encrypted in-memory data if available (Anti-Extract Protected)
+        if let encData = song.encryptedDataBlock {
+            let key = Array("K-On!AfterSchoolTeaTimeNavi2026".utf8)
+            var decBytes = [UInt8](encData)
+            for i in 0..<decBytes.count {
+                decBytes[i] ^= key[i % key.count]
+            }
+            let decData = Data(decBytes)
+            do {
+                audioPlayer?.stop()
+                audioPlayer = try AVAudioPlayer(data: decData)
+                audioPlayer?.delegate = self
+                audioPlayer?.volume = isDucked ? duckVolume : volume
+                audioPlayer?.prepareToPlay()
+                audioPlayer?.play()
+                
+                self.isPlaying = true
+                self.duration = audioPlayer?.duration ?? song.approxDurationSeconds
+                self.currentTime = 0.0
+                self.progress = 0.0
+                self.libraryStatusMessage = "正在播放: \(song.title)"
+                startProgressTimer()
+                return
+            } catch {
+                print("Failed to play encrypted audio: \(error)")
+            }
+        }
         
         guard let url = song.fileURL else {
             self.libraryStatusMessage = "【\(song.title)】音频文件尚未放入，请通过文件 App 或「+ 导入」放入歌曲"
@@ -996,4 +1045,61 @@ struct KOnMusicMiniPlayerBar: View {
         }
         .buttonStyle(PlainButtonStyle())
     }
+
+    private func parseAndLoadEncryptedContainer(_ data: Data, baseList: inout [KOnSongItem]) {
+        guard let headerEnd = data.range(of: Data("HEADER_END
+".utf8)) else { return }
+        let headerData = data.subdata(in: 0..<headerEnd.lowerBound)
+        guard let headerStr = String(data: headerData, encoding: .utf8) else { return }
+        let lines = headerStr.components(separatedBy: "
+")
+        guard lines.first == "KON_ENC_MUSIC_V1", lines.count >= 2 else { return }
+        let jsonStr = lines[1]
+        guard let jsonData = jsonStr.data(using: .utf8),
+              let items = try? JSONSerialization.jsonObject(with: jsonData) as? [[String: Any]] else { return }
+        
+        let binaryBaseOffset = headerEnd.upperBound
+        for entry in items {
+            guard let fname = entry["filename"] as? String,
+                  let offset = entry["offset"] as? Int,
+                  let length = entry["length"] as? Int else { continue }
+            let absStart = binaryBaseOffset + offset
+            let absEnd = absStart + length
+            guard absEnd <= data.count else { continue }
+            let trackEncData = data.subdata(in: absStart..<absEnd)
+            
+            let lowerFname = fname.lowercased()
+            if let idx = baseList.firstIndex(where: {
+                let t = /usr/bin/bash.title.lowercased()
+                let r = /usr/bin/bash.titleRomaji.lowercased()
+                return lowerFname.contains(t) || lowerFname.contains(r) ||
+                       (t.contains("cagayake") && lowerFname.contains("cagayake")) ||
+                       (t.contains("lazy") && lowerFname.contains("lazy")) ||
+                       (t.contains("fuwa") && lowerFname.contains("fuwa")) ||
+                       (t.contains("maniac") && lowerFname.contains("maniac")) ||
+                       (t.contains("listen") && lowerFname.contains("listen")) ||
+                       (t.contains("miracle") && lowerFname.contains("miracle")) ||
+                       (t.contains("thank you") && lowerFname.contains("thank you")) ||
+                       (t.contains("u&i") && lowerFname.contains("u&i")) ||
+                       (t.contains("相遇天使") && (lowerFname.contains("相遇天使") || lowerFname.contains("天使")))
+            }) {
+                baseList[idx].encryptedDataBlock = trackEncData
+            } else {
+                let cleanTitle = (fname as NSString).deletingPathExtension
+                let customItem = KOnSongItem(
+                    trackNumber: baseList.count + 1,
+                    title: cleanTitle,
+                    titleRomaji: cleanTitle,
+                    artist: "放课后茶会 / 内置曲库",
+                    album: "放课后茶会 独立音乐馆",
+                    category: .insert,
+                    vocalistChar: "放课后茶会",
+                    durationFormatted: "--:--",
+                    encryptedDataBlock: trackEncData
+                )
+                baseList.append(customItem)
+            }
+        }
+    }
+
 }
