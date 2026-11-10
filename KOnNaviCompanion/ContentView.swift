@@ -410,7 +410,7 @@ struct HTTSmoothMapView: UIViewRepresentable {
                 : manager.headingDegrees
             if let rmArrow = manager.getRM500NavigationArrowFrame(mapCameraHeading: mapView.camera.heading) {
                 userView.image = rmArrow
-                let isCarMode = (manager.travelMode == .driving)
+                let isCarMode = (manager.travelMode == .driving || manager.travelMode == .ebike)
                 userView.bounds = isCarMode
                     ? CGRect(x: 0, y: 0, width: 82, height: 106)
                     : CGRect(x: 0, y: 0, width: 68, height: 88)
@@ -614,7 +614,7 @@ struct HTTSmoothMapView: UIViewRepresentable {
                     : parent.manager.headingDegrees
                 if let rmArrow = parent.manager.getRM500NavigationArrowFrame(mapCameraHeading: mapView.camera.heading) {
                     view?.image = rmArrow
-                    let isCarMode = (parent.manager.travelMode == .driving)
+                    let isCarMode = (parent.manager.travelMode == .driving || parent.manager.travelMode == .ebike)
                     view?.bounds = isCarMode
                         ? CGRect(x: 0, y: 0, width: 82, height: 106)
                         : CGRect(x: 0, y: 0, width: 68, height: 88)
@@ -3837,22 +3837,29 @@ struct RM500AlbumAndOutfitSheetView: View {
                                     .font(.caption.bold())
                                     .foregroundColor(.secondary)
                                 
-                                HStack(spacing: 18) {
+                                HStack(spacing: 14) {
                                     if let carArrowImg = manager.getRM500NavigationArrowFrame(mapCameraHeading: manager.headingDegrees, forceDrivingCar: true) {
                                         VStack(spacing: 2) {
                                             Image(uiImage: carArrowImg)
                                                 .resizable()
                                                 .scaledToFit()
-                                                .frame(width: 88, height: 114)
-                                            Text(manager.language == .en ? "Driving Arrow" : (manager.language == .zhHant ? "開車導航車標" : "开车导航车标"))
+                                                .frame(width: 78, height: 102)
+                                            Text(manager.language == .en ? "Driving" : (manager.language == .zhHant ? "開車車標" : "开车车标"))
                                                 .font(.system(size: 10, weight: .bold))
                                                 .foregroundColor(.secondary)
                                         }
-                                    } else {
-                                        Image(uiImage: HTTSmoothMapView.Coordinator.createNavigationArrowImage())
-                                            .resizable()
-                                            .scaledToFit()
-                                            .frame(width: 70, height: 70)
+                                    }
+                                    
+                                    if let scooterArrowImg = manager.getRM500NavigationArrowFrame(mapCameraHeading: manager.headingDegrees, forceRidingScooter: true) {
+                                        VStack(spacing: 2) {
+                                            Image(uiImage: scooterArrowImg)
+                                                .resizable()
+                                                .scaledToFit()
+                                                .frame(width: 78, height: 102)
+                                            Text(manager.language == .en ? "Riding" : (manager.language == .zhHant ? "騎車車標" : "骑车车标"))
+                                                .font(.system(size: 10, weight: .bold))
+                                                .foregroundColor(.secondary)
+                                        }
                                     }
                                     
                                     if let stageIcon = manager.getRM500StageIcon(for: manager.selectedCharacter) {
@@ -3860,9 +3867,9 @@ struct RM500AlbumAndOutfitSheetView: View {
                                             Image(uiImage: stageIcon)
                                                 .resizable()
                                                 .scaledToFit()
-                                                .frame(width: 92, height: 92)
+                                                .frame(width: 82, height: 82)
                                                 .cornerRadius(12)
-                                            Text(manager.language == .en ? "Outfit Preview" : (manager.language == .zhHant ? "服裝造型預覽" : "服装造型预览"))
+                                            Text(manager.language == .en ? "Outfit" : (manager.language == .zhHant ? "服裝預覽" : "服装预览"))
                                                 .font(.system(size: 10, weight: .bold))
                                                 .foregroundColor(.secondary)
                                         }
