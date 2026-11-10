@@ -11,6 +11,7 @@ import AVFoundation
 import SwiftUI
 import Combine
 import UniformTypeIdentifiers
+import MediaPlayer
 
 // MARK: - HTT Theme Colors
 private let httCrimson = Color(red: 0.65, green: 0.12, blue: 0.18)
@@ -121,9 +122,12 @@ class KOnMusicManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
     private var isDucked: Bool = false
     private var baseVolume: Float = 0.85
     
+    private var backgroundTaskID: UIBackgroundTaskIdentifier = .invalid
+
     override init() {
         super.init()
         setupAudioSession()
+        setupRemoteCommandCenter()
         setupAndScanLibrary()
         startRotationLoop()
     }
@@ -349,6 +353,9 @@ class KOnMusicManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
                 self.currentTime = 0.0
                 self.progress = 0.0
                 self.libraryStatusMessage = "正在播放: \(song.title)"
+                self.beginBackgroundKeepAlive()
+                self.updateNowPlayingInfo()
+                AudioPlayerManager.shared.keepAlivePlayer?.play()
                 startProgressTimer()
                 return
             } catch {
@@ -389,7 +396,9 @@ class KOnMusicManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
             self.currentTime = 0.0
             self.progress = 0.0
             self.libraryStatusMessage = "正在播放: \(song.title)"
-            
+            self.beginBackgroundKeepAlive()
+            self.updateNowPlayingInfo()
+            AudioPlayerManager.shared.keepAlivePlayer?.play()
             startProgressTimer()
         } catch {
             print("Failed to play song \(song.title): \(error)")
@@ -414,11 +423,15 @@ class KOnMusicManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
             self.isPlaying = false
             playbackTimer?.invalidate()
             self.libraryStatusMessage = "已暂停播放"
+            self.updateNowPlayingInfo()
         } else {
             player.play()
             self.isPlaying = true
+            self.beginBackgroundKeepAlive()
+            AudioPlayerManager.shared.keepAlivePlayer?.play()
             startProgressTimer()
             self.libraryStatusMessage = "正在播放: \(currentSong?.title ?? "")"
+            self.updateNowPlayingInfo()
         }
     }
     

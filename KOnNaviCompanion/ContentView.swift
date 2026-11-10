@@ -552,7 +552,9 @@ struct HTTSmoothMapView: UIViewRepresentable {
             guard let loc = userLocation.location, loc.horizontalAccuracy >= 0, !parent.manager.isDemoSimulating else { return }
             DispatchQueue.main.async {
                 self.parent.manager.hasMapUserLocation = true
-                self.parent.manager.userCoordinate = loc.coordinate
+                self.parent.manager.updateSnappedRouteCoordinate(for: loc.coordinate)
+                let effectiveCoord = self.parent.manager.snappedRouteCoordinate ?? loc.coordinate
+                self.parent.manager.userCoordinate = effectiveCoord
                 if self.parent.manager.travelMode == .transit {
                     self.parent.manager.refreshTransitPlansForCurrentLocation(force: false)
                 }
@@ -570,6 +572,9 @@ struct HTTSmoothMapView: UIViewRepresentable {
                     view?.annotation = annotation
                 }
                 
+                let effHeading = (parent.manager.snappedRouteHeading != nil && parent.manager.hasActiveNavigation)
+                    ? parent.manager.snappedRouteHeading!
+                    : parent.manager.headingDegrees
                 if let rmArrow = parent.manager.getRM500NavigationArrowFrame(mapCameraHeading: mapView.camera.heading) {
                     view?.image = rmArrow
                     view?.bounds = CGRect(x: 0, y: 0, width: 68, height: 88)
@@ -579,7 +584,7 @@ struct HTTSmoothMapView: UIViewRepresentable {
                     view?.image = arrowImage
                     view?.bounds = CGRect(x: 0, y: 0, width: 46, height: 46)
                     view?.centerOffset = .zero
-                    let rotationAngle = CGFloat((parent.manager.headingDegrees - mapView.camera.heading) * .pi / 180.0)
+                    let rotationAngle = CGFloat((effHeading - mapView.camera.heading) * .pi / 180.0)
                     view?.transform = CGAffineTransform(rotationAngle: rotationAngle)
                 }
                 return view
@@ -1120,7 +1125,7 @@ struct ContentView: View {
                                 }) {
                                     HStack(spacing: 2) {
                                         Image(systemName: "arrow.down.right.and.arrow.up.left")
-                                        Text(tr("缩小", "縮小", "Cockpit"))
+                                        Text(tr("进入驾驶舱", "進入駕駛艙", "Cockpit"))
                                     }
                                     .font(.system(size: 10, weight: .bold))
                                     .padding(.horizontal, 6)
@@ -1243,7 +1248,7 @@ struct ContentView: View {
                                     HStack(spacing: 3) {
                                         Image(systemName: "arrow.down.right.and.arrow.up.left")
                                             .font(.system(size: 10, weight: .bold))
-                                        Text(tr("缩小", "縮小", "Cockpit"))
+                                        Text(tr("进入驾驶舱", "進入駕駛艙", "Cockpit"))
                                             .font(.system(size: 11, weight: .heavy))
                                     }
                                     .padding(.horizontal, 7)
@@ -1598,8 +1603,11 @@ struct ContentView: View {
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold.opacity(0.75), lineWidth: 1.2))
             .fixedSize(horizontal: true, vertical: false)
             
-            // 2. Real-Time Traffic Light Countdown Box (高德同款真·红绿灯倒计时: 圆灯固定正圆不变形，倒计时单行大字不折行)
-            HStack(spacing: 6) {
+            // 2. Real-Time Traffic Light Countdown Box (高德同款真·红绿灯倒计时: 圆灯固定正圆不变形，倒计时单行大字不折行，支持点击一键校准)
+            Button(action: {
+                manager.calibrateTrafficLight()
+            }) {
+                HStack(spacing: 6) {
                 // 3 LED Bulbs (🔴 🟡 🟢) in a dedicated dark capsule housing
                 HStack(spacing: 4) {
                     Circle()
@@ -1625,10 +1633,15 @@ struct ContentView: View {
                 
                 // Clear, bold digital countdown timer that NEVER wraps or truncates!
                 HStack(alignment: .firstTextBaseline, spacing: 1) {
-                    Text("\(manager.trafficLightSeconds)")
-                        .font(.system(size: 16, weight: .black, design: .monospaced))
-                    Text("s")
-                        .font(.system(size: 10, weight: .bold))
+                    if manager.trafficLightIsHighwayNonStop {
+                        Text(tr("畅行", "暢行", "Clear"))
+                            .font(.system(size: 13, weight: .black))
+                    } else {
+                        Text("\(manager.trafficLightSeconds)")
+                            .font(.system(size: 16, weight: .black, design: .monospaced))
+                        Text("s")
+                            .font(.system(size: 10, weight: .bold))
+                    }
                 }
                 .foregroundColor(
                     manager.trafficLightPhase == .red ? Color.red :
@@ -1644,6 +1657,8 @@ struct ContentView: View {
             .cornerRadius(8)
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.35), lineWidth: 1.2))
             .fixedSize(horizontal: true, vertical: false)
+            }
+            .buttonStyle(PlainButtonStyle())
             
             Spacer(minLength: 4)
             
