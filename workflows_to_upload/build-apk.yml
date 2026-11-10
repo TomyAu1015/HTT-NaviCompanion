@@ -32,6 +32,14 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
+      - name: Download and Embed K-ON Music from Google Drive
+        run: |
+          if [ -f "download_drive_music.py" ]; then
+            sudo apt-get update && sudo apt-get install -y p7zip-full || true
+            python3 -m pip install gdown || true
+            python3 download_drive_music.py || true
+          fi
+
       - name: Prepare Assets from iOS Directory
         run: |
           mkdir -p android/app/src/main/assets
@@ -43,12 +51,16 @@ jobs:
             echo "Copying mascot_assets.dat..."
             cp KOnNaviCompanion/mascot_assets.dat android/app/src/main/assets/
           fi
+          cp KOnNaviCompanion/qr_* android/app/src/main/assets/ 2>/dev/null || true
           if [ -d "KOnNaviCompanion/Music" ]; then
             echo "Copying Music folder..."
             mkdir -p android/app/src/main/assets/Music
             cp -r KOnNaviCompanion/Music/* android/app/src/main/assets/Music/ || true
+            if [ -f "KOnNaviCompanion/Music/music_assets.dat" ]; then
+              cp KOnNaviCompanion/Music/music_assets.dat android/app/src/main/assets/
+            fi
           fi
-          ls -la android/app/src/main/assets/
+          ls -lh android/app/src/main/assets/
 
       - name: Build with Gradle
         run: |
@@ -59,7 +71,7 @@ jobs:
         run: |
           mkdir -p output_apks
           find android/app/build/outputs/apk -name "*.apk" -exec cp {} output_apks/ \;
-          ls -la output_apks/
+          ls -lh output_apks/
 
       - name: Upload Android APK Artifact
         uses: actions/upload-artifact@v4
