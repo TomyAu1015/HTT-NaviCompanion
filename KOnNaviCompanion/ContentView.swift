@@ -410,9 +410,12 @@ struct HTTSmoothMapView: UIViewRepresentable {
                 : manager.headingDegrees
             if let rmArrow = manager.getRM500NavigationArrowFrame(mapCameraHeading: mapView.camera.heading) {
                 userView.image = rmArrow
-                userView.bounds = CGRect(x: 0, y: 0, width: 68, height: 88)
-                // Offset -32 places the red arrow tip at the bottom of the character sprite directly on the route line!
-                userView.centerOffset = CGPoint(x: 0, y: -32)
+                let isCarMode = (manager.travelMode == .driving)
+                userView.bounds = isCarMode
+                    ? CGRect(x: 0, y: 0, width: 82, height: 106)
+                    : CGRect(x: 0, y: 0, width: 68, height: 88)
+                // Offset places the bottom 3D arrow tip directly on the route line!
+                userView.centerOffset = isCarMode ? CGPoint(x: 0, y: -38) : CGPoint(x: 0, y: -32)
                 userView.transform = .identity
             } else {
                 userView.image = context.coordinator.arrowImage
@@ -611,8 +614,11 @@ struct HTTSmoothMapView: UIViewRepresentable {
                     : parent.manager.headingDegrees
                 if let rmArrow = parent.manager.getRM500NavigationArrowFrame(mapCameraHeading: mapView.camera.heading) {
                     view?.image = rmArrow
-                    view?.bounds = CGRect(x: 0, y: 0, width: 68, height: 88)
-                    view?.centerOffset = CGPoint(x: 0, y: -32)
+                    let isCarMode = (parent.manager.travelMode == .driving)
+                    view?.bounds = isCarMode
+                        ? CGRect(x: 0, y: 0, width: 82, height: 106)
+                        : CGRect(x: 0, y: 0, width: 68, height: 88)
+                    view?.centerOffset = isCarMode ? CGPoint(x: 0, y: -38) : CGPoint(x: 0, y: -32)
                     view?.transform = .identity
                 } else {
                     view?.image = arrowImage
@@ -3831,13 +3837,17 @@ struct RM500AlbumAndOutfitSheetView: View {
                                     .font(.caption.bold())
                                     .foregroundColor(.secondary)
                                 
-                                HStack(spacing: 24) {
-                                    if let arrowImg = manager.getRM500NavigationArrowFrame(mapCameraHeading: manager.headingDegrees) {
-                                        Image(uiImage: arrowImg)
-                                            .interpolation(.none)
-                                            .resizable()
-                                            .scaledToFit()
-                                            .frame(width: 90, height: 115)
+                                HStack(spacing: 18) {
+                                    if let carArrowImg = manager.getRM500NavigationArrowFrame(mapCameraHeading: manager.headingDegrees, forceDrivingCar: true) {
+                                        VStack(spacing: 2) {
+                                            Image(uiImage: carArrowImg)
+                                                .resizable()
+                                                .scaledToFit()
+                                                .frame(width: 88, height: 114)
+                                            Text(manager.language == .en ? "Driving Arrow" : (manager.language == .zhHant ? "開車導航車標" : "开车导航车标"))
+                                                .font(.system(size: 10, weight: .bold))
+                                                .foregroundColor(.secondary)
+                                        }
                                     } else {
                                         Image(uiImage: HTTSmoothMapView.Coordinator.createNavigationArrowImage())
                                             .resizable()
@@ -3846,11 +3856,16 @@ struct RM500AlbumAndOutfitSheetView: View {
                                     }
                                     
                                     if let stageIcon = manager.getRM500StageIcon(for: manager.selectedCharacter) {
-                                        Image(uiImage: stageIcon)
-                                            .resizable()
-                                            .scaledToFit()
-                                            .frame(width: 95, height: 95)
-                                            .cornerRadius(12)
+                                        VStack(spacing: 2) {
+                                            Image(uiImage: stageIcon)
+                                                .resizable()
+                                                .scaledToFit()
+                                                .frame(width: 92, height: 92)
+                                                .cornerRadius(12)
+                                            Text(manager.language == .en ? "Outfit Preview" : (manager.language == .zhHant ? "服裝造型預覽" : "服装造型预览"))
+                                                .font(.system(size: 10, weight: .bold))
+                                                .foregroundColor(.secondary)
+                                        }
                                     }
                                 }
                                 
