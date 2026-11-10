@@ -126,20 +126,73 @@ class KOnMusicManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
 
     override init() {
         super.init()
+        self.playlist = KOnMusicManager.canonicalKOnSongs
+        if let first = self.playlist.first {
+            self.currentSong = first
+            self.duration = first.approxDurationSeconds
+        }
         setupAudioSession()
+        setupAudioInterruptionAndRouteObservers()
         setupRemoteCommandCenter()
-        setupAndScanLibrary()
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            self?.setupAndScanLibrary()
+        }
         startRotationLoop()
     }
     
-    // MARK: - Audio Session Configuration
+    // MARK: - Audio Session Configuration (Pure A2DP Stereo Playback - Never drops Bluetooth headphones on Notification!)
     private func setupAudioSession() {
         do {
             let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.playback, mode: .default, options: [.mixWithOthers, .allowBluetoothHFP, .allowBluetoothA2DP, .duckOthers])
+            // IMPORTANT: Do NOT include .allowBluetoothHFP or .duckOthers on the persistent session,
+            // as .allowBluetoothHFP forces Bluetooth headphones to switch from A2DP stereo to HFP mono call profile when external notifications arrive!
+            try session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
             try session.setActive(true)
         } catch {
             print("KOnMusicManager audio session init error: \(error)")
+        }
+    }
+    
+    private func setupAudioInterruptionAndRouteObservers() {
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleAudioInterruption(_:)),
+            name: AVAudioSession.interruptionNotification,
+            object: AVAudioSession.sharedInstance()
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleAudioRouteChange(_:)),
+            name: AVAudioSession.routeChangeNotification,
+            object: AVAudioSession.sharedInstance()
+        )
+    }
+    
+    @objc private func handleAudioInterruption(_ notification: Notification) {
+        guard let userInfo = notification.userInfo,
+              let typeValue = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt,
+              let type = AVAudioSession.InterruptionType(rawValue: typeValue) else { return }
+        
+        if type == .ended {
+            try? AVAudioSession.sharedInstance().setActive(true)
+            if self.isPlaying, let player = self.audioPlayer, !player.isPlaying {
+                player.play()
+            }
+        }
+    }
+    
+    @objc private func handleAudioRouteChange(_ notification: Notification) {
+        guard let userInfo = notification.userInfo,
+              let reasonValue = userInfo[AVAudioSessionRouteChangeReasonKey] as? UInt,
+              let reason = AVAudioSession.RouteChangeReason(rawValue: reasonValue) else { return }
+        
+        // When an external notification banner finishes or route reconfigures, keep A2DP stream alive
+        if reason == .categoryChange || reason == .override || reason == .wakeFromSleep {
+            if self.isPlaying, let player = self.audioPlayer, !player.isPlaying {
+                try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [.mixWithOthers])
+                try? AVAudioSession.sharedInstance().setActive(true)
+                player.play()
+            }
         }
     }
 
@@ -377,20 +430,25 @@ class KOnMusicManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
             customIndex += 1
         }
         
-        self.playlist = baseList
-        let availableCount = baseList.filter { $0.isAvailable }.count
-        if availableCount > 0 {
-            self.libraryStatusMessage = "轻音音乐库已载入 \(availableCount) 首可播放曲目"
-        } else {
-            self.libraryStatusMessage = "轻音音乐库已建立 (27首名曲索引，可通过文件App放入音频)"
-        }
-        
-        if currentSong == nil, let firstAvailable = playlist.first(where: { $0.isAvailable }) {
-            self.currentSong = firstAvailable
-            self.duration = firstAvailable.approxDurationSeconds
-        } else if currentSong == nil, let first = playlist.first {
-            self.currentSong = first
-            self.duration = first.approxDurationSeconds
+        let finalList = baseList
+        let availableCount = finalList.filter { $0.isAvailable }.count
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            self.playlist = finalList
+            if availableCount > 0 {
+                self.libraryStatusMessage = "轻音音乐库已载入 \(availableCount) 首可播放曲目"
+            } else {
+                self.libraryStatusMessage = "轻音音乐库已建立 (27首名曲索引，可通过文件App放入音频)"
+            }
+            if let firstAvailable = finalList.first(where: { $0.isAvailable }) {
+                if self.currentSong == nil || !(self.currentSong?.isAvailable ?? false) {
+                    self.currentSong = firstAvailable
+                    self.duration = firstAvailable.approxDurationSeconds
+                }
+            } else if self.currentSong == nil, let first = finalList.first {
+                self.currentSong = first
+                self.duration = first.approxDurationSeconds
+            }
         }
     }
     
@@ -607,11 +665,9 @@ class KOnMusicManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
     
     private func startRotationLoop() {
         rotationTimer?.invalidate()
-        rotationTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
-            guard let self = self else { return }
-            if self.isPlaying {
-                self.discRotationDegrees = (self.discRotationDegrees + 1.2).truncatingRemainder(dividingBy: 360)
-            }
+        rotationTimer = Timer.scheduledTimer(withTimeInterval: 0.20, repeats: true) { [weak self] _ in
+            guard let self = self, self.isPlaying, self.showMusicSheet else { return }
+            self.discRotationDegrees = (self.discRotationDegrees + 4.5).truncatingRemainder(dividingBy: 360.0)
         }
     }
     

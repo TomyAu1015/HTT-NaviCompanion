@@ -187,6 +187,9 @@ struct HTTSmoothMapView: UIViewRepresentable {
         tapGesture.delegate = context.coordinator
         mapView.addGestureRecognizer(tapGesture)
         
+        context.coordinator.vehicleAnnotation.coordinate = manager.userCoordinate
+        mapView.addAnnotation(context.coordinator.vehicleAnnotation)
+        
         let region = MKCoordinateRegion(
             center: manager.userCoordinate,
             latitudinalMeters: 380,
@@ -215,7 +218,10 @@ struct HTTSmoothMapView: UIViewRepresentable {
             context.coordinator.lastTappedLon = manager.tappedMapCoord?.longitude
             
             mapView.removeOverlays(mapView.overlays)
-            mapView.removeAnnotations(mapView.annotations.filter { !($0 is MKUserLocation) })
+            mapView.removeAnnotations(mapView.annotations.filter { !($0 is MKUserLocation || $0 is VehicleAvatarAnnotation) })
+            if !mapView.annotations.contains(where: { $0 is VehicleAvatarAnnotation }) {
+                mapView.addAnnotation(context.coordinator.vehicleAnnotation)
+            }
             
             if manager.travelMode == .transit, manager.activeRoute == nil, let transitPoly = manager.customTransitPolyline {
                 // Public Transit Mode: Draw synchronized transit route with realistic colored segments & station pins!
@@ -367,9 +373,7 @@ struct HTTSmoothMapView: UIViewRepresentable {
             }
             
             if routeChanged && (manager.activeRoute != nil || manager.customTransitPolyline != nil) {
-                let targetCoord = (!manager.isDemoSimulating && mapView.userLocation.location != nil)
-                    ? mapView.userLocation.coordinate
-                    : manager.userCoordinate
+                let targetCoord = manager.userCoordinate
                 let camera = MKMapCamera(
                     lookingAtCenter: targetCoord,
                     fromDistance: manager.userZoomDistance,
@@ -390,18 +394,31 @@ struct HTTSmoothMapView: UIViewRepresentable {
             }
         }
         
-        // 2. Update Authentic RM-500HTT Navigation Arrow Sprite / 3D Arrow
-        if let userView = mapView.view(for: mapView.userLocation) {
+        // 2. Keep VehicleAvatarAnnotation locked to manager.userCoordinate (snapped dead-center onto the route line!)
+        let vAnno = context.coordinator.vehicleAnnotation
+        if abs(vAnno.coordinate.latitude - manager.userCoordinate.latitude) > 1e-7 ||
+           abs(vAnno.coordinate.longitude - manager.userCoordinate.longitude) > 1e-7 {
+            vAnno.coordinate = manager.userCoordinate
+        }
+        if let rawUserView = mapView.view(for: mapView.userLocation) {
+            rawUserView.isHidden = true
+            rawUserView.alpha = 0.0
+        }
+        if let userView = mapView.view(for: vAnno) {
+            let effHeading = (manager.snappedRouteHeading != nil && manager.hasActiveNavigation)
+                ? manager.snappedRouteHeading!
+                : manager.headingDegrees
             if let rmArrow = manager.getRM500NavigationArrowFrame(mapCameraHeading: mapView.camera.heading) {
                 userView.image = rmArrow
                 userView.bounds = CGRect(x: 0, y: 0, width: 68, height: 88)
-                userView.centerOffset = CGPoint(x: 0, y: -22)
+                // Offset -32 places the red arrow tip at the bottom of the character sprite directly on the route line!
+                userView.centerOffset = CGPoint(x: 0, y: -32)
                 userView.transform = .identity
             } else {
                 userView.image = context.coordinator.arrowImage
                 userView.bounds = CGRect(x: 0, y: 0, width: 46, height: 46)
                 userView.centerOffset = .zero
-                let rotationAngle = CGFloat((manager.headingDegrees - mapView.camera.heading) * .pi / 180.0)
+                let rotationAngle = CGFloat((effHeading - mapView.camera.heading) * .pi / 180.0)
                 userView.transform = CGAffineTransform(rotationAngle: rotationAngle)
             }
         }
@@ -410,7 +427,7 @@ struct HTTSmoothMapView: UIViewRepresentable {
         if context.coordinator.lastZoomTrigger != manager.zoomCommandTrigger {
             context.coordinator.lastZoomTrigger = manager.zoomCommandTrigger
             let centerCoord = manager.mapTrackingUser
-                ? ((!manager.isDemoSimulating && mapView.userLocation.location != nil) ? mapView.userLocation.coordinate : manager.userCoordinate)
+                ? manager.userCoordinate
                 : mapView.camera.centerCoordinate
             let cam = MKMapCamera(
                 lookingAtCenter: centerCoord,
@@ -427,9 +444,7 @@ struct HTTSmoothMapView: UIViewRepresentable {
             context.coordinator.lastRecenterTrigger = manager.recenterTrigger
             context.coordinator.isUserInteracting = false
             
-            let targetCoord = (!manager.isDemoSimulating && mapView.userLocation.location != nil)
-                ? mapView.userLocation.coordinate
-                : manager.userCoordinate
+            let targetCoord = manager.userCoordinate
             
             mapView.layer.removeAllAnimations()
             let camera = MKMapCamera(
@@ -441,9 +456,7 @@ struct HTTSmoothMapView: UIViewRepresentable {
             mapView.setCamera(camera, animated: false)
             
         } else if manager.mapTrackingUser && !context.coordinator.isUserInteracting {
-            let targetCoord = (!manager.isDemoSimulating && mapView.userLocation.location != nil)
-                ? mapView.userLocation.coordinate
-                : manager.userCoordinate
+            let targetCoord = manager.userCoordinate
             
             var hDiff = abs(mapView.camera.heading - camHeading).truncatingRemainder(dividingBy: 360.0)
             if hDiff > 180.0 { hDiff = 360.0 - hDiff }
@@ -477,8 +490,14 @@ struct HTTSmoothMapView: UIViewRepresentable {
         var lastRecenterTrigger: Int = 0
         var lastZoomTrigger: Int = 0
         
+        let vehicleAnnotation = VehicleAvatarAnnotation()
+        
         lazy var arrowImage: UIImage = {
             Coordinator.createNavigationArrowImage()
+        }()
+        
+        lazy var trafficLightIcon: UIImage = {
+            Coordinator.createTrafficLightMapIcon()
         }()
         
         init(_ parent: HTTSmoothMapView) {
@@ -528,7 +547,7 @@ struct HTTSmoothMapView: UIViewRepresentable {
         }
         
         func mapView(_ mapView: MKMapView, didSelect view: MKAnnotationView) {
-            guard let annotation = view.annotation, !(annotation is MKUserLocation) else { return }
+            guard let annotation = view.annotation, !(annotation is MKUserLocation), !(annotation is VehicleAvatarAnnotation) else { return }
             // Ignore temporary tapped pin or loading placeholder to prevent loop
             if annotation.subtitle == "TAPPED_PIN" || annotation.title == "正在获取地点..." || annotation.title == "定位解析中..." {
                 return
@@ -563,11 +582,26 @@ struct HTTSmoothMapView: UIViewRepresentable {
         
         func mapView(_ mapView: MKMapView, viewFor annotation: MKAnnotation) -> MKAnnotationView? {
             if annotation is MKUserLocation {
-                let identifier = "UserVehicleArrowView"
+                let identifier = "HiddenRawUserLocationView"
+                var view = mapView.dequeueReusableAnnotationView(withIdentifier: identifier)
+                if view == nil {
+                    view = MKAnnotationView(annotation: annotation, reuseIdentifier: identifier)
+                } else {
+                    view?.annotation = annotation
+                }
+                view?.isHidden = true
+                view?.alpha = 0.0
+                return view
+            } else if annotation is VehicleAvatarAnnotation {
+                let identifier = "SnappedVehicleAvatarView"
                 var view = mapView.dequeueReusableAnnotationView(withIdentifier: identifier)
                 if view == nil {
                     view = MKAnnotationView(annotation: annotation, reuseIdentifier: identifier)
                     view?.canShowCallout = false
+                    if #available(iOS 14.0, *) {
+                        view?.zPriority = .max
+                    }
+                    view?.displayPriority = .required
                 } else {
                     view?.annotation = annotation
                 }
@@ -578,7 +612,7 @@ struct HTTSmoothMapView: UIViewRepresentable {
                 if let rmArrow = parent.manager.getRM500NavigationArrowFrame(mapCameraHeading: mapView.camera.heading) {
                     view?.image = rmArrow
                     view?.bounds = CGRect(x: 0, y: 0, width: 68, height: 88)
-                    view?.centerOffset = CGPoint(x: 0, y: -22)
+                    view?.centerOffset = CGPoint(x: 0, y: -32)
                     view?.transform = .identity
                 } else {
                     view?.image = arrowImage
@@ -589,6 +623,21 @@ struct HTTSmoothMapView: UIViewRepresentable {
                 }
                 return view
             } else if let hazard = annotation as? RoadHazardAnnotation {
+                if hazard.kind == .trafficLight {
+                    let tlId = "RouteTrafficLightAnnotationView"
+                    var tlView = mapView.dequeueReusableAnnotationView(withIdentifier: tlId)
+                    if tlView == nil {
+                        tlView = MKAnnotationView(annotation: hazard, reuseIdentifier: tlId)
+                        tlView?.canShowCallout = true
+                        tlView?.displayPriority = .defaultHigh
+                    } else {
+                        tlView?.annotation = hazard
+                    }
+                    tlView?.image = trafficLightIcon
+                    tlView?.bounds = CGRect(x: 0, y: 0, width: 22, height: 34)
+                    tlView?.centerOffset = CGPoint(x: 0, y: -12)
+                    return tlView
+                }
                 let id = "RoadHazardPinView_\(hazard.kind.rawValue)"
                 var hView = mapView.dequeueReusableAnnotationView(withIdentifier: id) as? MKMarkerAnnotationView
                 if hView == nil {
@@ -613,6 +662,8 @@ struct HTTSmoothMapView: UIViewRepresentable {
                 case .congestion:
                     hView?.markerTintColor = .systemYellow
                     hView?.glyphImage = UIImage(systemName: "exclamationmark.triangle.fill")
+                case .trafficLight:
+                    break
                 }
                 return hView
             } else if let pin = annotation as? MKPointAnnotation {
@@ -677,6 +728,35 @@ struct HTTSmoothMapView: UIViewRepresentable {
                 UIColor.white.withAlphaComponent(0.55).setStroke()
                 ridge.lineWidth = 2.0
                 ridge.stroke()
+            }
+        }
+        
+        static func createTrafficLightMapIcon() -> UIImage {
+            let size = CGSize(width: 22, height: 34)
+            let renderer = UIGraphicsImageRenderer(size: size)
+            return renderer.image { ctx in
+                let cg = ctx.cgContext
+                cg.setShadow(offset: CGSize(width: 0, height: 1.5), blur: 3, color: UIColor.black.withAlphaComponent(0.55).cgColor)
+                let boxRect = CGRect(x: 3, y: 2, width: 16, height: 28)
+                let housing = UIBezierPath(roundedRect: boxRect, cornerRadius: 6)
+                UIColor(white: 0.12, alpha: 0.96).setFill()
+                housing.fill()
+                UIColor.white.withAlphaComponent(0.85).setStroke()
+                housing.lineWidth = 1.4
+                housing.stroke()
+                
+                // Red, Yellow, Green signal bulbs
+                let rPath = UIBezierPath(ovalIn: CGRect(x: 7.5, y: 5.0, width: 7, height: 7))
+                UIColor(red: 1.0, green: 0.22, blue: 0.22, alpha: 1.0).setFill()
+                rPath.fill()
+                
+                let yPath = UIBezierPath(ovalIn: CGRect(x: 7.5, y: 12.5, width: 7, height: 7))
+                UIColor(red: 1.0, green: 0.82, blue: 0.12, alpha: 1.0).setFill()
+                yPath.fill()
+                
+                let gPath = UIBezierPath(ovalIn: CGRect(x: 7.5, y: 20.0, width: 7, height: 7))
+                UIColor(red: 0.15, green: 0.95, blue: 0.40, alpha: 1.0).setFill()
+                gPath.fill()
             }
         }
         
@@ -1125,7 +1205,7 @@ struct ContentView: View {
                                 }) {
                                     HStack(spacing: 2) {
                                         Image(systemName: "arrow.down.right.and.arrow.up.left")
-                                        Text(tr("进入驾驶舱", "進入駕駛艙", "Cockpit"))
+                                        Text(tr("返回驾驶舱", "返回駕駛艙", "Cockpit"))
                                     }
                                     .font(.system(size: 10, weight: .bold))
                                     .padding(.horizontal, 6)
@@ -1248,7 +1328,7 @@ struct ContentView: View {
                                     HStack(spacing: 3) {
                                         Image(systemName: "arrow.down.right.and.arrow.up.left")
                                             .font(.system(size: 10, weight: .bold))
-                                        Text(tr("进入驾驶舱", "進入駕駛艙", "Cockpit"))
+                                        Text(tr("返回驾驶舱", "返回駕駛艙", "Cockpit"))
                                             .font(.system(size: 11, weight: .heavy))
                                     }
                                     .padding(.horizontal, 7)
@@ -1603,62 +1683,7 @@ struct ContentView: View {
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold.opacity(0.75), lineWidth: 1.2))
             .fixedSize(horizontal: true, vertical: false)
             
-            // 2. Real-Time Traffic Light Countdown Box (高德同款真·红绿灯倒计时: 圆灯固定正圆不变形，倒计时单行大字不折行，支持点击一键校准)
-            Button(action: {
-                manager.calibrateTrafficLight()
-            }) {
-                HStack(spacing: 6) {
-                // 3 LED Bulbs (🔴 🟡 🟢) in a dedicated dark capsule housing
-                HStack(spacing: 4) {
-                    Circle()
-                        .fill(manager.trafficLightPhase == .red ? Color.red : Color.red.opacity(0.25))
-                        .frame(width: 9, height: 9)
-                        .aspectRatio(1.0, contentMode: .fit)
-                        .shadow(color: manager.trafficLightPhase == .red ? Color.red : .clear, radius: 3)
-                    Circle()
-                        .fill(manager.trafficLightPhase == .yellow ? Color.yellow : Color.yellow.opacity(0.25))
-                        .frame(width: 9, height: 9)
-                        .aspectRatio(1.0, contentMode: .fit)
-                        .shadow(color: manager.trafficLightPhase == .yellow ? Color.yellow : .clear, radius: 3)
-                    Circle()
-                        .fill(manager.trafficLightPhase == .green ? Color(red: 0.15, green: 0.95, blue: 0.35) : Color.green.opacity(0.25))
-                        .frame(width: 9, height: 9)
-                        .aspectRatio(1.0, contentMode: .fit)
-                        .shadow(color: manager.trafficLightPhase == .green ? Color.green : .clear, radius: 3)
-                }
-                .padding(.horizontal, 5)
-                .padding(.vertical, 4)
-                .background(Color(white: 0.12))
-                .cornerRadius(6)
-                
-                // Clear, bold digital countdown timer that NEVER wraps or truncates!
-                HStack(alignment: .firstTextBaseline, spacing: 1) {
-                    if manager.trafficLightIsHighwayNonStop {
-                        Text(tr("畅行", "暢行", "Clear"))
-                            .font(.system(size: 13, weight: .black))
-                    } else {
-                        Text("\(manager.trafficLightSeconds)")
-                            .font(.system(size: 16, weight: .black, design: .monospaced))
-                        Text("s")
-                            .font(.system(size: 10, weight: .bold))
-                    }
-                }
-                .foregroundColor(
-                    manager.trafficLightPhase == .red ? Color.red :
-                    (manager.trafficLightPhase == .yellow ? Color.yellow : Color(red: 0.2, green: 0.98, blue: 0.45))
-                )
-                .shadow(color: (manager.trafficLightPhase == .red ? Color.red : (manager.trafficLightPhase == .yellow ? Color.yellow : Color.green)).opacity(0.55), radius: 3)
-                .lineLimit(1)
-                .fixedSize(horizontal: true, vertical: false)
-            }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 5)
-            .background(Color.black.opacity(0.92))
-            .cornerRadius(8)
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.35), lineWidth: 1.2))
-            .fixedSize(horizontal: true, vertical: false)
-            }
-            .buttonStyle(PlainButtonStyle())
+            // Top traffic light countdown removed per user request (intersection lights are rendered directly along the route on the map)
             
             Spacer(minLength: 4)
             
@@ -1913,33 +1938,35 @@ struct ContentView: View {
     // Electronic Speed Camera (测速电子眼) + Congestion (路况拥堵) + Service Area (服务区) + Toll Station (收费站) HUD Strip
     private var electronicEyeAndHighwayHUDStrip: some View {
         VStack(alignment: .leading, spacing: 4) {
-            // 1. Electronic Speed Camera Badge (测速电子眼)
-            HStack(spacing: 5) {
-                ZStack {
-                    Circle()
-                        .fill(Color.white)
-                        .frame(width: 26, height: 26)
-                        .overlay(Circle().stroke(Color.red, lineWidth: 3))
-                    Text("\(manager.upcomingCameraLimit > 0 ? manager.upcomingCameraLimit : Int(manager.speedLimitKmh))")
-                        .font(.system(size: 11, weight: .black, design: .rounded))
-                        .foregroundColor(.black)
+            // 1. Electronic Speed Camera Badge (测速电子眼 - 仅在驾车/骑车且当前实际道路有限速数据时显示，无限速则自动隐藏!)
+            if manager.travelMode.supportsSpeedLimit && manager.upcomingCameraLimit > 0 {
+                HStack(spacing: 5) {
+                    ZStack {
+                        Circle()
+                            .fill(Color.white)
+                            .frame(width: 26, height: 26)
+                            .overlay(Circle().stroke(Color.red, lineWidth: 3))
+                        Text("\(manager.upcomingCameraLimit)")
+                            .font(.system(size: 11, weight: .black, design: .rounded))
+                            .foregroundColor(.black)
+                    }
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text(tr("测速电子眼", "測速電子眼", "Speed Cam"))
+                            .font(.system(size: 10, weight: .heavy))
+                            .foregroundColor(.white)
+                        Text(manager.upcomingCameraDistance > 0
+                             ? manager.formatSmartDistance(manager.upcomingCameraDistance)
+                             : tr("实际路网限速", "實際路網限速", "Road Limit"))
+                            .font(.system(size: 9, weight: .bold, design: .monospaced))
+                            .foregroundColor(httGold)
+                    }
                 }
-                VStack(alignment: .leading, spacing: 0) {
-                    Text(tr("测速电子眼", "測速電子眼", "Speed Cam"))
-                        .font(.system(size: 10, weight: .heavy))
-                        .foregroundColor(.white)
-                    Text(manager.upcomingCameraDistance > 0
-                         ? manager.formatSmartDistance(manager.upcomingCameraDistance)
-                         : tr("全程监控中", "全程監控中", "Active"))
-                        .font(.system(size: 9, weight: .bold, design: .monospaced))
-                        .foregroundColor(httGold)
-                }
+                .padding(.horizontal, 7)
+                .padding(.vertical, 4)
+                .background(Color.black.opacity(0.85))
+                .cornerRadius(8)
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.red.opacity(0.85), lineWidth: 1.2))
             }
-            .padding(.horizontal, 7)
-            .padding(.vertical, 4)
-            .background(Color.black.opacity(0.85))
-            .cornerRadius(8)
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.red.opacity(0.85), lineWidth: 1.2))
             
             // 2. Traffic Congestion Indicator (拥堵/畅通状态)
             HStack(spacing: 4) {
@@ -2062,9 +2089,11 @@ struct ContentView: View {
                 }
                 
                 HStack(spacing: 5) {
-                    Text("\(tr("限速", "限速", "Limit")): \(Int(manager.speedLimitKmh))")
-                        .font(.system(size: 9, weight: .bold))
-                        .foregroundColor(httGold)
+                    if manager.travelMode.supportsSpeedLimit && manager.speedLimitKmh > 0 {
+                        Text("\(tr("限速", "限速", "Limit")): \(Int(manager.speedLimitKmh))")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundColor(httGold)
+                    }
                     Text(manager.compassDirectionString)
                         .font(.system(size: 9))
                         .foregroundColor(.gray)
@@ -2297,43 +2326,46 @@ struct ContentView: View {
                 }
             }
             
-            Divider().background(Color.white.opacity(0.15))
-            
-            HStack(spacing: 4) {
-                Button(action: { manager.triggerSpeedLimitPrompt() }) {
-                    HStack(spacing: 2) {
-                        Image(systemName: "speedometer")
-                        Text(tr("限速播报:", "限速播報:", "Limit:"))
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.75)
-                    }
-                    .font(.system(size: isCompact ? 10 : 11, weight: .bold))
-                    .foregroundColor(httGold)
-                }
+            if manager.travelMode.supportsSpeedLimit {
+                Divider().background(Color.white.opacity(0.15))
                 
-                ForEach([60.0, 80.0, 100.0, 120.0], id: \.self) { limit in
-                    Button(action: {
-                        if manager.speedLimitKmh == limit {
-                            manager.triggerSpeedLimitPrompt()
-                        } else {
-                            manager.speedLimitKmh = limit
+                HStack(spacing: 4) {
+                    Button(action: { manager.triggerSpeedLimitPrompt() }) {
+                        HStack(spacing: 2) {
+                            Image(systemName: "speedometer")
+                            Text(tr("限速播报:", "限速播報:", "Limit:"))
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.75)
                         }
-                    }) {
-                        Text("\(Int(limit))")
-                            .font(.system(size: isCompact ? 10 : 11, weight: .bold))
-                            .padding(.horizontal, isCompact ? 5 : 7)
-                            .padding(.vertical, 2.5)
-                            .background(manager.speedLimitKmh == limit ? httCrimson : Color.white.opacity(0.1))
-                            .foregroundColor(.white)
-                            .cornerRadius(5)
+                        .font(.system(size: isCompact ? 10 : 11, weight: .bold))
+                        .foregroundColor(httGold)
                     }
+                    
+                    let limitOptions: [Double] = (manager.travelMode == .ebike) ? [15.0, 20.0, 25.0, 35.0] : [60.0, 80.0, 100.0, 120.0]
+                    ForEach(limitOptions, id: \.self) { limit in
+                        Button(action: {
+                            if manager.speedLimitKmh == limit {
+                                manager.triggerSpeedLimitPrompt()
+                            } else {
+                                manager.speedLimitKmh = limit
+                            }
+                        }) {
+                            Text("\(Int(limit))")
+                                .font(.system(size: isCompact ? 10 : 11, weight: .bold))
+                                .padding(.horizontal, isCompact ? 5 : 7)
+                                .padding(.vertical, 2.5)
+                                .background(manager.speedLimitKmh == limit ? httCrimson : Color.white.opacity(0.1))
+                                .foregroundColor(.white)
+                                .cornerRadius(5)
+                        }
+                    }
+                    Spacer(minLength: 2)
+                    Text("\(tr("最高", "最高", "MAX")): \(Int(manager.maxSpeedKmh))")
+                        .font(.system(size: isCompact ? 10 : 11, weight: .bold))
+                        .foregroundColor(httGold)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
                 }
-                Spacer(minLength: 2)
-                Text("\(tr("最高", "最高", "MAX")): \(Int(manager.maxSpeedKmh))")
-                    .font(.system(size: isCompact ? 10 : 11, weight: .bold))
-                    .foregroundColor(httGold)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
             }
         }
         .padding(isCompact ? 7 : 10)
@@ -2565,7 +2597,7 @@ struct ContentView: View {
                                     .cornerRadius(4)
                             }
                             .offset(
-                                x: savedPos.width + (isThisDragged ? dragOffset.width : (manager.mascotOffsetX * 0.45)),
+                                x: savedPos.width + (isThisDragged ? dragOffset.width : 0),
                                 y: savedPos.height + (isThisDragged ? dragOffset.height : 0)
                             )
                             .highPriorityGesture(
@@ -3479,7 +3511,7 @@ struct DestinationSearchSheetView: View {
                             .font(.system(size: 15, weight: .bold))
                         Text(manager.language == .en
                              ? "One-Click Navigate from Copied Address / App Link"
-                             : "一键识别外部App复制的地址/分享链接并直接导航")
+                             : (manager.language == .zhHant ? "一鍵識別外部App複製的地址/分享連結並直接導航" : "一键识别外部App复制的地址/分享链接并直接导航"))
                             .font(.system(size: 12, weight: .bold))
                         Spacer()
                         Image(systemName: "chevron.right")
@@ -3497,7 +3529,7 @@ struct DestinationSearchSheetView: View {
                 HStack(spacing: 4) {
                     NativePinyinSearchBar(
                         text: $queryText,
-                        placeholder: manager.language == .en ? "Search station, mall, road or city..." : "输入目的地（如：广州南站、罗湖口岸、大厦）...",
+                        placeholder: manager.language == .en ? "Search station, mall, road or city..." : (manager.language == .zhHant ? "輸入目的地（如：廣州南站、羅湖口岸、大廈）..." : "输入目的地（如：广州南站、罗湖口岸、大厦）..."),
                         onTypingSettled: { settledText in
                             searchEngine.updateQueryFragment(settledText, center: manager.userCoordinate)
                             searchEngine.performFullSearch(query: settledText, center: manager.userCoordinate)
@@ -3514,7 +3546,7 @@ struct DestinationSearchSheetView: View {
                         searchEngine.updateQueryFragment(queryText, center: manager.userCoordinate)
                         searchEngine.performFullSearch(query: queryText, center: manager.userCoordinate)
                     }) {
-                        Text(manager.language == .en ? "Search" : "搜索")
+                        Text(manager.language == .en ? "Search" : (manager.language == .zhHant ? "搜尋" : "搜索"))
                             .font(.subheadline.bold())
                             .padding(.horizontal, 14)
                             .padding(.vertical, 8)
@@ -3536,7 +3568,7 @@ struct DestinationSearchSheetView: View {
                             .foregroundColor(.orange)
                         Text(manager.language == .en
                              ? "Test 1-Click Simulation (Listen to Full Turn Guidance Indoors)"
-                             : "室内一键测试：模拟路线指路（完整听转向原声）")
+                             : (manager.language == .zhHant ? "室內一鍵測試：模擬路線指路（完整聽轉向原聲）" : "室内一键测试：模拟路线指路（完整听转向原声）"))
                             .font(.caption.bold())
                         Spacer()
                         Image(systemName: "chevron.right")
@@ -3551,7 +3583,7 @@ struct DestinationSearchSheetView: View {
                 if searchEngine.isSearching {
                     HStack(spacing: 8) {
                         ProgressView()
-                        Text("正在检索全城及周边详细地点...")
+                        Text(manager.language == .en ? "Searching places..." : (manager.language == .zhHant ? "正在檢索全城及周邊詳細地點..." : "正在检索全城及周边详细地点..."))
                             .font(.caption)
                             .foregroundColor(.secondary)
                     }
@@ -3561,7 +3593,7 @@ struct DestinationSearchSheetView: View {
                 // Combined List: Direct POI MapItems (with Distance!) + Rich Autocomplete Sub-entrances (East/West Plaza, Parking, Metro, etc.)
                 List {
                     if !searchEngine.mapItems.isEmpty {
-                        Section(header: Text("精准地点结果 (\(searchEngine.mapItems.count) 个)")) {
+                        Section(header: Text(manager.language == .en ? "Exact Matches (\(searchEngine.mapItems.count))" : (manager.language == .zhHant ? "精準地點結果 (\(searchEngine.mapItems.count) 個)" : "精准地点结果 (\(searchEngine.mapItems.count) 个)"))) {
                             ForEach(searchEngine.mapItems, id: \.self) { item in
                                 Button(action: {
                                     manager.travelMode = selectedMode
@@ -3581,7 +3613,7 @@ struct DestinationSearchSheetView: View {
                                             .foregroundColor(.red)
                                             .frame(width: 28)
                                         VStack(alignment: .leading, spacing: 3) {
-                                            Text(item.name ?? "未知地点")
+                                            Text(item.name ?? (manager.language == .zhHant ? "未知地點" : "未知地点"))
                                                 .font(.subheadline.bold())
                                                 .foregroundColor(.primary)
                                             Text(detailedAddress(for: item.placemark))
@@ -3593,7 +3625,7 @@ struct DestinationSearchSheetView: View {
                                             Text(distanceString(to: item.placemark.coordinate))
                                                 .font(.caption2.bold())
                                                 .foregroundColor(.secondary)
-                                            Text(manager.language == .en ? "Go" : "去这里")
+                                            Text(manager.language == .en ? "Go" : (manager.language == .zhHant ? "去這裡" : "去这里"))
                                                 .font(.caption.bold())
                                                 .padding(.horizontal, 10)
                                                 .padding(.vertical, 4)
@@ -3608,7 +3640,7 @@ struct DestinationSearchSheetView: View {
                     }
                     
                     if !searchEngine.completions.isEmpty {
-                        Section(header: Text("全城联想与详细出入口 (\(searchEngine.completions.count) 个)")) {
+                        Section(header: Text(manager.language == .en ? "Suggestions & Entrances (\(searchEngine.completions.count))" : (manager.language == .zhHant ? "全城聯想與詳細出入口 (\(searchEngine.completions.count) 個)" : "全城联想与详细出入口 (\(searchEngine.completions.count) 个)"))) {
                             ForEach(searchEngine.completions, id: \.self) { comp in
                                 Button(action: {
                                     manager.travelMode = selectedMode
@@ -3639,7 +3671,7 @@ struct DestinationSearchSheetView: View {
                                             }
                                         }
                                         Spacer()
-                                        Text(manager.language == .en ? "Navigate" : "开始导航")
+                                        Text(manager.language == .en ? "Navigate" : (manager.language == .zhHant ? "開始導航" : "开始导航"))
                                             .font(.caption.bold())
                                             .padding(.horizontal, 10)
                                             .padding(.vertical, 5)
@@ -3654,11 +3686,11 @@ struct DestinationSearchSheetView: View {
                 }
                 .listStyle(.insetGrouped)
             }
-            .navigationTitle(manager.language == .en ? "Route Planner" : "高德/MapKit 智能路线搜索")
+            .navigationTitle(manager.language == .en ? "Route Planner" : (manager.language == .zhHant ? "高德/MapKit 智慧路線搜尋" : "高德/MapKit 智能路线搜索"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    Button(manager.language == .en ? "Close" : "关闭") { dismiss() }
+                    Button(manager.language == .en ? "Close" : (manager.language == .zhHant ? "關閉" : "关闭")) { dismiss() }
                 }
             }
         }
@@ -3700,7 +3732,7 @@ struct SoundboardSheetView: View {
             ("\(AudioPlayerManager.CharacterFilter.ritsu.displayName(lang)) (192)", AudioPlayerManager.CharacterFilter.ritsu.verifiedVoiceIds),
             ("\(AudioPlayerManager.CharacterFilter.mugi.displayName(lang)) (192)", AudioPlayerManager.CharacterFilter.mugi.verifiedVoiceIds),
             ("\(AudioPlayerManager.CharacterFilter.azusa.displayName(lang)) (192)", AudioPlayerManager.CharacterFilter.azusa.verifiedVoiceIds),
-            (lang == .en ? "Bonus & Birthdays (11)" : "全收集与生日彩蛋 (11)", Array(1112...1122))
+            (lang == .en ? "Bonus & Birthdays (11)" : (lang == .zhHant ? "全收集與生日彩蛋 (11)" : "全收集与生日彩蛋 (11)"), Array(1112...1122))
         ]
     }
     
@@ -3747,7 +3779,7 @@ struct SoundboardSheetView: View {
                     }
                 }
             }
-            .navigationTitle(manager.language == .en ? "Voice DB" : "已校准纯享角色语音库")
+            .navigationTitle(manager.language == .en ? "Voice DB" : (manager.language == .zhHant ? "已校準純享角色語音庫" : "已校准纯享角色语音库"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
@@ -3782,9 +3814,9 @@ struct RM500AlbumAndOutfitSheetView: View {
         NavigationView {
             VStack(spacing: 12) {
                 Picker("Mode", selection: $selectedTab) {
-                    Text("导航换装").tag(0)
-                    Text("纪念相册").tag(1)
-                    Text(manager.language == .en ? "Author & Feedback" : (manager.language == .zhHant ? "製作作者與反饋" : "制作作者与BUG反馈")).tag(2)
+                    Text(manager.language == .en ? "Outfits" : (manager.language == .zhHant ? "導航換裝" : "导航换装")).tag(0)
+                    Text(manager.language == .en ? "Album" : (manager.language == .zhHant ? "紀念相冊" : "纪念相册")).tag(1)
+                    Text(manager.language == .en ? "Author & Feedback" : (manager.language == .zhHant ? "製作作者與BUG反饋" : "制作作者与BUG反馈")).tag(2)
                 }
                 .pickerStyle(.segmented)
                 .padding(.horizontal)
@@ -3795,7 +3827,7 @@ struct RM500AlbumAndOutfitSheetView: View {
                         VStack(spacing: 14) {
                             // Live Preview Card of Current RM-500HTT Navigation Arrow
                             VStack(spacing: 8) {
-                                Text("当前地图自车导航箭头预览")
+                                Text(manager.language == .en ? "Current Navigation Arrow Preview" : (manager.language == .zhHant ? "當前地圖自車導航箭頭預覽" : "当前地图自车导航箭头预览"))
                                     .font(.caption.bold())
                                     .foregroundColor(.secondary)
                                 
@@ -3837,9 +3869,9 @@ struct RM500AlbumAndOutfitSheetView: View {
                                     Image(systemName: "sparkles.rectangle.stack.fill")
                                         .foregroundColor(.pink)
                                     VStack(alignment: .leading) {
-                                        Text("启用 RM-500HTT 原版角色星光斜纹背景皮肤")
+                                        Text(manager.language == .en ? "Enable RM-500HTT Original Starry Background Skin" : (manager.language == .zhHant ? "啟用 RM-500HTT 原版角色星光斜紋背景皮膚" : "启用 RM-500HTT 原版角色星光斜纹背景皮肤"))
                                             .font(.subheadline.bold())
-                                        Text("随所选角色自动切换红/蓝/黄/粉/绿专属星光底图")
+                                        Text(manager.language == .en ? "Auto-switches Red/Blue/Yellow/Pink/Green starry background" : (manager.language == .zhHant ? "隨所選角色自動切換紅/藍/黃/粉/綠專屬星光底圖" : "随所选角色自动切换红/蓝/黄/粉/绿专属星光底图"))
                                             .font(.caption2)
                                             .foregroundColor(.secondary)
                                     }
@@ -3852,7 +3884,7 @@ struct RM500AlbumAndOutfitSheetView: View {
                             
                             // Outfit Grid
                             VStack(alignment: .leading, spacing: 8) {
-                                Text("选择 RM-500HTT 原版导航自车箭头服装")
+                                Text(manager.language == .en ? "Select RM-500HTT Original Navigation Arrow Outfit" : (manager.language == .zhHant ? "選擇 RM-500HTT 原版導航自車箭頭服裝" : "选择 RM-500HTT 原版导航自车箭头服装"))
                                     .font(.subheadline.bold())
                                     .padding(.horizontal)
                                 
@@ -3873,7 +3905,9 @@ struct RM500AlbumAndOutfitSheetView: View {
                                                 Text(outfit.title(manager.language))
                                                     .font(.subheadline.bold())
                                                     .foregroundColor(.primary)
-                                                Text(outfit == .tonchan ? "轻音部宠物猪鼻龟专属游泳导航车标" : "支持 12 方向精准转向与行车迈步动画")
+                                                Text(outfit == .tonchan
+                                                     ? (manager.language == .en ? "K-ON! Pet Pig-Nosed Turtle Swimming Arrow" : (manager.language == .zhHant ? "輕音部寵物小豬(豬鼻龜)專屬游泳導航車標" : "轻音部宠物小猪(猪鼻龟)专属游泳导航车标"))
+                                                     : (manager.language == .en ? "Supports 12-direction turning & walking animation" : (manager.language == .zhHant ? "支援 12 方向精準轉向與行車邁步動畫" : "支持 12 方向精准转向与行车迈步动画")))
                                                     .font(.caption2)
                                                     .foregroundColor(.secondary)
                                             }
@@ -3923,7 +3957,7 @@ struct RM500AlbumAndOutfitSheetView: View {
                                         Button(action: {
                                             selectedCGIndex = selectedCGIndex > 1 ? selectedCGIndex - 1 : 36
                                         }) {
-                                            Label("上一张", systemImage: "chevron.left.circle.fill")
+                                            Label(manager.language == .en ? "Prev" : (manager.language == .zhHant ? "上一張" : "上一张"), systemImage: "chevron.left.circle.fill")
                                                 .font(.caption.bold())
                                         }
                                         Spacer()
@@ -3934,7 +3968,7 @@ struct RM500AlbumAndOutfitSheetView: View {
                                         Button(action: {
                                             selectedCGIndex = selectedCGIndex < 36 ? selectedCGIndex + 1 : 1
                                         }) {
-                                            Label("下一张", systemImage: "chevron.right.circle.fill")
+                                            Label(manager.language == .en ? "Next" : (manager.language == .zhHant ? "下一張" : "下一张"), systemImage: "chevron.right.circle.fill")
                                                 .font(.caption.bold())
                                         }
                                     }
@@ -3978,11 +4012,11 @@ struct RM500AlbumAndOutfitSheetView: View {
                     }
                 }
             }
-            .navigationTitle("RM-500HTT 典藏中心")
+            .navigationTitle(manager.language == .en ? "RM-500HTT Collection" : "RM-500HTT 典藏中心")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("完成") { dismiss() }
+                    Button(manager.language == .en ? "Done" : "完成") { dismiss() }
                 }
             }
         }
@@ -5681,7 +5715,7 @@ struct AboutAndFeedbackSheetView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    Button(manager.language == .en ? "Done" : "关闭") {
+                    Button(manager.language == .en ? "Done" : (manager.language == .zhHant ? "關閉" : "关闭")) {
                         dismiss()
                     }
                     .font(.body.bold())
@@ -5738,13 +5772,13 @@ struct AboutAndFeedbackContentView: View {
                             .foregroundColor(httGold)
                     }
                     
-                    Text(manager.language == .en ? "HTT Navi Companion" : "放课后茶会伴侣")
+                    Text(manager.language == .en ? "HTT Navi Companion" : (manager.language == .zhHant ? "放學後茶會伴侶" : "放课后茶会伴侣"))
                         .font(.system(size: 20, weight: .black))
                         .foregroundColor(.primary)
                     
                     HStack(spacing: 8) {
                         // Version 1.0 Badge
-                        Text("版本 1.0 (v\(manager.appVersion))")
+                        Text(manager.language == .en ? "Version 1.0 (v\(manager.appVersion))" : "版本 1.0 (v\(manager.appVersion))")
                             .font(.system(size: 11, weight: .bold, design: .monospaced))
                             .padding(.horizontal, 8)
                             .padding(.vertical, 3)
@@ -5764,7 +5798,7 @@ struct AboutAndFeedbackContentView: View {
                     
                     Text(manager.language == .en
                          ? "K-ON! After School Tea Time Exclusive In-Car Navigation & Companion System"
-                         : "放课后茶会 (HTT) 专属定制车载导航与桌面伴侣系统")
+                         : (manager.language == .zhHant ? "放學後茶會 (HTT) 專屬定製車載導航與桌面伴侶系統" : "放课后茶会 (HTT) 专属定制车载导航与桌面伴侣系统"))
                         .font(.system(size: 11, weight: .medium))
                         .foregroundColor(.secondary)
                         .multilineTextAlignment(.center)
@@ -5792,17 +5826,17 @@ struct AboutAndFeedbackContentView: View {
                     .transition(.scale.combined(with: .opacity))
                 }
                 
-                // 2. Feedback Channel 1: 抖音平台 (附图 P1 - 点击可直接放大打开)
+                // 2. Feedback Channel 1: 抖音平台 (保留「不懂二次元的君殇」原名不变)
                 VStack(alignment: .leading, spacing: 10) {
                     HStack(spacing: 8) {
                         Image(systemName: "play.tv.fill")
                             .foregroundColor(Color.pink)
                             .font(.title3)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("抖音平台：不懂二次元的君殇")
+                            Text(manager.language == .en ? "Douyin: 不懂二次元的君殇" : (manager.language == .zhHant ? "抖音平臺：不懂二次元的君殇" : "抖音平台：不懂二次元的君殇"))
                                 .font(.system(size: 15, weight: .black))
                                 .foregroundColor(.primary)
-                            Text("抖音号：363314224")
+                            Text(manager.language == .en ? "Douyin ID: 363314224" : (manager.language == .zhHant ? "抖音號：363314224" : "抖音号：363314224"))
                                 .font(.system(size: 12, weight: .bold, design: .monospaced))
                                 .foregroundColor(.secondary)
                         }
@@ -5810,12 +5844,12 @@ struct AboutAndFeedbackContentView: View {
                         HStack(spacing: 6) {
                             Button(action: {
                                 UIPasteboard.general.string = "363314224"
-                                withAnimation { copyToastText = "已复制抖音号：363314224" }
+                                withAnimation { copyToastText = manager.language == .en ? "Copied Douyin ID: 363314224" : (manager.language == .zhHant ? "已複製抖音號：363314224" : "已复制抖音号：363314224") }
                                 DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
                                     withAnimation { copyToastText = nil }
                                 }
                             }) {
-                                Text("复制抖音号")
+                                Text(manager.language == .en ? "Copy ID" : (manager.language == .zhHant ? "複製抖音號" : "复制抖音号"))
                                     .font(.system(size: 11, weight: .bold))
                                     .padding(.horizontal, 8)
                                     .padding(.vertical, 5)
@@ -5833,7 +5867,7 @@ struct AboutAndFeedbackContentView: View {
                                     UIApplication.shared.open(web)
                                 }
                             }) {
-                                Text("打开")
+                                Text(manager.language == .en ? "Open" : (manager.language == .zhHant ? "打開" : "打开"))
                                     .font(.system(size: 11, weight: .bold))
                                     .padding(.horizontal, 8)
                                     .padding(.vertical, 5)
@@ -5844,7 +5878,11 @@ struct AboutAndFeedbackContentView: View {
                         }
                     }
                     
-                    Text("可在抖音 App 搜索关注私信反馈使用中的 BUG 与功能建议，点击下方图片可直接打开大图或保存：")
+                    Text(manager.language == .en
+                         ? "Search & follow '不懂二次元的君殇' on Douyin for bug reports and suggestions. Tap image to enlarge or save:"
+                         : (manager.language == .zhHant
+                            ? "可在抖音 App 搜尋關注私訊反饋使用中的 BUG 與功能建議，點擊下方圖片可直接打開大圖或保存："
+                            : "可在抖音 App 搜索关注私信反馈使用中的 BUG 与功能建议，点击下方图片可直接打开大图或保存："))
                         .font(.system(size: 11))
                         .foregroundColor(.secondary)
                     
@@ -5853,7 +5891,7 @@ struct AboutAndFeedbackContentView: View {
                         Spacer()
                         Button(action: {
                             previewImage = AuthorQRCodeAssets.douyinImage
-                            previewTitle = "抖音平台：不懂二次元的君殇"
+                            previewTitle = manager.language == .zhHant ? "抖音平臺：不懂二次元的君殇" : "抖音平台：不懂二次元的君殇"
                             previewPlatform = "douyin"
                         }) {
                             ZStack(alignment: .bottomTrailing) {
@@ -5870,7 +5908,7 @@ struct AboutAndFeedbackContentView: View {
                                         Image(systemName: "qrcode")
                                             .font(.system(size: 44))
                                             .foregroundColor(.pink)
-                                        Text("抖音搜索：不懂二次元的君殇")
+                                        Text("抖音：不懂二次元的君殇")
                                             .font(.caption.bold())
                                     }
                                     .frame(width: 220, height: 220)
@@ -5882,7 +5920,7 @@ struct AboutAndFeedbackContentView: View {
                                 HStack(spacing: 3) {
                                     Image(systemName: "arrow.up.left.and.arrow.down.right")
                                         .font(.system(size: 9, weight: .black))
-                                    Text("点击打开")
+                                    Text(manager.language == .en ? "Tap to Open" : (manager.language == .zhHant ? "點擊打開" : "点击打开"))
                                         .font(.system(size: 10, weight: .bold))
                                 }
                                 .padding(.horizontal, 7)
@@ -5921,12 +5959,12 @@ struct AboutAndFeedbackContentView: View {
                         HStack(spacing: 6) {
                             Button(action: {
                                 UIPasteboard.general.string = "tomy.au1015"
-                                withAnimation { copyToastText = "已复制 Instagram：tomy.au1015" }
+                                withAnimation { copyToastText = manager.language == .en ? "Copied Instagram: tomy.au1015" : (manager.language == .zhHant ? "已複製 Instagram：tomy.au1015" : "已复制 Instagram：tomy.au1015") }
                                 DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
                                     withAnimation { copyToastText = nil }
                                 }
                             }) {
-                                Text("复制账号")
+                                Text(manager.language == .en ? "Copy ID" : (manager.language == .zhHant ? "複製賬號" : "复制账号"))
                                     .font(.system(size: 11, weight: .bold))
                                     .padding(.horizontal, 8)
                                     .padding(.vertical, 5)
@@ -5942,7 +5980,7 @@ struct AboutAndFeedbackContentView: View {
                                     UIApplication.shared.open(web)
                                 }
                             }) {
-                                Text("打开")
+                                Text(manager.language == .en ? "Open" : (manager.language == .zhHant ? "打開" : "打开"))
                                     .font(.system(size: 11, weight: .bold))
                                     .padding(.horizontal, 8)
                                     .padding(.vertical, 5)
@@ -5953,7 +5991,11 @@ struct AboutAndFeedbackContentView: View {
                         }
                     }
                     
-                    Text("Overseas or Hong Kong users can follow & DM on Instagram for bug reporting:")
+                    Text(manager.language == .en
+                         ? "Overseas or Hong Kong users can follow & DM on Instagram for bug reporting:"
+                         : (manager.language == .zhHant
+                            ? "港澳台及海外用戶可在 Instagram 關注私訊反饋 BUG 與建議，點擊下方圖片可直接打開大圖或保存："
+                            : "港澳台及海外用户可在 Instagram 关注私信反馈 BUG 与建议，点击下方图片可直接打开大图或保存："))
                         .font(.system(size: 11))
                         .foregroundColor(.secondary)
                     
@@ -5991,7 +6033,7 @@ struct AboutAndFeedbackContentView: View {
                                 HStack(spacing: 3) {
                                     Image(systemName: "arrow.up.left.and.arrow.down.right")
                                         .font(.system(size: 9, weight: .black))
-                                    Text("点击打开")
+                                    Text(manager.language == .en ? "Tap to Open" : (manager.language == .zhHant ? "點擊打開" : "点击打开"))
                                         .font(.system(size: 10, weight: .bold))
                                 }
                                 .padding(.horizontal, 7)
@@ -6012,7 +6054,7 @@ struct AboutAndFeedbackContentView: View {
                 .cornerRadius(16)
                 .padding(.horizontal)
                 
-                // 4. Feedback Channel 3: Bilibili 哔哩哔哩 (附图 P3 - 点击可直接放大打开)
+                // 4. Feedback Channel 3: Bilibili 哔哩哔哩 (保留「小君殇」原名不变)
                 VStack(alignment: .leading, spacing: 10) {
                     HStack(spacing: 8) {
                         Image(systemName: "tv.circle.fill")
@@ -6030,12 +6072,12 @@ struct AboutAndFeedbackContentView: View {
                         HStack(spacing: 6) {
                             Button(action: {
                                 UIPasteboard.general.string = "239899475"
-                                withAnimation { copyToastText = "已复制 B站 UID：239899475" }
+                                withAnimation { copyToastText = manager.language == .en ? "Copied Bilibili UID: 239899475" : (manager.language == .zhHant ? "已複製 B站 UID：239899475" : "已复制 B站 UID：239899475") }
                                 DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
                                     withAnimation { copyToastText = nil }
                                 }
                             }) {
-                                Text("复制UID")
+                                Text(manager.language == .en ? "Copy UID" : (manager.language == .zhHant ? "複製UID" : "复制UID"))
                                     .font(.system(size: 11, weight: .bold))
                                     .padding(.horizontal, 8)
                                     .padding(.vertical, 5)
@@ -6051,7 +6093,7 @@ struct AboutAndFeedbackContentView: View {
                                     UIApplication.shared.open(web)
                                 }
                             }) {
-                                Text("打开")
+                                Text(manager.language == .en ? "Open" : (manager.language == .zhHant ? "打開" : "打开"))
                                     .font(.system(size: 11, weight: .bold))
                                     .padding(.horizontal, 8)
                                     .padding(.vertical, 5)
@@ -6062,7 +6104,11 @@ struct AboutAndFeedbackContentView: View {
                         }
                     }
                     
-                    Text("可在哔哩哔哩 (B站) 搜索「小君殇」或 UID: 239899475 关注私信反馈，点击下方二维码可直接打开大图或保存：")
+                    Text(manager.language == .en
+                         ? "Search '小君殇' or UID: 239899475 on Bilibili to follow & DM. Tap QR image to enlarge or save:"
+                         : (manager.language == .zhHant
+                            ? "可在嗶哩嗶哩 (B站) 搜尋「小君殇」或 UID: 239899475 關注私訊反饋，點擊下方二維碼可直接打開大圖或保存："
+                            : "可在哔哩哔哩 (B站) 搜索「小君殇」或 UID: 239899475 关注私信反馈，点击下方二维码可直接打开大图或保存："))
                         .font(.system(size: 11))
                         .foregroundColor(.secondary)
                     
@@ -6099,7 +6145,7 @@ struct AboutAndFeedbackContentView: View {
                                 HStack(spacing: 3) {
                                     Image(systemName: "arrow.up.left.and.arrow.down.right")
                                         .font(.system(size: 9, weight: .black))
-                                    Text("点击打开")
+                                    Text(manager.language == .en ? "Tap to Open" : (manager.language == .zhHant ? "點擊打開" : "点击打开"))
                                         .font(.system(size: 10, weight: .bold))
                                 }
                                 .padding(.horizontal, 7)
@@ -6120,17 +6166,17 @@ struct AboutAndFeedbackContentView: View {
                 .cornerRadius(16)
                 .padding(.horizontal)
                 
-                // 5. Feedback Channel 4: 小红书 (附图 P4 - 点击可直接放大打开)
+                // 5. Feedback Channel 4: 小红书 (保留「小君殇」原名不变)
                 VStack(alignment: .leading, spacing: 10) {
                     HStack(spacing: 8) {
                         Image(systemName: "book.circle.fill")
                             .foregroundColor(Color.red)
                             .font(.title3)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("小红书：小君殇")
+                            Text(manager.language == .en ? "Xiaohongshu: 小君殇" : (manager.language == .zhHant ? "小紅書：小君殇" : "小红书：小君殇"))
                                 .font(.system(size: 15, weight: .black))
                                 .foregroundColor(.primary)
-                            Text("小红书号：638021380")
+                            Text(manager.language == .en ? "Xiaohongshu ID: 638021380" : (manager.language == .zhHant ? "小紅書號：638021380" : "小红书号：638021380"))
                                 .font(.system(size: 12, weight: .bold, design: .monospaced))
                                 .foregroundColor(.secondary)
                         }
@@ -6138,12 +6184,12 @@ struct AboutAndFeedbackContentView: View {
                         HStack(spacing: 6) {
                             Button(action: {
                                 UIPasteboard.general.string = "638021380"
-                                withAnimation { copyToastText = "已复制小红书号：638021380" }
+                                withAnimation { copyToastText = manager.language == .en ? "Copied Xiaohongshu ID: 638021380" : (manager.language == .zhHant ? "已複製小紅書號：638021380" : "已复制小红书号：638021380") }
                                 DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
                                     withAnimation { copyToastText = nil }
                                 }
                             }) {
-                                Text("复制账号")
+                                Text(manager.language == .en ? "Copy ID" : (manager.language == .zhHant ? "複製賬號" : "复制账号"))
                                     .font(.system(size: 11, weight: .bold))
                                     .padding(.horizontal, 8)
                                     .padding(.vertical, 5)
@@ -6159,7 +6205,7 @@ struct AboutAndFeedbackContentView: View {
                                     UIApplication.shared.open(web)
                                 }
                             }) {
-                                Text("打开")
+                                Text(manager.language == .en ? "Open" : (manager.language == .zhHant ? "打開" : "打开"))
                                     .font(.system(size: 11, weight: .bold))
                                     .padding(.horizontal, 8)
                                     .padding(.vertical, 5)
@@ -6170,7 +6216,11 @@ struct AboutAndFeedbackContentView: View {
                         }
                     }
                     
-                    Text("可在小红书 App 搜索「小君殇」或小红书号 638021380 关注私信反馈，点击下方图片可直接打开大图或保存：")
+                    Text(manager.language == .en
+                         ? "Search '小君殇' or ID 638021380 on Xiaohongshu to follow & DM. Tap image to enlarge or save:"
+                         : (manager.language == .zhHant
+                            ? "可在小紅書 App 搜尋「小君殇」或小紅書號 638021380 關注私訊反饋，點擊下方圖片可直接打開大圖或保存："
+                            : "可在小红书 App 搜索「小君殇」或小红书号 638021380 关注私信反馈，点击下方图片可直接打开大图或保存："))
                         .font(.system(size: 11))
                         .foregroundColor(.secondary)
                     
@@ -6179,7 +6229,7 @@ struct AboutAndFeedbackContentView: View {
                         Spacer()
                         Button(action: {
                             previewImage = AuthorQRCodeAssets.xiaohongshuImage
-                            previewTitle = "小红书：小君殇"
+                            previewTitle = manager.language == .zhHant ? "小紅書：小君殇" : "小红书：小君殇"
                             previewPlatform = "xiaohongshu"
                         }) {
                             ZStack(alignment: .bottomTrailing) {
@@ -6196,7 +6246,7 @@ struct AboutAndFeedbackContentView: View {
                                         Image(systemName: "qrcode")
                                             .font(.system(size: 44))
                                             .foregroundColor(.red)
-                                        Text("小红书号: 638021380")
+                                        Text("小红书: 小君殇")
                                             .font(.caption.bold())
                                     }
                                     .frame(width: 220, height: 220)
@@ -6207,7 +6257,7 @@ struct AboutAndFeedbackContentView: View {
                                 HStack(spacing: 3) {
                                     Image(systemName: "arrow.up.left.and.arrow.down.right")
                                         .font(.system(size: 9, weight: .black))
-                                    Text("点击打开")
+                                    Text(manager.language == .en ? "Tap to Open" : (manager.language == .zhHant ? "點擊打開" : "点击打开"))
                                         .font(.system(size: 10, weight: .bold))
                                 }
                                 .padding(.horizontal, 7)
@@ -6228,17 +6278,25 @@ struct AboutAndFeedbackContentView: View {
                 .cornerRadius(16)
                 .padding(.horizontal)
                 
-                // 6. Dual-Map Engine Status & Copyright Footer
+                // 6. Dual-Map Engine Status & Copyright Footer (自动根据简/繁/英切换!)
                 VStack(alignment: .leading, spacing: 8) {
                     HStack {
                         Image(systemName: "globe.asia.australia.fill")
                             .foregroundColor(.blue)
-                        Text("中国大陆高德地图 + 海外 Apple Maps 双擎自动切换")
+                        Text(manager.language == .en
+                             ? "Mainland AutoNavi (GaoDe) + Overseas Apple Maps Dual Engine"
+                             : (manager.language == .zhHant
+                                ? "中國大陸高德地圖 + 海外 Apple Maps 雙擎自動切換"
+                                : "中国大陆高德地图 + 海外 Apple Maps 双擎自动切换"))
                             .font(.system(size: 12, weight: .bold))
                             .foregroundColor(.primary)
                         Spacer()
                     }
-                    Text("系统在中国大陆自动启用高德地图数据与 GCJ-02 道路精准对齐；在港澳台及海外地区自动无缝切换为 Apple Maps 官方全球路网（WGS-84）。")
+                    Text(manager.language == .en
+                         ? "Automatically activates AutoNavi (GaoDe) map data & GCJ-02 road alignment in Mainland China, and seamlessly switches to Apple Maps official global road network (WGS-84) in HK, Macau, Taiwan & overseas."
+                         : (manager.language == .zhHant
+                            ? "系統在中國大陸自動啟用高德地圖數據與 GCJ-02 道路精準對齊；在港澳台及海外地區自動無縫切換為 Apple Maps 官方全球路網（WGS-84）。"
+                            : "系统在中国大陆自动启用高德地图数据与 GCJ-02 道路精准对齐；在港澳台及海外地区自动无缝切换为 Apple Maps 官方全球路网（WGS-84）。"))
                         .font(.system(size: 10))
                         .foregroundColor(.secondary)
                     
@@ -6299,7 +6357,9 @@ struct AboutAndFeedbackContentView: View {
                                 Button(action: {
                                     albumSaver.save(pImg) { success in
                                         withAnimation {
-                                            copyToastText = success ? "已成功保存二维码到系统相册！" : "请在系统设置中允许相册写入权限"
+                                            copyToastText = success
+                                                ? (manager.language == .en ? "Saved QR code to Photos!" : (manager.language == .zhHant ? "已成功保存二維碼到系統相冊！" : "已成功保存二维码到系统相册！"))
+                                                : (manager.language == .en ? "Please allow Photos access in Settings" : (manager.language == .zhHant ? "請在系統設置中允許相冊寫入權限" : "请在系统设置中允许相册写入权限"))
                                         }
                                         DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
                                             withAnimation { copyToastText = nil }
@@ -6308,7 +6368,7 @@ struct AboutAndFeedbackContentView: View {
                                 }) {
                                     HStack(spacing: 5) {
                                         Image(systemName: "square.and.arrow.down")
-                                        Text("保存到相册")
+                                        Text(manager.language == .en ? "Save Image" : (manager.language == .zhHant ? "保存到相冊" : "保存到相册"))
                                     }
                                     .font(.system(size: 13, weight: .bold))
                                     .frame(maxWidth: .infinity)
@@ -6329,14 +6389,14 @@ struct AboutAndFeedbackContentView: View {
                                     default: acct = "363314224"
                                     }
                                     UIPasteboard.general.string = acct
-                                    withAnimation { copyToastText = "已复制账号/UID：\(acct)" }
+                                    withAnimation { copyToastText = manager.language == .en ? "Copied: \(acct)" : (manager.language == .zhHant ? "已複製賬號/UID：\(acct)" : "已复制账号/UID：\(acct)") }
                                     DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
                                         withAnimation { copyToastText = nil }
                                     }
                                 }) {
                                     HStack(spacing: 5) {
                                         Image(systemName: "doc.on.doc")
-                                        Text("复制账号/UID")
+                                        Text(manager.language == .en ? "Copy ID/UID" : (manager.language == .zhHant ? "複製賬號/UID" : "复制账号/UID"))
                                     }
                                     .font(.system(size: 13, weight: .bold))
                                     .frame(maxWidth: .infinity)
@@ -6407,7 +6467,7 @@ struct AboutAndFeedbackContentView: View {
                             Button(action: {
                                 withAnimation { previewImage = nil }
                             }) {
-                                Text("关闭预览")
+                                Text(manager.language == .en ? "Close Preview" : (manager.language == .zhHant ? "關閉預覽" : "关闭预览"))
                                     .font(.system(size: 13, weight: .bold))
                                     .foregroundColor(.white.opacity(0.75))
                                     .padding(.top, 2)
