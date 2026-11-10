@@ -706,6 +706,9 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     var walkStepFrame: Int = 0
     @Published var currentNavArrowImage: UIImage? = nil
     private var lastNavArrowCacheKey: String = ""
+    private var lastMemberFrameKeys: [Int: String] = [:]
+    private var lastSingleFrameKey: String = ""
+    private var dragLastActiveTick: Int = 0
     private var croppedFrameCache: [String: UIImage] = [:]
     @Published var memberSpecificActions: [Int: MascotActionState] = [:]
     private var memberActionExpiryTick: [Int: Int] = [:]
@@ -5550,11 +5553,20 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                 }
             }
             let deskImg: UIImage? = {
-                if let deskSheet = loadedSheets["desk00"],
-                   let croppedDesk = deskSheet.cropping(to: CGRect(x: 96, y: 0, width: 192, height: 110)) {
-                    return UIImage(cgImage: croppedDesk)
+                guard let desk00 = loadedSheets["desk00"] else { return nil }
+                let desk01 = loadedSheets["desk01"]
+                // Each frame in desk00 / desk01 is 288x160; table & cakes span x=10..278, y=68..158 (268x90)
+                let cropRect = CGRect(x: 10, y: 68, width: 268, height: 90)
+                let size = CGSize(width: 268, height: 90)
+                let renderer = UIGraphicsImageRenderer(size: size)
+                return renderer.image { _ in
+                    if let d1 = desk01?.cropping(to: cropRect) {
+                        UIImage(cgImage: d1).draw(in: CGRect(origin: .zero, size: size))
+                    }
+                    if let d0 = desk00.cropping(to: cropRect) {
+                        UIImage(cgImage: d0).draw(in: CGRect(origin: .zero, size: size))
+                    }
                 }
-                return nil
             }()
             DispatchQueue.main.async {
                 self.spriteSheets = loadedSheets
@@ -5583,23 +5595,31 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         self.animTimer = timer
     }
     
+    func selectStagePosePill(_ state: MascotActionState) {
+        isDraggingMascot = false
+        draggedMemberId = nil
+        memberSpecificActions.removeAll()
+        memberActionExpiryTick.removeAll()
+        mascotAction = state
+        updateAllSpriteFrames()
+        playMascotVoice()
+    }
+
     private func stepMascotBehavior() {
         if isDraggingMascot {
-            if selectedCharacter != .all {
-                mascotAction = .grabbed
+            if animTick - dragLastActiveTick > 16 {
+                // Auto-recover if ScrollView cancelled DragGesture without firing onEnded
+                isDraggingMascot = false
+                draggedMemberId = nil
+            } else {
+                if selectedCharacter != .all {
+                    mascotAction = .grabbed
+                }
+                return
             }
-            return
         }
         if isOverspeeding && travelMode.supportsSpeedLimit {
             mascotAction = .panic
-            return
-        }
-        
-        // In 5-Member Stage Mode (.all), each member stays independently in her own state unless individually tapped!
-        if selectedCharacter == .all {
-            if mascotAction != .teaCake && mascotAction != .idle {
-                mascotAction = .idle
-            }
             return
         }
         
@@ -5609,6 +5629,12 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         } else if mascotAction == .walkRight {
             mascotOffsetX += 4.5
             if mascotOffsetX > stageWalkBound { mascotAction = .walkLeft }
+        }
+        
+        // In 5-Member Stage Mode (.all), preserve whatever pose pill the user selected (.idle, .walkRight, .special, .teaCake)
+        // without randomly overwriting it every 36 ticks!
+        if selectedCharacter == .all {
+            return
         }
         
         if animTick % 36 == 0 && mascotAction != .teaCake {
@@ -5759,7 +5785,8 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         let useCar = forceDrivingCar || (!forceRidingScooter && travelMode == .driving)
         
         // DRIVING MODE (开车: 伦敦复古出租车) OR RIDING MODE (骑车: 红色复古小绵羊电动车)
-        if useCar || useScooter {
+        // Per user requirement: 小猪(猪鼻龟) (.tonchan) uniformly uses its original walking/swimming turtle arrow in all modes!
+        if (useCar || useScooter) && arrowOutfit != .tonchan {
             let prefixChar = useScooter ? "s" : "c"
             let modeCacheKey = "\(prefixChar)_veh_\(oddStripIdx)_c\(cellIndex)_s\(stepBit)"
             if let cached = croppedFrameCache[modeCacheKey] {
@@ -5830,8 +5857,19 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         return img
     }
 
+    func markDragActive(memberId: Int? = nil) {
+        dragLastActiveTick = animTick
+        if !isDraggingMascot {
+            isDraggingMascot = true
+            draggedMemberId = memberId
+        }
+    }
+
     private func updateAllSpriteFrames() {
         guard !spriteSheets.isEmpty else { return }
+        var updatedFrames = allMemberFrames
+        var anyMemberChanged = false
+        
         for member in CharacterFilter.fiveIndividuals {
             if let exp = memberActionExpiryTick[member.charId], animTick >= exp {
                 memberSpecificActions.removeValue(forKey: member.charId)
@@ -5844,12 +5882,10 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             } else if selectedCharacter == .all {
                 if let specific = memberSpecificActions[member.charId] {
                     memberAction = specific
-                } else if mascotAction == .teaCake {
-                    memberAction = .teaCake
                 } else if activeRoute != nil && currentSpeedKmh > 3.0 {
                     memberAction = .walkRight
                 } else {
-                    memberAction = .idle
+                    memberAction = mascotAction
                 }
             } else if activeRoute != nil && currentSpeedKmh > 3.0 {
                 memberAction = .walkRight
@@ -5857,11 +5893,17 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                 memberAction = mascotAction
             }
             if let img = sliceFrame(for: member, action: memberAction, tick: phaseTick) {
-                allMemberFrames[member.charId] = img
-                if member == selectedCharacter {
+                if updatedFrames[member.charId] !== img {
+                    updatedFrames[member.charId] = img
+                    anyMemberChanged = true
+                }
+                if member == selectedCharacter && currentSpriteFrame !== img {
                     currentSpriteFrame = img
                 }
             }
+        }
+        if anyMemberChanged {
+            allMemberFrames = updatedFrames
         }
         if selectedCharacter == .all {
             if animTick >= nextAllMemberSwitchTick && !isPlaying {
@@ -5869,12 +5911,17 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                 activeAllMemberChar = others.randomElement() ?? .yui
                 nextAllMemberSwitchTick = animTick + Int.random(in: 35...95)
             }
-            currentSpriteFrame = allMemberFrames[activeAllMemberChar.charId] ?? allMemberFrames[1]
+            let targetSprite = updatedFrames[activeAllMemberChar.charId] ?? updatedFrames[1]
+            if currentSpriteFrame !== targetSprite {
+                currentSpriteFrame = targetSprite
+            }
         }
         walkStepFrame = (animTick / 2) % 2
         let effectiveCamHeading = (mapTrackingUser && cameraMode == .headingUp) ? headingDegrees : 0.0
         if let navImg = getRM500NavigationArrowFrame(mapCameraHeading: effectiveCamHeading) {
-            currentNavArrowImage = navImg
+            if currentNavArrowImage !== navImg {
+                currentNavArrowImage = navImg
+            }
         }
     }
     
