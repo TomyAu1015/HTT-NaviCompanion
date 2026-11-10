@@ -4974,7 +4974,13 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     }
     
     private var audioPlayer: AVAudioPlayer?
-    private var keepAlivePlayer: AVAudioPlayer?
+    var keepAlivePlayer: AVAudioPlayer?
+
+    func ensureBackgroundKeepAliveRunning() {
+        if keepAlivePlayer?.isPlaying == false {
+            keepAlivePlayer?.play()
+        }
+    }
     private var navFileHandle: FileHandle?
     private var navIndexTable: [VoiceEntry] = []
     private var navPayloadStart: UInt64 = 0

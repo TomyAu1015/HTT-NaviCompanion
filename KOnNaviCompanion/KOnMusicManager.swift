@@ -142,6 +142,84 @@ class KOnMusicManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
             print("KOnMusicManager audio session init error: \(error)")
         }
     }
+
+    // MARK: - Lock Screen & Control Center Integration (锁屏/控制中心媒体控制 & 彻底杜绝后台被杀)
+    private func setupRemoteCommandCenter() {
+        let commandCenter = MPRemoteCommandCenter.shared()
+        commandCenter.playCommand.isEnabled = true
+        commandCenter.playCommand.addTarget { [weak self] _ in
+            if let self = self, !self.isPlaying {
+                self.playOrPause()
+                return .success
+            }
+            return .commandFailed
+        }
+        commandCenter.pauseCommand.isEnabled = true
+        commandCenter.pauseCommand.addTarget { [weak self] _ in
+            if let self = self, self.isPlaying {
+                self.playOrPause()
+                return .success
+            }
+            return .commandFailed
+        }
+        commandCenter.togglePlayPauseCommand.isEnabled = true
+        commandCenter.togglePlayPauseCommand.addTarget { [weak self] _ in
+            self?.playOrPause()
+            return .success
+        }
+        commandCenter.nextTrackCommand.isEnabled = true
+        commandCenter.nextTrackCommand.addTarget { [weak self] _ in
+            self?.nextTrack()
+            return .success
+        }
+        commandCenter.previousTrackCommand.isEnabled = true
+        commandCenter.previousTrackCommand.addTarget { [weak self] _ in
+            self?.previousTrack()
+            return .success
+        }
+        commandCenter.changePlaybackPositionCommand.isEnabled = true
+        commandCenter.changePlaybackPositionCommand.addTarget { [weak self] event in
+            if let posEvent = event as? MPChangePlaybackPositionCommandEvent, let self = self, self.duration > 0 {
+                self.seek(to: posEvent.positionTime / self.duration)
+                return .success
+            }
+            return .commandFailed
+        }
+    }
+
+    func updateNowPlayingInfo() {
+        guard let song = currentSong else {
+            MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+            return
+        }
+        var info: [String: Any] = [
+            MPMediaItemPropertyTitle: song.title,
+            MPMediaItemPropertyArtist: song.artist,
+            MPMediaItemPropertyAlbumTitle: song.album,
+            MPMediaItemPropertyPlaybackDuration: duration > 0 ? duration : song.approxDurationSeconds,
+            MPNowPlayingInfoPropertyElapsedPlaybackTime: currentTime,
+            MPNowPlayingInfoPropertyPlaybackRate: isPlaying ? 1.0 : 0.0
+        ]
+        if let appIcon = UIImage(named: "AppIcon60x60@2x") ?? UIImage(named: "AppIcon") {
+            info[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: appIcon.size) { _ in appIcon }
+        }
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+    }
+
+    func beginBackgroundKeepAlive() {
+        if backgroundTaskID == .invalid {
+            backgroundTaskID = UIApplication.shared.beginBackgroundTask(withName: "KOnMusicBackgroundPlayback") { [weak self] in
+                self?.endBackgroundKeepAlive()
+            }
+        }
+    }
+    
+    func endBackgroundKeepAlive() {
+        if backgroundTaskID != .invalid {
+            UIApplication.shared.endBackgroundTask(backgroundTaskID)
+            backgroundTaskID = .invalid
+        }
+    }
     
     // MARK: - Built-in Canonical K-ON! Discography Index
     private static let canonicalKOnSongs: [KOnSongItem] = [
@@ -355,7 +433,7 @@ class KOnMusicManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
                 self.libraryStatusMessage = "正在播放: \(song.title)"
                 self.beginBackgroundKeepAlive()
                 self.updateNowPlayingInfo()
-                AudioPlayerManager.shared.keepAlivePlayer?.play()
+                AudioPlayerManager.shared.ensureBackgroundKeepAliveRunning()
                 startProgressTimer()
                 return
             } catch {
@@ -398,7 +476,7 @@ class KOnMusicManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
             self.libraryStatusMessage = "正在播放: \(song.title)"
             self.beginBackgroundKeepAlive()
             self.updateNowPlayingInfo()
-            AudioPlayerManager.shared.keepAlivePlayer?.play()
+            AudioPlayerManager.shared.ensureBackgroundKeepAliveRunning()
             startProgressTimer()
         } catch {
             print("Failed to play song \(song.title): \(error)")
@@ -428,7 +506,7 @@ class KOnMusicManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
             player.play()
             self.isPlaying = true
             self.beginBackgroundKeepAlive()
-            AudioPlayerManager.shared.keepAlivePlayer?.play()
+            AudioPlayerManager.shared.ensureBackgroundKeepAliveRunning()
             startProgressTimer()
             self.libraryStatusMessage = "正在播放: \(currentSong?.title ?? "")"
             self.updateNowPlayingInfo()
