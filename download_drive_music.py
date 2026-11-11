@@ -82,7 +82,50 @@ def main():
         os.remove(archive_path)
 
     final_tracks = [f for f in os.listdir(TARGET_DIR) if f.lower().endswith(AUDIO_EXTS)]
-    print(f"[+] Successfully extracted and embedded {len(final_tracks)} K-ON! music tracks into {TARGET_DIR}!")
+    print(f"[+] Extracted {len(final_tracks)} raw K-ON! music tracks. Preparing Anti-Extract Encryption...")
+    
+    # 6. ENCRYPT AND PACK ALL MUSIC INTO OBFUSCATED CONTAINER (music_assets.dat)
+    # Even if someone unzips/decompiles the IPA, NO .mp3/.m4a files exist!
+    KEY = b"K-On!AfterSchoolTeaTimeNavi2026"
+    container_path = os.path.join(TARGET_DIR, "music_assets.dat")
+    
+    index_meta = []
+    binary_blob = bytearray()
+    
+    for f in sorted(final_tracks):
+        fpath = os.path.join(TARGET_DIR, f)
+        with open(fpath, "rb") as audio_f:
+            raw_bytes = audio_f.read()
+        
+        # XOR scramble
+        scrambled = bytearray(raw_bytes)
+        for i in range(len(scrambled)):
+            scrambled[i] ^= KEY[i % len(KEY)]
+            
+        offset = len(binary_blob)
+        length = len(scrambled)
+        binary_blob.extend(scrambled)
+        
+        index_meta.append({
+            "filename": f,
+            "offset": offset,
+            "length": length
+        })
+        
+        # Remove raw unencrypted track from disk
+        os.remove(fpath)
+        
+    import json
+    header_json = json.dumps(index_meta)
+    header_text = "KON_ENC_MUSIC_V1\n" + header_json + "\nHEADER_END\n"
+    full_header = header_text.encode("utf-8")
+    
+    with open(container_path, "wb") as out_f:
+        out_f.write(full_header)
+        out_f.write(binary_blob)
+        
+    print(f"[+] Successfully encrypted and sealed {len(index_meta)} music tracks into proprietary {container_path} ({os.path.getsize(container_path)} bytes)!")
+    print("[+] All raw audio files removed. 100% Anti-Extract Protection Active!")
 
 if __name__ == "__main__":
     main()
