@@ -43,6 +43,14 @@ enum MusicPlayMode: String, CaseIterable {
         case .shuffle: return "shuffle"
         }
     }
+    
+    var shortLabel: String {
+        switch self {
+        case .loopAll: return "列表"
+        case .loopSingle: return "单曲"
+        case .shuffle: return "随机"
+        }
+    }
 }
 
 // MARK: - K-ON! Song Item Model
@@ -542,6 +550,14 @@ class KOnMusicManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
         }
     }
     
+    func toggleOrPlaySong(_ song: KOnSongItem) {
+        if let cur = currentSong, cur == song, audioPlayer != nil {
+            playOrPause()
+        } else {
+            playSong(song)
+        }
+    }
+    
     func playOrPause() {
         guard let player = audioPlayer else {
             if let song = currentSong, song.isAvailable {
@@ -988,13 +1004,21 @@ struct KOnMusicLibraryView: View {
                     
                     // Playback Controls Row
                     HStack(spacing: 24) {
-                        // Play Mode
+                        // Play Mode (列表循环 / 单曲循环 / 随机播放)
                         Button(action: {
                             musicManager.togglePlayMode()
                         }) {
-                            Image(systemName: musicManager.playMode.iconName)
-                                .font(.system(size: 15, weight: .bold))
-                                .foregroundColor(httGold)
+                            HStack(spacing: 3) {
+                                Image(systemName: musicManager.playMode.iconName)
+                                    .font(.system(size: 12, weight: .bold))
+                                Text(musicManager.playMode.rawValue)
+                                    .font(.system(size: 9, weight: .heavy))
+                            }
+                            .foregroundColor(httGold)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 4)
+                            .background(Color.white.opacity(0.08))
+                            .cornerRadius(6)
                         }
                         
                         // Previous
@@ -1126,12 +1150,15 @@ struct KOnMusicLibraryView: View {
                                         .foregroundColor(.gray)
                                     
                                     Button(action: {
-                                        musicManager.playSong(song)
+                                        musicManager.toggleOrPlaySong(song)
                                     }) {
                                         Image(systemName: (song == musicManager.currentSong && musicManager.isPlaying) ? "pause.circle.fill" : "play.circle.fill")
-                                            .font(.system(size: 20))
+                                            .font(.system(size: 22))
                                             .foregroundColor(httGold)
+                                            .padding(.leading, 4)
+                                            .padding(.vertical, 2)
                                     }
+                                    .buttonStyle(PlainButtonStyle())
                                 } else {
                                     Text("待放入")
                                         .font(.system(size: 9, weight: .bold))
@@ -1149,7 +1176,7 @@ struct KOnMusicLibraryView: View {
                             .contentShape(Rectangle())
                             .onTapGesture {
                                 if song.isAvailable {
-                                    musicManager.playSong(song)
+                                    musicManager.toggleOrPlaySong(song)
                                 } else {
                                     musicManager.libraryStatusMessage = "【\(song.title)】请先放入音频文件"
                                 }
@@ -1230,6 +1257,25 @@ struct KOnMusicMiniPlayerBar: View {
                     Spacer(minLength: 4)
                 }
                 .contentShape(Rectangle())
+            }
+            .buttonStyle(PlainButtonStyle())
+            
+            // Play Mode Switcher Button (列表循环 / 单曲循环 / 随机播放)
+            Button(action: {
+                musicManager.togglePlayMode()
+            }) {
+                HStack(spacing: 2) {
+                    Image(systemName: musicManager.playMode.iconName)
+                        .font(.system(size: 11, weight: .bold))
+                    Text(musicManager.playMode.shortLabel)
+                        .font(.system(size: 9, weight: .heavy))
+                }
+                .foregroundColor(httGold)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 4)
+                .background(Color.white.opacity(0.10))
+                .cornerRadius(6)
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(httGold.opacity(0.45), lineWidth: 0.8))
             }
             .buttonStyle(PlainButtonStyle())
             

@@ -928,7 +928,7 @@ struct ContentView: View {
                         let isCompactH = geo.size.height < 400 // iPhone 7 (375pt) & iPhone 13 Pro (390pt)
                         let landscapeStageH = max(124, min(175, geo.size.height * (isCompactH ? 0.36 : 0.40)))
                         
-                        ScrollView(.vertical, showsIndicators: true) {
+                        ScrollView((manager.showMapMode && !manager.isDraggingMascot) ? .vertical : [], showsIndicators: false) {
                             VStack(spacing: isCompactH ? 5 : 7) {
                                 topBezelBar
                                     .frame(width: usableW)
@@ -1004,7 +1004,7 @@ struct ContentView: View {
                             : max(205, min(260, geo.size.height * 0.27))
                         let contentW = max(280, geo.size.width - 20)
                         
-                        ScrollView(.vertical, showsIndicators: true) {
+                        ScrollView((manager.showMapMode && !manager.isDraggingMascot) ? .vertical : [], showsIndicators: false) {
                             VStack(spacing: isSmallPortrait ? 6 : 8) {
                                 topBezelBar
                                 speedometerCockpit(isCompact: isSmallPortrait)
@@ -1140,6 +1140,10 @@ struct ContentView: View {
                         electronicEyeAndHighwayHUDStrip
                         
                         Spacer(minLength: 2)
+                        
+                        if musicManager.isPlaying || musicManager.currentSong != nil {
+                            KOnMusicMiniPlayerBar(musicManager: musicManager)
+                        }
                         
                         // Speedometer + Speech Bubble + Mascot Compact Dock at Bottom-Left
                         bottomEnlargedFloatingIsland(isLandscape: true)
@@ -2634,8 +2638,8 @@ struct ContentView: View {
                             .onTapGesture {
                                 manager.triggerCharacterTap(member: member)
                             }
-                            .simultaneousGesture(
-                                DragGesture(minimumDistance: 12)
+                            .highPriorityGesture(
+                                DragGesture(minimumDistance: 4)
                                     .onChanged { value in
                                         let wasDragging = manager.isDraggingMascot
                                         manager.markDragActive(memberId: member.charId)
@@ -2675,8 +2679,8 @@ struct ContentView: View {
                     .onTapGesture {
                         manager.triggerCharacterTap()
                     }
-                    .simultaneousGesture(
-                        DragGesture(minimumDistance: 12)
+                    .highPriorityGesture(
+                        DragGesture(minimumDistance: 4)
                             .onChanged { value in
                                 let wasDragging = manager.isDraggingMascot
                                 manager.markDragActive(memberId: nil)
