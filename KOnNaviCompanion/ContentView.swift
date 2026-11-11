@@ -3211,7 +3211,7 @@ struct ContentView: View {
                 
                 // Live Character Arrow Preview Banner
                 HStack(spacing: 18) {
-                    if let arrowImg = manager.getRM500NavigationArrowFrame(mapCameraHeading: manager.headingDegrees) {
+                    if let arrowImg = manager.getRM500NavigationArrowFrame(mapCameraHeading: manager.headingDegrees, isPreview: true) {
                         Image(uiImage: arrowImg)
                             .interpolation(.none)
                             .resizable()
@@ -6490,6 +6490,54 @@ struct AboutAndFeedbackContentView: View {
                         .foregroundColor(.secondary)
                         .frame(maxWidth: .infinity, alignment: .center)
                         .padding(.top, 2)
+                }
+                .padding(14)
+                .background(Color(UIColor.secondarySystemGroupedBackground))
+                .cornerRadius(16)
+                .padding(.horizontal)
+                
+                // 7. Non-Profit Fan-Project Legal & Copyright Disclaimer Card (同人非营利与版权归属声明卡片)
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "shield.lefthalf.filled")
+                            .foregroundColor(httGold)
+                            .font(.system(size: 13, weight: .bold))
+                        Text(manager.language == .en
+                             ? "Non-Profit Fan Project & Copyright Notice"
+                             : (manager.language == .zhHant ? "同人非營利與版權聲明" : "同人非营利与版权声明"))
+                            .font(.system(size: 13, weight: .black))
+                            .foregroundColor(.primary)
+                        Spacer()
+                    }
+                    
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text(manager.language == .en
+                             ? "• Non-Commercial: This app is a personal fan tribute made strictly for non-profit nostalgia, technical study & research. No commercial sales, payments, or ads."
+                             : (manager.language == .zhHant
+                                ? "• 非商業性質：本應用為《輕音少女》粉絲出於懷舊技術交流與學習製作的個人同人作品，嚴禁任何形式的商業轉售、收費、內置廣告或贊助打賞。"
+                                : "• 非商业性质：本应用为《轻音少女》粉丝出于怀旧技术交流与学习制作的个人同人作品，严禁任何形式的商业转售、收费、内置广告或赞助打赏。"))
+                            .font(.system(size: 10))
+                            .foregroundColor(.secondary)
+                        
+                        Text(manager.language == .en
+                             ? "• Rights Attribution: K-ON! characters & universe © kakifly · Houbunsha / Sakura High Band / TBS / Kyoto Animation / Pony Canyon. RM-500HTT original navigation system © RWC / TBS."
+                             : (manager.language == .zhHant
+                                ? "• 權利歸屬：《輕音少女》（けいおん!）角色及原著版權歸 かきふらい（Kakifly）· 芳文社 / 櫻高輕音部 / TBS / 京都動畫 / 波麗佳音 所有；原版 RM-500HTT 導航儀軟硬件設計與原創語音歸 RWC / TBS 原權利方所有。"
+                                : "• 权利归属：《轻音少女》（けいおん!）角色及原著版权归 かきふらい（Kakifly）· 芳文社 / 樱高轻音部 / TBS / 京都动画 / 波丽佳音 所有；原版 RM-500HTT 导航仪软硬件设计与原创语音归 RWC / TBS 原权利方所有。"))
+                            .font(.system(size: 10))
+                            .foregroundColor(.secondary)
+                        
+                        Text(manager.language == .en
+                             ? "• Safe Harbor: The software only provides player & UI companion frameworks. All music files are imported locally by users and not publicly hosted or sold by this app."
+                             : (manager.language == .zhHant
+                                ? "• 音頻外置：本軟體僅提供介面與播放器框架，音樂庫音訊皆由用戶本地手動導入，軟體本身不公開發行或分發任何未授權商業音樂。"
+                                : "• 音频外置：本软件仅提供界面与播放器框架，音乐库音频皆由用户本地手动导入，软件本身不公开发行或分发任何未授权商业音乐。"))
+                            .font(.system(size: 10))
+                            .foregroundColor(.secondary)
+                    }
+                    .padding(8)
+                    .background(Color.white.opacity(0.04))
+                    .cornerRadius(8)
                 }
                 .padding(14)
                 .background(Color(UIColor.secondarySystemGroupedBackground))
