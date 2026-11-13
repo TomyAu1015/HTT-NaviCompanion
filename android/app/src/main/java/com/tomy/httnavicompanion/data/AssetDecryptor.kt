@@ -117,8 +117,7 @@ class AssetDecryptor(private val context: Context) {
         }
     }
 
-    private fun loadMascotPackageIndex()
-        loadVehicleSpritesArchive() {
+    private fun loadMascotPackageIndex() {
         try {
             context.assets.open("mascot_assets.dat").use { stream ->
                 val magic = ByteArray(8)
