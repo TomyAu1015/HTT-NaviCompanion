@@ -5001,8 +5001,9 @@ struct VehicleAndPlateSettingsSheetView: View {
     private let httCream = Color(red: 0.99, green: 0.96, blue: 0.90)
     private let provincePrefixes = ["粤", "港", "澳", "京", "沪", "浙", "苏", "川", "鄂", "湘", "桂", "闽"]
     
-    init(manager: AudioPlayerManager) {
+    init(manager: AudioPlayerManager, onClose: (() -> Void)? = nil) {
         self.manager = manager
+        self.onClose = onClose
         self.lang = manager.language
         _plateInput = State(initialValue: manager.vehicleLicensePlate)
         _selectedEnergy = State(initialValue: manager.vehicleEnergyType)
