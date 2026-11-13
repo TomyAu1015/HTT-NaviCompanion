@@ -4751,8 +4751,6 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         // CASE OVERSEAS / MACAU / TAIWAN / OTHER CITIES (海外 Apple Maps 官方地铁巴士 & 非深圳城市本地公交地铁)
         // Ensures users in Japan, US, Europe, Taiwan, Macau, or other cities NEVER see hardcoded Shenzhen stations!
         // =========================================================================
-        let isUserInSZ = CoordinateConverter.isInShenzhen(from)
-        let isDestInSZ = CoordinateConverter.isInShenzhen(to)
         if !fromHK && !toHK && (!isUserInSZ || !isDestInSZ) {
             let isOverseas = !CoordinateConverter.isInMainlandChina(from) || !CoordinateConverter.isInMainlandChina(to)
             let w1 = min(450, max(80, Int(Double(directMeters) * 0.08)))

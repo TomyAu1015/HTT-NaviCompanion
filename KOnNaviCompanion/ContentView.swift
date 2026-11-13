@@ -1006,11 +1006,199 @@ struct ContentView: View {
         }
     }
     
-    var body: some View {
+    private var cockpitAuthorFeedbackBadgeCompact: some View {
+        Button(action: { activeModalSheet = .about }) {
+            HStack(spacing: 5) {
+                Image(systemName: "sparkles")
+                    .font(.system(size: 9))
+                    .foregroundColor(httGold)
+                Text(manager.appAuthorLabel)
+                    .font(.system(size: 10, weight: .black))
+                    .foregroundColor(httGold)
+                    .lineLimit(1)
+                Text("·")
+                    .foregroundColor(.gray)
+                Text("v\(manager.appVersion)")
+                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                    .foregroundColor(.white.opacity(0.85))
+                Text("·")
+                    .foregroundColor(.gray)
+                HStack(spacing: 3) {
+                    Image(systemName: "ladybug.fill")
+                        .font(.system(size: 9))
+                        .foregroundColor(.orange)
+                    Text(tr("BUG反馈", "BUG反饋", "Feedback"))
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundColor(Color(red: 0.4, green: 0.8, blue: 1.0))
+                        .lineLimit(1)
+                }
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .frame(maxWidth: .infinity)
+            .background(Color.black.opacity(0.55))
+            .cornerRadius(8)
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold.opacity(0.45), lineWidth: 1))
+        }
+    }
+    
+    private var cockpitAuthorFeedbackBadgePortrait: some View {
+        Button(action: { activeModalSheet = .about }) {
+            HStack(spacing: 6) {
+                Image(systemName: "sparkles")
+                    .font(.system(size: 9))
+                    .foregroundColor(httGold)
+                Text(manager.appAuthorLabel)
+                    .font(.system(size: 11, weight: .black))
+                    .foregroundColor(httGold)
+                Text("·")
+                    .foregroundColor(.gray)
+                Text("v\(manager.appVersion)")
+                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                    .foregroundColor(.white.opacity(0.85))
+                Text("·")
+                    .foregroundColor(.gray)
+                HStack(spacing: 3) {
+                    Image(systemName: "ladybug.fill")
+                        .font(.system(size: 9))
+                        .foregroundColor(.orange)
+                    Text(tr("BUG反馈", "BUG反饋", "Feedback"))
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundColor(Color(red: 0.4, green: 0.8, blue: 1.0))
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 5)
+            .frame(maxWidth: .infinity)
+            .background(Color.black.opacity(0.48))
+            .cornerRadius(8)
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold.opacity(0.45), lineWidth: 1))
+        }
+        .padding(.top, 1)
+    }
+    
+    private func landscapeStandardCockpitView(geo: GeometryProxy) -> some View {
+        let sidePad: CGFloat = 10
+        let usableW = max(320, geo.size.width - sidePad * 2)
+        let colSpacing: CGFloat = max(8, usableW * 0.018)
+        let leftColW = (usableW - colSpacing) * 0.46
+        let rightColW = (usableW - colSpacing) * 0.54
+        let isCompactH = geo.size.height < 400
+        let landscapeStageH = max(124, min(175, geo.size.height * (isCompactH ? 0.36 : 0.40)))
+        
+        return ScrollView(.vertical, showsIndicators: false) {
+            VStack(spacing: isCompactH ? 5 : 7) {
+                topBezelBar
+                    .frame(width: usableW)
+                
+                HStack(alignment: .top, spacing: colSpacing) {
+                    VStack(spacing: isCompactH ? 5 : 7) {
+                        speedometerCockpit(isCompact: true)
+                        utilityControlGrid(isCompact: true)
+                        outfitCameraGiftRow
+                        cockpitAuthorFeedbackBadgeCompact
+                    }
+                    .frame(width: leftColW)
+                    
+                    VStack(spacing: isCompactH ? 5 : 7) {
+                        mainStageOrMapSection(stageWidth: rightColW, stageHeight: landscapeStageH)
+                        characterSelectorStrip
+                            .frame(width: rightColW)
+                        travelModesRow
+                            .frame(width: rightColW)
+                    }
+                    .frame(width: rightColW)
+                }
+                .frame(width: usableW)
+            }
+            .padding(.horizontal, sidePad)
+            .padding(.top, 4)
+            .padding(.bottom, max(geo.safeAreaInsets.bottom + 6, 18))
+        }
+        .frame(width: geo.size.width, height: geo.size.height)
+        .scaleEffect(x: manager.isHUDMirrored ? -1 : 1, y: 1)
+        .onAppear { manager.stageWalkBound = 85.0 }
+    }
+    
+    private func portraitStandardCockpitView(geo: GeometryProxy) -> some View {
+        let isSmallPortrait = geo.size.height < 700
+        let portraitStageH = isSmallPortrait
+            ? max(155, geo.size.height * 0.24)
+            : max(205, min(260, geo.size.height * 0.27))
+        let contentW = max(280, geo.size.width - 20)
+        
+        return ScrollView(.vertical, showsIndicators: false) {
+            VStack(spacing: isSmallPortrait ? 6 : 8) {
+                topBezelBar
+                speedometerCockpit(isCompact: isSmallPortrait)
+                mainStageOrMapSection(stageWidth: contentW, stageHeight: portraitStageH)
+                characterSelectorStrip
+                utilityControlGrid(isCompact: isSmallPortrait)
+                portraitBottomCompanionDock
+                cockpitAuthorFeedbackBadgePortrait
+            }
+            .frame(width: contentW)
+            .padding(.horizontal, 10)
+            .padding(.top, 4)
+            .padding(.bottom, max(geo.safeAreaInsets.bottom + 8, 16))
+        }
+        .frame(width: geo.size.width, height: geo.size.height)
+        .scaleEffect(x: manager.isHUDMirrored ? -1 : 1, y: 1)
+        .onAppear { manager.stageWalkBound = 65.0 }
+    }
+    
+    @ViewBuilder
+    private func fullScreenModalOverlayLayer(geo: GeometryProxy) -> some View {
+        if activeModalSheet == .doudizhu {
+            KOnDoudizhuSheetView(
+                manager: manager,
+                onClose: {
+                    withAnimation(.easeInOut(duration: 0.18)) {
+                        activeModalSheet = nil
+                    }
+                    restoreRootWindowTouchInteractions()
+                }
+            )
+            .frame(width: geo.size.width, height: geo.size.height)
+            .transition(.opacity)
+            .zIndex(999)
+        }
+        
+        if activeModalSheet == .departureTime {
+            RouteDepartureTimePickerSheetView(
+                manager: manager,
+                onClose: {
+                    withAnimation(.easeInOut(duration: 0.18)) {
+                        activeModalSheet = nil
+                    }
+                    restoreRootWindowTouchInteractions()
+                }
+            )
+            .frame(width: geo.size.width, height: geo.size.height)
+            .transition(.opacity)
+            .zIndex(998)
+        }
+        
+        if activeModalSheet == .vehicleSettings {
+            VehicleAndPlateSettingsSheetView(
+                manager: manager,
+                onClose: {
+                    withAnimation(.easeInOut(duration: 0.18)) {
+                        activeModalSheet = nil
+                    }
+                    restoreRootWindowTouchInteractions()
+                }
+            )
+            .frame(width: geo.size.width, height: geo.size.height)
+            .transition(.opacity)
+            .zIndex(998)
+        }
+    }
+    
+    private var mainGeometryRootCanvas: some View {
         GeometryReader { geo in
             let isLandscape = geo.size.width > geo.size.height
             ZStack {
-                // Background layer attached via .background() so it NEVER inflates ZStack or ScrollView frame size!
                 httDarkPanel
                     .overlay(
                         Group {
@@ -1025,212 +1213,21 @@ struct ContentView: View {
                     .clipped()
                     .ignoresSafeArea(.all)
                 
-                // CONDITIONAL 1: Prominent Enlarged Full-Screen Navigation View
                 if manager.isMapEnlarged {
                     enlargedNavigationHUDView(geo: geo, isLandscape: isLandscape)
                         .frame(width: geo.size.width, height: geo.size.height)
                         .scaleEffect(x: manager.isHUDMirrored ? -1 : 1, y: 1)
+                } else if isLandscape {
+                    landscapeStandardCockpitView(geo: geo)
                 } else {
-                    // CONDITIONAL 2: Standard Classic Cockpit View
-                    // Universal Responsive Layout for:
-                    // - Small Screens (iPhone 7 / 8 / SE: 375x667 Portrait, 667x375 Landscape)
-                    // - Notch Screens (iPhone 13 / 13 Pro / 14: 390x844 Portrait, 844x390 Landscape)
-                    // - Dynamic Island (iPhone 15 / 16 Pro: 393x852 Portrait, 852x393 Landscape)
-                    // - Plus / Pro Max / Duo (430x932+ Portrait, 932x430+ Landscape)
-                    if isLandscape {
-                        // GeometryReader already respects left/right safeAreaInsets automatically!
-                        // Use clean 10pt symmetric side padding so there is ZERO wasted gap on the left!
-                        let sidePad: CGFloat = 10
-                        let usableW = max(320, geo.size.width - sidePad * 2)
-                        let colSpacing: CGFloat = max(8, usableW * 0.018)
-                        let leftColW = (usableW - colSpacing) * 0.46
-                        let rightColW = (usableW - colSpacing) * 0.54
-                        let isCompactH = geo.size.height < 400 // iPhone 7 (375pt) & iPhone 13 Pro (390pt)
-                        let landscapeStageH = max(124, min(175, geo.size.height * (isCompactH ? 0.36 : 0.40)))
-                        
-                        ScrollView(.vertical, showsIndicators: false) {
-                            VStack(spacing: isCompactH ? 5 : 7) {
-                                topBezelBar
-                                    .frame(width: usableW)
-                                
-                                HStack(alignment: .top, spacing: colSpacing) {
-                                    // Left Column: Speedometer + Tactical Buttons + Cruise/Nav + Outfit/Camera/Gift + Author Bar!
-                                    VStack(spacing: isCompactH ? 5 : 7) {
-                                        speedometerCockpit(isCompact: true)
-                                        utilityControlGrid(isCompact: true)
-                                        outfitCameraGiftRow
-                                        
-                                        // Landscape Author & Feedback Bar (横屏左侧底部署名与反馈)
-                                        Button(action: { activeModalSheet = .about }) {
-                                            HStack(spacing: 5) {
-                                                Image(systemName: "sparkles")
-                                                    .font(.system(size: 9))
-                                                    .foregroundColor(httGold)
-                                                Text(manager.appAuthorLabel)
-                                                    .font(.system(size: 10, weight: .black))
-                                                    .foregroundColor(httGold)
-                                                    .lineLimit(1)
-                                                Text("·")
-                                                    .foregroundColor(.gray)
-                                                Text("v\(manager.appVersion)")
-                                                    .font(.system(size: 10, weight: .bold, design: .monospaced))
-                                                    .foregroundColor(.white.opacity(0.85))
-                                                Text("·")
-                                                    .foregroundColor(.gray)
-                                                HStack(spacing: 3) {
-                                                    Image(systemName: "ladybug.fill")
-                                                        .font(.system(size: 9))
-                                                        .foregroundColor(.orange)
-                                                    Text(tr("BUG反馈", "BUG反饋", "Feedback"))
-                                                        .font(.system(size: 10, weight: .bold))
-                                                        .foregroundColor(Color(red: 0.4, green: 0.8, blue: 1.0))
-                                                        .lineLimit(1)
-                                                }
-                                            }
-                                            .padding(.horizontal, 8)
-                                            .padding(.vertical, 4)
-                                            .frame(maxWidth: .infinity)
-                                            .background(Color.black.opacity(0.55))
-                                            .cornerRadius(8)
-                                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold.opacity(0.45), lineWidth: 1))
-                                        }
-                                    }
-                                    .frame(width: leftColW)
-                                    
-                                    // Right Column: Map/Stage + Speech Bubble + Character Strip + Travel Modes Row
-                                    VStack(spacing: isCompactH ? 5 : 7) {
-                                        mainStageOrMapSection(stageWidth: rightColW, stageHeight: landscapeStageH)
-                                        characterSelectorStrip
-                                            .frame(width: rightColW)
-                                        travelModesRow
-                                            .frame(width: rightColW)
-                                    }
-                                    .frame(width: rightColW)
-                                }
-                                .frame(width: usableW)
-                            }
-                            .padding(.horizontal, sidePad)
-                            .padding(.top, 4)
-                            .padding(.bottom, max(geo.safeAreaInsets.bottom + 6, 18))
-                        }
-                        .frame(width: geo.size.width, height: geo.size.height)
-                        .scaleEffect(x: manager.isHUDMirrored ? -1 : 1, y: 1)
-                        .onAppear { manager.stageWalkBound = 85.0 }
-                    } else {
-                        // Portrait Mode: Adaptive for iPhone 7/SE (height ~647pt) up to iPhone 13/15/Pro Max/Duo!
-                        let isSmallPortrait = geo.size.height < 700
-                        let portraitStageH = isSmallPortrait
-                            ? max(155, geo.size.height * 0.24)
-                            : max(205, min(260, geo.size.height * 0.27))
-                        let contentW = max(280, geo.size.width - 20)
-                        
-                        ScrollView(.vertical, showsIndicators: false) {
-                            VStack(spacing: isSmallPortrait ? 6 : 8) {
-                                topBezelBar
-                                speedometerCockpit(isCompact: isSmallPortrait)
-                                mainStageOrMapSection(stageWidth: contentW, stageHeight: portraitStageH)
-                                characterSelectorStrip
-                                utilityControlGrid(isCompact: isSmallPortrait)
-                                portraitBottomCompanionDock
-                                
-                                // Prominent Author & Version Badge (优雅呈现作者与版本)
-                                Button(action: { activeModalSheet = .about }) {
-                                    HStack(spacing: 6) {
-                                        Image(systemName: "sparkles")
-                                            .font(.system(size: 9))
-                                            .foregroundColor(httGold)
-                                        Text(manager.appAuthorLabel)
-                                            .font(.system(size: 11, weight: .black))
-                                            .foregroundColor(httGold)
-                                        Text("·")
-                                            .foregroundColor(.gray)
-                                        Text("v\(manager.appVersion)")
-                                            .font(.system(size: 11, weight: .bold, design: .monospaced))
-                                            .foregroundColor(.white.opacity(0.85))
-                                        Text("·")
-                                            .foregroundColor(.gray)
-                                        HStack(spacing: 3) {
-                                            Image(systemName: "ladybug.fill")
-                                                .font(.system(size: 9))
-                                                .foregroundColor(.orange)
-                                            Text(tr("BUG反馈", "BUG反饋", "Feedback"))
-                                                .font(.system(size: 11, weight: .bold))
-                                                .foregroundColor(Color(red: 0.4, green: 0.8, blue: 1.0))
-                                        }
-                                    }
-                                    .padding(.horizontal, 12)
-                                    .padding(.vertical, 5)
-                                    .frame(maxWidth: .infinity)
-                                    .background(Color.black.opacity(0.48))
-                                    .cornerRadius(8)
-                                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold.opacity(0.45), lineWidth: 1))
-                                }
-                                .padding(.top, 1)
-                            }
-                            .frame(width: contentW)
-                            .padding(.horizontal, 10)
-                            .padding(.top, 4)
-                            .padding(.bottom, max(geo.safeAreaInsets.bottom + 8, 16))
-                        }
-                        .frame(width: geo.size.width, height: geo.size.height)
-                        .scaleEffect(x: manager.isHUDMirrored ? -1 : 1, y: 1)
-                        .onAppear { manager.stageWalkBound = 65.0 }
-                    }
+                    portraitStandardCockpitView(geo: geo)
                 }
                 
-                // Long-Press RM-500HTT Beautified Outfit Quick Switcher Modal!
                 if showOutfitPopup {
                     outfitQuickPickerModalOverlay
                 }
                 
-                // Full-Screen ZStack Overlay for K-ON! Doudizhu:
-                // 1. Gives 100% full screen area in both Portrait & Landscape (no .sheet top margin stealing height in Landscape!)
-                // 2. Completely eliminates the iOS UIKit modal UIPresentationController responder deadlock when backgrounding & resuming!
-                if activeModalSheet == .doudizhu {
-                    KOnDoudizhuSheetView(
-                        manager: manager,
-                        onClose: {
-                            withAnimation(.easeInOut(duration: 0.18)) {
-                                activeModalSheet = nil
-                            }
-                            restoreRootWindowTouchInteractions()
-                        }
-                    )
-                    .frame(width: geo.size.width, height: geo.size.height)
-                    .transition(.opacity)
-                    .zIndex(999)
-                }
-                
-                if activeModalSheet == .departureTime {
-                    RouteDepartureTimePickerSheetView(
-                        manager: manager,
-                        onClose: {
-                            withAnimation(.easeInOut(duration: 0.18)) {
-                                activeModalSheet = nil
-                            }
-                            restoreRootWindowTouchInteractions()
-                        }
-                    )
-                    .frame(width: geo.size.width, height: geo.size.height)
-                    .transition(.opacity)
-                    .zIndex(998)
-                }
-                
-                if activeModalSheet == .vehicleSettings {
-                    VehicleAndPlateSettingsSheetView(
-                        manager: manager,
-                        onClose: {
-                            withAnimation(.easeInOut(duration: 0.18)) {
-                                activeModalSheet = nil
-                            }
-                            restoreRootWindowTouchInteractions()
-                        }
-                    )
-                    .frame(width: geo.size.width, height: geo.size.height)
-                    .transition(.opacity)
-                    .zIndex(998)
-                }
-
+                fullScreenModalOverlayLayer(geo: geo)
             }
             .frame(width: geo.size.width, height: geo.size.height)
             .onChange(of: isLandscape) { newVal in
@@ -1238,55 +1235,63 @@ struct ContentView: View {
             }
         }
         .ignoresSafeArea(.container, edges: .bottom)
-        .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in
-            manager.isDraggingMascot = false
-            manager.draggedMemberId = nil
-            UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
-        }
-        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
-            manager.isDraggingMascot = false
-            manager.draggedMemberId = nil
-            uiInteractionRecoveryTick += 1
-            restoreRootWindowTouchInteractions()
-        }
-        .onChange(of: activeModalSheet) { newSheet in
-            if newSheet == nil {
+    }
+    
+    private var mainCanvasWithLifecycleObservers: some View {
+        mainGeometryRootCanvas
+            .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in
                 manager.isDraggingMascot = false
                 manager.draggedMemberId = nil
+                UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
+                manager.isDraggingMascot = false
+                manager.draggedMemberId = nil
+                uiInteractionRecoveryTick += 1
                 restoreRootWindowTouchInteractions()
             }
-        }
-        .onChange(of: musicManager.showMusicSheet) { val in
-            if val { activeModalSheet = .music; musicManager.showMusicSheet = false }
-        }
-        .onChange(of: manager.showTransitPlanSheet) { val in
-            if val { activeModalSheet = .transitPlan; manager.showTransitPlanSheet = false }
-        }
-        .onChange(of: manager.showGaoDeWebPortalSheet) { val in
-            if val { activeModalSheet = .gaoDeWeb; manager.showGaoDeWebPortalSheet = false }
-        }
-        .onChange(of: manager.showAllFlightTicketsSheet) { val in
-            if val { activeModalSheet = .flights; manager.showAllFlightTicketsSheet = false }
-        }
-        .onChange(of: manager.showAllTrainTicketsSheet) { val in
-            if val { activeModalSheet = .trains; manager.showAllTrainTicketsSheet = false }
-        }
-        .onChange(of: manager.showDepartureTimePickerSheet) { val in
-            if val {
-                manager.showDepartureTimePickerSheet = false
-                withAnimation(.easeInOut(duration: 0.18)) {
-                    activeModalSheet = .departureTime
+            .onChange(of: activeModalSheet) { newSheet in
+                if newSheet == nil {
+                    manager.isDraggingMascot = false
+                    manager.draggedMemberId = nil
+                    restoreRootWindowTouchInteractions()
                 }
             }
-        }
-        .onChange(of: manager.showVehicleSettingsSheet) { val in
-            if val {
-                manager.showVehicleSettingsSheet = false
-                withAnimation(.easeInOut(duration: 0.18)) {
-                    activeModalSheet = .vehicleSettings
+            .onChange(of: musicManager.showMusicSheet) { val in
+                if val { activeModalSheet = .music; musicManager.showMusicSheet = false }
+            }
+            .onChange(of: manager.showTransitPlanSheet) { val in
+                if val { activeModalSheet = .transitPlan; manager.showTransitPlanSheet = false }
+            }
+    }
+    
+    var body: some View {
+        mainCanvasWithLifecycleObservers
+            .onChange(of: manager.showGaoDeWebPortalSheet) { val in
+                if val { activeModalSheet = .gaoDeWeb; manager.showGaoDeWebPortalSheet = false }
+            }
+            .onChange(of: manager.showAllFlightTicketsSheet) { val in
+                if val { activeModalSheet = .flights; manager.showAllFlightTicketsSheet = false }
+            }
+            .onChange(of: manager.showAllTrainTicketsSheet) { val in
+                if val { activeModalSheet = .trains; manager.showAllTrainTicketsSheet = false }
+            }
+            .onChange(of: manager.showDepartureTimePickerSheet) { val in
+                if val {
+                    manager.showDepartureTimePickerSheet = false
+                    withAnimation(.easeInOut(duration: 0.18)) {
+                        activeModalSheet = .departureTime
+                    }
                 }
             }
-        }
+            .onChange(of: manager.showVehicleSettingsSheet) { val in
+                if val {
+                    manager.showVehicleSettingsSheet = false
+                    withAnimation(.easeInOut(duration: 0.18)) {
+                        activeModalSheet = .vehicleSettings
+                    }
+                }
+            }
         .sheet(item: Binding<ActiveModalSheet?>(
             get: {
                 if activeModalSheet == .doudizhu || activeModalSheet == .departureTime || activeModalSheet == .vehicleSettings {
