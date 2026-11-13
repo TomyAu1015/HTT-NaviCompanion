@@ -15,6 +15,7 @@ struct NativePinyinSearchBar: UIViewRepresentable {
     func makeUIView(context: Context) -> UISearchBar {
         let bar = UISearchBar(frame: .zero)
         bar.delegate = context.coordinator
+        context.coordinator.searchBarRef = bar
         bar.searchBarStyle = .minimal
         bar.placeholder = placeholder
         bar.returnKeyType = .search
@@ -40,9 +41,22 @@ struct NativePinyinSearchBar: UIViewRepresentable {
     class Coordinator: NSObject, UISearchBarDelegate {
         var parent: NativePinyinSearchBar
         private var debounceTimer: Timer?
+        weak var searchBarRef: UISearchBar?
         
         init(_ parent: NativePinyinSearchBar) {
             self.parent = parent
+            super.init()
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(handleWillResignActive),
+                name: UIApplication.willResignActiveNotification,
+                object: nil
+            )
+        }
+        
+        @objc private func handleWillResignActive() {
+            debounceTimer?.invalidate()
+            searchBarRef?.resignFirstResponder()
         }
         
         func searchBar(_ searchBar: UISearchBar, textDidChange searchText: String) {
@@ -582,6 +596,17 @@ struct HTTSmoothMapView: UIViewRepresentable {
         
         init(_ parent: HTTSmoothMapView) {
             self.parent = parent
+            super.init()
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(handleMapAppDidBecomeActive),
+                name: UIApplication.didBecomeActiveNotification,
+                object: nil
+            )
+        }
+        
+        @objc private func handleMapAppDidBecomeActive() {
+            isUserInteracting = false
         }
         
 
@@ -1070,6 +1095,7 @@ enum ActiveModalSheet: String, Identifiable {
     case trains
     case departureTime
     case vehicleSettings
+    case doudizhu
     
     var id: String { self.rawValue }
 }
@@ -1329,6 +1355,8 @@ struct ContentView: View {
                 RouteDepartureTimePickerSheetView(manager: manager)
             case .vehicleSettings:
                 VehicleAndPlateSettingsSheetView(manager: manager)
+            case .doudizhu:
+                KOnDoudizhuSheetView(manager: manager)
             }
         }
     }
@@ -2755,6 +2783,25 @@ struct ContentView: View {
                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold.opacity(0.7), lineWidth: 1))
             }
             
+            Button(action: {
+                activeModalSheet = .doudizhu
+            }) {
+                HStack(spacing: 3) {
+                    Image(systemName: "suit.spade.fill")
+                        .font(.system(size: 10, weight: .bold))
+                    Text(tr("斗地主", "鬥地主", "Poker"))
+                        .font(.system(size: 11, weight: .heavy))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                }
+                .padding(.horizontal, 6)
+                .padding(.vertical, 6)
+                .background(LinearGradient(colors: [Color(red: 0.85, green: 0.35, blue: 0.12), httCrimson], startPoint: .topLeading, endPoint: .bottomTrailing))
+                .foregroundColor(.white)
+                .cornerRadius(8)
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold, lineWidth: 1.2))
+            }
+            
             Spacer(minLength: 2)
             
             Menu {
@@ -3140,10 +3187,8 @@ struct ContentView: View {
                     let seatCenterXRatios: [CGFloat] = [0.12, 0.31, 0.50, 0.69, 0.88]
                     let walkShift: CGFloat = (manager.mascotOffsetX * 0.35)
                     
-                    var currentSeatedIds = Set([1, 2, 3, 4, 5]).subtracting(manager.unseatedTeaMemberIds)
-                    if manager.isDraggingMascot, let dId = manager.draggedMemberId {
-                        currentSeatedIds.remove(dId)
-                    }
+                    let draggedExclusion: Set<Int> = (manager.isDraggingMascot && manager.draggedMemberId != nil) ? [manager.draggedMemberId!] : []
+                    let currentSeatedIds: Set<Int> = Set([1, 2, 3, 4, 5]).subtracting(manager.unseatedTeaMemberIds).subtracting(draggedExclusion)
                     let dynamicTeaScene = manager.renderTeaPartySceneFrame(includedCharIds: currentSeatedIds)
                         ?? manager.teaPartyCompositedFrame
                         ?? manager.cachedTeaPartyFrames.first
@@ -4250,14 +4295,14 @@ struct ContentView: View {
     }
 }
 
-// MARK: - Multi-Modal Destination Search & Route Sheet (Pinyin-Safe & 20+ Amap POI Suggestions)
+// MARK: - Multi-Modal Destination Search & Route Sheet (App-Switch Safe ScrollView + LazyVStack!)
 struct DestinationSearchSheetView: View {
-    // NOT @ObservedObject on manager so 60fps sprite/GPS ticks never re-render this sheet or interrupt Pinyin typing!
     let manager: AudioPlayerManager
     @StateObject private var searchEngine = PlaceSearchEngine()
     @Environment(\.dismiss) var dismiss
     @State private var queryText: String = ""
     @State private var selectedMode: NavigationTravelMode = AudioPlayerManager.shared.travelMode
+    @State private var activeRefreshToken: UUID = UUID()
     
     var body: some View {
         NavigationView {
@@ -4280,33 +4325,11 @@ struct DestinationSearchSheetView: View {
                             .foregroundColor(selectedMode == mode ? .white : .primary)
                             .cornerRadius(8)
                         }
+                        .buttonStyle(PlainButtonStyle())
                     }
                 }
                 .padding(.horizontal)
                 .padding(.top, 6)
-                
-                // Driving Highway Preference Selector in Search Sheet (Enlarged!)
-                if selectedMode == .driving {
-                    HStack(spacing: 8) {
-                        ForEach(RouteStrategyPreference.allCases) { pref in
-                            Button(action: {
-                                manager.routePreference = pref
-                            }) {
-                                HStack(spacing: 5) {
-                                    Image(systemName: pref.icon)
-                                        .font(.system(size: 13, weight: .bold))
-                                    Text(pref.title(manager.language))
-                                        .font(.system(size: 13, weight: .heavy))
-                                }
-                                .frame(maxWidth: .infinity, minHeight: 36)
-                                .background(manager.routePreference == pref ? Color.orange : Color(UIColor.tertiarySystemFill))
-                                .foregroundColor(manager.routePreference == pref ? .white : .primary)
-                                .cornerRadius(9)
-                            }
-                        }
-                    }
-                    .padding(.horizontal)
-                }
                 
                 // One-Click External App / Clipboard Quick Navigation Bar
                 Button(action: {
@@ -4330,7 +4353,9 @@ struct DestinationSearchSheetView: View {
                     .foregroundColor(.blue)
                     .cornerRadius(9)
                     .padding(.horizontal)
+                    .contentShape(Rectangle())
                 }
+                .buttonStyle(PlainButtonStyle())
                 
                 // Pinyin-Safe Native Search Bar + Search Button
                 HStack(spacing: 4) {
@@ -4361,6 +4386,7 @@ struct DestinationSearchSheetView: View {
                             .foregroundColor(.white)
                             .cornerRadius(8)
                     }
+                    .buttonStyle(PlainButtonStyle())
                     .padding(.trailing, 12)
                 }
                 
@@ -4385,7 +4411,9 @@ struct DestinationSearchSheetView: View {
                     .foregroundColor(.orange)
                     .cornerRadius(8)
                     .padding(.horizontal)
+                    .contentShape(Rectangle())
                 }
+                .buttonStyle(PlainButtonStyle())
                 
                 if searchEngine.isSearching {
                     HStack(spacing: 8) {
@@ -4397,12 +4425,19 @@ struct DestinationSearchSheetView: View {
                     .padding(.vertical, 4)
                 }
                 
-                // Combined List: Direct POI MapItems (with Distance!) + Rich Autocomplete Sub-entrances (East/West Plaza, Parking, Metro, etc.)
-                List {
-                    if !searchEngine.mapItems.isEmpty {
-                        Section(header: Text(manager.language == .en ? "Exact Matches (\(searchEngine.mapItems.count))" : (manager.language == .zhHant ? "精準地點結果 (\(searchEngine.mapItems.count) 個)" : "精准地点结果 (\(searchEngine.mapItems.count) 个)"))) {
-                            ForEach(searchEngine.mapItems, id: \.self) { item in
+                // App-Switch Safe ScrollView + LazyVStack (Never freezes hit-testing when returning from background!)
+                ScrollView(.vertical, showsIndicators: true) {
+                    LazyVStack(alignment: .leading, spacing: 8) {
+                        if !searchEngine.mapItems.isEmpty {
+                            Text(manager.language == .en ? "Exact Matches (\(searchEngine.mapItems.count))" : (manager.language == .zhHant ? "精準地點結果 (\(searchEngine.mapItems.count) 個)" : "精准地点结果 (\(searchEngine.mapItems.count) 个)"))
+                                .font(.caption.bold())
+                                .foregroundColor(.secondary)
+                                .padding(.horizontal, 16)
+                                .padding(.top, 4)
+                            
+                            ForEach(Array(searchEngine.mapItems.enumerated()), id: \.offset) { _, item in
                                 Button(action: {
+                                    UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
                                     manager.travelMode = selectedMode
                                     manager.isMapEnlarged = true
                                     manager.showMapMode = true
@@ -4423,33 +4458,46 @@ struct DestinationSearchSheetView: View {
                                             Text(item.name ?? (manager.language == .zhHant ? "未知地點" : "未知地点"))
                                                 .font(.subheadline.bold())
                                                 .foregroundColor(.primary)
+                                                .multilineTextAlignment(.leading)
                                             Text(detailedAddress(for: item.placemark))
                                                 .font(.caption2)
                                                 .foregroundColor(.secondary)
+                                                .multilineTextAlignment(.leading)
                                         }
                                         Spacer()
                                         VStack(alignment: .trailing, spacing: 3) {
                                             Text(distanceString(to: item.placemark.coordinate))
                                                 .font(.caption2.bold())
                                                 .foregroundColor(.secondary)
-                                            Text(manager.language == .en ? "Go" : (manager.language == .zhHant ? "去這裡" : "去这里"))
+                                            Text(manager.language == .en ? "Routes" : (manager.language == .zhHant ? "查看路線" : "查看路线"))
                                                 .font(.caption.bold())
                                                 .padding(.horizontal, 10)
-                                                .padding(.vertical, 4)
+                                                .padding(.vertical, 5)
                                                 .background(Color.red)
                                                 .foregroundColor(.white)
                                                 .cornerRadius(6)
                                         }
                                     }
+                                    .padding(12)
+                                    .background(Color(UIColor.secondarySystemGroupedBackground))
+                                    .cornerRadius(10)
+                                    .contentShape(Rectangle())
                                 }
+                                .buttonStyle(PlainButtonStyle())
+                                .padding(.horizontal, 14)
                             }
                         }
-                    }
-                    
-                    if !searchEngine.completions.isEmpty {
-                        Section(header: Text(manager.language == .en ? "Suggestions & Entrances (\(searchEngine.completions.count))" : (manager.language == .zhHant ? "全城聯想與詳細出入口 (\(searchEngine.completions.count) 個)" : "全城联想与详细出入口 (\(searchEngine.completions.count) 个)"))) {
-                            ForEach(searchEngine.completions, id: \.self) { comp in
+                        
+                        if !searchEngine.completions.isEmpty {
+                            Text(manager.language == .en ? "Suggestions & Entrances (\(searchEngine.completions.count))" : (manager.language == .zhHant ? "全城聯想與詳細出入口 (\(searchEngine.completions.count) 個)" : "全城联想与详细出入口 (\(searchEngine.completions.count) 个)"))
+                                .font(.caption.bold())
+                                .foregroundColor(.secondary)
+                                .padding(.horizontal, 16)
+                                .padding(.top, 6)
+                            
+                            ForEach(Array(searchEngine.completions.enumerated()), id: \.offset) { _, comp in
                                 Button(action: {
+                                    UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
                                     manager.travelMode = selectedMode
                                     manager.isMapEnlarged = true
                                     manager.showMapMode = true
@@ -4471,14 +4519,16 @@ struct DestinationSearchSheetView: View {
                                             Text(comp.title)
                                                 .font(.subheadline.bold())
                                                 .foregroundColor(.primary)
+                                                .multilineTextAlignment(.leading)
                                             if !comp.subtitle.isEmpty {
                                                 Text(comp.subtitle)
                                                     .font(.caption2)
                                                     .foregroundColor(.secondary)
+                                                    .multilineTextAlignment(.leading)
                                             }
                                         }
                                         Spacer()
-                                        Text(manager.language == .en ? "Navigate" : (manager.language == .zhHant ? "開始導航" : "开始导航"))
+                                        Text(manager.language == .en ? "Routes" : (manager.language == .zhHant ? "查看路線" : "查看路线"))
                                             .font(.caption.bold())
                                             .padding(.horizontal, 10)
                                             .padding(.vertical, 5)
@@ -4486,21 +4536,40 @@ struct DestinationSearchSheetView: View {
                                             .foregroundColor(.white)
                                             .cornerRadius(6)
                                     }
+                                    .padding(12)
+                                    .background(Color(UIColor.secondarySystemGroupedBackground))
+                                    .cornerRadius(10)
+                                    .contentShape(Rectangle())
                                 }
+                                .buttonStyle(PlainButtonStyle())
+                                .padding(.horizontal, 14)
                             }
                         }
                     }
+                    .padding(.bottom, 20)
                 }
-                .listStyle(.insetGrouped)
+                .id(activeRefreshToken)
             }
-            .navigationTitle(manager.language == .en ? "Route Planner" : (manager.language == .zhHant ? "高德/MapKit 智慧路線搜尋" : "高德/MapKit 智能路线搜索"))
+            .background(Color(UIColor.systemGroupedBackground).ignoresSafeArea())
+            .navigationTitle(manager.language == .en ? "Route Search" : (manager.language == .zhHant ? "高德/MapKit 智慧路線搜尋" : "高德/MapKit 智能路线搜索"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button(manager.language == .en ? "Close" : (manager.language == .zhHant ? "關閉" : "关闭")) { dismiss() }
                 }
             }
+            .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
+                // Force clean hit-test refresh when user switches back from another app!
+                searchEngine.isSearching = false
+                activeRefreshToken = UUID()
+                let trimmed = queryText.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty && searchEngine.mapItems.isEmpty && searchEngine.completions.isEmpty {
+                    searchEngine.updateQueryFragment(trimmed, center: manager.userCoordinate)
+                    searchEngine.performFullSearch(query: trimmed, center: manager.userCoordinate)
+                }
+            }
         }
+        .navigationViewStyle(StackNavigationViewStyle())
     }
     
     private func detailedAddress(for pm: MKPlacemark) -> String {
@@ -7796,5 +7865,887 @@ struct AboutAndFeedbackContentView: View {
                 .transition(.opacity)
             }
         }
+    }
+}
+
+
+// ============================================================================
+// MARK: - K-ON! Ho-kago Tea Time Face-to-Face Multiplayer Doudizhu View
+// (轻音少女 · 放课后茶会面对面开房联机斗地主：支持蓝牙/Wi-Fi面对面建房、AI角色补位、记牌器、智能提示与在线服务器预留)
+// ============================================================================
+
+struct KOnDoudizhuSheetView: View {
+    @ObservedObject var manager: AudioPlayerManager
+    @ObservedObject private var ddz = KOnDoudizhuManager.shared
+    @Environment(\.dismiss) private var dismiss
+    @State private var showServerConfig: Bool = false
+    
+    private let httGold = Color(red: 0.88, green: 0.68, blue: 0.24)
+    private let httCrimson = Color(red: 0.78, green: 0.18, blue: 0.22)
+    private let httCream = Color(red: 0.99, green: 0.96, blue: 0.90)
+    private let tableFeltDark = Color(red: 0.09, green: 0.28, blue: 0.20)
+    private let tableFeltLight = Color(red: 0.14, green: 0.38, blue: 0.26)
+    
+    private func tr(_ hans: String, _ hant: String, _ en: String) -> String {
+        switch manager.language {
+        case .zhHans: return hans
+        case .zhHant: return hant
+        case .en: return en
+        }
+    }
+    
+    var body: some View {
+        NavigationView {
+            ZStack {
+                LinearGradient(
+                    colors: [tableFeltDark, tableFeltLight, Color(red: 0.07, green: 0.20, blue: 0.14)],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+                .ignoresSafeArea()
+                
+                VStack(spacing: 8) {
+                    // Status Notice Bar
+                    HStack(spacing: 6) {
+                        Image(systemName: "sparkles")
+                            .foregroundColor(httGold)
+                            .font(.system(size: 12, weight: .bold))
+                        Text(ddz.statusBanner)
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundColor(httCream)
+                            .lineLimit(2)
+                        Spacer()
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 7)
+                    .background(Color.black.opacity(0.55))
+                    .cornerRadius(10)
+                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(httGold.opacity(0.6), lineWidth: 1))
+                    .padding(.horizontal, 12)
+                    .padding(.top, 4)
+                    
+                    if ddz.phase == .lobby {
+                        lobbyContentView
+                    } else {
+                        gameTableContentView
+                    }
+                }
+            }
+            .navigationTitle(tr("放课后茶会 · 面对面斗地主", "放課後茶會 · 面對面鬥地主", "HTT · Multiplayer Doudizhu"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    if ddz.phase != .lobby {
+                        Button(action: {
+                            ddz.phase = .lobby
+                        }) {
+                            HStack(spacing: 3) {
+                                Image(systemName: "chevron.left")
+                                Text(tr("房间大厅", "房間大廳", "Lobby"))
+                            }
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundColor(httGold)
+                        }
+                    }
+                }
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button(tr("关闭", "關閉", "Close")) {
+                        dismiss()
+                    }
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundColor(httGold)
+                }
+            }
+            .onAppear {
+                if ddz.phase == .lobby {
+                    ddz.rebuildLobbySeats()
+                }
+            }
+        }
+        .navigationViewStyle(StackNavigationViewStyle())
+    }
+    
+    // MARK: - 1. Face-to-Face Room Creation & Joining Lobby View
+    private var lobbyContentView: some View {
+        ScrollView(.vertical, showsIndicators: true) {
+            VStack(alignment: .leading, spacing: 12) {
+                // Network Mode Selector: Face-to-Face P2P vs Online Server (Reserved)
+                HStack(spacing: 8) {
+                    Button(action: {
+                        ddz.networkMode = .faceToFaceP2P
+                    }) {
+                        HStack(spacing: 5) {
+                            Image(systemName: "antenna.radiowaves.left.and.right")
+                            Text(tr("面对面开房联机 (免流量)", "面對面開房聯機 (免流量)", "Face-to-Face P2P"))
+                                .font(.system(size: 12, weight: .black))
+                        }
+                        .frame(maxWidth: .infinity, minHeight: 36)
+                        .background(ddz.networkMode == .faceToFaceP2P ? httCrimson : Color.black.opacity(0.45))
+                        .foregroundColor(.white)
+                        .cornerRadius(10)
+                        .overlay(RoundedRectangle(cornerRadius: 10).stroke(ddz.networkMode == .faceToFaceP2P ? httGold : Color.clear, lineWidth: 1.5))
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                    
+                    Button(action: {
+                        ddz.networkMode = .onlineServer
+                    }) {
+                        HStack(spacing: 5) {
+                            Image(systemName: "icloud.and.arrow.up.fill")
+                            Text(tr("在线服务器联机 (预留)", "在線伺服器聯機 (預留)", "Online Server"))
+                                .font(.system(size: 12, weight: .black))
+                        }
+                        .frame(maxWidth: .infinity, minHeight: 36)
+                        .background(ddz.networkMode == .onlineServer ? Color.blue : Color.black.opacity(0.45))
+                        .foregroundColor(.white)
+                        .cornerRadius(10)
+                        .overlay(RoundedRectangle(cornerRadius: 10).stroke(ddz.networkMode == .onlineServer ? httGold : Color.clear, lineWidth: 1.5))
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                }
+                
+                // Player Nickname & K-ON! Character Avatar Selection
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(tr("1. 个人昵称与出战轻音角色选择", "1. 個人暱稱與出戰輕音角色選擇", "1. Your Nickname & HTT Character"))
+                        .font(.system(size: 13, weight: .black))
+                        .foregroundColor(httGold)
+                    
+                    HStack(spacing: 8) {
+                        Text(tr("昵称:", "暱稱:", "Name:"))
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundColor(httCream)
+                        TextField(tr("输入你的房间昵称", "輸入你的房間暱稱", "Nickname"), text: $ddz.myNickname)
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 10)
+                            .frame(height: 34)
+                            .background(Color.white.opacity(0.14))
+                            .cornerRadius(8)
+                    }
+                    
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            ForEach(AudioPlayerManager.CharacterFilter.fiveIndividuals) { char in
+                                let isSel = (ddz.myCharacter == char)
+                                Button(action: {
+                                    ddz.myCharacter = char
+                                    ddz.rebuildLobbySeats()
+                                    manager.playMascotVoice(for: char)
+                                }) {
+                                    VStack(spacing: 3) {
+                                        if let frame = manager.allMemberFrames[char.charId] {
+                                            Image(uiImage: frame)
+                                                .interpolation(.none)
+                                                .resizable()
+                                                .scaledToFit()
+                                                .frame(width: 42, height: 48)
+                                        }
+                                        Text(char.displayName(manager.language))
+                                            .font(.system(size: 11, weight: .black))
+                                            .foregroundColor(.white)
+                                    }
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 6)
+                                    .background(isSel ? httCrimson : Color.white.opacity(0.10))
+                                    .cornerRadius(10)
+                                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(isSel ? httGold : Color.clear, lineWidth: 1.5))
+                                }
+                                .buttonStyle(PlainButtonStyle())
+                            }
+                        }
+                    }
+                }
+                .padding(12)
+                .background(Color.black.opacity(0.45))
+                .cornerRadius(12)
+                
+                // Face-to-Face Room Code & Host / Join Buttons (OR Online Server Config)
+                if ddz.networkMode == .faceToFaceP2P {
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack {
+                            Text(tr("2. 面对面开房联机 (蓝牙 + P2P Wi-Fi 直连)", "2. 面對面開房聯機 (藍牙 + P2P Wi-Fi 直連)", "2. Face-to-Face Room Setup"))
+                                .font(.system(size: 13, weight: .black))
+                                .foregroundColor(httGold)
+                            Spacer()
+                            Text(tr("房号:", "房號:", "Code:"))
+                                .font(.system(size: 12, weight: .bold))
+                                .foregroundColor(httCream)
+                            TextField("8888", text: $ddz.roomCode)
+                                .font(.system(size: 14, weight: .black, design: .monospaced))
+                                .foregroundColor(httGold)
+                                .multilineTextAlignment(.center)
+                                .frame(width: 68, height: 30)
+                                .background(Color.white.opacity(0.14))
+                                .cornerRadius(7)
+                        }
+                        
+                        HStack(spacing: 10) {
+                            Button(action: {
+                                ddz.startHostingFaceToFaceRoom()
+                            }) {
+                                HStack(spacing: 5) {
+                                    Image(systemName: ddz.isHostingRoom ? "checkmark.R.circle.fill" : "house.fill")
+                                    Text(ddz.isHostingRoom
+                                         ? tr("已建房(\(ddz.roomCode)) · 等待加入", "已建房(\(ddz.roomCode)) · 等待加入", "Hosting (\(ddz.roomCode))")
+                                         : tr("创建面对面房间 (当房主)", "創建面對面房間 (當房主)", "Create Room (Host)"))
+                                        .font(.system(size: 12, weight: .black))
+                                }
+                                .frame(maxWidth: .infinity, minHeight: 40)
+                                .background(ddz.isHostingRoom ? Color.green.opacity(0.85) : httCrimson)
+                                .foregroundColor(.white)
+                                .cornerRadius(10)
+                                .overlay(RoundedRectangle(cornerRadius: 10).stroke(httGold, lineWidth: 1.2))
+                            }
+                            .buttonStyle(PlainButtonStyle())
+                            
+                            Button(action: {
+                                ddz.startScanningFaceToFaceRooms()
+                            }) {
+                                HStack(spacing: 5) {
+                                    Image(systemName: "dot.radiowaves.left.and.right")
+                                    Text(ddz.isBrowsingRooms
+                                         ? tr("正在扫描附近房间...", "正在掃描附近房間...", "Scanning...")
+                                         : tr("扫描并加入附近房间", "掃描並加入附近房間", "Join Nearby Room"))
+                                        .font(.system(size: 12, weight: .black))
+                                }
+                                .frame(maxWidth: .infinity, minHeight: 40)
+                                .background(ddz.isBrowsingRooms ? Color.blue : Color.white.opacity(0.16))
+                                .foregroundColor(.white)
+                                .cornerRadius(10)
+                                .overlay(RoundedRectangle(cornerRadius: 10).stroke(httGold.opacity(0.75), lineWidth: 1))
+                            }
+                            .buttonStyle(PlainButtonStyle())
+                        }
+                        
+                        // Discovered Nearby Rooms List
+                        if !ddz.discoveredRooms.isEmpty {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text(tr("发现附近的面对面房间（点击立即加入）：", "發現附近的面對面房間（點擊立即加入）：", "Nearby Rooms (Tap to Join):"))
+                                    .font(.system(size: 11, weight: .bold))
+                                    .foregroundColor(.green)
+                                
+                                ForEach(ddz.discoveredRooms) { rm in
+                                    Button(action: {
+                                        ddz.joinDiscoveredRoom(rm)
+                                    }) {
+                                        HStack {
+                                            Image(systemName: "person.2.wave.2.fill")
+                                                .foregroundColor(httGold)
+                                            Text("房主: \(rm.hostName) · 房号: \(rm.roomCode)")
+                                                .font(.system(size: 13, weight: .black))
+                                                .foregroundColor(.white)
+                                            Spacer()
+                                            Text(tr("点击加入", "點擊加入", "Join"))
+                                                .font(.system(size: 11, weight: .black))
+                                                .padding(.horizontal, 10)
+                                                .padding(.vertical, 5)
+                                                .background(Color.green)
+                                                .foregroundColor(.white)
+                                                .cornerRadius(6)
+                                        }
+                                        .padding(10)
+                                        .background(Color.white.opacity(0.12))
+                                        .cornerRadius(8)
+                                    }
+                                    .buttonStyle(PlainButtonStyle())
+                                }
+                            }
+                        }
+                    }
+                    .padding(12)
+                    .background(Color.black.opacity(0.45))
+                    .cornerRadius(12)
+                } else {
+                    // Reserved Online Server Configuration Card
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(tr("2. 在线联机服务器配置 (预留后续云服务器接口)", "2. 在線聯機伺服器配置 (預留後續雲伺服器接口)", "2. Online Server Endpoint"))
+                            .font(.system(size: 13, weight: .black))
+                            .foregroundColor(httGold)
+                        
+                        Text(tr("底层已封装统一 DoudizhuNetPacket 状态同步协议，后续部署 WebSocket 房间服务后填入地址即可直接在线跨网匹配：", "底層已封裝統一 DoudizhuNetPacket 狀態同步協議，後續部署 WebSocket 房間服務後填入地址即可直接在線跨網匹配：", "WebSocket room server URL:"))
+                            .font(.system(size: 11))
+                            .foregroundColor(.gray)
+                        
+                        HStack(spacing: 8) {
+                            TextField("wss://psp.azusa.online/ddz", text: $ddz.customServerURL)
+                                .font(.system(size: 12, weight: .bold, design: .monospaced))
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 10)
+                                .frame(height: 36)
+                                .background(Color.white.opacity(0.14))
+                                .cornerRadius(8)
+                            
+                            Button(action: {
+                                ddz.connectOnlineServerRoom()
+                            }) {
+                                Text(tr("连接服务器", "連接伺服器", "Connect"))
+                                    .font(.system(size: 12, weight: .black))
+                                    .padding(.horizontal, 12)
+                                    .frame(height: 36)
+                                    .background(Color.blue)
+                                    .foregroundColor(.white)
+                                    .cornerRadius(8)
+                            }
+                            .buttonStyle(PlainButtonStyle())
+                        }
+                    }
+                    .padding(12)
+                    .background(Color.black.opacity(0.45))
+                    .cornerRadius(12)
+                }
+                
+                // Current 3-Seat Room Preview (Shows Real Connected Friends + HTT AI Auto-Fill)
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(tr("3. 当前牌桌座位预览 (不足3人将由轻音少女AI自动补位陪打)", "3. 當前牌桌座位預覽 (不足3人將由輕音少女AI自動補位陪打)", "3. Table Seats Preview (AI Auto-Fill)"))
+                        .font(.system(size: 13, weight: .black))
+                        .foregroundColor(httGold)
+                    
+                    HStack(spacing: 8) {
+                        ForEach(ddz.seats) { seat in
+                            VStack(spacing: 4) {
+                                if let sprite = manager.allMemberFrames[seat.characterId] {
+                                    Image(uiImage: sprite)
+                                        .interpolation(.none)
+                                        .resizable()
+                                        .scaledToFit()
+                                        .frame(width: 46, height: 54)
+                                }
+                                Text(seat.name)
+                                    .font(.system(size: 11, weight: .black))
+                                    .foregroundColor(.white)
+                                    .lineLimit(1)
+                                Text(seat.isAI ? tr("🤖 轻音AI补位", "🤖 輕音AI補位", "HTT AI") : tr("📱 真机玩家", "📱 真機玩家", "Human Player"))
+                                    .font(.system(size: 10, weight: .bold))
+                                    .foregroundColor(seat.isAI ? httGold : .green)
+                                Text("积分: \(seat.score)")
+                                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                                    .foregroundColor(httCream.opacity(0.85))
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 8)
+                            .background(Color.white.opacity(0.10))
+                            .cornerRadius(10)
+                            .overlay(RoundedRectangle(cornerRadius: 10).stroke(seat.isAI ? Color.white.opacity(0.2) : Color.green, lineWidth: 1))
+                        }
+                    }
+                }
+                .padding(12)
+                .background(Color.black.opacity(0.45))
+                .cornerRadius(12)
+                
+                // Prominent Start Game Button
+                Button(action: {
+                    ddz.startNewRound()
+                }) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "play.fill")
+                            .font(.headline)
+                        Text(ddz.connectedPeerNames.isEmpty
+                             ? tr("立即开始牌局 (与轻音少女AI练手 / 单机畅玩)", "立即開始牌局 (與輕音少女AI練手 / 單機暢玩)", "Start Game Now (With HTT AI)")
+                             : tr("房主开始发牌 (当前已连 \(ddz.connectedPeerNames.count + 1) 人)", "房主開始發牌 (當前已連 \(ddz.connectedPeerNames.count + 1) 人)", "Deal Cards Now"))
+                            .font(.system(size: 15, weight: .black))
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 48)
+                    .background(
+                        LinearGradient(
+                            colors: [httCrimson, Color(red: 0.90, green: 0.30, blue: 0.18)],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )
+                    )
+                    .foregroundColor(.white)
+                    .cornerRadius(12)
+                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(httGold, lineWidth: 1.8))
+                }
+                .buttonStyle(PlainButtonStyle())
+            }
+            .padding(12)
+        }
+    }
+    
+    // MARK: - 2. Active Doudizhu Game Table View
+    private var gameTableContentView: some View {
+        VStack(spacing: 8) {
+            // Top Row: 3 Landlord Hole Cards (三张底牌) + Multiplier + Card Counter Toggle
+            HStack(spacing: 10) {
+                HStack(spacing: 4) {
+                    Text(tr("底牌:", "底牌:", "Hole:"))
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundColor(httCream)
+                    ForEach(ddz.holeCards) { hc in
+                        if ddz.phase == .bidding {
+                            RoundedRectangle(cornerRadius: 4)
+                                .fill(httCrimson)
+                                .frame(width: 26, height: 36)
+                                .overlay(
+                                    Text("HTT")
+                                        .font(.system(size: 7, weight: .black))
+                                        .foregroundColor(httGold)
+                                )
+                                .overlay(RoundedRectangle(cornerRadius: 4).stroke(httGold, lineWidth: 1))
+                        } else {
+                            miniPokerCardView(card: hc)
+                        }
+                    }
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(Color.black.opacity(0.45))
+                .cornerRadius(8)
+                
+                Text("倍数 x\(ddz.multiplier)")
+                    .font(.system(size: 12, weight: .black, design: .monospaced))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 6)
+                    .background(httCrimson)
+                    .foregroundColor(httGold)
+                    .cornerRadius(8)
+                
+                Spacer()
+                
+                Button(action: {
+                    withAnimation { ddz.showCardCounter.toggle() }
+                }) {
+                    HStack(spacing: 3) {
+                        Image(systemName: "number.square.fill")
+                        Text(tr("记牌器", "記牌器", "Counter"))
+                    }
+                    .font(.system(size: 11, weight: .bold))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 6)
+                    .background(ddz.showCardCounter ? httGold : Color.black.opacity(0.45))
+                    .foregroundColor(ddz.showCardCounter ? .black : httCream)
+                    .cornerRadius(8)
+                }
+                .buttonStyle(PlainButtonStyle())
+                
+                Button(action: {
+                    ddz.startNewRound()
+                }) {
+                    Image(systemName: "arrow.clockwise.circle.fill")
+                        .font(.system(size: 20))
+                        .foregroundColor(httGold)
+                }
+                .buttonStyle(PlainButtonStyle())
+            }
+            .padding(.horizontal, 12)
+            
+            // Optional Card Counter Bar (记牌器: 大王..3)
+            if ddz.showCardCounter {
+                let ranksDesc = [17, 16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3]
+                let rankLabels = ["大王", "小王", "2", "A", "K", "Q", "J", "10", "9", "8", "7", "6", "5", "4", "3"]
+                HStack(spacing: 2) {
+                    ForEach(0..<ranksDesc.count, id: \.self) { rIdx in
+                        let rem = ddz.remainingCount(forRank: ranksDesc[rIdx])
+                        VStack(spacing: 1) {
+                            Text(rankLabels[rIdx])
+                                .font(.system(size: 8, weight: .black))
+                                .foregroundColor(rIdx <= 2 ? httGold : .white)
+                            Text("\(rem)")
+                                .font(.system(size: 10, weight: .heavy, design: .monospaced))
+                                .foregroundColor(rem == 0 ? .gray.opacity(0.4) : (rem == 4 ? .orange : httCream))
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 3)
+                        .background(Color.black.opacity(0.45))
+                        .cornerRadius(4)
+                    }
+                }
+                .padding(.horizontal, 12)
+            }
+            
+            // Middle Arena: Left Opponent (Seat 2) + Center Played Cards + Right Opponent (Seat 1)
+            let leftSeatIdx = (ddz.mySeatIndex + 2) % 3
+            let rightSeatIdx = (ddz.mySeatIndex + 1) % 3
+            
+            HStack(alignment: .top, spacing: 8) {
+                if leftSeatIdx < ddz.seats.count {
+                    opponentSeatPanel(seat: ddz.seats[leftSeatIdx], isLeft: true)
+                }
+                
+                Spacer(minLength: 4)
+                
+                // Center Table Last Played Hand Banner
+                VStack(spacing: 6) {
+                    if let lastHand = ddz.lastValidHand, ddz.lastPlaySeat >= 0, ddz.lastPlaySeat < ddz.seats.count {
+                        Text("[\(ddz.seats[ddz.lastPlaySeat].name)] 出牌：\(lastHand.category.localizedName(manager.language))")
+                            .font(.system(size: 11, weight: .black))
+                            .foregroundColor(httGold)
+                        
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: -10) {
+                                ForEach(lastHand.cards) { c in
+                                    tablePokerCardView(card: c)
+                                }
+                            }
+                            .padding(.horizontal, 8)
+                        }
+                    } else {
+                        Text(ddz.phase == .bidding
+                             ? tr("正在叫地主阶段...", "正在叫地主階段...", "Bidding for Landlord...")
+                             : tr("等待出牌...", "等待出牌...", "Waiting for play..."))
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundColor(httCream.opacity(0.75))
+                            .padding(.top, 24)
+                    }
+                }
+                .frame(maxWidth: .infinity)
+                
+                Spacer(minLength: 4)
+                
+                if rightSeatIdx < ddz.seats.count {
+                    opponentSeatPanel(seat: ddz.seats[rightSeatIdx], isLeft: false)
+                }
+            }
+            .padding(.horizontal, 12)
+            
+            Spacer(minLength: 4)
+            
+            // My Last Played Cards or Action Status
+            if ddz.mySeatIndex < ddz.seats.count {
+                let me = ddz.seats[ddz.mySeatIndex]
+                if !me.lastActionText.isEmpty {
+                    Text("我的状态: \(me.lastActionText)")
+                        .font(.system(size: 11, weight: .black))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 3)
+                        .background(Color.black.opacity(0.5))
+                        .foregroundColor(httGold)
+                        .cornerRadius(6)
+                }
+            }
+            
+            // Action Control Bar (Bidding / Playing / Round Over)
+            playerActionControlBar
+                .padding(.horizontal, 12)
+            
+            // Bottom Player Hand & Info Bar
+            if ddz.mySeatIndex < ddz.seats.count {
+                let me = ddz.seats[ddz.mySeatIndex]
+                VStack(spacing: 6) {
+                    // Hand Cards Fan (Scrollable & Tappable, pops up by 14pt when selected!)
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: -14) {
+                            ForEach(me.hand) { card in
+                                let isSelected = ddz.selectedCardIds.contains(card.id)
+                                Button(action: {
+                                    withAnimation(.spring(response: 0.22, dampingFraction: 0.7)) {
+                                        ddz.toggleSelectCard(card)
+                                    }
+                                }) {
+                                    handPokerCardView(card: card, isSelected: isSelected)
+                                }
+                                .buttonStyle(PlainButtonStyle())
+                            }
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.top, 16)
+                        .padding(.bottom, 4)
+                    }
+                    
+                    // My Seat Footer Bar
+                    HStack(spacing: 10) {
+                        if let sprite = manager.allMemberFrames[me.characterId] {
+                            Image(uiImage: sprite)
+                                .interpolation(.none)
+                                .resizable()
+                                .scaledToFit()
+                                .frame(width: 36, height: 42)
+                        }
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack(spacing: 6) {
+                                Text(me.name)
+                                    .font(.system(size: 13, weight: .black))
+                                    .foregroundColor(.white)
+                                if ddz.phase != .bidding {
+                                    Text(me.isLandlord ? "🎩 地主" : "🌾 农民")
+                                        .font(.system(size: 10, weight: .black))
+                                        .padding(.horizontal, 6)
+                                        .padding(.vertical, 2)
+                                        .background(me.isLandlord ? httGold : Color.green.opacity(0.8))
+                                        .foregroundColor(me.isLandlord ? .black : .white)
+                                        .cornerRadius(4)
+                                }
+                            }
+                            Text("手牌: \(me.hand.count) 张 · 积分: \(me.score)")
+                                .font(.system(size: 11, weight: .bold, design: .monospaced))
+                                .foregroundColor(httGold)
+                        }
+                        Spacer()
+                        if ddz.currentTurnSeat == ddz.mySeatIndex && ddz.phase != .roundOver {
+                            Text(tr("👉 轮到你操作", "👉 輪到你操作", "👉 Your Turn"))
+                                .font(.system(size: 11, weight: .black))
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(Color.green)
+                                .foregroundColor(.white)
+                                .cornerRadius(6)
+                        }
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(Color.black.opacity(0.60))
+                    .cornerRadius(12)
+                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(ddz.currentTurnSeat == ddz.mySeatIndex ? httGold : Color.white.opacity(0.2), lineWidth: 1.5))
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 8)
+                }
+            }
+        }
+    }
+    
+    @ViewBuilder
+    private var playerActionControlBar: some View {
+        if ddz.phase == .bidding {
+            if ddz.currentTurnSeat == ddz.mySeatIndex {
+                HStack(spacing: 8) {
+                    Button(action: { ddz.submitBid(0) }) {
+                        Text(tr("不叫", "不叫", "Pass"))
+                            .font(.system(size: 14, weight: .black))
+                            .frame(maxWidth: .infinity, minHeight: 38)
+                            .background(Color.gray.opacity(0.75))
+                            .foregroundColor(.white)
+                            .cornerRadius(10)
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                    
+                    ForEach([1, 2, 3], id: \.self) { score in
+                        let canBid = score > ddz.highestBid
+                        Button(action: {
+                            if canBid { ddz.submitBid(score) }
+                        }) {
+                            Text("\(score) 分")
+                                .font(.system(size: 14, weight: .black))
+                                .frame(maxWidth: .infinity, minHeight: 38)
+                                .background(canBid ? httCrimson : Color.white.opacity(0.12))
+                                .foregroundColor(canBid ? .white : .gray)
+                                .cornerRadius(10)
+                                .overlay(RoundedRectangle(cornerRadius: 10).stroke(canBid ? httGold : Color.clear, lineWidth: 1.2))
+                        }
+                        .buttonStyle(PlainButtonStyle())
+                        .disabled(!canBid)
+                    }
+                }
+            } else {
+                Text(tr("等待其他玩家叫地主...", "等待其他玩家叫地主...", "Waiting for other players to bid..."))
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundColor(httGold)
+                    .padding(.vertical, 6)
+            }
+        } else if ddz.phase == .playing {
+            if ddz.currentTurnSeat == ddz.mySeatIndex {
+                let canPass = (ddz.lastPlaySeat != ddz.mySeatIndex && ddz.lastPlaySeat != -1)
+                HStack(spacing: 8) {
+                    if canPass {
+                        Button(action: { ddz.passTurn() }) {
+                            Text(tr("不出", "不出", "Pass"))
+                                .font(.system(size: 14, weight: .black))
+                                .padding(.horizontal, 14)
+                                .frame(height: 38)
+                                .background(Color.gray.opacity(0.8))
+                                .foregroundColor(.white)
+                                .cornerRadius(10)
+                        }
+                        .buttonStyle(PlainButtonStyle())
+                    }
+                    
+                    Button(action: { ddz.clearSelectedCards() }) {
+                        Text(tr("重选", "重選", "Clear"))
+                            .font(.system(size: 13, weight: .bold))
+                            .padding(.horizontal, 12)
+                            .frame(height: 38)
+                            .background(Color.white.opacity(0.18))
+                            .foregroundColor(httCream)
+                            .cornerRadius(10)
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                    
+                    Button(action: { ddz.triggerSmartHint() }) {
+                        HStack(spacing: 3) {
+                            Image(systemName: "lightbulb.fill")
+                            Text(tr("提示", "提示", "Hint"))
+                        }
+                        .font(.system(size: 13, weight: .black))
+                        .padding(.horizontal, 14)
+                        .frame(height: 38)
+                        .background(Color.blue.opacity(0.85))
+                        .foregroundColor(.white)
+                        .cornerRadius(10)
+                        .overlay(RoundedRectangle(cornerRadius: 10).stroke(httGold.opacity(0.7), lineWidth: 1))
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                    
+                    Button(action: { ddz.playSelectedCards() }) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "hand.point.up.left.fill")
+                            Text(tr("出牌", "出牌", "Play"))
+                        }
+                        .font(.system(size: 15, weight: .black))
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 38)
+                        .background(Color(red: 0.20, green: 0.78, blue: 0.35))
+                        .foregroundColor(.white)
+                        .cornerRadius(10)
+                        .overlay(RoundedRectangle(cornerRadius: 10).stroke(httGold, lineWidth: 1.5))
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                }
+            } else {
+                Text(tr("等待 [\(ddz.seats[ddz.currentTurnSeat].name)] 出牌...", "等待 [\(ddz.seats[ddz.currentTurnSeat].name)] 出牌...", "Waiting for opponent..."))
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundColor(httGold)
+                    .padding(.vertical, 6)
+            }
+        } else if ddz.phase == .roundOver {
+            HStack(spacing: 12) {
+                Button(action: { ddz.startNewRound() }) {
+                    HStack(spacing: 5) {
+                        Image(systemName: "play.fill")
+                        Text(tr("再来一局", "再來一局", "Play Again"))
+                    }
+                    .font(.system(size: 15, weight: .black))
+                    .frame(maxWidth: .infinity, minHeight: 42)
+                    .background(httCrimson)
+                    .foregroundColor(.white)
+                    .cornerRadius(10)
+                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(httGold, lineWidth: 1.5))
+                }
+                .buttonStyle(PlainButtonStyle())
+                
+                Button(action: { ddz.phase = .lobby }) {
+                    Text(tr("返回大厅", "返回大廳", "Lobby"))
+                        .font(.system(size: 14, weight: .bold))
+                        .padding(.horizontal, 18)
+                        .frame(height: 42)
+                        .background(Color.black.opacity(0.55))
+                        .foregroundColor(httGold)
+                        .cornerRadius(10)
+                }
+                .buttonStyle(PlainButtonStyle())
+            }
+        }
+    }
+    
+    private func opponentSeatPanel(seat: DoudizhuPlayerSeat, isLeft: Bool) -> some View {
+        let isTurn = (ddz.currentTurnSeat == seat.id && ddz.phase != .roundOver)
+        return VStack(spacing: 4) {
+            ZStack(alignment: .topTrailing) {
+                if let sprite = manager.allMemberFrames[seat.characterId] {
+                    Image(uiImage: sprite)
+                        .interpolation(.none)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 48, height: 56)
+                }
+                if ddz.phase != .bidding {
+                    Text(seat.isLandlord ? "🎩" : "🌾")
+                        .font(.system(size: 13))
+                        .offset(x: 4, y: -4)
+                }
+            }
+            
+            Text(seat.name)
+                .font(.system(size: 10, weight: .black))
+                .foregroundColor(.white)
+                .lineLimit(1)
+            
+            HStack(spacing: 3) {
+                RoundedRectangle(cornerRadius: 3)
+                    .fill(httCrimson)
+                    .frame(width: 12, height: 16)
+                    .overlay(RoundedRectangle(cornerRadius: 3).stroke(httGold, lineWidth: 0.8))
+                Text("\(seat.hand.count)")
+                    .font(.system(size: 13, weight: .black, design: .monospaced))
+                    .foregroundColor(seat.hand.count <= 2 ? .red : httGold)
+            }
+            
+            if !seat.lastActionText.isEmpty {
+                Text(seat.lastActionText)
+                    .font(.system(size: 10, weight: .heavy))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Color.black.opacity(0.6))
+                    .foregroundColor(httGold)
+                    .cornerRadius(4)
+            }
+        }
+        .frame(width: 86)
+        .padding(7)
+        .background(Color.black.opacity(0.50))
+        .cornerRadius(12)
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(isTurn ? Color.green : Color.white.opacity(0.18), lineWidth: isTurn ? 2.0 : 1.0)
+        )
+    }
+    
+    private func handPokerCardView(card: DoudizhuCard, isSelected: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text(card.displayRank)
+                .font(.system(size: card.rank >= 16 ? 11 : 15, weight: .black, design: .rounded))
+                .foregroundColor(card.isRedCard ? Color(red: 0.85, green: 0.12, blue: 0.15) : .black)
+                .padding(.leading, 5)
+                .padding(.top, 4)
+            
+            Text(card.suit.rawValue)
+                .font(.system(size: 12, weight: .bold))
+                .foregroundColor(card.isRedCard ? Color(red: 0.85, green: 0.12, blue: 0.15) : .black)
+                .padding(.leading, 5)
+            
+            Spacer()
+            
+            HStack {
+                Spacer()
+                Text(card.suit.rawValue)
+                    .font(.system(size: 18))
+                    .foregroundColor(card.isRedCard ? Color(red: 0.85, green: 0.12, blue: 0.15).opacity(0.85) : .black.opacity(0.85))
+                    .padding(.trailing, 5)
+                    .padding(.bottom, 4)
+            }
+        }
+        .frame(width: 48, height: 70)
+        .background(isSelected ? Color(red: 1.0, green: 0.98, blue: 0.85) : Color.white)
+        .cornerRadius(7)
+        .overlay(
+            RoundedRectangle(cornerRadius: 7)
+                .stroke(isSelected ? httCrimson : Color.gray.opacity(0.45), lineWidth: isSelected ? 2.2 : 1.0)
+        )
+        .shadow(color: Color.black.opacity(0.35), radius: 2, x: -1, y: 2)
+        .offset(y: isSelected ? -14 : 0)
+    }
+    
+    private func tablePokerCardView(card: DoudizhuCard) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text(card.displayRank)
+                .font(.system(size: card.rank >= 16 ? 9 : 12, weight: .black))
+                .foregroundColor(card.isRedCard ? Color(red: 0.85, green: 0.12, blue: 0.15) : .black)
+                .padding(.leading, 4)
+                .padding(.top, 3)
+            Text(card.suit.rawValue)
+                .font(.system(size: 10))
+                .foregroundColor(card.isRedCard ? Color(red: 0.85, green: 0.12, blue: 0.15) : .black)
+                .padding(.leading, 4)
+            Spacer()
+        }
+        .frame(width: 36, height: 50)
+        .background(Color.white)
+        .cornerRadius(5)
+        .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.gray.opacity(0.5), lineWidth: 0.8))
+        .shadow(color: .black.opacity(0.3), radius: 1.5, x: 0, y: 1)
+    }
+    
+    private func miniPokerCardView(card: DoudizhuCard) -> some View {
+        VStack(spacing: 0) {
+            Text(card.displayRank)
+                .font(.system(size: card.rank >= 16 ? 7 : 10, weight: .black))
+                .foregroundColor(card.isRedCard ? Color(red: 0.85, green: 0.12, blue: 0.15) : .black)
+            Text(card.suit.rawValue)
+                .font(.system(size: 8))
+                .foregroundColor(card.isRedCard ? Color(red: 0.85, green: 0.12, blue: 0.15) : .black)
+        }
+        .frame(width: 26, height: 36)
+        .background(Color.white)
+        .cornerRadius(4)
+        .overlay(RoundedRectangle(cornerRadius: 4).stroke(httGold, lineWidth: 1))
     }
 }

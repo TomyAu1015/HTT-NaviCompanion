@@ -1,3 +1,4 @@
+import MultipeerConnectivity
 import Foundation
 import AVFoundation
 import CryptoKit
@@ -719,6 +720,20 @@ class PlaceSearchEngine: NSObject, ObservableObject, MKLocalSearchCompleterDeleg
         super.init()
         completer.delegate = self
         completer.resultTypes = [.address, .pointOfInterest, .query]
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleAppDidBecomeActive),
+            name: UIApplication.didBecomeActiveNotification,
+            object: nil
+        )
+    }
+    
+    @objc private func handleAppDidBecomeActive() {
+        DispatchQueue.main.async {
+            if self.isSearching {
+                self.isSearching = false
+            }
+        }
     }
     
     func updateQueryFragment(_ fragment: String, center: CLLocationCoordinate2D) {
@@ -1264,7 +1279,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     func recalculateOrResortDrivingRoutes() {
         guard travelMode == .driving else { return }
         if let dest = destinationCoord {
-            calculateRoute(to: dest, title: destinationName, isReroute: false)
+            calculateAndStartRoute(to: dest, title: destinationName, isReroute: false)
         } else if !candidateRoutes.isEmpty {
             applyRoutePreferenceSort()
         }
@@ -9261,5 +9276,1074 @@ extension Double {
         var r = self.truncatingRemainder(dividingBy: m)
         if r < 0 { r += m }
         return Int(r) % mod
+    }
+}
+
+
+// ============================================================================
+// MARK: - K-ON! Ho-kago Tea Time Face-to-Face P2P & Online Doudizhu Engine
+// (支持面对面 MultipeerConnectivity 蓝牙/Wi-Fi 开房联机 + 轻音少女 AI 补位陪打 + 预留在线 WebSocket 服务器接口)
+// ============================================================================
+
+enum DoudizhuSuit: String, Codable, CaseIterable {
+    case spade = "♠"
+    case heart = "♥"
+    case club = "♣"
+    case diamond = "♦"
+    case joker = "🃏"
+    
+    var isRed: Bool {
+        return self == .heart || self == .diamond
+    }
+}
+
+struct DoudizhuCard: Identifiable, Codable, Equatable, Hashable {
+    let id: String
+    let rank: Int        // 3..10, 11=J, 12=Q, 13=K, 14=A, 15=2, 16=小王, 17=大王
+    let suit: DoudizhuSuit
+    
+    var displayRank: String {
+        switch rank {
+        case 3...10: return "\(rank)"
+        case 11: return "J"
+        case 12: return "Q"
+        case 13: return "K"
+        case 14: return "A"
+        case 15: return "2"
+        case 16: return "小王"
+        case 17: return "大王"
+        default: return "\(rank)"
+        }
+    }
+    
+    var isRedCard: Bool {
+        if rank == 17 { return true }
+        if rank == 16 { return false }
+        return suit.isRed
+    }
+}
+
+enum DoudizhuHandCategory: String, Codable {
+    case invalid
+    case single          // 单张
+    case pair            // 对子
+    case triple          // 三不带
+    case tripleWithOne   // 三带一
+    case tripleWithPair  // 三带二
+    case straight        // 顺子 (>=5张)
+    case consecutivePairs // 连对 (>=3对)
+    case airplane        // 飞机
+    case fourWithTwo     // 四带二
+    case bomb            // 炸弹 (x2)
+    case rocket          // 王炸 (x2)
+    
+    func localizedName(_ lang: AppLanguage) -> String {
+        switch (self, lang) {
+        case (.single, _): return "单张"
+        case (.pair, _): return "对子"
+        case (.triple, _): return "三张"
+        case (.tripleWithOne, _): return "三带一"
+        case (.tripleWithPair, _): return "三带二"
+        case (.straight, .zhHant): return "順子"
+        case (.straight, _): return "顺子"
+        case (.consecutivePairs, .zhHant): return "連對"
+        case (.consecutivePairs, _): return "连对"
+        case (.airplane, .zhHant): return "飛機"
+        case (.airplane, _): return "飞机"
+        case (.fourWithTwo, _): return "四带二"
+        case (.bomb, .zhHant): return "💥 炸彈!"
+        case (.bomb, _): return "💥 炸弹!"
+        case (.rocket, _): return "🚀 王炸!!"
+        case (.invalid, _): return ""
+        }
+    }
+}
+
+struct EvaluatedDoudizhuHand: Codable, Equatable {
+    let category: DoudizhuHandCategory
+    let primaryRank: Int
+    let length: Int
+    let cards: [DoudizhuCard]
+    
+    func canBeat(_ previous: EvaluatedDoudizhuHand?) -> Bool {
+        guard category != .invalid else { return false }
+        guard let prev = previous, prev.category != .invalid else { return true }
+        if category == .rocket { return true }
+        if prev.category == .rocket { return false }
+        if category == .bomb && prev.category != .bomb { return true }
+        if category != .bomb && prev.category == .bomb { return false }
+        guard category == prev.category && length == prev.length else { return false }
+        return primaryRank > prev.primaryRank
+    }
+}
+
+struct DoudizhuHandEvaluator {
+    static func evaluate(_ cards: [DoudizhuCard]) -> EvaluatedDoudizhuHand {
+        let sorted = cards.sorted { $0.rank > $1.rank }
+        let n = sorted.count
+        if n == 0 {
+            return EvaluatedDoudizhuHand(category: .invalid, primaryRank: 0, length: 0, cards: [])
+        }
+        
+        var counts: [Int: Int] = [:]
+        for c in sorted { counts[c.rank, default: 0] += 1 }
+        let groups = counts.sorted { a, b in
+            if a.value != b.value { return a.value > b.value }
+            return a.key > b.key
+        }
+        
+        // 1. Single
+        if n == 1 {
+            return EvaluatedDoudizhuHand(category: .single, primaryRank: sorted[0].rank, length: 1, cards: sorted)
+        }
+        // 2. Pair or Rocket
+        if n == 2 {
+            if sorted[0].rank == 17 && sorted[1].rank == 16 {
+                return EvaluatedDoudizhuHand(category: .rocket, primaryRank: 99, length: 2, cards: sorted)
+            }
+            if groups.count == 1 && groups[0].value == 2 {
+                return EvaluatedDoudizhuHand(category: .pair, primaryRank: groups[0].key, length: 2, cards: sorted)
+            }
+            return EvaluatedDoudizhuHand(category: .invalid, primaryRank: 0, length: n, cards: sorted)
+        }
+        // 3. Triple
+        if n == 3 {
+            if groups.count == 1 && groups[0].value == 3 {
+                return EvaluatedDoudizhuHand(category: .triple, primaryRank: groups[0].key, length: 3, cards: sorted)
+            }
+            return EvaluatedDoudizhuHand(category: .invalid, primaryRank: 0, length: n, cards: sorted)
+        }
+        // 4. Bomb or Triple+1
+        if n == 4 {
+            if groups.count == 1 && groups[0].value == 4 {
+                return EvaluatedDoudizhuHand(category: .bomb, primaryRank: groups[0].key, length: 4, cards: sorted)
+            }
+            if groups.count == 2 && groups[0].value == 3 {
+                return EvaluatedDoudizhuHand(category: .tripleWithOne, primaryRank: groups[0].key, length: 4, cards: sorted)
+            }
+            return EvaluatedDoudizhuHand(category: .invalid, primaryRank: 0, length: n, cards: sorted)
+        }
+        // 5. Triple+Pair (5 cards)
+        if n == 5 && groups.count == 2 && groups[0].value == 3 && groups[1].value == 2 {
+            return EvaluatedDoudizhuHand(category: .tripleWithPair, primaryRank: groups[0].key, length: 5, cards: sorted)
+        }
+        // 6. Four with two singles (6 cards) or two pairs (8 cards)
+        if n == 6 && groups[0].value == 4 {
+            return EvaluatedDoudizhuHand(category: .fourWithTwo, primaryRank: groups[0].key, length: 6, cards: sorted)
+        }
+        if n == 8 && groups[0].value == 4 && groups.count == 3 && groups[1].value == 2 && groups[2].value == 2 {
+            return EvaluatedDoudizhuHand(category: .fourWithTwo, primaryRank: groups[0].key, length: 8, cards: sorted)
+        }
+        // 7. Straight (>= 5 singles, all ranks <= 14 i.e. 3..A)
+        if n >= 5 && groups.count == n {
+            let maxR = sorted.first!.rank
+            let minR = sorted.last!.rank
+            if maxR <= 14 && (maxR - minR == n - 1) {
+                return EvaluatedDoudizhuHand(category: .straight, primaryRank: maxR, length: n, cards: sorted)
+            }
+        }
+        // 8. Consecutive Pairs (>= 3 pairs, all ranks <= 14)
+        if n >= 6 && n % 2 == 0 && groups.count == n / 2 && groups.allSatisfy({ $0.value == 2 && $0.key <= 14 }) {
+            let pairRanks = groups.map { $0.key }.sorted()
+            if pairRanks.last! - pairRanks.first! == (n / 2 - 1) {
+                return EvaluatedDoudizhuHand(category: .consecutivePairs, primaryRank: pairRanks.last!, length: n, cards: sorted)
+            }
+        }
+        // 9. Airplane (2+ consecutive triples, with or without wings)
+        let tripleRanks = groups.filter { $0.value >= 3 && $0.key <= 14 }.map { $0.key }.sorted()
+        if tripleRanks.count >= 2 {
+            var maxConsec = 1
+            var bestHigh = tripleRanks.last!
+            var curConsec = 1
+            for i in 1..<tripleRanks.count {
+                if tripleRanks[i] == tripleRanks[i - 1] + 1 {
+                    curConsec += 1
+                    if curConsec >= maxConsec {
+                        maxConsec = curConsec
+                        bestHigh = tripleRanks[i]
+                    }
+                } else {
+                    curConsec = 1
+                }
+            }
+            if maxConsec >= 2 {
+                if n == maxConsec * 3 || n == maxConsec * 4 || (n == maxConsec * 5 && groups.filter({ $0.value == 2 }).count >= maxConsec) {
+                    return EvaluatedDoudizhuHand(category: .airplane, primaryRank: bestHigh, length: n, cards: sorted)
+                }
+            }
+        }
+        
+        return EvaluatedDoudizhuHand(category: .invalid, primaryRank: 0, length: n, cards: sorted)
+    }
+    
+    /// Finds candidate playable card subsets from `hand` that can beat `target`
+    static func findHints(in hand: [DoudizhuCard], beating target: EvaluatedDoudizhuHand?) -> [[DoudizhuCard]] {
+        let asc = hand.sorted { $0.rank < $1.rank }
+        guard !asc.isEmpty else { return [] }
+        
+        var byRank: [Int: [DoudizhuCard]] = [:]
+        for c in asc { byRank[c.rank, default: []].append(c) }
+        let uniqueRanks = byRank.keys.sorted()
+        
+        var hints: [[DoudizhuCard]] = []
+        
+        // If free lead (no target to beat): suggest smallest single, pair, triple, or straight
+        guard let tgt = target, tgt.category != .invalid else {
+            for r in uniqueRanks {
+                if let arr = byRank[r] {
+                    if arr.count == 1 { hints.append(arr) }
+                    else if arr.count == 2 { hints.append(arr) }
+                    else if arr.count == 3 {
+                        if let singleR = uniqueRanks.first(where: { $0 != r && (byRank[$0]?.count ?? 0) >= 1 }) {
+                            hints.append(arr + [byRank[singleR]![0]])
+                        } else {
+                            hints.append(arr)
+                        }
+                    }
+                }
+            }
+            if hints.isEmpty { hints.append([asc[0]]) }
+            return hints
+        }
+        
+        if tgt.category == .rocket { return [] }
+        
+        switch tgt.category {
+        case .single:
+            for r in uniqueRanks where r > tgt.primaryRank {
+                if let arr = byRank[r], !arr.isEmpty {
+                    hints.append([arr[0]])
+                }
+            }
+        case .pair:
+            for r in uniqueRanks where r > tgt.primaryRank {
+                if let arr = byRank[r], arr.count >= 2 {
+                    hints.append(Array(arr.prefix(2)))
+                }
+            }
+        case .triple:
+            for r in uniqueRanks where r > tgt.primaryRank {
+                if let arr = byRank[r], arr.count >= 3 {
+                    hints.append(Array(arr.prefix(3)))
+                }
+            }
+        case .tripleWithOne:
+            for r in uniqueRanks where r > tgt.primaryRank {
+                if let arr = byRank[r], arr.count >= 3 {
+                    if let kickerR = uniqueRanks.first(where: { $0 != r }) {
+                        hints.append(Array(arr.prefix(3)) + [byRank[kickerR]![0]])
+                    }
+                }
+            }
+        case .tripleWithPair:
+            for r in uniqueRanks where r > tgt.primaryRank {
+                if let arr = byRank[r], arr.count >= 3 {
+                    if let kickerR = uniqueRanks.first(where: { $0 != r && (byRank[$0]?.count ?? 0) >= 2 }) {
+                        hints.append(Array(arr.prefix(3)) + Array(byRank[kickerR]!.prefix(2)))
+                    }
+                }
+            }
+        case .straight:
+            let len = tgt.length
+            let validSingleRanks = uniqueRanks.filter { $0 <= 14 }
+            if validSingleRanks.count >= len {
+                for startIdx in 0...(validSingleRanks.count - len) {
+                    let slice = Array(validSingleRanks[startIdx..<(startIdx + len)])
+                    if slice.last! - slice.first! == len - 1 && slice.last! > tgt.primaryRank {
+                        hints.append(slice.map { byRank[$0]![0] })
+                    }
+                }
+            }
+        case .consecutivePairs:
+            let pairCount = tgt.length / 2
+            let validPairRanks = uniqueRanks.filter { $0 <= 14 && (byRank[$0]?.count ?? 0) >= 2 }
+            if validPairRanks.count >= pairCount {
+                for startIdx in 0...(validPairRanks.count - pairCount) {
+                    let slice = Array(validPairRanks[startIdx..<(startIdx + pairCount)])
+                    if slice.last! - slice.first! == pairCount - 1 && slice.last! > tgt.primaryRank {
+                        var combo: [DoudizhuCard] = []
+                        for r in slice { combo.append(contentsOf: byRank[r]!.prefix(2)) }
+                        hints.append(combo)
+                    }
+                }
+            }
+        default:
+            break
+        }
+        
+        // Add Bombs that can beat tgt
+        for r in uniqueRanks {
+            if let arr = byRank[r], arr.count == 4 {
+                if tgt.category != .bomb || r > tgt.primaryRank {
+                    hints.append(arr)
+                }
+            }
+        }
+        // Add Rocket if available
+        if let j1 = byRank[16]?.first, let j2 = byRank[17]?.first {
+            hints.append([j2, j1])
+        }
+        
+        return hints
+    }
+}
+
+struct DoudizhuPlayerSeat: Identifiable, Codable, Equatable {
+    var id: Int               // 0, 1, 2
+    var name: String
+    var characterId: Int      // 1=Yui, 2=Mio, 3=Ritsu, 4=Mugi, 5=Azusa
+    var isAI: Bool
+    var peerDisplayName: String
+    var hand: [DoudizhuCard]
+    var isLandlord: Bool
+    var lastActionText: String
+    var lastPlayedCards: [DoudizhuCard]
+    var score: Int
+}
+
+struct DoudizhuDiscoveredRoom: Identifiable, Equatable {
+    let id: String
+    let roomCode: String
+    let hostName: String
+    let hostCharId: Int
+    let peerID: MCPeerID
+}
+
+enum DoudizhuGamePhase: String, Codable {
+    case lobby          // 建房/选人/联机等待大厅
+    case bidding        // 叫地主/抢地主阶段
+    case playing        // 出牌对抗阶段
+    case roundOver      // 本局结算阶段
+}
+
+struct DoudizhuNetPacket: Codable {
+    enum PacketKind: String, Codable {
+        case joinRequest
+        case stateSync
+        case bidAction
+        case playCardsAction
+        case passAction
+        case chatVoiceAction
+    }
+    var kind: PacketKind
+    var roomCode: String
+    var senderPeerName: String
+    var senderCharId: Int
+    var bidScore: Int?
+    var playedCards: [DoudizhuCard]?
+    var seats: [DoudizhuPlayerSeat]?
+    var holeCards: [DoudizhuCard]?
+    var phase: DoudizhuGamePhase?
+    var currentTurnSeat: Int?
+    var highestBid: Int?
+    var highestBidderSeat: Int?
+    var multiplier: Int?
+    var lastValidHand: EvaluatedDoudizhuHand?
+    var lastPlaySeat: Int?
+    var winnerSeat: Int?
+    var statusBanner: String?
+}
+
+// Abstract Transport Protocol: Supports Face-to-Face P2P Now & Online WebSocket Server Later!
+protocol DoudizhuTransportProtocol: AnyObject {
+    var modeName: String { get }
+    func startHosting(roomCode: String, hostName: String, hostCharId: Int)
+    func startBrowsing()
+    func stopAll()
+    func sendPacket(_ packet: DoudizhuNetPacket)
+}
+
+class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearbyServiceAdvertiserDelegate, MCNearbyServiceBrowserDelegate {
+    static let shared = KOnDoudizhuManager()
+    
+    // Transport Mode: Face-to-Face P2P vs Online Server (Reserved for user's future server!)
+    enum NetworkMode: String, CaseIterable, Identifiable {
+        case faceToFaceP2P = "p2p"
+        case onlineServer = "online"
+        var id: String { rawValue }
+    }
+    
+    @Published var networkMode: NetworkMode = .faceToFaceP2P
+    @Published var customServerURL: String = UserDefaults.standard.string(forKey: "kon_ddz_server_url") ?? "wss://psp.azusa.online/ddz" {
+        didSet {
+            UserDefaults.standard.set(customServerURL, forKey: "kon_ddz_server_url")
+        }
+    }
+    
+    // Room & Lobby State
+    @Published var roomCode: String = "8888"
+    @Published var myNickname: String = UserDefaults.standard.string(forKey: "kon_ddz_nickname") ?? "轻音车友" {
+        didSet {
+            UserDefaults.standard.set(myNickname, forKey: "kon_ddz_nickname")
+        }
+    }
+    @Published var myCharacter: AudioPlayerManager.CharacterFilter = .yui
+    @Published var isHostingRoom: Bool = false
+    @Published var isBrowsingRooms: Bool = false
+    @Published var connectedPeerNames: [String] = []
+    @Published var discoveredRooms: [DoudizhuDiscoveredRoom] = []
+    @Published var mySeatIndex: Int = 0
+    @Published var statusBanner: String = "欢迎来到放课后茶会斗地主！可面对面建房联机或与轻音少女AI对局"
+    
+    // Game Table State
+    @Published var phase: DoudizhuGamePhase = .lobby
+    @Published var seats: [DoudizhuPlayerSeat] = [
+        DoudizhuPlayerSeat(id: 0, name: "平泽唯 (我)", characterId: 1, isAI: false, peerDisplayName: "Me", hand: [], isLandlord: false, lastActionText: "", lastPlayedCards: [], score: 1000),
+        DoudizhuPlayerSeat(id: 1, name: "秋山澪 (HTT)", characterId: 2, isAI: true, peerDisplayName: "AI_Mio", hand: [], isLandlord: false, lastActionText: "", lastPlayedCards: [], score: 1000),
+        DoudizhuPlayerSeat(id: 2, name: "田井中律 (HTT)", characterId: 3, isAI: true, peerDisplayName: "AI_Ritsu", hand: [], isLandlord: false, lastActionText: "", lastPlayedCards: [], score: 1000)
+    ]
+    @Published var holeCards: [DoudizhuCard] = []
+    @Published var selectedCardIds: Set<String> = []
+    @Published var currentTurnSeat: Int = 0
+    @Published var highestBid: Int = 0
+    @Published var highestBidderSeat: Int = -1
+    @Published var bidsCount: Int = 0
+    @Published var multiplier: Int = 1
+    @Published var lastValidHand: EvaluatedDoudizhuHand? = nil
+    @Published var lastPlaySeat: Int = -1
+    @Published var winnerSeat: Int? = nil
+    @Published var showCardCounter: Bool = true
+    @Published var hintIndex: Int = 0
+    
+    // MultipeerConnectivity P2P Components (Bluetooth + Peer-to-Peer Wi-Fi)
+    private let serviceType = "kon-ddz"
+    private var myPeerID: MCPeerID!
+    private var mcSession: MCSession?
+    private var advertiser: MCNearbyServiceAdvertiser?
+    private var browser: MCNearbyServiceBrowser?
+    private var webSocketTask: URLSessionWebSocketTask?
+    private var aiTurnWorkItem: DispatchWorkItem?
+    
+    override init() {
+        super.init()
+        let devName = UIDevice.current.name
+        self.myPeerID = MCPeerID(displayName: "\(myNickname)-\(Int.random(in: 100...999))")
+        if myNickname == "轻音车友" && !devName.isEmpty {
+            self.myNickname = devName
+        }
+    }
+    
+    func characterFilter(for charId: Int) -> AudioPlayerManager.CharacterFilter {
+        switch charId {
+        case 1: return .yui
+        case 2: return .mio
+        case 3: return .ritsu
+        case 4: return .mugi
+        case 5: return .azusa
+        default: return .yui
+        }
+    }
+    
+    // MARK: - Face-to-Face P2P Room Creation & Discovery
+    func startHostingFaceToFaceRoom() {
+        stopNetworking()
+        isHostingRoom = true
+        isBrowsingRooms = false
+        mySeatIndex = 0
+        
+        myPeerID = MCPeerID(displayName: myNickname.isEmpty ? "房主" : myNickname)
+        let session = MCSession(peer: myPeerID, securityIdentity: nil, encryptionPreference: .optional)
+        session.delegate = self
+        self.mcSession = session
+        
+        let info: [String: String] = [
+            "code": roomCode,
+            "host": myNickname,
+            "char": "\(myCharacter.charId)"
+        ]
+        let adv = MCNearbyServiceAdvertiser(peer: myPeerID, discoveryInfo: info, serviceType: serviceType)
+        adv.delegate = self
+        adv.startAdvertisingPeer()
+        self.advertiser = adv
+        
+        rebuildLobbySeats()
+        statusBanner = "📡 房间 [\(roomCode)] 已创建！附近好友点击「加入房间」即可面对面秒连（不足3人自动由轻音AI补位）"
+        AudioPlayerManager.shared.playMascotVoice(for: myCharacter)
+    }
+    
+    func startScanningFaceToFaceRooms() {
+        stopNetworking()
+        isHostingRoom = false
+        isBrowsingRooms = true
+        discoveredRooms.removeAll()
+        
+        myPeerID = MCPeerID(displayName: myNickname.isEmpty ? "玩家" : myNickname)
+        let session = MCSession(peer: myPeerID, securityIdentity: nil, encryptionPreference: .optional)
+        session.delegate = self
+        self.mcSession = session
+        
+        let brw = MCNearbyServiceBrowser(peer: myPeerID, serviceType: serviceType)
+        brw.delegate = self
+        brw.startBrowsingForPeers()
+        self.browser = brw
+        
+        statusBanner = "🔍 正在通过蓝牙与点对点 Wi-Fi 扫描附近的面对面房间..."
+    }
+    
+    func joinDiscoveredRoom(_ room: DoudizhuDiscoveredRoom) {
+        guard let brw = browser, let session = mcSession else { return }
+        statusBanner = "🔗 正在加入 [\(room.hostName)] 的房间 (\(room.roomCode))..."
+        let contextData = try? JSONEncoder().encode([
+            "name": myNickname,
+            "char": "\(myCharacter.charId)",
+            "code": room.roomCode
+        ])
+        brw.invitePeer(room.peerID, to: session, withContext: contextData, timeout: 15)
+    }
+    
+    func connectOnlineServerRoom() {
+        guard let url = URL(string: customServerURL) else {
+            statusBanner = "⚠️ 服务器地址格式无效，请检查 ws:// 或 wss:// 地址"
+            return
+        }
+        stopNetworking()
+        let task = URLSession.shared.webSocketTask(with: url)
+        self.webSocketTask = task
+        task.resume()
+        receiveNextWebSocketMessage()
+        statusBanner = "🌐 已发起在线服务器连接 (\(customServerURL))，房间号：\(roomCode)"
+    }
+    
+    private func receiveNextWebSocketMessage() {
+        webSocketTask?.receive { [weak self] result in
+            guard let self = self else { return }
+            switch result {
+            case .success(let msg):
+                if case .data(let data) = msg, let pkt = try? JSONDecoder().decode(DoudizhuNetPacket.self, from: data) {
+                    DispatchQueue.main.async {
+                        self.handleIncomingPacket(pkt)
+                    }
+                } else if case .string(let str) = msg, let data = str.data(using: .utf8),
+                          let pkt = try? JSONDecoder().decode(DoudizhuNetPacket.self, from: data) {
+                    DispatchQueue.main.async {
+                        self.handleIncomingPacket(pkt)
+                    }
+                }
+                self.receiveNextWebSocketMessage()
+            case .failure:
+                break
+            }
+        }
+    }
+    
+    func stopNetworking() {
+        aiTurnWorkItem?.cancel()
+        advertiser?.stopAdvertisingPeer()
+        browser?.stopBrowsingForPeers()
+        mcSession?.disconnect()
+        webSocketTask?.cancel(with: .goingAway, reason: nil)
+        advertiser = nil
+        browser = nil
+        mcSession = nil
+        webSocketTask = nil
+        isHostingRoom = false
+        isBrowsingRooms = false
+        connectedPeerNames.removeAll()
+        discoveredRooms.removeAll()
+    }
+    
+    func rebuildLobbySeats() {
+        let aiCandidates: [AudioPlayerManager.CharacterFilter] = [.mio, .ritsu, .mugi, .azusa, .yui].filter { $0 != myCharacter }
+        var newSeats: [DoudizhuPlayerSeat] = []
+        
+        // Seat 0: Host / Local Player
+        newSeats.append(DoudizhuPlayerSeat(
+            id: 0,
+            name: "\(myNickname) (\(myCharacter.displayName(AudioPlayerManager.shared.language)))",
+            characterId: myCharacter.charId,
+            isAI: false,
+            peerDisplayName: myPeerID.displayName,
+            hand: [],
+            isLandlord: false,
+            lastActionText: "已准备",
+            lastPlayedCards: [],
+            score: seats.first?.score ?? 1000
+        ))
+        
+        // Seat 1 & Seat 2: Connected real peers first, otherwise K-ON! AI members!
+        for slot in 1...2 {
+            let peerIdx = slot - 1
+            if peerIdx < connectedPeerNames.count {
+                let pName = connectedPeerNames[peerIdx]
+                let charPick = aiCandidates[slot % aiCandidates.count]
+                newSeats.append(DoudizhuPlayerSeat(
+                    id: slot,
+                    name: "🎮 \(pName)",
+                    characterId: charPick.charId,
+                    isAI: false,
+                    peerDisplayName: pName,
+                    hand: [],
+                    isLandlord: false,
+                    lastActionText: "已联机",
+                    lastPlayedCards: [],
+                    score: seats.count > slot ? seats[slot].score : 1000
+                ))
+            } else {
+                let aiChar = aiCandidates[(slot - 1) % aiCandidates.count]
+                newSeats.append(DoudizhuPlayerSeat(
+                    id: slot,
+                    name: "\(aiChar.displayName(AudioPlayerManager.shared.language)) (AI)",
+                    characterId: aiChar.charId,
+                    isAI: true,
+                    peerDisplayName: "AI_\(slot)",
+                    hand: [],
+                    isLandlord: false,
+                    lastActionText: "AI陪打",
+                    lastPlayedCards: [],
+                    score: seats.count > slot ? seats[slot].score : 1000
+                ))
+            }
+        }
+        self.seats = newSeats
+    }
+    
+    // MARK: - Start New Doudizhu Game (Host Deals 54 Cards & Syncs to Connected Peers)
+    func startNewRound() {
+        aiTurnWorkItem?.cancel()
+        if phase == .lobby {
+            rebuildLobbySeats()
+        }
+        
+        // Build 54-card deck
+        var deck: [DoudizhuCard] = []
+        let suits: [DoudizhuSuit] = [.spade, .heart, .club, .diamond]
+        for r in 3...15 {
+            for s in suits {
+                deck.append(DoudizhuCard(id: "\(s.rawValue)_\(r)", rank: r, suit: s))
+            }
+        }
+        deck.append(DoudizhuCard(id: "joker_16", rank: 16, suit: .joker))
+        deck.append(DoudizhuCard(id: "joker_17", rank: 17, suit: .joker))
+        deck.shuffle()
+        
+        let h0 = Array(deck[0..<17]).sorted { $0.rank > $1.rank }
+        let h1 = Array(deck[17..<34]).sorted { $0.rank > $1.rank }
+        let h2 = Array(deck[34..<51]).sorted { $0.rank > $1.rank }
+        let bottom3 = Array(deck[51..<54]).sorted { $0.rank > $1.rank }
+        
+        for i in 0..<3 {
+            seats[i].isLandlord = false
+            seats[i].lastActionText = ""
+            seats[i].lastPlayedCards = []
+        }
+        seats[0].hand = h0
+        seats[1].hand = h1
+        seats[2].hand = h2
+        holeCards = bottom3
+        selectedCardIds.removeAll()
+        
+        phase = .bidding
+        currentTurnSeat = Int.random(in: 0...2)
+        highestBid = 0
+        highestBidderSeat = -1
+        bidsCount = 0
+        multiplier = 1
+        lastValidHand = nil
+        lastPlaySeat = -1
+        winnerSeat = nil
+        hintIndex = 0
+        
+        statusBanner = "🃏 发牌完成！轮到 [\(seats[currentTurnSeat].name)] 叫地主"
+        AudioPlayerManager.shared.playMascotVoice(for: characterFilter(for: seats[currentTurnSeat].characterId))
+        
+        broadcastFullState()
+        scheduleAITurnIfNeeded()
+    }
+    
+    // MARK: - Bidding Phase (叫地主: 0=不叫, 1=1分, 2=2分, 3=3分)
+    func submitBid(_ score: Int, fromSeat seatIdx: Int? = nil) {
+        let actor = seatIdx ?? mySeatIndex
+        guard phase == .bidding, currentTurnSeat == actor else { return }
+        
+        if !isHostingRoom && connectedPeerNames.count > 0 && actor == mySeatIndex {
+            // Client sends bid action to Host
+            let pkt = DoudizhuNetPacket(
+                kind: .bidAction,
+                roomCode: roomCode,
+                senderPeerName: myPeerID.displayName,
+                senderCharId: myCharacter.charId,
+                bidScore: score
+            )
+            sendPacketToPeers(pkt)
+            return
+        }
+        
+        let bidLabel = score == 0 ? "不叫" : "叫 \(score) 分"
+        seats[actor].lastActionText = bidLabel
+        if score > highestBid {
+            highestBid = score
+            highestBidderSeat = actor
+            multiplier = max(1, score)
+        }
+        bidsCount += 1
+        
+        AudioPlayerManager.shared.playMascotVoice(for: characterFilter(for: seats[actor].characterId))
+        
+        if score == 3 || bidsCount >= 3 {
+            let landlordIdx = highestBidderSeat >= 0 ? highestBidderSeat : 0
+            finalizeLandlord(seatIdx: landlordIdx)
+        } else {
+            currentTurnSeat = (currentTurnSeat + 1) % 3
+            statusBanner = "轮到 [\(seats[currentTurnSeat].name)] 叫分 (当前最高: \(highestBid)分)"
+            broadcastFullState()
+            scheduleAITurnIfNeeded()
+        }
+    }
+    
+    private func finalizeLandlord(seatIdx: Int) {
+        for i in 0..<3 {
+            seats[i].isLandlord = (i == seatIdx)
+            seats[i].lastActionText = (i == seatIdx) ? "🎩 地主" : "🌾 农民"
+        }
+        seats[seatIdx].hand.append(contentsOf: holeCards)
+        seats[seatIdx].hand.sort { $0.rank > $1.rank }
+        
+        phase = .playing
+        currentTurnSeat = seatIdx
+        lastValidHand = nil
+        lastPlaySeat = seatIdx
+        statusBanner = "🎩 [\(seats[seatIdx].name)] 成为地主！获得三张底牌并优先出牌"
+        
+        broadcastFullState()
+        scheduleAITurnIfNeeded()
+    }
+    
+    // MARK: - Playing Cards & Passing
+    func toggleSelectCard(_ card: DoudizhuCard) {
+        if selectedCardIds.contains(card.id) {
+            selectedCardIds.remove(card.id)
+        } else {
+            selectedCardIds.insert(card.id)
+        }
+    }
+    
+    func clearSelectedCards() {
+        selectedCardIds.removeAll()
+    }
+    
+    func triggerSmartHint() {
+        guard mySeatIndex < seats.count else { return }
+        let myHand = seats[mySeatIndex].hand
+        let effectiveTarget = (lastPlaySeat == mySeatIndex || lastPlaySeat == -1) ? nil : lastValidHand
+        let candidates = DoudizhuHandEvaluator.findHints(in: myHand, beating: effectiveTarget)
+        guard !candidates.isEmpty else {
+            statusBanner = "💡 没有大过上家的牌，建议点击「不出」"
+            return
+        }
+        let chosen = candidates[hintIndex % candidates.count]
+        hintIndex += 1
+        selectedCardIds = Set(chosen.map { $0.id })
+    }
+    
+    func playSelectedCards() {
+        guard phase == .playing, currentTurnSeat == mySeatIndex else { return }
+        let myHand = seats[mySeatIndex].hand
+        let chosen = myHand.filter { selectedCardIds.contains($0.id) }
+        guard !chosen.isEmpty else {
+            statusBanner = "⚠️ 请先点选要出的扑克牌！"
+            return
+        }
+        
+        let evaluated = DoudizhuHandEvaluator.evaluate(chosen)
+        guard evaluated.category != .invalid else {
+            statusBanner = "⚠️ 所选牌型不符合斗地主规则（支持单张/对子/三带一/三带二/顺子/连对/飞机/炸弹/王炸）"
+            return
+        }
+        
+        let effectiveTarget = (lastPlaySeat == mySeatIndex || lastPlaySeat == -1) ? nil : lastValidHand
+        guard evaluated.canBeat(effectiveTarget) else {
+            statusBanner = "⚠️ 所选牌型无法大过上家的 [\(effectiveTarget?.category.localizedName(AudioPlayerManager.shared.language) ?? "")]！"
+            return
+        }
+        
+        if !isHostingRoom && connectedPeerNames.count > 0 {
+            let pkt = DoudizhuNetPacket(
+                kind: .playCardsAction,
+                roomCode: roomCode,
+                senderPeerName: myPeerID.displayName,
+                senderCharId: myCharacter.charId,
+                playedCards: chosen
+            )
+            sendPacketToPeers(pkt)
+            selectedCardIds.removeAll()
+            return
+        }
+        
+        executePlayCards(chosen, Evaluated: evaluated, fromSeat: mySeatIndex)
+        selectedCardIds.removeAll()
+    }
+    
+    func passTurn(fromSeat seatIdx: Int? = nil) {
+        let actor = seatIdx ?? mySeatIndex
+        guard phase == .playing, currentTurnSeat == actor else { return }
+        if lastPlaySeat == actor || lastPlaySeat == -1 {
+            statusBanner = "⚠️ 当前由您自由领出，不能选择「不出」！"
+            return
+        }
+        
+        if !isHostingRoom && connectedPeerNames.count > 0 && actor == mySeatIndex {
+            let pkt = DoudizhuNetPacket(
+                kind: .passAction,
+                roomCode: roomCode,
+                senderPeerName: myPeerID.displayName,
+                senderCharId: myCharacter.charId
+            )
+            sendPacketToPeers(pkt)
+            return
+        }
+        
+        seats[actor].lastActionText = "不出"
+        seats[actor].lastPlayedCards = []
+        currentTurnSeat = (currentTurnSeat + 1) % 3
+        if currentTurnSeat == lastPlaySeat {
+            // Everyone else passed -> new free lead!
+            lastValidHand = nil
+        }
+        statusBanner = "[\(seats[actor].name)] 选择不出，轮到 [\(seats[currentTurnSeat].name)] 出牌"
+        broadcastFullState()
+        scheduleAITurnIfNeeded()
+    }
+    
+    private func executePlayCards(_ cards: [DoudizhuCard], Evaluated eval: EvaluatedDoudizhuHand, fromSeat actor: Int) {
+        let playedIds = Set(cards.map { $0.id })
+        seats[actor].hand.removeAll { playedIds.contains($0.id) }
+        seats[actor].lastPlayedCards = cards.sorted { $0.rank > $1.rank }
+        seats[actor].lastActionText = eval.category.localizedName(AudioPlayerManager.shared.language)
+        
+        if eval.category == .bomb || eval.category == .rocket {
+            multiplier *= 2
+        }
+        
+        lastValidHand = eval
+        lastPlaySeat = actor
+        hintIndex = 0
+        
+        AudioPlayerManager.shared.playMascotVoice(for: characterFilter(for: seats[actor].characterId))
+        
+        // Check win condition
+        if seats[actor].hand.isEmpty {
+            winnerSeat = actor
+            phase = .roundOver
+            let landlordWon = seats[actor].isLandlord
+            let delta = 100 * multiplier
+            for i in 0..<3 {
+                if seats[i].isLandlord {
+                    seats[i].score += landlordWon ? (delta * 2) : (-delta * 2)
+                } else {
+                    seats[i].score += landlordWon ? (-delta) : delta
+                }
+            }
+            let roleTitle = landlordWon ? "🎩 地主获胜！" : "🌾 农民联手获胜！"
+            statusBanner = "🎉 牌局结束：[\(seats[actor].name)] 出完手牌，\(roleTitle) (倍数 x\(multiplier))"
+            broadcastFullState()
+            return
+        }
+        
+        currentTurnSeat = (currentTurnSeat + 1) % 3
+        statusBanner = "[\(seats[actor].name)] 打出 \(eval.category.localizedName(AudioPlayerManager.shared.language))，轮到 [\(seats[currentTurnSeat].name)]"
+        broadcastFullState()
+        scheduleAITurnIfNeeded()
+    }
+    
+    // MARK: - Intelligent K-ON! AI Decision Engine
+    private func scheduleAITurnIfNeeded() {
+        aiTurnWorkItem?.cancel()
+        if !isHostingRoom && connectedPeerNames.count > 0 { return }
+        guard currentTurnSeat >= 0 && currentTurnSeat < seats.count else { return }
+        let activePlayer = seats[currentTurnSeat]
+        guard activePlayer.isAI else { return }
+        
+        let seatToAct = currentTurnSeat
+        let work = DispatchWorkItem { [weak self] in
+            guard let self = self, self.currentTurnSeat == seatToAct else { return }
+            if self.phase == .bidding {
+                let highCards = activePlayer.hand.filter { $0.rank >= 15 }.count
+                let desiredBid: Int
+                if highCards >= 4 && self.highestBid < 3 {
+                    desiredBid = 3
+                } else if highCards >= 3 && self.highestBid < 2 {
+                    desiredBid = 2
+                } else if highCards >= 2 && self.highestBid < 1 {
+                    desiredBid = 1
+                } else {
+                    desiredBid = 0
+                }
+                self.submitBid(desiredBid, fromSeat: seatToAct)
+            } else if self.phase == .playing {
+                let effectiveTarget = (self.lastPlaySeat == seatToAct || self.lastPlaySeat == -1) ? nil : self.lastValidHand
+                let hints = DoudizhuHandEvaluator.findHints(in: activePlayer.hand, beating: effectiveTarget)
+                if let chosen = hints.first {
+                    // Teammate cooperation: if another Farmer played a big hand (>= Q) and AI is also a Farmer, don't waste a bomb on teammate!
+                    if effectiveTarget != nil,
+                       self.lastPlaySeat >= 0,
+                       !activePlayer.isLandlord,
+                       !self.seats[self.lastPlaySeat].isLandlord {
+                        let ev = DoudizhuHandEvaluator.evaluate(chosen)
+                        if ev.category == .bomb || ev.category == .rocket || (effectiveTarget?.primaryRank ?? 0) >= 13 {
+                            self.passTurn(fromSeat: seatToAct)
+                            return
+                        }
+                    }
+                    let ev = DoudizhuHandEvaluator.evaluate(chosen)
+                    self.executePlayCards(chosen, Evaluated: ev, fromSeat: seatToAct)
+                } else {
+                    self.passTurn(fromSeat: seatToAct)
+                }
+            }
+        }
+        self.aiTurnWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.05, execute: work)
+    }
+    
+    // MARK: - Remaining Card Counter (记牌器)
+    func remainingCount(forRank rank: Int) -> Int {
+        guard mySeatIndex < seats.count else { return 0 }
+        // Count cards still unseen (in other players' hands + unrevealed hole cards)
+        var total = 0
+        for (idx, s) in seats.enumerated() {
+            if idx != mySeatIndex {
+                total += s.hand.filter { $0.rank == rank }.count
+            }
+        }
+        if phase == .bidding {
+            total += holeCards.filter { $0.rank == rank }.count
+        }
+        return total
+    }
+    
+    // MARK: - Network Packet Sync
+    private func broadcastFullState() {
+        let pkt = DoudizhuNetPacket(
+            kind: .stateSync,
+            roomCode: roomCode,
+            senderPeerName: myPeerID.displayName,
+            senderCharId: myCharacter.charId,
+            seats: seats,
+            holeCards: holeCards,
+            phase: phase,
+            currentTurnSeat: currentTurnSeat,
+            highestBid: highestBid,
+            highestBidderSeat: highestBidderSeat,
+            multiplier: multiplier,
+            lastValidHand: lastValidHand,
+            lastPlaySeat: lastPlaySeat,
+            winnerSeat: winnerSeat,
+            statusBanner: statusBanner
+        )
+        sendPacketToPeers(pkt)
+    }
+    
+    private func sendPacketToPeers(_ packet: DoudizhuNetPacket) {
+        guard let data = try? JSONEncoder().encode(packet) else { return }
+        if let session = mcSession, !session.connectedPeers.isEmpty {
+            try? session.send(data, toPeers: session.connectedPeers, with: .reliable)
+        }
+        if let ws = webSocketTask {
+            ws.send(.data(data)) { _ in }
+        }
+    }
+    
+    private func handleIncomingPacket(_ pkt: DoudizhuNetPacket) {
+        switch pkt.kind {
+        case .stateSync:
+            if let s = pkt.seats {
+                self.seats = s
+                if let myIdx = s.firstIndex(where: { $0.peerDisplayName == self.myPeerID.displayName }) {
+                    self.mySeatIndex = myIdx
+                }
+            }
+            if let h = pkt.holeCards { self.holeCards = h }
+            if let p = pkt.phase { self.phase = p }
+            if let t = pkt.currentTurnSeat { self.currentTurnSeat = t }
+            if let hb = pkt.highestBid { self.highestBid = hb }
+            if let hbs = pkt.highestBidderSeat { self.highestBidderSeat = hbs }
+            if let m = pkt.multiplier { self.multiplier = m }
+            self.lastValidHand = pkt.lastValidHand
+            if let lp = pkt.lastPlaySeat { self.lastPlaySeat = lp }
+            self.winnerSeat = pkt.winnerSeat
+            if let sb = pkt.statusBanner { self.statusBanner = sb }
+            
+        case .bidAction:
+            if isHostingRoom, let score = pkt.bidScore,
+               let seatIdx = seats.firstIndex(where: { $0.peerDisplayName == pkt.senderPeerName }) {
+                submitBid(score, fromSeat: seatIdx)
+            }
+            
+        case .playCardsAction:
+            if isHostingRoom, let cards = pkt.playedCards,
+               let seatIdx = seats.firstIndex(where: { $0.peerDisplayName == pkt.senderPeerName }) {
+                let ev = DoudizhuHandEvaluator.evaluate(cards)
+                if ev.category != .invalid {
+                    executePlayCards(cards, Evaluated: ev, fromSeat: seatIdx)
+                }
+            }
+            
+        case .passAction:
+            if isHostingRoom,
+               let seatIdx = seats.firstIndex(where: { $0.peerDisplayName == pkt.senderPeerName }) {
+                passTurn(fromSeat: seatIdx)
+            }
+            
+        default:
+            break
+        }
+    }
+    
+    // MARK: - MCSessionDelegate & MCNearbyService Delegates
+    func session(_ session: MCSession, peer peerID: MCPeerID, didChange state: MCSessionState) {
+        DispatchQueue.main.async {
+            self.connectedPeerNames = session.connectedPeers.map { $0.displayName }
+            if self.isHostingRoom {
+                self.rebuildLobbySeats()
+                self.statusBanner = "✅ 玩家 [\(peerID.displayName)] 已连接！(当前真机玩家: \(self.connectedPeerNames.count + 1) 人)"
+                self.broadcastFullState()
+            } else if state == .connected {
+                self.statusBanner = "✅ 已成功连入房主 [\(peerID.displayName)] 的面对面牌桌！等待房主发牌..."
+            } else if state == .notConnected {
+                self.statusBanner = "ℹ️ 与 [\(peerID.displayName)] 的连接已断开"
+            }
+        }
+    }
+    
+    func session(_ session: MCSession, didReceive data: Data, fromPeer peerID: MCPeerID) {
+        guard let pkt = try? JSONDecoder().decode(DoudizhuNetPacket.self, from: data) else { return }
+        DispatchQueue.main.async {
+            self.handleIncomingPacket(pkt)
+        }
+    }
+    
+    func session(_ session: MCSession, didReceive stream: InputStream, withName streamName: String, fromPeer peerID: MCPeerID) {}
+    func session(_ session: MCSession, didStartReceivingResourceWithName resourceName: String, fromPeer peerID: MCPeerID, with progress: Progress) {}
+    func session(_ session: MCSession, didFinishReceivingResourceWithName resourceName: String, fromPeer peerID: MCPeerID, at localURL: URL?, withError error: Error?) {}
+    
+    func advertiser(_ advertiser: MCNearbyServiceAdvertiser, didReceiveInvitationFromPeer peerID: MCPeerID, withContext context: Data?, invitationHandler: @escaping (Bool, MCSession?) -> Void) {
+        // Automatically accept nearby friends into the room if < 2 peers connected
+        let canAccept = (mcSession?.connectedPeers.count ?? 0) < 2
+        invitationHandler(canAccept, mcSession)
+    }
+    
+    func browser(_ browser: MCNearbyServiceBrowser, foundPeer peerID: MCPeerID, withDiscoveryInfo info: [String : String]?) {
+        let code = info?["code"] ?? "8888"
+        let host = info?["host"] ?? peerID.displayName
+        let charId = Int(info?["char"] ?? "1") ?? 1
+        let room = DoudizhuDiscoveredRoom(
+            id: "\(peerID.displayName)_\(code)",
+            roomCode: code,
+            hostName: host,
+            hostCharId: charId,
+            peerID: peerID
+        )
+        DispatchQueue.main.async {
+            if !self.discoveredRooms.contains(where: { $0.id == room.id }) {
+                self.discoveredRooms.append(room)
+                self.statusBanner = "🎉 发现附近房间：房主 [\(host)] (房号 \(code))，点击即可加入！"
+            }
+        }
+    }
+    
+    func browser(_ browser: MCNearbyServiceBrowser, lostPeer peerID: MCPeerID) {
+        DispatchQueue.main.async {
+            self.discoveredRooms.removeAll { $0.peerID == peerID }
+        }
     }
 }

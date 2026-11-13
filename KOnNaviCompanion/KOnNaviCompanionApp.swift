@@ -26,7 +26,9 @@ class PhoneSceneDelegate: UIResponder, UIWindowSceneDelegate {
     }
 
     func sceneDidBecomeActive(_ scene: UIScene) {
-        AudioPlayerManager.shared.refreshTransitPlansForCurrentLocation(force: true)
+        if AudioPlayerManager.shared.travelMode == .transit && AudioPlayerManager.shared.transitPlans.isEmpty {
+            AudioPlayerManager.shared.refreshTransitPlansForCurrentLocation(force: false)
+        }
     }
 }
 
@@ -38,7 +40,9 @@ class AppDelegate: NSObject, UIApplicationDelegate {
     }
 
     func applicationDidBecomeActive(_ application: UIApplication) {
-        AudioPlayerManager.shared.refreshTransitPlansForCurrentLocation(force: true)
+        if AudioPlayerManager.shared.travelMode == .transit && AudioPlayerManager.shared.transitPlans.isEmpty {
+            AudioPlayerManager.shared.refreshTransitPlansForCurrentLocation(force: false)
+        }
     }
     
     func application(_ application: UIApplication,

@@ -133,6 +133,13 @@
 	<string>保存作者反馈与交流二维码到系统相册，方便扫码添加</string>
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
 	<string>用于在后台与CarPlay导航共存时持续监测车速并播报放课后茶会伴侣提醒</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>用于在放课后茶会面对面斗地主中发现并直连附近好友的手机房间</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_kon-ddz._tcp</string>
+		<string>_kon-ddz._udp</string>
+	</array>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>用于实时获取行车速度、行进方向并在超速时触发轻音少女语音预警</string>
 	<key>UIApplicationSceneManifest</key>
