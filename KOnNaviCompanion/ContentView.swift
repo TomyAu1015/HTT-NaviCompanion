@@ -146,6 +146,24 @@ class GaoDeArrowRouteRenderer: MKPolylineRenderer {
     }
 }
 
+// MARK: - Apple Maps Style Floating Route Time Bubble Annotation (地图路线时间气泡标注)
+class RouteTimeBubbleAnnotation: NSObject, MKAnnotation {
+    dynamic var coordinate: CLLocationCoordinate2D
+    var routeIndex: Int
+    var durationText: String
+    var subtitleBadge: String
+    var isSelected: Bool
+    
+    init(coordinate: CLLocationCoordinate2D, routeIndex: Int, durationText: String, subtitleBadge: String, isSelected: Bool) {
+        self.coordinate = coordinate
+        self.routeIndex = routeIndex
+        self.durationText = durationText
+        self.subtitleBadge = subtitleBadge
+        self.isSelected = isSelected
+        super.init()
+    }
+}
+
 // MARK: - Native 3D AutoNavi/MapKit Route & 60fps Smooth Tracking View
 struct HTTSmoothMapView: UIViewRepresentable {
     @ObservedObject var manager: AudioPlayerManager
@@ -203,17 +221,21 @@ struct HTTSmoothMapView: UIViewRepresentable {
         let camHeading = (manager.cameraMode == .headingUp) ? manager.headingDegrees : 0.0
         let camPitch: CGFloat = (manager.cameraMode == .headingUp) ? 45.0 : 0.0
         
-        // 1. Route Overlays, Candidate Alternate Routes, Electronic Speed Cameras & Tapped POI Pins
+        // 1. Route Overlays, Candidate Alternate Routes, Route Time Bubbles & Tapped POI Pins
         let tappedChanged = (context.coordinator.lastTappedLat != manager.tappedMapCoord?.latitude) ||
                             (context.coordinator.lastTappedLon != manager.tappedMapCoord?.longitude)
+        let selectionChanged = (context.coordinator.lastSelectionRenderTrigger != manager.routeSelectionRenderTrigger)
+        let overviewFitChanged = (context.coordinator.lastOverviewFitTrigger != manager.routeOverviewFitTrigger)
         let routeChanged = (context.coordinator.lastRoute !== manager.activeRoute) ||
                            (context.coordinator.lastCustomPolyline !== manager.customTransitPolyline) ||
-                           (context.coordinator.lastCandidateCount != manager.candidateRoutes.count)
+                           (context.coordinator.lastCandidateCount != manager.candidateRoutes.count) ||
+                           selectionChanged
         
         if routeChanged || tappedChanged {
             context.coordinator.lastRoute = manager.activeRoute
             context.coordinator.lastCustomPolyline = manager.customTransitPolyline
             context.coordinator.lastCandidateCount = manager.candidateRoutes.count
+            context.coordinator.lastSelectionRenderTrigger = manager.routeSelectionRenderTrigger
             context.coordinator.lastTappedLat = manager.tappedMapCoord?.latitude
             context.coordinator.lastTappedLon = manager.tappedMapCoord?.longitude
             
@@ -361,6 +383,37 @@ struct HTTSmoothMapView: UIViewRepresentable {
                 for hazard in manager.routeHazards {
                     mapView.addAnnotation(hazard)
                 }
+                
+                // Apple Maps Style Floating Route Time Bubbles along each candidate route when in pre-navigation overview!
+                if !manager.isNavigatingFocused && manager.travelMode != .transit && !manager.candidateRoutes.isEmpty {
+                    let ratios: [Double] = [0.48, 0.32, 0.66, 0.40]
+                    let minTime = manager.candidateRoutes.map { manager.estimatedMinutes(for: $0) }.min() ?? 0
+                    for (idx, cand) in manager.candidateRoutes.enumerated() {
+                        let ptCount = cand.polyline.pointCount
+                        if ptCount > 1 {
+                            let ratio = ratios[idx % ratios.count]
+                            let targetPtIdx = min(ptCount - 1, max(0, Int(Double(ptCount - 1) * ratio)))
+                            let bubbleCoord = cand.polyline.points()[targetPtIdx].coordinate
+                            let mins = manager.estimatedMinutes(for: cand)
+                            let unitStr = manager.language == .en ? "min" : (manager.language == .zhHant ? "分鐘" : "分钟")
+                            let durStr = "\(mins) \(unitStr)"
+                            let subStr: String
+                            if mins == minTime && idx == 0 {
+                                subStr = manager.language == .en ? "Fastest" : "最快"
+                            } else {
+                                subStr = ""
+                            }
+                            let bubble = RouteTimeBubbleAnnotation(
+                                coordinate: bubbleCoord,
+                                routeIndex: idx,
+                                durationText: durStr,
+                                subtitleBadge: subStr,
+                                isSelected: (idx == manager.selectedRouteIndex)
+                            )
+                            mapView.addAnnotation(bubble)
+                        }
+                    }
+                }
             }
             
             if let tapped = manager.tappedMapCoord {
@@ -372,7 +425,29 @@ struct HTTSmoothMapView: UIViewRepresentable {
                 mapView.addAnnotation(tappedPin)
             }
             
-            if routeChanged && (manager.activeRoute != nil || manager.customTransitPolyline != nil) {
+            if !manager.isNavigatingFocused && (overviewFitChanged || routeChanged) && (manager.activeRoute != nil || manager.customTransitPolyline != nil || !manager.candidateRoutes.isEmpty) {
+                context.coordinator.lastOverviewFitTrigger = manager.routeOverviewFitTrigger
+                var unionRect = MKMapRect.null
+                if manager.travelMode == .transit, let tPoly = manager.customTransitPolyline {
+                    unionRect = tPoly.boundingMapRect
+                } else {
+                    for cand in manager.candidateRoutes {
+                        unionRect = unionRect.union(cand.polyline.boundingMapRect)
+                    }
+                    if unionRect.isNull, let act = manager.activeRoute {
+                        unionRect = act.polyline.boundingMapRect
+                    }
+                }
+                if !unionRect.isNull {
+                    // Zoom out to show the ENTIRE route(s) in the upper map area above the bottom route selection sheet!
+                    mapView.camera.pitch = 0
+                    mapView.setVisibleMapRect(
+                        unionRect,
+                        edgePadding: UIEdgeInsets(top: 95, left: 52, bottom: 325, right: 52),
+                        animated: true
+                    )
+                }
+            } else if manager.isNavigatingFocused && routeChanged && (manager.activeRoute != nil || manager.customTransitPolyline != nil) {
                 let targetCoord = manager.userCoordinate
                 let camera = MKMapCamera(
                     lookingAtCenter: targetCoord,
@@ -458,7 +533,7 @@ struct HTTSmoothMapView: UIViewRepresentable {
             )
             mapView.setCamera(camera, animated: false)
             
-        } else if manager.mapTrackingUser && !context.coordinator.isUserInteracting {
+        } else if manager.mapTrackingUser && !context.coordinator.isUserInteracting && (manager.isNavigatingFocused || (manager.activeRoute == nil && manager.customTransitPolyline == nil && manager.candidateRoutes.isEmpty)) {
             let targetCoord = manager.userCoordinate
             
             var hDiff = abs(mapView.camera.heading - camHeading).truncatingRemainder(dividingBy: 360.0)
@@ -492,6 +567,8 @@ struct HTTSmoothMapView: UIViewRepresentable {
         var isUserInteracting: Bool = false
         var lastRecenterTrigger: Int = 0
         var lastZoomTrigger: Int = 0
+        var lastOverviewFitTrigger: Int = 0
+        var lastSelectionRenderTrigger: Int = 0
         
         let vehicleAnnotation = VehicleAvatarAnnotation()
         
@@ -544,13 +621,64 @@ struct HTTSmoothMapView: UIViewRepresentable {
             guard gesture.state == .ended, let mapView = gesture.view as? MKMapView else { return }
             let point = gesture.location(in: mapView)
             let coord = mapView.convert(point, toCoordinateFrom: mapView)
+            
+            // If user is in pre-navigation route selection overview, check if they tapped directly on any candidate route polyline!
+            if !parent.manager.isNavigatingFocused && parent.manager.travelMode != .transit && !parent.manager.candidateRoutes.isEmpty {
+                var bestRouteIdx: Int? = nil
+                var bestDistPt: CGFloat = 28.0 // 28pt touch tolerance around route line
+                for (idx, cand) in parent.manager.candidateRoutes.enumerated() {
+                    let pts = cand.polyline.points()
+                    let count = cand.polyline.pointCount
+                    guard count > 1 else { continue }
+                    let strideStep = max(1, count / 80)
+                    var i = 0
+                    while i < count - 1 {
+                        let nextI = min(count - 1, i + strideStep)
+                        let p1 = mapView.convert(pts[i].coordinate, toPointTo: mapView)
+                        let p2 = mapView.convert(pts[nextI].coordinate, toPointTo: mapView)
+                        let d = Coordinator.distanceFromPoint(point, toSegmentP1: p1, p2: p2)
+                        if d < bestDistPt {
+                            bestDistPt = d
+                            bestRouteIdx = idx
+                        }
+                        i = nextI
+                    }
+                }
+                if let hitIdx = bestRouteIdx {
+                    DispatchQueue.main.async {
+                        self.parent.manager.selectCandidateRoute(at: hitIdx)
+                    }
+                    return
+                }
+            }
+            
             DispatchQueue.main.async {
                 self.parent.manager.handleMapTap(at: coord)
             }
         }
         
+        static func distanceFromPoint(_ p: CGPoint, toSegmentP1 p1: CGPoint, p2: CGPoint) -> CGFloat {
+            let dx = p2.x - p1.x
+            let dy = p2.y - p1.y
+            let lenSq = dx * dx + dy * dy
+            if lenSq < 1e-4 {
+                return hypot(p.x - p1.x, p.y - p1.y)
+            }
+            let t = max(0.0, min(1.0, ((p.x - p1.x) * dx + (p.y - p1.y) * dy) / lenSq))
+            let projX = p1.x + t * dx
+            let projY = p1.y + t * dy
+            return hypot(p.x - projX, p.y - projY)
+        }
+        
         func mapView(_ mapView: MKMapView, didSelect view: MKAnnotationView) {
             guard let annotation = view.annotation, !(annotation is MKUserLocation), !(annotation is VehicleAvatarAnnotation) else { return }
+            if let bubble = annotation as? RouteTimeBubbleAnnotation {
+                mapView.deselectAnnotation(bubble, animated: false)
+                DispatchQueue.main.async {
+                    self.parent.manager.selectCandidateRoute(at: bubble.routeIndex)
+                }
+                return
+            }
             // Ignore temporary tapped pin or loading placeholder to prevent loop
             if annotation.subtitle == "TAPPED_PIN" || annotation.title == "正在获取地点..." || annotation.title == "定位解析中..." {
                 return
@@ -672,6 +800,28 @@ struct HTTSmoothMapView: UIViewRepresentable {
                     break
                 }
                 return hView
+            } else if let bubble = annotation as? RouteTimeBubbleAnnotation {
+                let bId = "AppleMapsRouteTimeBubbleView"
+                var bView = mapView.dequeueReusableAnnotationView(withIdentifier: bId)
+                if bView == nil {
+                    bView = MKAnnotationView(annotation: bubble, reuseIdentifier: bId)
+                    bView?.canShowCallout = false
+                } else {
+                    bView?.annotation = bubble
+                }
+                if #available(iOS 14.0, *) {
+                    bView?.zPriority = bubble.isSelected ? .max : .defaultUnselected
+                }
+                bView?.displayPriority = .required
+                let bubbleImg = Coordinator.createRouteTimeBubbleImage(
+                    durationText: bubble.durationText,
+                    subtitleBadge: bubble.subtitleBadge,
+                    isSelected: bubble.isSelected
+                )
+                bView?.image = bubbleImg
+                bView?.bounds = CGRect(origin: .zero, size: bubbleImg.size)
+                bView?.centerOffset = CGPoint(x: 0, y: -bubbleImg.size.height * 0.5)
+                return bView
             } else if let pin = annotation as? MKPointAnnotation {
                 let sub = pin.subtitle ?? ""
                 let id = "GaoDePin_\(sub)"
@@ -708,6 +858,67 @@ struct HTTSmoothMapView: UIViewRepresentable {
                 return pinView
             }
             return nil
+        }
+        
+        static func createRouteTimeBubbleImage(durationText: String, subtitleBadge: String, isSelected: Bool) -> UIImage {
+            let hasSub = !subtitleBadge.isEmpty
+            let width: CGFloat = max(74, CGFloat(durationText.count) * 11.5 + 24)
+            let boxHeight: CGFloat = hasSub ? 42 : 28
+            let pointerHeight: CGFloat = 7
+            let totalSize = CGSize(width: width + 8, height: boxHeight + pointerHeight + 6)
+            
+            let renderer = UIGraphicsImageRenderer(size: totalSize)
+            return renderer.image { ctx in
+                let cg = ctx.cgContext
+                cg.setShadow(offset: CGSize(width: 0, height: 2), blur: 4, color: UIColor.black.withAlphaComponent(0.30).cgColor)
+                
+                let boxRect = CGRect(x: 4, y: 2, width: width, height: boxHeight)
+                let path = UIBezierPath(roundedRect: boxRect, cornerRadius: 10)
+                
+                // Bottom pointer triangle
+                let midX = boxRect.midX
+                path.move(to: CGPoint(x: midX - 6, y: boxRect.maxY))
+                path.addLine(to: CGPoint(x: midX, y: boxRect.maxY + pointerHeight))
+                path.addLine(to: CGPoint(x: midX + 6, y: boxRect.maxY))
+                path.close()
+                
+                let appleBlue = UIColor(red: 0.0, green: 0.48, blue: 1.0, alpha: 1.0)
+                if isSelected {
+                    appleBlue.setFill()
+                    path.fill()
+                    UIColor.white.setStroke()
+                    path.lineWidth = 1.5
+                    path.stroke()
+                } else {
+                    UIColor.white.withAlphaComponent(0.96).setFill()
+                    path.fill()
+                    appleBlue.withAlphaComponent(0.85).setStroke()
+                    path.lineWidth = 1.5
+                    path.stroke()
+                }
+                
+                cg.setShadow(offset: .zero, blur: 0, color: nil)
+                let paragraph = NSMutableParagraphStyle()
+                paragraph.alignment = .center
+                
+                let mainColor = isSelected ? UIColor.white : appleBlue
+                let mainAttrs: [NSAttributedString.Key: Any] = [
+                    .font: UIFont.systemFont(ofSize: 13, weight: .heavy),
+                    .foregroundColor: mainColor,
+                    .paragraphStyle: paragraph
+                ]
+                let mainY: CGFloat = hasSub ? (boxRect.minY + 4) : (boxRect.minY + 6)
+                (durationText as NSString).draw(in: CGRect(x: boxRect.minX + 4, y: mainY, width: boxRect.width - 8, height: 18), withAttributes: mainAttrs)
+                
+                if hasSub {
+                    let subAttrs: [NSAttributedString.Key: Any] = [
+                        .font: UIFont.systemFont(ofSize: 10, weight: .bold),
+                        .foregroundColor: isSelected ? UIColor.white.withAlphaComponent(0.92) : appleBlue.withAlphaComponent(0.85),
+                        .paragraphStyle: paragraph
+                    ]
+                    (subtitleBadge as NSString).draw(in: CGRect(x: boxRect.minX + 4, y: boxRect.minY + 22, width: boxRect.width - 8, height: 14), withAttributes: subAttrs)
+                }
+            }
         }
         
         static func createNavigationArrowImage() -> UIImage {
@@ -772,12 +983,12 @@ struct HTTSmoothMapView: UIViewRepresentable {
                 let tag = polyline.title ?? ""
                 
                 if tag.hasPrefix("ALT_ROUTE") {
-                    // Alternate Backup Route (备选路线: 半透明浅灰绿/浅蓝分色，一眼区分主次)
+                    // Apple Maps Alternate Route (备选路线: 清晰浅蓝色，支持点击切换!)
                     renderer.isAlternateRoute = true
                     renderer.drawDirectionChevrons = false
-                    renderer.mainFillColor = UIColor(red: 0.55, green: 0.78, blue: 0.65, alpha: 0.65)
-                    renderer.outerBorderColor = UIColor(red: 0.35, green: 0.55, blue: 0.45, alpha: 0.70)
-                    renderer.lineWidth = 8.0
+                    renderer.mainFillColor = UIColor(red: 0.38, green: 0.68, blue: 0.98, alpha: 0.85)
+                    renderer.outerBorderColor = UIColor(red: 0.18, green: 0.45, blue: 0.78, alpha: 0.85)
+                    renderer.lineWidth = 9.0
                 } else if tag == "DRIVING_ACTIVE_BLUE" || tag == "EBIKE_CYAN_BLUE" {
                     // Driving & e-Bike Active Vehicle Guidance Line: Vivid GaoDe Cyan-Blue (#0099FF) with deep navy border & white chevrons!
                     renderer.mainFillColor = UIColor(red: 0.0, green: 0.62, blue: 1.0, alpha: 0.98)
@@ -858,6 +1069,7 @@ enum ActiveModalSheet: String, Identifiable {
     case flights
     case trains
     case departureTime
+    case vehicleSettings
     
     var id: String { self.rawValue }
 }
@@ -1090,6 +1302,9 @@ struct ContentView: View {
         .onChange(of: manager.showDepartureTimePickerSheet) { val in
             if val { activeModalSheet = .departureTime; manager.showDepartureTimePickerSheet = false }
         }
+        .onChange(of: manager.showVehicleSettingsSheet) { val in
+            if val { activeModalSheet = .vehicleSettings; manager.showVehicleSettingsSheet = false }
+        }
         .sheet(item: $activeModalSheet) { sheet in
             switch sheet {
             case .soundboard:
@@ -1112,6 +1327,8 @@ struct ContentView: View {
                 InAppTrainTicketScheduleSheetView(manager: manager)
             case .departureTime:
                 RouteDepartureTimePickerSheetView(manager: manager)
+            case .vehicleSettings:
+                VehicleAndPlateSettingsSheetView(manager: manager)
             }
         }
     }
@@ -1500,27 +1717,12 @@ struct ContentView: View {
     private var landscapeCompactPreNavCard: some View {
         VStack(spacing: 6) {
             if manager.travelMode == .driving {
-                HStack(spacing: 5) {
-                    ForEach(RouteStrategyPreference.allCases) { pref in
-                        let isSelPref = (manager.routePreference == pref)
-                        Button(action: {
-                            withAnimation(.easeInOut(duration: 0.2)) {
-                                manager.routePreference = pref
-                            }
-                        }) {
-                            HStack(spacing: 3) {
-                                Image(systemName: pref.icon)
-                                    .font(.system(size: 10, weight: .bold))
-                                Text(pref.title(manager.language))
-                                    .font(.system(size: 11, weight: .heavy))
-                                    .lineLimit(1)
-                                    .minimumScaleFactor(0.75)
-                            }
-                            .frame(maxWidth: .infinity, minHeight: 28)
-                            .background(isSelPref ? httGold : Color.white.opacity(0.14))
-                            .foregroundColor(isSelPref ? .black : httCream)
-                            .cornerRadius(7)
-                        }
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 5) {
+                        drivingModeMenuPill
+                        departureTimeMenuButton
+                        drivingAvoidanceMenuButton
+                        vehicleSettingsPillButton
                     }
                 }
             } else if manager.travelMode == .transit && manager.destinationCoord != nil {
@@ -1748,77 +1950,89 @@ struct ContentView: View {
         }
     }
     
-    // MARK: - Subviews for Pre-Navigation Card (Split to Guarantee Instant Swift Compilation!)
-    private var highwayPreferenceButtonRow: some View {
-        HStack(spacing: 8) {
-            ForEach(RouteStrategyPreference.allCases) { pref in
-                let isSel = (manager.routePreference == pref)
+    // MARK: - Apple Maps 1:1 Driving & Transit Pre-Navigation Filter Pills & Multi-Route Cards
+    private var drivingModeMenuPill: some View {
+        Menu {
+            ForEach(NavigationTravelMode.allCases) { mode in
+                let isSel = (manager.travelMode == mode)
                 Button(action: {
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        manager.routePreference = pref
-                    }
+                    manager.stop()
+                    manager.travelMode = mode
                 }) {
-                    HStack(spacing: 5) {
-                        Image(systemName: pref.icon)
-                            .font(.system(size: 13, weight: .bold))
-                        Text(pref.title(manager.language))
-                            .font(.system(size: 13, weight: .heavy))
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.8)
-                    }
-                    .frame(maxWidth: .infinity, minHeight: 38)
-                    .padding(.vertical, 4)
-                    .background(isSel ? httGold : Color.white.opacity(0.14))
-                    .foregroundColor(isSel ? .black : httCream)
-                    .cornerRadius(10)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 10)
-                            .stroke(isSel ? Color.white : httGold.opacity(0.45), lineWidth: isSel ? 2 : 1)
+                    Label(
+                        (isSel ? "✓ " : "    ") + mode.title(manager.language),
+                        systemImage: isSel ? "checkmark.circle.fill" : mode.icon
                     )
                 }
             }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: manager.travelMode.icon)
+                    .font(.system(size: 11, weight: .bold))
+                Text(manager.travelMode == .driving ? tr("驾驶", "駕駛", "Drive") : manager.travelMode.title(manager.language))
+                    .font(.system(size: 11, weight: .heavy))
+                    .lineLimit(1)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 9, weight: .bold))
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(Color(red: 0.0, green: 0.48, blue: 1.0))
+            .foregroundColor(.white)
+            .cornerRadius(14)
         }
     }
     
-    // MARK: - Departure Time Menu Button (默认显示“出发”) + Transit Sort Strategy & Vehicle Preferences Menus
     private var departureTimeMenuButton: some View {
         Menu {
             Button(action: {
                 manager.isCustomDepartureTime = false
                 manager.routeDepartureDate = Date()
-            }) {
-                HStack {
-                    Text(tr("现在出发 (默认显示“出发”)", "現在出發 (預設顯示「出發」)", "Leave Now (Default 'Depart')"))
-                    if !manager.isCustomDepartureTime { Image(systemName: "checkmark") }
+                if manager.travelMode == .driving {
+                    manager.recalculateOrResortDrivingRoutes()
                 }
+            }) {
+                Label(
+                    (!manager.isCustomDepartureTime ? "✓ " : "    ") + tr("现在出发", "現在出發", "Leave Now"),
+                    systemImage: !manager.isCustomDepartureTime ? "checkmark.circle.fill" : "clock"
+                )
             }
             Button(action: {
                 manager.routeDepartureDate = Date().addingTimeInterval(15 * 60)
                 manager.isCustomDepartureTime = true
+                if manager.travelMode == .driving {
+                    manager.recalculateOrResortDrivingRoutes()
+                }
             }) {
-                Text(tr("15 分钟后出发", "15 分鐘後出發", "Leave in 15 min"))
+                Label(tr("15 分钟后出发", "15 分鐘後出發", "In 15 min"), systemImage: "clock.badge.checkmark")
             }
             Button(action: {
                 manager.routeDepartureDate = Date().addingTimeInterval(30 * 60)
                 manager.isCustomDepartureTime = true
+                if manager.travelMode == .driving {
+                    manager.recalculateOrResortDrivingRoutes()
+                }
             }) {
-                Text(tr("30 分钟后出发", "30 分鐘後出發", "Leave in 30 min"))
+                Label(tr("30 分钟后出发", "30 分鐘後出發", "In 30 min"), systemImage: "clock.badge.checkmark")
             }
             Button(action: {
                 manager.routeDepartureDate = Date().addingTimeInterval(60 * 60)
                 manager.isCustomDepartureTime = true
+                if manager.travelMode == .driving {
+                    manager.recalculateOrResortDrivingRoutes()
+                }
             }) {
-                Text(tr("1 小时后出发", "1 小時後出發", "Leave in 1 hour"))
+                Label(tr("1 小时后出发", "1 小時後出發", "In 1 hour"), systemImage: "clock.badge.checkmark")
             }
             Divider()
             Button(action: {
                 manager.showDepartureTimePickerSheet = true
             }) {
-                Label(tr("自定义出发时间...", "自訂出發時間...", "Custom Departure Time..."), systemImage: "calendar.badge.clock")
+                Label(tr("选择出发日期与时间...", "選擇出發日期與時間...", "Pick Date & Time..."), systemImage: "calendar.badge.clock")
             }
         } label: {
             HStack(spacing: 4) {
-                Image(systemName: "clock.fill")
+                Image(systemName: "clock")
                     .font(.system(size: 10, weight: .bold))
                 Text(manager.departureButtonTitle(manager.language))
                     .font(.system(size: 11, weight: .heavy))
@@ -1826,10 +2040,74 @@ struct ContentView: View {
                 Image(systemName: "chevron.down")
                     .font(.system(size: 9, weight: .bold))
             }
-            .padding(.horizontal, 9)
+            .padding(.horizontal, 10)
             .padding(.vertical, 6)
             .background(manager.isCustomDepartureTime ? httGold : Color.white.opacity(0.15))
             .foregroundColor(manager.isCustomDepartureTime ? .black : .white)
+            .cornerRadius(14)
+            .overlay(RoundedRectangle(cornerRadius: 14).stroke(httGold.opacity(0.65), lineWidth: 1))
+        }
+    }
+    
+    // Driving Avoidance Menu Pill ([避开 ⌄]: 避开收费站 / 避开高速公路 / 避开禁行)
+    private var drivingAvoidanceMenuButton: some View {
+        Menu {
+            ForEach(DrivingAvoidanceOption.allCases) { opt in
+                let isChecked = manager.drivingAvoidOptions.contains(opt)
+                Button(action: {
+                    manager.toggleDrivingAvoidance(opt)
+                }) {
+                    Label(
+                        (isChecked ? "✓ " : "    ") + opt.title(manager.language),
+                        systemImage: isChecked ? "checkmark.circle.fill" : "circle"
+                    )
+                }
+            }
+            if !manager.drivingAvoidOptions.isEmpty {
+                Divider()
+                Button(action: {
+                    manager.drivingAvoidOptions.removeAll()
+                }) {
+                    Label(tr("清除全部避让限制", "清除全部避讓限制", "Clear All Avoidances"), systemImage: "arrow.counterclockwise")
+                }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "shield.lefthalf.filled")
+                    .font(.system(size: 10, weight: .bold))
+                Text(manager.drivingAvoidanceButtonTitle(manager.language))
+                    .font(.system(size: 11, weight: .heavy))
+                    .lineLimit(1)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 9, weight: .bold))
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(!manager.drivingAvoidOptions.isEmpty ? Color(red: 0.0, green: 0.48, blue: 1.0) : Color.white.opacity(0.15))
+            .foregroundColor(.white)
+            .cornerRadius(14)
+            .overlay(RoundedRectangle(cornerRadius: 14).stroke(httGold.opacity(0.65), lineWidth: 1))
+        }
+    }
+    
+    // Vehicle & License Plate Pill ([粤AF17987 ⌄])
+    private var vehicleSettingsPillButton: some View {
+        Button(action: {
+            manager.showVehicleSettingsSheet = true
+        }) {
+            HStack(spacing: 4) {
+                Image(systemName: "car.fill")
+                    .font(.system(size: 10, weight: .bold))
+                Text(manager.vehiclePillTitle(manager.language))
+                    .font(.system(size: 11, weight: .heavy))
+                    .lineLimit(1)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 9, weight: .bold))
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(Color(red: 0.0, green: 0.48, blue: 1.0))
+            .foregroundColor(.white)
             .cornerRadius(14)
             .overlay(RoundedRectangle(cornerRadius: 14).stroke(httGold.opacity(0.75), lineWidth: 1))
         }
@@ -1838,16 +2116,21 @@ struct ContentView: View {
     private var transitPreferencesMenuButton: some View {
         Menu {
             ForEach(TransitVehicleMode.allCases) { vMode in
+                let isChecked = manager.preferredTransitVehicles.contains(vMode)
                 Button(action: {
                     manager.toggleTransitVehiclePreference(vMode)
                 }) {
-                    HStack {
-                        Label(vMode.title(manager.language), systemImage: vMode.icon)
-                        if manager.preferredTransitVehicles.contains(vMode) {
-                            Image(systemName: "checkmark")
-                        }
-                    }
+                    Label(
+                        (isChecked ? "✓ " : "    ") + vMode.title(manager.language),
+                        systemImage: isChecked ? "checkmark.circle.fill" : "circle"
+                    )
                 }
+            }
+            Divider()
+            Button(action: {
+                manager.resetAllTransitVehiclePreferences()
+            }) {
+                Label(tr("全部勾选 (默认)", "全部勾選 (預設)", "Select All (Default)"), systemImage: "checkmark.seal.fill")
             }
         } label: {
             HStack(spacing: 4) {
@@ -1871,15 +2154,14 @@ struct ContentView: View {
     private var transitSortStrategyMenuButton: some View {
         Menu {
             ForEach(TransitSortStrategy.allCases) { strat in
+                let isSel = (manager.transitSortStrategy == strat)
                 Button(action: {
                     manager.transitSortStrategy = strat
                 }) {
-                    HStack {
-                        Label(strat.title(manager.language), systemImage: strat.icon)
-                        if manager.transitSortStrategy == strat {
-                            Image(systemName: "checkmark")
-                        }
-                    }
+                    Label(
+                        (isSel ? "✓ " : "    ") + strat.title(manager.language),
+                        systemImage: isSel ? "checkmark.circle.fill" : strat.icon
+                    )
                 }
             }
         } label: {
@@ -1903,16 +2185,15 @@ struct ContentView: View {
     
     private var transitPreNavSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            // Unified Filter Bar: [出发 ⌄] [偏好设置 ⌄] [建议路线 ⌄] (Replaces old purple tabs!)
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 7) {
+                    drivingModeMenuPill
                     departureTimeMenuButton
                     transitPreferencesMenuButton
                     transitSortStrategyMenuButton
                 }
             }
             
-            // Multi-Itinerary Compact Route Cards (Aligned with GaoDe & Apple Maps!)
             if !manager.transitPlans.isEmpty {
                 ScrollView(.vertical, showsIndicators: true) {
                     VStack(spacing: 7) {
@@ -1945,7 +2226,6 @@ struct ContentView: View {
                                                 .lineLimit(1)
                                         }
                                         
-                                        // Step pills with triangle arrows
                                         ScrollView(.horizontal, showsIndicators: false) {
                                             HStack(spacing: 4) {
                                                 ForEach(Array(plan.steps.enumerated()), id: \.element.id) { sIdx, st in
@@ -1988,12 +2268,12 @@ struct ContentView: View {
                                         manager.selectTransitPlan(at: idx)
                                         manager.startTransitWalkingNavigation()
                                     }) {
-                                        Text(tr("开始", "開始", "GO"))
+                                        Text(tr("开始", "開始", "Start"))
                                             .font(.system(size: 13, weight: .black))
                                             .foregroundColor(.white)
                                             .padding(.horizontal, 10)
                                             .padding(.vertical, 12)
-                                            .background(Color.green)
+                                            .background(Color(red: 0.20, green: 0.78, blue: 0.35))
                                             .cornerRadius(9)
                                     }
                                 }
@@ -2034,144 +2314,182 @@ struct ContentView: View {
         }
     }
     
-    private func candidateRouteTabButton(route: MKRoute, index: Int) -> some View {
+    // Apple Maps 1:1 Candidate Route Row (35 分钟 / 16 公里 · 最快 + Right Green [开始 / 開始] Button!)
+    // Tapping the card previews/highlights the route on the map; ONLY tapping [开始] starts navigation!
+    private func appleMapsCandidateRouteCard(route: MKRoute, index: Int) -> some View {
         let isSel = (manager.selectedRouteIndex == index)
         let estMins: Int = manager.estimatedMinutes(for: route)
-        let distKmStr: String = String(format: "%.1f公里", route.distance / 1000.0)
-        let lightCount: Int = max(1, Int(route.distance / 450.0))
+        let distKmInt: Int = max(1, Int(round(route.distance / 1000.0)))
+        let distStr: String = route.distance >= 10000
+            ? "\(distKmInt)\(tr("公里", "公里", "km"))"
+            : String(format: "%.1f%@", route.distance / 1000.0, tr("公里", "公里", "km"))
         let badgeTitle: String = manager.routeOptionBadgeTitle(for: route, index: index)
+        let etaStr: String = manager.estimatedArrivalTimeString(durationMinutes: estMins)
         
-        return Button(action: {
-            withAnimation(.easeInOut(duration: 0.2)) {
-                manager.selectCandidateRoute(at: index)
-            }
-        }) {
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 4) {
-                    Text("\(estMins)分钟")
-                        .font(.system(size: 14, weight: .black))
-                        .foregroundColor(isSel ? .white : httGold)
-                    Text(distKmStr)
+        return HStack(alignment: .center, spacing: 10) {
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text("\(estMins) \(tr("分钟", "分鐘", "min"))")
+                        .font(.system(size: 20, weight: .black))
+                        .foregroundColor(.white)
+                    Text(etaStr)
                         .font(.system(size: 11, weight: .bold))
-                        .foregroundColor(.white.opacity(0.9))
-                    HStack(spacing: 1) {
-                        Image(systemName: "light.beacon.max.fill")
-                            .font(.system(size: 8))
-                        Text("\(lightCount)")
-                            .font(.system(size: 10, weight: .bold))
-                    }
-                    .foregroundColor(.green)
+                        .foregroundColor(httGold)
                 }
-                Text(badgeTitle)
-                    .font(.system(size: 10, weight: .bold))
-                    .foregroundColor(isSel ? httCream : Color.cyan)
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 7)
-            .background(isSel ? httCrimson : Color.white.opacity(0.14))
-            .cornerRadius(10)
-            .overlay(
-                RoundedRectangle(cornerRadius: 10)
-                    .stroke(isSel ? httGold : Color.white.opacity(0.25), lineWidth: isSel ? 1.8 : 1)
-            )
-        }
-    }
-    
-    private var candidateRoutesScrollRow: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                ForEach(0..<manager.candidateRoutes.count, id: \.self) { idx in
-                    candidateRouteTabButton(route: manager.candidateRoutes[idx], index: idx)
-                }
-            }
-        }
-    }
-    
-    private var bottomPreNavActionRow: some View {
-        Button(action: {
-            withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) {
-                manager.startFocusedNavigation()
-            }
-        }) {
-            HStack(spacing: 8) {
-                Image(systemName: "location.north.circle.fill")
-                    .font(.title3)
-                Text(tr("开始导航 · 专注驾驶", "開始導航 · 專注駕駛", "Start Navigation"))
-                    .font(.system(size: 15, weight: .black))
+                
+                Text("\(distStr) · \(badgeTitle)")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundColor(isSel ? httCream : Color.gray)
                     .lineLimit(1)
             }
-            .frame(maxWidth: .infinity, minHeight: 44)
-            .padding(.vertical, 4)
-            .background(
-                LinearGradient(
-                    colors: [httCrimson, Color(red: 0.92, green: 0.25, blue: 0.30)],
-                    startPoint: .leading,
-                    endPoint: .trailing
-                )
-            )
-            .foregroundColor(.white)
-            .cornerRadius(11)
-            .overlay(RoundedRectangle(cornerRadius: 11).stroke(httGold, lineWidth: 1.5))
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    manager.selectCandidateRoute(at: index)
+                }
+            }
+            
+            // Only pressing the green [开始 / 開始] button starts turn-by-turn navigation!
+            Button(action: {
+                manager.selectCandidateRoute(at: index)
+                withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) {
+                    manager.startFocusedNavigation()
+                }
+            }) {
+                Text(tr("开始", "開始", "Start"))
+                    .font(.system(size: 15, weight: .black))
+                    .foregroundColor(.white)
+                    .frame(width: 60, height: 44)
+                    .background(Color(red: 0.20, green: 0.78, blue: 0.35))
+                    .cornerRadius(10)
+                    .shadow(color: Color.green.opacity(0.35), radius: 3, x: 0, y: 2)
+            }
+            .buttonStyle(PlainButtonStyle())
         }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .background(isSel ? Color(red: 0.0, green: 0.48, blue: 1.0).opacity(0.24) : Color.white.opacity(0.08))
+        .cornerRadius(12)
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(isSel ? Color(red: 0.25, green: 0.68, blue: 1.0) : Color.white.opacity(0.14), lineWidth: isSel ? 2.0 : 1.0)
+        )
     }
     
-    // Bottom Pre-Navigation Card: Enlarged Highway Strategy (高速优先/不走高速/距离最短) + Separate Candidate Routes Row + Anti-Mistouch [🚀 开始导航] Button!
+    // Apple Maps 1:1 Bottom Route Selection Sheet Card (Matches User Video d99b5e3c71bdce6a63a33fbaaa627035.mp4!)
     private var bottomPreNavRouteSelectionCard: some View {
-        VStack(spacing: 9) {
-            // Destination Title Header Row with Departure Time [出发 ⌄] + Close Route Button
-            HStack(spacing: 6) {
-                Image(systemName: "mappin.and.ellipse")
-                    .font(.system(size: 13, weight: .bold))
-                    .foregroundColor(httGold)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(manager.destinationName.isEmpty ? tr("规划路线", "規劃路線", "Planned Route") : manager.destinationName)
-                        .font(.system(size: 14, weight: .black))
-                        .foregroundColor(.white)
-                        .lineLimit(1)
-                    if manager.remainingRouteMinutes > 0 {
-                        Text(manager.estimatedArrivalTimeString(durationMinutes: manager.remainingRouteMinutes))
-                            .font(.system(size: 10, weight: .bold))
+        VStack(alignment: .leading, spacing: 8) {
+            // 1. Header: 路线 (我的位置 -> 目的地) + Full Overview Zoom Button + Close [X]
+            HStack(spacing: 8) {
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 5) {
+                        Text(tr("路线", "路線", "Routes"))
+                            .font(.system(size: 16, weight: .black))
+                            .foregroundColor(.white)
+                        Text("·")
+                            .foregroundColor(.gray)
+                        Text("\(tr("我的位置", "我的位置", "My Location")) ➔ \(manager.destinationName.isEmpty ? tr("目的地", "目的地", "Destination") : manager.destinationName)")
+                            .font(.system(size: 13, weight: .bold))
                             .foregroundColor(httGold)
+                            .lineLimit(1)
                     }
                 }
                 Spacer()
-                if manager.travelMode != .transit {
-                    departureTimeMenuButton
+                
+                // Fit Entire Route on Map Button
+                Button(action: {
+                    manager.mapTrackingUser = false
+                    manager.routeOverviewFitTrigger += 1
+                }) {
+                    HStack(spacing: 3) {
+                        Image(systemName: "arrow.up.left.and.arrow.down.right")
+                            .font(.system(size: 10, weight: .bold))
+                        Text(tr("全览", "全覽", "Overview"))
+                            .font(.system(size: 10, weight: .bold))
+                    }
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 4)
+                    .background(Color.white.opacity(0.14))
+                    .foregroundColor(httCream)
+                    .cornerRadius(8)
                 }
+                
                 Button(action: {
                     manager.stopRouteGuidance()
                 }) {
                     Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 16))
+                        .font(.system(size: 20))
                         .foregroundColor(.gray)
                 }
             }
-            .padding(.bottom, 1)
             
-            // Row 1: Enlarged Full-Width 3-Grid Highway Strategy (Driving) OR Built-In Transit Plans (Transit)
-            if manager.travelMode == .driving {
-                highwayPreferenceButtonRow
-            } else if manager.travelMode == .transit {
+            if manager.travelMode == .transit {
                 transitPreNavSection
+            } else {
+                // 2. Apple Maps 4-Pill Filter Bar: [🚗 驾驶 ⌄] [现在/日期时间 ⌄] [避开 ⌄] [粤AF17987 ⌄]
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 7) {
+                        drivingModeMenuPill
+                        departureTimeMenuButton
+                        if manager.travelMode == .driving {
+                            drivingAvoidanceMenuButton
+                            vehicleSettingsPillButton
+                        }
+                    }
+                }
+                
+                // 3. Live License Plate & Departure Time Traffic Restriction Recognition Banner (通过车牌及出行时间智能识别禁行区域!)
+                if manager.travelMode == .driving {
+                    let restriction = manager.evaluateTrafficRestrictionStatus()
+                    Button(action: {
+                        manager.showVehicleSettingsSheet = true
+                    }) {
+                        HStack(spacing: 6) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(restriction.badgeTitle)
+                                    .font(.system(size: 11, weight: .black))
+                                    .foregroundColor(restriction.isRestricted ? Color.orange : Color(red: 0.45, green: 0.96, blue: 0.65))
+                                Text(restriction.detailMessage)
+                                    .font(.system(size: 10, weight: .medium))
+                                    .foregroundColor(httCream.opacity(0.9))
+                                    .lineLimit(2)
+                                    .multilineTextAlignment(.leading)
+                            }
+                            Spacer(minLength: 2)
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundColor(.gray)
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(restriction.isRestricted ? Color.orange.opacity(0.16) : Color.green.opacity(0.12))
+                        .cornerRadius(9)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 9)
+                                .stroke(restriction.isRestricted ? Color.orange.opacity(0.6) : Color.green.opacity(0.4), lineWidth: 1)
+                        )
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                }
+                
+                // 4. Vertical List of Candidate Routes (Tap card to inspect route on map; tap green [开始] button to start navigation!)
+                if !manager.candidateRoutes.isEmpty {
+                    ScrollView(.vertical, showsIndicators: true) {
+                        VStack(spacing: 7) {
+                            ForEach(0..<manager.candidateRoutes.count, id: \.self) { idx in
+                                appleMapsCandidateRouteCard(route: manager.candidateRoutes[idx], index: idx)
+                            }
+                        }
+                    }
+                    .frame(maxHeight: 175)
+                }
             }
-            
-            // Row 2: GaoDe-Style Multi-Route Comparison Cards (Shows time, km, traffic lights & lighting % for Driving, e-Bike & Walking!)
-            if manager.travelMode != .transit && !manager.candidateRoutes.isEmpty {
-                candidateRoutesScrollRow
-            }
-            
-            // Safety Divider Cushion
-            Divider()
-                .background(httGold.opacity(0.35))
-                .padding(.vertical, 1)
-            
-            // Row 3: GaoDe Aggregated Ride-Hailing [🚕 高德打车] + [🚗 顺风车] + Prominent [🚀 开始导航] Button!
-            bottomPreNavActionRow
         }
         .padding(12)
-        .background(Color.black.opacity(0.90))
-        .cornerRadius(16)
-        .overlay(RoundedRectangle(cornerRadius: 16).stroke(httGold, lineWidth: 1.8))
+        .background(Color.black.opacity(0.92))
+        .cornerRadius(18)
+        .overlay(RoundedRectangle(cornerRadius: 18).stroke(httGold, lineWidth: 1.8))
     }
     
     // Electronic Speed Camera (测速电子眼) + Congestion (路况拥堵) + Service Area (服务区) + Toll Station (收费站) HUD Strip
@@ -2784,10 +3102,11 @@ struct ContentView: View {
                 .overlay(RoundedRectangle(cornerRadius: 16).stroke(httGold, lineWidth: 2))
             
             let isCompactStage = stageHeight < 175
-            let deskH: CGFloat = isCompactStage ? 36 : 48
-            let charBottomPad: CGFloat = (manager.mascotAction == .teaCake)
-                ? (isCompactStage ? 18 : 26)
-                : (isCompactStage ? 34 : 48)
+            let spriteHeight: CGFloat = isCompactStage ? 64 : 76
+            // 288x160 tea scene height = spriteHeight * (160/128) so seated characters are 100% the exact same size as Idle!
+            let teaSceneHeight: CGFloat = isCompactStage ? 82 : 96
+            let teaBottomPad: CGFloat = isCompactStage ? 12 : 18
+            let charBottomPad: CGFloat = isCompactStage ? 26 : 36
             
             VStack {
                 HStack(spacing: 5) {
@@ -2810,84 +3129,160 @@ struct ContentView: View {
                 .padding(.top, 7)
                 Spacer()
             }
-            .zIndex(3)
+            .zIndex(5)
             
             if manager.selectedCharacter == .all {
                 if manager.mascotAction == .teaCake {
-                    // Authentic Canonical RM-500 5-Member Seated Afternoon Tea Scene ([Mio, Ritsu, Yui, Mugi, Azusa])
-                    // When one member is lifted, renderTeaPartySceneFrame excludes ONLY that lifted member so the other 4 & wooden table stay 100% stationary!
-                    let activeLiftedId: Int? = manager.isDraggingMascot ? manager.draggedMemberId : nil
-                    let dynamicTeaScene = manager.renderTeaPartySceneFrame(excludingCharId: activeLiftedId)
+                    // 5-Member Tea Time:
+                    // 1. Seated members (those NOT in unseatedTeaMemberIds and NOT currently being dragged) sit in their chairs at the wooden table.
+                    // 2. Any member lifted & dropped stays at her dropped position doing random Idle/Walk/Special until [喝下午茶] is pressed!
+                    let seatedOrder: [AudioPlayerManager.CharacterFilter] = [.mio, .ritsu, .yui, .mugi, .azusa]
+                    let seatCenterXRatios: [CGFloat] = [0.12, 0.31, 0.50, 0.69, 0.88]
+                    let walkShift: CGFloat = (manager.mascotOffsetX * 0.35)
+                    
+                    var currentSeatedIds = Set([1, 2, 3, 4, 5]).subtracting(manager.unseatedTeaMemberIds)
+                    if manager.isDraggingMascot, let dId = manager.draggedMemberId {
+                        currentSeatedIds.remove(dId)
+                    }
+                    let dynamicTeaScene = manager.renderTeaPartySceneFrame(includedCharIds: currentSeatedIds)
                         ?? manager.teaPartyCompositedFrame
                         ?? manager.cachedTeaPartyFrames.first
-                    let seatedOrder: [AudioPlayerManager.CharacterFilter] = [.mio, .ritsu, .yui, .mugi, .azusa]
-                    let seatCenterXRatios: [CGFloat] = [0.13, 0.31, 0.50, 0.69, 0.87]
                     
-                    if let teaPartyImg = dynamicTeaScene {
-                        ZStack(alignment: .bottom) {
+                    ZStack(alignment: .bottom) {
+                        // A. The Tea Table + Currently Seated Girls (Normal size matching Idle!)
+                        if let teaPartyImg = dynamicTeaScene {
                             Image(uiImage: teaPartyImg)
                                 .interpolation(.none)
                                 .resizable()
                                 .scaledToFit()
-                                .frame(height: isCompactStage ? stageHeight - 16 : stageHeight - 12)
-                                .padding(.bottom, 2)
+                                .frame(height: teaSceneHeight)
                                 .overlay(
                                     GeometryReader { sceneGeo in
                                         ZStack {
                                             ForEach(0..<seatedOrder.count, id: \.self) { sIdx in
                                                 let member = seatedOrder[sIdx]
-                                                let seatX = sceneGeo.size.width * seatCenterXRatios[sIdx]
-                                                let seatY = sceneGeo.size.height * 0.54
-                                                let isLifted = manager.isDraggingMascot && manager.draggedMemberId == member.charId
-                                                
-                                                // Interactive Seat Hit Zone (Tap to speak, Drag to lift individually without moving the other 4!)
-                                                Rectangle()
-                                                    .fill(Color.clear)
-                                                    .contentShape(Rectangle())
-                                                    .frame(width: sceneGeo.size.width * 0.19, height: sceneGeo.size.height * 0.82)
-                                                    .position(x: seatX, y: seatY)
-                                                    .onTapGesture {
-                                                        manager.triggerCharacterTap(member: member)
-                                                    }
-                                                    .highPriorityGesture(
-                                                        DragGesture(minimumDistance: 4)
-                                                            .onChanged { value in
-                                                                let wasDragging = manager.isDraggingMascot
-                                                                manager.markDragActive(memberId: member.charId)
-                                                                if !wasDragging {
-                                                                    manager.playMascotVoice(for: member)
+                                                let isUnseated = manager.unseatedTeaMemberIds.contains(member.charId)
+                                                if !isUnseated {
+                                                    let seatX = sceneGeo.size.width * seatCenterXRatios[sIdx]
+                                                    let seatY = sceneGeo.size.height * 0.54
+                                                    let isLifted = manager.isDraggingMascot && manager.draggedMemberId == member.charId
+                                                    
+                                                    Rectangle()
+                                                        .fill(Color.clear)
+                                                        .contentShape(Rectangle())
+                                                        .frame(width: sceneGeo.size.width * 0.19, height: sceneGeo.size.height * 0.85)
+                                                        .position(x: seatX, y: seatY)
+                                                        .onTapGesture {
+                                                            manager.triggerCharacterTap(member: member)
+                                                        }
+                                                        .highPriorityGesture(
+                                                            DragGesture(minimumDistance: 4)
+                                                                .onChanged { value in
+                                                                    let wasDragging = manager.isDraggingMascot
+                                                                    manager.markDragActive(memberId: member.charId)
+                                                                    if !wasDragging {
+                                                                        manager.playMascotVoice(for: member)
+                                                                    }
+                                                                    dragOffset = value.translation
                                                                 }
-                                                                dragOffset = value.translation
-                                                            }
-                                                            .onEnded { _ in
-                                                                withAnimation(.spring(response: 0.35, dampingFraction: 0.68)) {
-                                                                    manager.isDraggingMascot = false
-                                                                    manager.draggedMemberId = nil
-                                                                    dragOffset = .zero
+                                                                .onEnded { value in
+                                                                    // Convert seat-relative drop translation into stage-center offset so she stays where dropped!
+                                                                    let seatOffsetFromCenter = (seatCenterXRatios[sIdx] - 0.50) * (teaSceneHeight * (288.0 / 160.0))
+                                                                    let maxBoundX = stageWidth * 0.38
+                                                                    let dropX = min(max(seatOffsetFromCenter + value.translation.width, -maxBoundX), maxBoundX)
+                                                                    let dropY = min(max(value.translation.height, -45), 25)
+                                                                    withAnimation(.spring(response: 0.32, dampingFraction: 0.72)) {
+                                                                        manager.finishDraggingMascot(
+                                                                            memberId: member.charId,
+                                                                            dropPosition: CGSize(width: dropX, height: dropY)
+                                                                        )
+                                                                        dragOffset = .zero
+                                                                    }
                                                                 }
-                                                            }
-                                                    )
-                                                
-                                                // Floating Lifted Sprite for the single grabbed member
-                                                if isLifted, let grabbedFrame = manager.allMemberFrames[member.charId] {
-                                                    Image(uiImage: grabbedFrame)
-                                                        .interpolation(.none)
-                                                        .resizable()
-                                                        .scaledToFit()
-                                                        .frame(width: isCompactStage ? 64 : 76, height: isCompactStage ? 64 : 76)
-                                                        .position(
-                                                            x: seatX + dragOffset.width,
-                                                            y: seatY + dragOffset.height
                                                         )
-                                                        .allowsHitTesting(false)
+                                                    
+                                                    if isLifted, let grabbedFrame = manager.allMemberFrames[member.charId] {
+                                                        Image(uiImage: grabbedFrame)
+                                                            .interpolation(.none)
+                                                            .resizable()
+                                                            .scaledToFit()
+                                                            .frame(width: spriteHeight, height: spriteHeight)
+                                                            .position(
+                                                                x: seatX + dragOffset.width,
+                                                                y: seatY + dragOffset.height
+                                                            )
+                                                            .allowsHitTesting(false)
+                                                    }
                                                 }
                                             }
                                         }
                                     }
                                 )
+                                .padding(.bottom, teaBottomPad)
                         }
-                        .zIndex(2)
+                        
+                        // B. Unseated Girls (Lifted out of the tea table -> wandering in Idle / Walk / Special at their dropped positions!)
+                        ForEach(Array(seatedOrder.enumerated()), id: \.element.id) { idx, member in
+                            if manager.unseatedTeaMemberIds.contains(member.charId),
+                               let frame = manager.allMemberFrames[member.charId] {
+                                let isThisDragged = manager.isDraggingMascot && manager.draggedMemberId == member.charId
+                                let savedPos = manager.memberPositions[member.charId] ?? .zero
+                                let memberAct = manager.memberSpecificActions[member.charId] ?? .idle
+                                let extraWalk: CGFloat = (memberAct == .walkRight || memberAct == .walkLeft) ? walkShift : 0.0
+                                
+                                VStack(spacing: 0) {
+                                    Image(uiImage: frame)
+                                        .interpolation(.none)
+                                        .resizable()
+                                        .scaledToFit()
+                                        .frame(width: spriteHeight, height: spriteHeight)
+                                    Text(member.displayName(manager.language))
+                                        .font(.system(size: 9, weight: .bold))
+                                        .padding(.horizontal, 4)
+                                        .padding(.vertical, 1)
+                                        .background(characterThemeColor(member).opacity(0.88))
+                                        .foregroundColor(.white)
+                                        .cornerRadius(4)
+                                }
+                                .frame(width: stageWidth * 0.18)
+                                .offset(
+                                    x: savedPos.width + (isThisDragged ? dragOffset.width : extraWalk),
+                                    y: savedPos.height + (isThisDragged ? dragOffset.height : 0)
+                                )
+                                .padding(.bottom, teaBottomPad)
+                                .zIndex(isThisDragged ? 12 : Double(3 + idx))
+                                .onTapGesture {
+                                    manager.triggerCharacterTap(member: member)
+                                }
+                                .highPriorityGesture(
+                                    DragGesture(minimumDistance: 4)
+                                        .onChanged { value in
+                                            let wasDragging = manager.isDraggingMascot
+                                            manager.markDragActive(memberId: member.charId)
+                                            if !wasDragging {
+                                                manager.playMascotVoice(for: member)
+                                            }
+                                            dragOffset = value.translation
+                                        }
+                                        .onEnded { value in
+                                            let oldPos = manager.memberPositions[member.charId] ?? .zero
+                                            let maxBoundX = stageWidth * 0.38
+                                            let newX = min(max(oldPos.width + value.translation.width, -maxBoundX), maxBoundX)
+                                            let newY = min(max(oldPos.height + value.translation.height, -45), 25)
+                                            withAnimation(.spring(response: 0.32, dampingFraction: 0.72)) {
+                                                manager.finishDraggingMascot(
+                                                    memberId: member.charId,
+                                                    dropPosition: CGSize(width: newX, height: newY)
+                                                )
+                                                dragOffset = .zero
+                                            }
+                                        }
+                                )
+                            }
+                        }
                     }
+                    .frame(width: stageWidth)
+                    .zIndex(2)
                 } else {
                     // Non-tea-time 5-member standing/walking/special mode:
                     // Each member is anchored in a ZStack at a fixed slotX so lifting one member NEVER causes the other 4 to shift!
@@ -2901,7 +3296,6 @@ struct ContentView: View {
                                 let isThisDragged = manager.isDraggingMascot && manager.draggedMemberId == member.charId
                                 let savedPos = manager.memberPositions[member.charId] ?? .zero
                                 let fixedSlotX = CGFloat(idx - 2) * (stageWidth * 0.185)
-                                let spriteHeight: CGFloat = isCompactStage ? 64 : 76
                                 
                                 VStack(spacing: 0) {
                                     Image(uiImage: frame)
@@ -2942,9 +3336,10 @@ struct ContentView: View {
                                             let newX = min(max(oldPos.width + value.translation.width, -maxBoundX), maxBoundX)
                                             let newY = min(max(oldPos.height + value.translation.height, -45), 35)
                                             withAnimation(.spring(response: 0.35, dampingFraction: 0.65)) {
-                                                manager.memberPositions[member.charId] = CGSize(width: newX, height: newY)
-                                                manager.isDraggingMascot = false
-                                                manager.draggedMemberId = nil
+                                                manager.finishDraggingMascot(
+                                                    memberId: member.charId,
+                                                    dropPosition: CGSize(width: newX, height: newY)
+                                                )
                                                 dragOffset = .zero
                                             }
                                         }
@@ -2956,56 +3351,126 @@ struct ContentView: View {
                     .padding(.bottom, charBottomPad)
                     .zIndex(2)
                 }
-            } else if let sprite = manager.currentSpriteFrame {
-                Image(uiImage: sprite)
-                    .interpolation(.none)
-                    .resizable()
-                    .scaledToFit()
-                    .frame(height: isCompactStage ? 84 : 102)
-                    .offset(
-                        x: manager.mascotOffsetX + (manager.isDraggingMascot ? dragOffset.width : 0),
-                        y: manager.mascotOffsetY + (manager.isDraggingMascot ? dragOffset.height : 0)
-                    )
-                    .onTapGesture {
-                        manager.triggerCharacterTap()
+            } else {
+                // Single-Character Stage Mode (Yui, Mio, Ritsu, Mugi, or Azusa)
+                if manager.mascotAction == .teaCake {
+                    // Single character seated right in her matching chair at the afternoon tea table!
+                    // When lifted & dropped, she stays at her dropped spot and switches randomly to Idle / Walk / Special!
+                    let singleSeatedIds: Set<Int> = manager.isDraggingMascot ? [] : [manager.selectedCharacter.charId]
+                    let singleTeaScene = manager.renderTeaPartySceneFrame(includedCharIds: singleSeatedIds)
+                        ?? manager.teaPartyCompositedFrame
+                    let seatRatioForChar: CGFloat = {
+                        switch manager.selectedCharacter {
+                        case .mio:   return 0.12
+                        case .ritsu: return 0.31
+                        case .yui, .all: return 0.50
+                        case .mugi:  return 0.69
+                        case .azusa: return 0.88
+                        }
+                    }()
+                    
+                    ZStack(alignment: .bottom) {
+                        if let teaImg = singleTeaScene {
+                            Image(uiImage: teaImg)
+                                .interpolation(.none)
+                                .resizable()
+                                .scaledToFit()
+                                .frame(height: teaSceneHeight)
+                                .overlay(
+                                    GeometryReader { sceneGeo in
+                                        let seatX = sceneGeo.size.width * seatRatioForChar
+                                        let seatY = sceneGeo.size.height * 0.54
+                                        ZStack {
+                                            Rectangle()
+                                                .fill(Color.clear)
+                                                .contentShape(Rectangle())
+                                                .frame(width: sceneGeo.size.width, height: sceneGeo.size.height)
+                                                .onTapGesture {
+                                                    manager.triggerCharacterTap()
+                                                }
+                                                .highPriorityGesture(
+                                                    DragGesture(minimumDistance: 4)
+                                                        .onChanged { value in
+                                                            let wasDragging = manager.isDraggingMascot
+                                                            manager.markDragActive(memberId: manager.selectedCharacter.charId)
+                                                            if !wasDragging {
+                                                                manager.playMascotVoice()
+                                                            }
+                                                            dragOffset = value.translation
+                                                        }
+                                                        .onEnded { value in
+                                                            let seatOffsetFromCenter = (seatRatioForChar - 0.50) * (teaSceneHeight * (288.0 / 160.0))
+                                                            let maxBoundX = stageWidth * 0.38
+                                                            let newX = min(max(seatOffsetFromCenter + value.translation.width, -maxBoundX), maxBoundX)
+                                                            let newY = min(max(value.translation.height, -45), 25)
+                                                            withAnimation(.spring(response: 0.32, dampingFraction: 0.72)) {
+                                                                manager.finishDraggingMascot(
+                                                                    memberId: manager.selectedCharacter.charId,
+                                                                    dropPosition: CGSize(width: newX, height: newY)
+                                                                )
+                                                                dragOffset = .zero
+                                                            }
+                                                        }
+                                                )
+                                            
+                                            if manager.isDraggingMascot, let grabbedSprite = manager.currentSpriteFrame {
+                                                Image(uiImage: grabbedSprite)
+                                                    .interpolation(.none)
+                                                    .resizable()
+                                                    .scaledToFit()
+                                                    .frame(width: spriteHeight, height: spriteHeight)
+                                                    .position(
+                                                        x: seatX + dragOffset.width,
+                                                        y: seatY + dragOffset.height
+                                                    )
+                                                    .allowsHitTesting(false)
+                                            }
+                                        }
+                                    }
+                                )
+                                .padding(.bottom, teaBottomPad)
+                        }
                     }
-                    .highPriorityGesture(
-                        DragGesture(minimumDistance: 4)
-                            .onChanged { value in
-                                let wasDragging = manager.isDraggingMascot
-                                manager.markDragActive(memberId: nil)
-                                if !wasDragging {
-                                    manager.playMascotVoice()
-                                }
-                                dragOffset = value.translation
-                            }
-                            .onEnded { value in
-                                let maxBoundX = stageWidth * 0.38
-                                let newX = min(max(manager.mascotOffsetX + value.translation.width, -maxBoundX), maxBoundX)
-                                let newY = min(max(manager.mascotOffsetY + value.translation.height, -45), 35)
-                                withAnimation(.spring(response: 0.35, dampingFraction: 0.65)) {
-                                    manager.mascotOffsetX = newX
-                                    manager.mascotOffsetY = newY
-                                    manager.isDraggingMascot = false
-                                    dragOffset = .zero
-                                }
-                            }
-                    )
-                    .padding(.bottom, charBottomPad)
                     .zIndex(2)
-            }
-            
-            // Complete Afternoon Tea Cake Table (desk01 wooden table + desk00 cakes & chairs)
-            if let deskImg = manager.deskSpriteFrame, manager.selectedCharacter != .all && manager.mascotAction == .teaCake {
-                Image(uiImage: deskImg)
-                    .interpolation(.none)
-                    .resizable()
-                    .scaledToFit()
-                    .frame(height: deskH)
-                    .opacity(0.96)
-                    .padding(.bottom, 3)
-                    .allowsHitTesting(false)
-                    .zIndex(1)
+                } else if let sprite = manager.currentSpriteFrame {
+                    Image(uiImage: sprite)
+                        .interpolation(.none)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(height: spriteHeight)
+                        .offset(
+                            x: manager.mascotOffsetX + (manager.isDraggingMascot ? dragOffset.width : 0),
+                            y: manager.mascotOffsetY + (manager.isDraggingMascot ? dragOffset.height : 0)
+                        )
+                        .onTapGesture {
+                            manager.triggerCharacterTap()
+                        }
+                        .highPriorityGesture(
+                            DragGesture(minimumDistance: 4)
+                                .onChanged { value in
+                                    let wasDragging = manager.isDraggingMascot
+                                    manager.markDragActive(memberId: nil)
+                                    if !wasDragging {
+                                        manager.playMascotVoice()
+                                    }
+                                    dragOffset = value.translation
+                                }
+                                .onEnded { value in
+                                    let maxBoundX = stageWidth * 0.38
+                                    let newX = min(max(manager.mascotOffsetX + value.translation.width, -maxBoundX), maxBoundX)
+                                    let newY = min(max(manager.mascotOffsetY + value.translation.height, -45), 35)
+                                    withAnimation(.spring(response: 0.35, dampingFraction: 0.65)) {
+                                        manager.finishDraggingMascot(
+                                            memberId: nil,
+                                            dropPosition: CGSize(width: newX, height: newY)
+                                        )
+                                        dragOffset = .zero
+                                    }
+                                }
+                        )
+                        .padding(.bottom, charBottomPad)
+                        .zIndex(2)
+                }
             }
         }
         .frame(height: stageHeight)
@@ -4382,6 +4847,283 @@ struct RM500AlbumAndOutfitSheetView: View {
 }
 
 
+// MARK: - Vehicle & License Plate Settings + Traffic Restriction Recognition Sheet (车牌号输入、车辆类型选择与禁行区域智能识别面板)
+struct VehicleAndPlateSettingsSheetView: View {
+    @ObservedObject var manager: AudioPlayerManager
+    @Environment(\.dismiss) private var dismiss
+    @State private var plateInput: String = ""
+    
+    private let httGold = Color(red: 0.88, green: 0.68, blue: 0.24)
+    private let httCrimson = Color(red: 0.78, green: 0.18, blue: 0.22)
+    private let httCream = Color(red: 0.99, green: 0.96, blue: 0.90)
+    private let provincePrefixes = ["粤", "港", "澳", "京", "沪", "浙", "苏", "川", "鄂", "湘", "桂", "闽"]
+    
+    private func tr(_ hans: String, _ hant: String, _ en: String) -> String {
+        switch manager.language {
+        case .zhHans: return hans
+        case .zhHant: return hant
+        case .en: return en
+        }
+    }
+    
+    var body: some View {
+        NavigationView {
+            ZStack {
+                Color(red: 0.11, green: 0.10, blue: 0.12).ignoresSafeArea()
+                
+                ScrollView(.vertical, showsIndicators: true) {
+                    VStack(alignment: .leading, spacing: 16) {
+                        // 1. Live Restriction Diagnosis Card
+                        let status = manager.evaluateTrafficRestrictionStatus()
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack {
+                                Image(systemName: status.isRestricted ? "exclamationmark.triangle.fill" : "checkmark.shield.fill")
+                                    .foregroundColor(status.isRestricted ? .orange : .green)
+                                Text(status.badgeTitle)
+                                    .font(.system(size: 15, weight: .black))
+                                    .foregroundColor(status.isRestricted ? .orange : Color(red: 0.45, green: 0.96, blue: 0.65))
+                                Spacer()
+                            }
+                            Text(status.detailMessage)
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundColor(httCream)
+                        }
+                        .padding(12)
+                        .background(status.isRestricted ? Color.orange.opacity(0.16) : Color.green.opacity(0.14))
+                        .cornerRadius(12)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 12)
+                                .stroke(status.isRestricted ? Color.orange : Color.green.opacity(0.6), lineWidth: 1.2)
+                        )
+                        
+                        // 2. License Plate Number Input + Quick Province Prefixes
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text(tr("1. 车牌号码设置 (用于识别本地/外地限行与尾号禁行)", "1. 車牌號碼設置 (用於識別本地/外地限行與尾號禁行)", "1. License Plate Number"))
+                                .font(.system(size: 14, weight: .black))
+                                .foregroundColor(httGold)
+                            
+                            HStack(spacing: 10) {
+                                TextField(tr("输入车牌号，如 粤AF17987 或 粤B88888", "輸入車牌號，如 粵AF17987 或 粵B88888", "e.g. 粤AF17987"), text: $plateInput)
+                                    .font(.system(size: 18, weight: .black, design: .monospaced))
+                                    .foregroundColor(.white)
+                                    .padding(.horizontal, 12)
+                                    .frame(height: 44)
+                                    .background(Color(red: 0.0, green: 0.38, blue: 0.85))
+                                    .cornerRadius(10)
+                                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.white, lineWidth: 1.5))
+                                    .onChange(of: plateInput) { newVal in
+                                        manager.vehicleLicensePlate = newVal.uppercased()
+                                    }
+                                
+                                Button(action: {
+                                    plateInput = ""
+                                    manager.vehicleLicensePlate = ""
+                                }) {
+                                    Text(tr("清空", "清空", "Clear"))
+                                        .font(.system(size: 13, weight: .bold))
+                                        .padding(.horizontal, 12)
+                                        .frame(height: 44)
+                                        .background(Color.white.opacity(0.14))
+                                        .foregroundColor(httCream)
+                                        .cornerRadius(10)
+                                }
+                            }
+                            
+                            Text(tr("快捷省份/字头点选：", "快捷省份/字頭點選：", "Quick Province Prefix:"))
+                                .font(.system(size: 11, weight: .bold))
+                                .foregroundColor(.gray)
+                            
+                            ScrollView(.horizontal, showsIndicators: false) {
+                                HStack(spacing: 6) {
+                                    ForEach(provincePrefixes, id: \.self) { pfx in
+                                        Button(action: {
+                                            if plateInput.isEmpty {
+                                                plateInput = pfx + "A"
+                                            } else {
+                                                let rest = String(plateInput.dropFirst())
+                                                plateInput = pfx + rest
+                                            }
+                                            manager.vehicleLicensePlate = plateInput.uppercased()
+                                        }) {
+                                            Text(pfx)
+                                                .font(.system(size: 13, weight: .black))
+                                                .frame(width: 34, height: 34)
+                                                .background(plateInput.hasPrefix(pfx) ? httGold : Color.white.opacity(0.14))
+                                                .foregroundColor(plateInput.hasPrefix(pfx) ? .black : .white)
+                                                .cornerRadius(8)
+                                        }
+                                    }
+                                }
+                            }
+                            
+                            HStack(spacing: 8) {
+                                Button(action: {
+                                    plateInput = "粤AF17987"
+                                    manager.vehicleLicensePlate = "粤AF17987"
+                                }) {
+                                    Text("粤AF17987 (广州蓝牌)")
+                                        .font(.system(size: 11, weight: .bold))
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 5)
+                                        .background(Color.blue.opacity(0.3))
+                                        .foregroundColor(.white)
+                                        .cornerRadius(6)
+                                }
+                                Button(action: {
+                                    plateInput = "粤BD88888"
+                                    manager.vehicleLicensePlate = "粤BD88888"
+                                    manager.vehicleEnergyType = .pureEVGreen
+                                }) {
+                                    Text("粤BD88888 (深圳绿牌)")
+                                        .font(.system(size: 11, weight: .bold))
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 5)
+                                        .background(Color.green.opacity(0.3))
+                                        .foregroundColor(.white)
+                                        .cornerRadius(6)
+                                }
+                                Button(action: {
+                                    plateInput = "粤Z8888港"
+                                    manager.vehicleLicensePlate = "粤Z8888港"
+                                    manager.vehicleEnergyType = .hkMacauDual
+                                }) {
+                                    Text("粤Z8888港 (两地牌)")
+                                        .font(.system(size: 11, weight: .bold))
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 5)
+                                        .background(Color.purple.opacity(0.3))
+                                        .foregroundColor(.white)
+                                        .cornerRadius(6)
+                                }
+                            }
+                        }
+                        .padding(12)
+                        .background(Color.white.opacity(0.06))
+                        .cornerRadius(12)
+                        
+                        // 3. Vehicle Energy & Plate Type
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(tr("2. 能源与号牌类型", "2. 能源與號牌類型", "2. Energy & Plate Type"))
+                                .font(.system(size: 14, weight: .black))
+                                .foregroundColor(httGold)
+                            
+                            ForEach(VehicleEnergyType.allCases) { eType in
+                                let isSel = (manager.vehicleEnergyType == eType)
+                                Button(action: {
+                                    manager.vehicleEnergyType = eType
+                                }) {
+                                    HStack {
+                                        Text(eType.title(manager.language))
+                                            .font(.system(size: 13, weight: .bold))
+                                            .foregroundColor(.white)
+                                        Spacer()
+                                        Image(systemName: isSel ? "checkmark.circle.fill" : "circle")
+                                            .foregroundColor(isSel ? httGold : .gray)
+                                    }
+                                    .padding(10)
+                                    .background(isSel ? httCrimson.opacity(0.45) : Color.white.opacity(0.08))
+                                    .cornerRadius(8)
+                                }
+                            }
+                        }
+                        .padding(12)
+                        .background(Color.white.opacity(0.06))
+                        .cornerRadius(12)
+                        
+                        // 4. Vehicle Body Category
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(tr("3. 车辆类型 (客车/货车/摩托车禁行识别)", "3. 車輛類型 (客車/貨車/電單車禁行識別)", "3. Vehicle Category"))
+                                .font(.system(size: 14, weight: .black))
+                                .foregroundColor(httGold)
+                            
+                            ForEach(VehicleBodyType.allCases) { bType in
+                                let isSel = (manager.vehicleBodyType == bType)
+                                Button(action: {
+                                    manager.vehicleBodyType = bType
+                                }) {
+                                    HStack {
+                                        Text(bType.title(manager.language))
+                                            .font(.system(size: 13, weight: .bold))
+                                            .foregroundColor(.white)
+                                        Spacer()
+                                        Image(systemName: isSel ? "checkmark.circle.fill" : "circle")
+                                            .foregroundColor(isSel ? httGold : .gray)
+                                    }
+                                    .padding(10)
+                                    .background(isSel ? httCrimson.opacity(0.45) : Color.white.opacity(0.08))
+                                    .cornerRadius(8)
+                                }
+                            }
+                        }
+                        .padding(12)
+                        .background(Color.white.opacity(0.06))
+                        .cornerRadius(12)
+                        
+                        // 5. Route Avoidance Switches (避开收费站 / 避开高速公路 / 避开禁行)
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(tr("4. 路线避让偏好设置", "4. 路線避讓偏好設置", "4. Route Avoidance Preferences"))
+                                .font(.system(size: 14, weight: .black))
+                                .foregroundColor(httGold)
+                            
+                            ForEach(DrivingAvoidanceOption.allCases) { opt in
+                                let isOn = manager.drivingAvoidOptions.contains(opt)
+                                Button(action: {
+                                    manager.toggleDrivingAvoidance(opt)
+                                }) {
+                                    HStack {
+                                        Image(systemName: opt.icon)
+                                            .foregroundColor(httGold)
+                                        Text(opt.title(manager.language))
+                                            .font(.system(size: 13, weight: .bold))
+                                            .foregroundColor(.white)
+                                        Spacer()
+                                        Image(systemName: isOn ? "checkmark.circle.fill" : "circle")
+                                            .foregroundColor(isOn ? .green : .gray)
+                                    }
+                                    .padding(10)
+                                    .background(isOn ? Color.blue.opacity(0.35) : Color.white.opacity(0.08))
+                                    .cornerRadius(8)
+                                }
+                            }
+                        }
+                        .padding(12)
+                        .background(Color.white.opacity(0.06))
+                        .cornerRadius(12)
+                        
+                        Button(action: {
+                            manager.recalculateOrResortDrivingRoutes()
+                            dismiss()
+                        }) {
+                            Text(tr("保存车辆设置并更新路线", "保存車輛設置並更新路線", "Save & Update Routes"))
+                                .font(.system(size: 15, weight: .black))
+                                .frame(maxWidth: .infinity, minHeight: 46)
+                                .background(httCrimson)
+                                .foregroundColor(.white)
+                                .cornerRadius(12)
+                                .overlay(RoundedRectangle(cornerRadius: 12).stroke(httGold, lineWidth: 1.5))
+                        }
+                    }
+                    .padding(16)
+                }
+            }
+            .navigationTitle(tr("车辆与禁行设置", "車輛與禁行設置", "Vehicle & Restrictions"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button(tr("完成", "完成", "Done")) {
+                        manager.recalculateOrResortDrivingRoutes()
+                        dismiss()
+                    }
+                    .foregroundColor(httGold)
+                }
+            }
+            .onAppear {
+                plateInput = manager.vehicleLicensePlate
+            }
+        }
+    }
+}
+
 // MARK: - Custom Departure Time Picker Sheet (地图自定义出发时间选择器)
 struct RouteDepartureTimePickerSheetView: View {
     @ObservedObject var manager: AudioPlayerManager
@@ -4450,6 +5192,7 @@ struct RouteDepartureTimePickerSheetView: View {
                         Button(action: {
                             manager.routeDepartureDate = tempDate
                             manager.isCustomDepartureTime = true
+                            manager.recalculateOrResortDrivingRoutes()
                             dismiss()
                         }) {
                             Text(tr("确认出发时间", "確認出發時間", "Confirm Time"))
@@ -4561,16 +5304,21 @@ struct InAppTransitPlanSheetView: View {
     private var sheetVehiclePreferencesMenuPill: some View {
         Menu {
             ForEach(TransitVehicleMode.allCases) { vMode in
+                let isChecked = manager.preferredTransitVehicles.contains(vMode)
                 Button(action: {
                     manager.toggleTransitVehiclePreference(vMode)
                 }) {
-                    HStack {
-                        Label(vMode.title(manager.language), systemImage: vMode.icon)
-                        if manager.preferredTransitVehicles.contains(vMode) {
-                            Image(systemName: "checkmark")
-                        }
-                    }
+                    Label(
+                        (isChecked ? "✓ " : "    ") + vMode.title(manager.language),
+                        systemImage: isChecked ? "checkmark.circle.fill" : "circle"
+                    )
                 }
+            }
+            Divider()
+            Button(action: {
+                manager.resetAllTransitVehiclePreferences()
+            }) {
+                Label(tr("全部勾选 (默认)", "全部勾選 (預設)", "Select All (Default)"), systemImage: "checkmark.seal.fill")
             }
         } label: {
             HStack(spacing: 4) {
@@ -4594,15 +5342,14 @@ struct InAppTransitPlanSheetView: View {
     private var sheetSortStrategyMenuPill: some View {
         Menu {
             ForEach(TransitSortStrategy.allCases) { strat in
+                let isSel = (manager.transitSortStrategy == strat)
                 Button(action: {
                     manager.transitSortStrategy = strat
                 }) {
-                    HStack {
-                        Label(strat.title(manager.language), systemImage: strat.icon)
-                        if manager.transitSortStrategy == strat {
-                            Image(systemName: "checkmark")
-                        }
-                    }
+                    Label(
+                        (isSel ? "✓ " : "    ") + strat.title(manager.language),
+                        systemImage: isSel ? "checkmark.circle.fill" : strat.icon
+                    )
                 }
             }
         } label: {

@@ -49,10 +49,18 @@ struct CoordinateConverter {
     }
     
     static func isInHongKong(_ coord: CLLocationCoordinate2D) -> Bool {
-        // Precise Hong Kong SAR boundary (South of Shenzhen River ~22.548N)
+        // Precise Hong Kong SAR boundary (South of Shenzhen River & Deep Bay)
         if coord.latitude >= 22.14 && coord.latitude <= 22.545 && coord.longitude >= 113.82 && coord.longitude <= 114.45 {
-            // Exclude Shenzhen Futian/Luohu/Shatoujiao north of 22.522N
-            if coord.latitude > 22.522 && coord.longitude < 114.16 {
+            // West of 114.045E (Shenzhen Nanshan / Shekou / Shenzhen Bay Port): Shenzhen extends south to 22.472N
+            if coord.longitude < 114.045 && coord.latitude > 22.472 {
+                return false
+            }
+            // Central-West (114.045E..114.115E: Shenzhen Futian Port 22.515N & Huanggang Port 22.518N): border is at 22.510N
+            if coord.longitude >= 114.045 && coord.longitude < 114.115 && coord.latitude > 22.510 {
+                return false
+            }
+            // Central-East (114.115E..114.165E: Shenzhen Luohu Port 22.531N & Wenjindu): border is at 22.526N
+            if coord.longitude >= 114.115 && coord.longitude < 114.165 && coord.latitude > 22.526 {
                 return false
             }
             if coord.latitude > 22.542 {
@@ -177,6 +185,89 @@ enum TransitVehicleMode: String, CaseIterable, Identifiable, Hashable {
         }
     }
 }
+
+enum DrivingAvoidanceOption: String, CaseIterable, Identifiable, Hashable {
+    case avoidTolls = "tolls"           // 避开收费站
+    case avoidHighways = "highways"     // 避开高速公路
+    case avoidRestricted = "restricted" // 避开禁行
+    
+    var id: String { self.rawValue }
+    
+    func title(_ lang: AppLanguage) -> String {
+        switch (self, lang) {
+        case (.avoidTolls, .zhHans): return "避开收费站"
+        case (.avoidTolls, .zhHant): return "避開收費站"
+        case (.avoidTolls, .en): return "Avoid Tolls"
+        case (.avoidHighways, .zhHans): return "避开高速公路"
+        case (.avoidHighways, .zhHant): return "避開高速公路"
+        case (.avoidHighways, .en): return "Avoid Highways"
+        case (.avoidRestricted, .zhHans): return "避开禁行"
+        case (.avoidRestricted, .zhHant): return "避開禁行"
+        case (.avoidRestricted, .en): return "Avoid Restricted Zones"
+        }
+    }
+    
+    var icon: String {
+        switch self {
+        case .avoidTolls: return "yensign.circle"
+        case .avoidHighways: return "road.lanes"
+        case .avoidRestricted: return "exclamationmark.shield"
+        }
+    }
+}
+
+enum VehicleEnergyType: String, CaseIterable, Identifiable {
+    case fuelBlue = "fuel"          // 燃油车 (蓝牌)
+    case pureEVGreen = "ev"         // 纯电动新能源 (绿牌)
+    case phevGreen = "phev"         // 插电混动新能源 (绿牌)
+    case hkMacauDual = "hkmacau"    // 港澳两地牌 (粤Z/FV)
+    
+    var id: String { self.rawValue }
+    
+    func title(_ lang: AppLanguage) -> String {
+        switch (self, lang) {
+        case (.fuelBlue, .zhHans): return "燃油车 (蓝牌/黄牌)"
+        case (.fuelBlue, .zhHant): return "燃油車 (藍牌/黃牌)"
+        case (.fuelBlue, .en): return "Gasoline (Blue Plate)"
+        case (.pureEVGreen, .zhHans): return "纯电动新能源 (绿牌)"
+        case (.pureEVGreen, .zhHant): return "純電動新能源 (綠牌)"
+        case (.pureEVGreen, .en): return "Pure EV (Green Plate)"
+        case (.phevGreen, .zhHans): return "插电混动新能源 (绿牌)"
+        case (.phevGreen, .zhHant): return "插電混動新能源 (綠牌)"
+        case (.phevGreen, .en): return "Plug-in Hybrid (Green)"
+        case (.hkMacauDual, .zhHans): return "港澳两地牌 (粤Z/FV)"
+        case (.hkMacauDual, .zhHant): return "港澳兩地牌 (粵Z/FV)"
+        case (.hkMacauDual, .en): return "HK/Macau Cross-Border"
+        }
+    }
+    
+    var isGreenExempt: Bool {
+        return self == .pureEVGreen || self == .phevGreen
+    }
+}
+
+enum VehicleBodyType: String, CaseIterable, Identifiable {
+    case passengerCar = "car"       // 小型客车 / 轿车 / SUV
+    case lightTruck = "truck"       // 轻型货车 / 皮卡
+    case motorcycle = "moto"        // 摩托车 / 电单车
+    
+    var id: String { self.rawValue }
+    
+    func title(_ lang: AppLanguage) -> String {
+        switch (self, lang) {
+        case (.passengerCar, .zhHans): return "小型轿车 / SUV (客车)"
+        case (.passengerCar, .zhHant): return "小型轎車 / SUV (客車)"
+        case (.passengerCar, .en): return "Passenger Car / SUV"
+        case (.lightTruck, .zhHans): return "轻型货车 / 皮卡"
+        case (.lightTruck, .zhHant): return "輕型貨車 / 皮卡"
+        case (.lightTruck, .en): return "Light Truck / Pickup"
+        case (.motorcycle, .zhHans): return "摩托车 / 机车"
+        case (.motorcycle, .zhHant): return "電單車 / 機車"
+        case (.motorcycle, .en): return "Motorcycle"
+        }
+    }
+}
+
 
 enum MascotActionState: String, CaseIterable {
     case idle = "idle"
@@ -973,45 +1064,237 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     @Published var selectedTransitPlanIndex: Int = 0
     @Published var showTransitPlanSheet: Bool = false
     
-    // Departure Time & Transit Sort / Vehicle Mode Preferences
+    // Unseated Tea Party Members in 5-Member Stage Mode (Only reset when pressing [喝下午茶] or [位置归位]!)
+    @Published var unseatedTeaMemberIds: Set<Int> = []
+    
+    // Departure Time & Transit Sort / Vehicle Mode Preferences (Default: all 4 vehicle modes checked!)
     @Published var routeDepartureDate: Date = Date() {
         didSet {
             if isCustomDepartureTime {
-                applyTransitFiltersAndSort()
+                applyTransitFiltersAndSort(shouldUpdateMapRoute: true)
             }
         }
     }
     @Published var isCustomDepartureTime: Bool = false {
         didSet {
-            applyTransitFiltersAndSort()
+            applyTransitFiltersAndSort(shouldUpdateMapRoute: true)
         }
     }
     @Published var showDepartureTimePickerSheet: Bool = false
+    @Published var showVehicleSettingsSheet: Bool = false
+    @Published var routeOverviewFitTrigger: Int = 0
+    @Published var routeSelectionRenderTrigger: Int = 0
+    @Published var drivingAvoidOptions: Set<DrivingAvoidanceOption> = [] {
+        didSet {
+            recalculateOrResortDrivingRoutes()
+        }
+    }
+    @Published var vehicleLicensePlate: String = UserDefaults.standard.string(forKey: "kon_vehicle_plate") ?? "粤AF17987" {
+        didSet {
+            UserDefaults.standard.set(vehicleLicensePlate, forKey: "kon_vehicle_plate")
+        }
+    }
+    @Published var vehicleEnergyType: VehicleEnergyType = {
+        if let saved = UserDefaults.standard.string(forKey: "kon_vehicle_energy"),
+           let parsed = VehicleEnergyType(rawValue: saved) {
+            return parsed
+        }
+        return .fuelBlue
+    }() {
+        didSet {
+            UserDefaults.standard.set(vehicleEnergyType.rawValue, forKey: "kon_vehicle_energy")
+        }
+    }
+    @Published var vehicleBodyType: VehicleBodyType = {
+        if let saved = UserDefaults.standard.string(forKey: "kon_vehicle_body"),
+           let parsed = VehicleBodyType(rawValue: saved) {
+            return parsed
+        }
+        return .passengerCar
+    }() {
+        didSet {
+            UserDefaults.standard.set(vehicleBodyType.rawValue, forKey: "kon_vehicle_body")
+        }
+    }
+    
+    func toggleDrivingAvoidance(_ option: DrivingAvoidanceOption) {
+        if drivingAvoidOptions.contains(option) {
+            drivingAvoidOptions.remove(option)
+        } else {
+            drivingAvoidOptions.insert(option)
+        }
+    }
+    
+    func drivingAvoidanceButtonTitle(_ lang: AppLanguage) -> String {
+        if drivingAvoidOptions.isEmpty {
+            switch lang {
+            case .zhHans: return "避开"
+            case .zhHant: return "避開"
+            case .en: return "Avoid"
+            }
+        }
+        switch lang {
+        case .zhHans: return "避开(\(drivingAvoidOptions.count))"
+        case .zhHant: return "避開(\(drivingAvoidOptions.count))"
+        case .en: return "Avoid(\(drivingAvoidOptions.count))"
+        }
+    }
+    
+    func drivingDeparturePillTitle(_ lang: AppLanguage) -> String {
+        if !isCustomDepartureTime {
+            switch lang {
+            case .zhHans: return "现在"
+            case .zhHant: return "現在"
+            case .en: return "Now"
+            }
+        }
+        let fmt = DateFormatter()
+        fmt.dateFormat = "M月d日 HH:mm"
+        let dStr = fmt.string(from: routeDepartureDate)
+        return dStr
+    }
+    
+    func vehiclePillTitle(_ lang: AppLanguage) -> String {
+        let trimmed = vehicleLicensePlate.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty {
+            return trimmed
+        }
+        switch lang {
+        case .zhHans: return "车辆"
+        case .zhHant: return "車輛"
+        case .en: return "Vehicle"
+        }
+    }
+    
+    /// Evaluates license plate + vehicle type + departure date/time + current/destination city for traffic restriction zones!
+    func evaluateTrafficRestrictionStatus() -> (isRestricted: Bool, badgeTitle: String, detailMessage: String) {
+        let plate = vehicleLicensePlate.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        let evalDate = isCustomDepartureTime ? routeDepartureDate : Date()
+        let cal = Calendar.current
+        let weekday = cal.component(.weekday, from: evalDate) // 1=Sun, 7=Sat
+        let isWeekend = (weekday == 1 || weekday == 7)
+        let hour = cal.component(.hour, from: evalDate)
+        let minute = cal.component(.minute, from: evalDate)
+        let totalMins = hour * 60 + minute
+        let isPeakHour = !isWeekend && ((totalMins >= 7 * 60 && totalMins <= 9 * 60) || (totalMins >= 17 * 60 + 30 && totalMins <= 19 * 60 + 30))
+        
+        let fmt = DateFormatter()
+        fmt.dateFormat = "M月d日 HH:mm"
+        let timeLabel = fmt.string(from: evalDate)
+        
+        let refCoord = destinationCoord ?? userCoordinate
+        let inShenzhen = CoordinateConverter.isInShenzhen(refCoord) || destinationName.contains("深圳") || destinationName.contains("罗湖") || destinationName.contains("羅湖") || destinationName.contains("福田") || destinationName.contains("南山")
+        let inHK = CoordinateConverter.isInHongKong(refCoord)
+        
+        // 1. Motorcycle restriction in Shenzhen/Urban Core
+        if vehicleBodyType == .motorcycle && inShenzhen {
+            return (
+                true,
+                language == .zhHant ? "⚠️ 電單車禁行區域識別" : "⚠️ 摩托车禁行区域识别",
+                language == .zhHant
+                    ? "[\(plate.isEmpty ? "電單車" : plate)] 深圳羅湖/福田/南山等市區道路全天禁止摩托車通行，已自動為您標記並優先規劃合規路線。"
+                    : "[\(plate.isEmpty ? "摩托车" : plate)] 深圳罗湖/福田/南山等市区道路全天禁止摩托车通行，已自动为您标记并优先规划合规路线。"
+            )
+        }
+        
+        // 2. Light Truck peak/core restriction
+        if vehicleBodyType == .lightTruck && inShenzhen && (isPeakHour || (hour >= 7 && hour < 22)) {
+            return (
+                true,
+                language == .zhHant ? "⚠️ 貨車限行區域識別" : "⚠️ 货车限行区域识别",
+                language == .zhHant
+                    ? "[\(plate.isEmpty ? "輕型貨車" : plate)] 出行時間 (\(timeLabel)) 處於深圳市區貨車限行時段 (07:00-22:00)，已開啟避開禁行。"
+                    : "[\(plate.isEmpty ? "轻型货车" : plate)] 出行时间 (\(timeLabel)) 处于深圳市区货车限行时段 (07:00-22:00)，已开启避开禁行。"
+            )
+        }
+        
+        // 3. Cross-border HK permit check
+        if inHK && !plate.hasPrefix("粵Z") && !plate.hasPrefix("粤Z") && !plate.hasPrefix("FV") && vehicleEnergyType != .hkMacauDual {
+            return (
+                true,
+                language == .zhHant ? "⚠️ 跨境禁行識別 (需兩地牌)" : "⚠️ 跨境禁行识别 (需两地牌)",
+                language == .zhHant
+                    ? "[\(plate.isEmpty ? "未設車牌" : plate)] 香港道路需持有粵Z/FV兩地牌或禁區紙方可自駕進入，建議導航至口岸停車場後換乘。"
+                    : "[\(plate.isEmpty ? "未设车牌" : plate)] 香港道路需持有粤Z/FV两地牌或禁区纸方可自驾进入，建议导航至口岸停车场后换乘。"
+            )
+        }
+        
+        // 4. Green Plate EV exemption
+        if vehicleEnergyType.isGreenExempt || plate.count >= 8 {
+            return (
+                false,
+                language == .zhHant ? "✅ 新能源綠牌 · 免限行" : "✅ 新能源绿牌 · 免限行",
+                language == .zhHant
+                    ? "[\(plate)] 新能源綠牌車輛於當前出行時間 (\(timeLabel)) 不受深圳/廣州外牌早晚高峰及尾號限行限制。"
+                    : "[\(plate)] 新能源绿牌车辆于当前出行时间 (\(timeLabel)) 不受深圳/广州外牌早晚高峰及尾号限行限制。"
+            )
+        }
+        
+        // 5. Shenzhen non-local blue plate (e.g. 粤AF17987) peak-hour restriction check!
+        let isLocalShenzhenPlate = plate.hasPrefix("粤B") || plate.hasPrefix("粵B") || plate.hasPrefix("粤Z") || plate.hasPrefix("粵Z")
+        if inShenzhen && !plate.isEmpty && !isLocalShenzhenPlate {
+            if isPeakHour {
+                return (
+                    true,
+                    language == .zhHant ? "⚠️ 外地藍牌早晚高峰禁行" : "⚠️ 外地蓝牌早晚高峰禁行",
+                    language == .zhHant
+                        ? "[\(plate)] 出行時間 (\(timeLabel)) 處於深圳工作日早晚高峰 (07:00-09:00, 17:30-19:30) 外地車限行時段，已為您啟用【避開禁行】口岸指定通道！"
+                        : "[\(plate)] 出行时间 (\(timeLabel)) 处于深圳工作日早晚高峰 (07:00-09:00, 17:30-19:30) 外地车限行时段，已为您启用【避开禁行】口岸指定通道！"
+                )
+            } else {
+                return (
+                    false,
+                    language == .zhHant ? "✅ 非限行時段 · 暢行無阻" : "✅ 非限行时段 · 畅行无阻",
+                    language == .zhHant
+                        ? "[\(plate)] 出行時間 (\(timeLabel)) 處於深圳非限行時段（外牌限行僅限工作日 07:00-09:00、17:30-19:30），全城不限行。"
+                        : "[\(plate)] 出行时间 (\(timeLabel)) 处于深圳非限行时段（外牌限行仅限工作日 07:00-09:00、17:30-19:30），全城不限行。"
+                )
+            }
+        }
+        
+        return (
+            false,
+            language == .zhHant ? "✅ 本地號牌 · 全城通行" : "✅ 本地号牌 · 全城通行",
+            language == .zhHant
+                ? "[\(plate.isEmpty ? "未設車牌" : plate)] 出行時間 (\(timeLabel)) 當前路線無禁行與尾號限制。"
+                : "[\(plate.isEmpty ? "未设车牌" : plate)] 出行时间 (\(timeLabel)) 当前路线无禁行与尾号限制。"
+        )
+    }
+    
+    func recalculateOrResortDrivingRoutes() {
+        guard travelMode == .driving else { return }
+        if let dest = destinationCoord {
+            calculateRoute(to: dest, title: destinationName, isReroute: false)
+        } else if !candidateRoutes.isEmpty {
+            applyRoutePreferenceSort()
+        }
+    }
+
     @Published var transitSortStrategy: TransitSortStrategy = .suggested {
         didSet {
-            applyTransitFiltersAndSort()
+            applyTransitFiltersAndSort(shouldUpdateMapRoute: true)
         }
     }
     @Published var preferredTransitVehicles: Set<TransitVehicleMode> = Set(TransitVehicleMode.allCases) {
         didSet {
-            applyTransitFiltersAndSort()
+            applyTransitFiltersAndSort(shouldUpdateMapRoute: true)
         }
     }
     
     func departureButtonTitle(_ lang: AppLanguage) -> String {
         if !isCustomDepartureTime {
             switch lang {
-            case .zhHans: return "出发"
-            case .zhHant: return "出發"
-            case .en: return "Depart"
+            case .zhHans: return travelMode == .driving ? "现在" : "出发"
+            case .zhHant: return travelMode == .driving ? "現在" : "出發"
+            case .en: return travelMode == .driving ? "Now" : "Depart"
             }
         }
         let fmt = DateFormatter()
-        fmt.dateFormat = "HH:mm"
+        fmt.dateFormat = "M月d日 HH:mm"
         let tStr = fmt.string(from: routeDepartureDate)
         switch lang {
-        case .zhHans: return "出发 \(tStr)"
-        case .zhHant: return "出發 \(tStr)"
+        case .zhHans: return "\(tStr) 出发"
+        case .zhHant: return "\(tStr) 出發"
         case .en: return "Dep \(tStr)"
         }
     }
@@ -1030,13 +1313,22 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     }
     
     func toggleTransitVehiclePreference(_ mode: TransitVehicleMode) {
-        if preferredTransitVehicles.contains(mode) {
-            if preferredTransitVehicles.count > 1 {
-                preferredTransitVehicles.remove(mode)
+        var updated = preferredTransitVehicles
+        if updated.contains(mode) {
+            if updated.count > 1 {
+                updated.remove(mode)
+            } else {
+                // If user taps the last remaining checked item, reset to all 4 checked so it never gets stuck
+                updated = Set(TransitVehicleMode.allCases)
             }
         } else {
-            preferredTransitVehicles.insert(mode)
+            updated.insert(mode)
         }
+        preferredTransitVehicles = updated
+    }
+    
+    func resetAllTransitVehiclePreferences() {
+        preferredTransitVehicles = Set(TransitVehicleMode.allCases)
     }
     
     func transitPreferencesSummaryTitle(_ lang: AppLanguage) -> String {
@@ -1055,73 +1347,352 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         }
     }
     
-    func applyTransitFiltersAndSort() {
+    private func stepMatchesVehiclePreferences(_ step: TransitStepItem) -> Bool {
+        switch step.kind {
+        case .walk: return true
+        case .bus: return preferredTransitVehicles.contains(.bus)
+        case .subway: return preferredTransitVehicles.contains(.subwayLightRail)
+        case .intercity, .train: return preferredTransitVehicles.contains(.commuterRail)
+        case .ferry: return preferredTransitVehicles.contains(.ferry)
+        }
+    }
+    
+    func applyTransitFiltersAndSort(shouldUpdateMapRoute: Bool = false) {
         let sourcePlans = rawTransitPlans.isEmpty ? transitPlans : rawTransitPlans
         guard !sourcePlans.isEmpty else { return }
         if rawTransitPlans.isEmpty {
             rawTransitPlans = sourcePlans
         }
         
-        // 1. Filter by preferred vehicle modes (巴士 / 地铁与轻轨 / 通勤铁路 / 渡轮)
-        var filtered = sourcePlans.filter { plan in
+        let destClean = destinationName.isEmpty ? "目的地" : destinationName
+        let allowBus = preferredTransitVehicles.contains(.bus)
+        let allowSubway = preferredTransitVehicles.contains(.subwayLightRail)
+        let allowRail = preferredTransitVehicles.contains(.commuterRail)
+        let allowFerry = preferredTransitVehicles.contains(.ferry)
+        
+        // 1. Strict match: plans where every transit step is in preferredTransitVehicles
+        var candidateList: [TransitPlanOption] = sourcePlans.filter { plan in
             let transitSteps = plan.steps.filter { $0.kind != .walk }
-            if transitSteps.isEmpty { return true }
-            return transitSteps.allSatisfy { step in
-                switch step.kind {
-                case .bus: return preferredTransitVehicles.contains(.bus)
-                case .subway: return preferredTransitVehicles.contains(.subwayLightRail)
-                case .intercity, .train: return preferredTransitVehicles.contains(.commuterRail)
-                case .ferry: return preferredTransitVehicles.contains(.ferry)
-                case .walk: return true
-                }
-            }
-        }
-        if filtered.isEmpty {
-            // Fallback to plans that contain at least one selected vehicle mode
-            filtered = sourcePlans.filter { plan in
-                plan.steps.contains { step in
-                    switch step.kind {
-                    case .bus: return preferredTransitVehicles.contains(.bus)
-                    case .subway: return preferredTransitVehicles.contains(.subwayLightRail)
-                    case .intercity, .train: return preferredTransitVehicles.contains(.commuterRail)
-                    case .ferry: return preferredTransitVehicles.contains(.ferry)
-                    case .walk: return false
-                    }
-                }
-            }
-        }
-        if filtered.isEmpty {
-            filtered = sourcePlans
+            guard !transitSteps.isEmpty else { return true }
+            return transitSteps.allSatisfy { stepMatchesVehiclePreferences($0) }
         }
         
-        // 2. Sort by transitSortStrategy (建议路线 / 较快路程 / 较少转乘 / 较少步行)
+        // 2. If user unchecked Bus (wants Subway/Rail without Bus), adapt mixed Bus+Subway plans by replacing feeder bus with direct walking to the metro station!
+        if !allowBus && allowSubway {
+            for plan in sourcePlans {
+                let hasBus = plan.steps.contains { $0.kind == .bus }
+                let hasSubway = plan.steps.contains { $0.kind == .subway }
+                if hasBus && hasSubway, let firstSubwayIdx = plan.steps.firstIndex(where: { $0.kind == .subway }) {
+                    let firstSubway = plan.steps[firstSubwayIdx]
+                    let walkToMetroSteps: [TransitStepItem] = [
+                        TransitStepItem(
+                            kind: .walk,
+                            lineName: "步行前往地鐵站",
+                            directionDesc: "前往 \(firstSubway.fromStation)",
+                            fromStation: "我的位置",
+                            toStation: firstSubway.fromStation,
+                            passStations: [],
+                            durationMins: 14,
+                            walkMeters: 920,
+                            doorSideDesc: "",
+                            acNotice: "",
+                            exitDesc: "直接步行前往 \(firstSubway.fromStation) 進站乘車 (已按偏好過濾巴士)",
+                            colorHex: "#888888",
+                            intervalDesc: "步行 920 米 (14分鐘)"
+                        )
+                    ] + Array(plan.steps[firstSubwayIdx...]).filter { $0.kind != .bus }
+                    
+                    let newTotalMins = walkToMetroSteps.reduce(0) { $0 + $1.durationMins }
+                    let newWalkMeters = walkToMetroSteps.filter { $0.kind == .walk }.reduce(0) { $0 + $1.walkMeters }
+                    let newTransfers = max(0, walkToMetroSteps.filter { $0.kind != .walk }.count - 1)
+                    let pureSubwayPlan = TransitPlanOption(
+                        title: "\(newTotalMins)分鐘 · 純地鐵直達 (免坐巴士)",
+                        badge: "地鐵與輕軌 · 已濾除巴士",
+                        totalMinutes: newTotalMins,
+                        totalStations: max(3, plan.totalStations - 4),
+                        transferCount: newTransfers,
+                        walkMeters: newWalkMeters,
+                        priceYuan: "5",
+                        startExitDesc: "\(firstSubway.fromStation)進站",
+                        warningNotice: "🚇 已根據您的「偏好設置」過濾地面巴士，全程採用地鐵與輕軌通行",
+                        realtimeArrivalText: "地鐵準點運行 · 約 4~6 分鐘一班",
+                        intercityBanner: plan.intercityBanner,
+                        steps: walkToMetroSteps
+                    )
+                    candidateList.append(pureSubwayPlan)
+                }
+            }
+        }
+        
+        // 3. If user unchecked Subway (wants Bus without Subway), adapt or synthesize pure Bus plans!
+        if allowBus && !allowSubway {
+            let hasPureBus = candidateList.contains { p in p.steps.contains { $0.kind == .bus } }
+            if !hasPureBus {
+                let baseMins = max(32, (sourcePlans.first?.totalMinutes ?? 50) + 8)
+                let pureBus1Steps: [TransitStepItem] = [
+                    TransitStepItem(
+                        kind: .walk,
+                        lineName: "步行前往公交站",
+                        directionDesc: "前往 沙灣天橋 / 附近公交站",
+                        fromStation: "我的位置",
+                        toStation: "幹線公交站",
+                        passStations: [],
+                        durationMins: 6,
+                        walkMeters: 380,
+                        doorSideDesc: "",
+                        acNotice: "",
+                        exitDesc: "前往公交站台候車",
+                        colorHex: "#888888",
+                        intervalDesc: "步行 380 米 (6分鐘)"
+                    ),
+                    TransitStepItem(
+                        kind: .bus,
+                        lineName: "351路 / M385路 城市幹線",
+                        directionDesc: "往 \(destClean) 方向",
+                        fromStation: "幹線公交站",
+                        toStation: "\(destClean)公交總站",
+                        passStations: ["東湖公園", "水庫", "留醫部", "東門", "中心廣場", "\(destClean)公交總站"],
+                        durationMins: baseMins - 12,
+                        walkMeters: 0,
+                        doorSideDesc: "空調大巴",
+                        acNotice: "🚌 巴士即將開出，6分鐘 📡 · CN¥3",
+                        exitDesc: "在 \(destClean)公交總站 下車",
+                        colorHex: "#1E88E5",
+                        intervalDesc: "全程地面巴士直達 · 票價¥3"
+                    ),
+                    TransitStepItem(
+                        kind: .walk,
+                        lineName: "步行到達",
+                        directionDesc: "前往 \(destClean)",
+                        fromStation: "\(destClean)公交總站",
+                        toStation: destClean,
+                        passStations: [],
+                        durationMins: 6,
+                        walkMeters: 320,
+                        doorSideDesc: "",
+                        acNotice: "",
+                        exitDesc: "到達 \(destClean)",
+                        colorHex: "#888888",
+                        intervalDesc: "步行 320 米 (6分鐘)"
+                    )
+                ]
+                let pureBus1 = TransitPlanOption(
+                    title: "\(baseMins)分鐘 · 351/M385路直達",
+                    badge: "純巴士方案 · 0換乘",
+                    totalMinutes: baseMins,
+                    totalStations: 7,
+                    transferCount: 0,
+                    walkMeters: 700,
+                    priceYuan: "3",
+                    startExitDesc: "附近公交站上車",
+                    warningNotice: "🚌 已根據您的「偏好設置」過濾地鐵，全程採用地面巴士直達",
+                    realtimeArrivalText: "巴士即將開出，6分鐘 📡 · CN¥3",
+                    steps: pureBus1Steps
+                )
+                
+                let pureBus2Steps: [TransitStepItem] = [
+                    pureBus1Steps[0],
+                    TransitStepItem(
+                        kind: .bus,
+                        lineName: "M508 / 高快巴士專線",
+                        directionDesc: "往 \(destClean) 快線方向",
+                        fromStation: "幹線公交站",
+                        toStation: "\(destClean)東站",
+                        passStations: ["大站快車直達", "\(destClean)東站"],
+                        durationMins: max(20, baseMins - 18),
+                        walkMeters: 0,
+                        doorSideDesc: "大站快車",
+                        acNotice: "🚌 巴士將於 4、12 分鐘後開出 📡 · CN¥5",
+                        exitDesc: "在 \(destClean)東站 下車",
+                        colorHex: "#1E88E5",
+                        intervalDesc: "大站快線巴士 · 票價¥5"
+                    ),
+                    pureBus1Steps[2]
+                ]
+                let pureBus2 = TransitPlanOption(
+                    title: "\(max(28, baseMins - 6))分鐘 · M508大站快巴",
+                    badge: "純巴士快線 · 較快路程",
+                    totalMinutes: max(28, baseMins - 6),
+                    totalStations: 3,
+                    transferCount: 0,
+                    walkMeters: 580,
+                    priceYuan: "5",
+                    startExitDesc: "幹線公交站上車",
+                    warningNotice: "🚌 大站快線巴士，停站少、車速快",
+                    realtimeArrivalText: "巴士將於4、12分鐘後開出 📡 · CN¥5",
+                    steps: pureBus2Steps
+                )
+                candidateList.append(contentsOf: [pureBus1, pureBus2])
+            }
+        }
+        
+        // 4. If Commuter Rail (.commuterRail) is checked and user either selected ONLY Commuter Rail or wants rail options included:
+        if allowRail && (!allowBus && !allowSubway || !candidateList.contains(where: { p in p.steps.contains { $0.kind == .train || $0.kind == .intercity } })) {
+            let railSteps: [TransitStepItem] = [
+                TransitStepItem(
+                    kind: .walk,
+                    lineName: "步行前往鐵路樞紐",
+                    directionDesc: "前往 深圳東站(布吉) / 深圳北站",
+                    fromStation: "我的位置",
+                    toStation: "深圳東站 / 城際鐵路站",
+                    passStations: [],
+                    durationMins: 12,
+                    walkMeters: 780,
+                    doorSideDesc: "",
+                    acNotice: "",
+                    exitDesc: "進站安檢候車",
+                    colorHex: "#888888",
+                    intervalDesc: "步行 780 米 (12分鐘)"
+                ),
+                TransitStepItem(
+                    kind: .intercity,
+                    lineName: "通勤鐵路 / 廣深城際動車",
+                    directionDesc: "往 \(destClean) / 羅湖 / 福田樞紐方向",
+                    fromStation: "深圳東站 / 布吉城際站",
+                    toStation: "\(destClean)鐵路站",
+                    passStations: ["深圳東", "\(destClean)鐵路站"],
+                    durationMins: 18,
+                    walkMeters: 0,
+                    doorSideDesc: "動車組列車",
+                    acNotice: "🚆 通勤鐵路/城際動車 · 準點率 99%",
+                    exitDesc: "出站前往 \(destClean)",
+                    colorHex: "#7CB342",
+                    intervalDesc: "1站直達 (18分鐘) · 票價¥15"
+                ),
+                TransitStepItem(
+                    kind: .walk,
+                    lineName: "步行到達",
+                    directionDesc: "前往 \(destClean)",
+                    fromStation: "\(destClean)鐵路站",
+                    toStation: destClean,
+                    passStations: [],
+                    durationMins: 6,
+                    walkMeters: 350,
+                    doorSideDesc: "",
+                    acNotice: "",
+                    exitDesc: "到達 \(destClean)",
+                    colorHex: "#888888",
+                    intervalDesc: "步行 350 米 (6分鐘)"
+                )
+            ]
+            let railPlan = TransitPlanOption(
+                title: "36分鐘 · 通勤鐵路/城際動車直達",
+                badge: "通勤鐵路 · 極速0換乘",
+                totalMinutes: 36,
+                totalStations: 2,
+                transferCount: 0,
+                walkMeters: 1130,
+                priceYuan: "15",
+                startExitDesc: "城際鐵路站進站",
+                warningNotice: "🚆 通勤鐵路與城際動車專線，大站直達無紅綠燈",
+                realtimeArrivalText: "預定每15分鐘開出一班 · CN¥15",
+                steps: railSteps
+            )
+            if !allowBus && !allowSubway {
+                candidateList.insert(railPlan, at: 0)
+            } else {
+                candidateList.append(railPlan)
+            }
+        }
+        
+        // 5. If Ferry (.ferry) is checked and user selected ONLY Ferry (or wants ferry option):
+        if allowFerry && !allowBus && !allowSubway && !allowRail {
+            let ferrySteps: [TransitStepItem] = [
+                TransitStepItem(
+                    kind: .walk,
+                    lineName: "步行前往渡輪碼頭",
+                    directionDesc: "前往 客運碼頭登船口",
+                    fromStation: "我的位置",
+                    toStation: "渡輪客運碼頭",
+                    passStations: [],
+                    durationMins: 10,
+                    walkMeters: 620,
+                    doorSideDesc: "",
+                    acNotice: "",
+                    exitDesc: "碼頭閘口檢票登船",
+                    colorHex: "#888888",
+                    intervalDesc: "步行 620 米 (10分鐘)"
+                ),
+                TransitStepItem(
+                    kind: .ferry,
+                    lineName: "水上巴士 / 灣區渡輪航綫",
+                    directionDesc: "往 \(destClean)碼頭 方向",
+                    fromStation: "渡輪客運碼頭",
+                    toStation: "\(destClean)碼頭",
+                    passStations: ["海景航道", "\(destClean)碼頭"],
+                    durationMins: 25,
+                    walkMeters: 0,
+                    doorSideDesc: "雙體高速客輪",
+                    acNotice: "⛴️ 渡輪航綫 · 每20分鐘一班",
+                    exitDesc: "下船出閘",
+                    colorHex: "#00897B",
+                    intervalDesc: "水上航綫 (25分鐘) · 票價¥20"
+                ),
+                TransitStepItem(
+                    kind: .walk,
+                    lineName: "步行到達",
+                    directionDesc: "前往 \(destClean)",
+                    fromStation: "\(destClean)碼頭",
+                    toStation: destClean,
+                    passStations: [],
+                    durationMins: 6,
+                    walkMeters: 360,
+                    doorSideDesc: "",
+                    acNotice: "",
+                    exitDesc: "到達 \(destClean)",
+                    colorHex: "#888888",
+                    intervalDesc: "步行 360 米 (6分鐘)"
+                )
+            ]
+            let ferryPlan = TransitPlanOption(
+                title: "41分鐘 · 水上渡輪航綫直達",
+                badge: "渡輪專線 · 0換乘海景",
+                totalMinutes: 41,
+                totalStations: 2,
+                transferCount: 0,
+                walkMeters: 980,
+                priceYuan: "20",
+                startExitDesc: "渡輪碼頭登船",
+                warningNotice: "⛴️ 已根據您的「偏好設置」切換為水上渡輪航綫",
+                realtimeArrivalText: "渡輪即將開出，10分鐘 📡 · CN¥20",
+                steps: ferrySteps
+            )
+            candidateList.append(ferryPlan)
+        }
+        
+        if candidateList.isEmpty {
+            candidateList = sourcePlans
+        }
+        
+        // 6. Sort by transitSortStrategy (建议路线 / 较快路程 / 较少转乘 / 较少步行)
         let sorted: [TransitPlanOption]
         switch transitSortStrategy {
         case .suggested:
-            sorted = filtered
+            sorted = candidateList
         case .faster:
-            sorted = filtered.sorted { a, b in
+            sorted = candidateList.sorted { a, b in
                 if a.totalMinutes != b.totalMinutes { return a.totalMinutes < b.totalMinutes }
                 return a.transferCount < b.transferCount
             }
         case .fewerTransfers:
-            sorted = filtered.sorted { a, b in
+            sorted = candidateList.sorted { a, b in
                 if a.transferCount != b.transferCount { return a.transferCount < b.transferCount }
                 return a.totalMinutes < b.totalMinutes
             }
         case .lessWalking:
-            sorted = filtered.sorted { a, b in
+            sorted = candidateList.sorted { a, b in
                 if a.walkMeters != b.walkMeters { return a.walkMeters < b.walkMeters }
                 return a.totalMinutes < b.totalMinutes
             }
         }
         
         transitPlans = sorted
-        if selectedTransitPlanIndex >= transitPlans.count {
-            selectedTransitPlanIndex = 0
-        }
+        selectedTransitPlanIndex = 0
         if let first = transitPlans.first {
             remainingRouteMinutes = first.totalMinutes
+            if shouldUpdateMapRoute, let dest = destinationCoord {
+                calculateTransitAppleMapsRoute(from: userCoordinate, to: dest, destTitle: destinationName, plan: first)
+            }
         }
     }
     @Published var customTransitPolyline: MKPolyline? = nil
@@ -1843,7 +2414,8 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         let directMeters = metersBetween(from, to)
         
         let fromHK = CoordinateConverter.isInHongKong(from)
-        let toHK = CoordinateConverter.isInHongKong(to) || destClean.contains("香港") || destClean.contains("九龙") || destClean.contains("九龍") || destClean.contains("旺角") || destClean.contains("尖沙咀") || destClean.contains("中环") || destClean.contains("中環") || destClean.contains("铜锣湾") || destClean.contains("銅鑼灣") || destClean.contains("金钟") || destClean.contains("金鐘") || destClean.contains("沙田") || destClean.contains("西九龙") || destClean.contains("西九龍") || destClean.contains("石硖尾") || destClean.contains("石硤尾") || destClean.contains("深水埗") || destClean.contains("油麻地") || destClean.contains("佐敦") || destClean.contains("紅磡") || destClean.contains("红磡") || destClean.contains("大圍") || destClean.contains("大围") || destClean.contains("火炭") || destClean.contains("大學") || destClean.contains("大学") || destClean.contains("太和") || destClean.contains("大埔") || destClean.contains("粉嶺") || destClean.contains("粉岭") || destClean.contains("上水") || destClean.contains("港鐵") || destClean.contains("港铁")
+        let isExplicitShenzhen = (destClean.contains("深圳") || destClean.contains("福田口岸") || destClean.contains("罗湖口岸") || destClean.contains("羅湖口岸") || destClean.contains("皇岗口岸") || destClean.contains("皇崗口岸") || destClean.contains("莲塘口岸") || destClean.contains("蓮塘口岸") || destClean.contains("文锦渡")) && !destClean.contains("香港")
+        let toHK = !isExplicitShenzhen && (CoordinateConverter.isInHongKong(to) || destClean.contains("香港") || destClean.contains("九龙") || destClean.contains("九龍") || destClean.contains("旺角") || destClean.contains("尖沙咀") || destClean.contains("中环") || destClean.contains("中環") || destClean.contains("铜锣湾") || destClean.contains("銅鑼灣") || destClean.contains("金钟") || destClean.contains("金鐘") || destClean.contains("沙田") || destClean.contains("西九龙") || destClean.contains("西九龍") || destClean.contains("石硖尾") || destClean.contains("石硤尾") || destClean.contains("深水埗") || destClean.contains("油麻地") || destClean.contains("佐敦") || destClean.contains("紅磡") || destClean.contains("红磡") || destClean.contains("大圍") || destClean.contains("大围") || destClean.contains("火炭") || destClean.contains("大學") || destClean.contains("大学") || destClean.contains("太和") || destClean.contains("大埔") || destClean.contains("粉嶺") || destClean.contains("粉岭") || destClean.contains("上水") || destClean.contains("港鐵") || destClean.contains("港铁"))
         
         // =========================================================================
         // 1. HONG KONG INTRA-CITY MTR & KMB BUS (香港本地港铁MTR + 九巴/城巴无缝导航)
@@ -5803,9 +6375,38 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     }
     
     func resetPositions() {
+        isDraggingMascot = false
+        draggedMemberId = nil
         mascotOffsetX = 0.0
         mascotOffsetY = 0.0
         memberPositions.removeAll()
+        unseatedTeaMemberIds.removeAll()
+        memberSpecificActions.removeAll()
+        memberActionExpiryTick.removeAll()
+        updateAllSpriteFrames()
+    }
+    
+    func finishDraggingMascot(memberId: Int?, dropPosition: CGSize) {
+        let randomPool: [MascotActionState] = [.idle, .walkRight, .special]
+        let chosenAction = randomPool.randomElement() ?? .idle
+        isDraggingMascot = false
+        draggedMemberId = nil
+        
+        if selectedCharacter == .all {
+            if let mId = memberId {
+                memberPositions[mId] = dropPosition
+                if mascotAction == .teaCake {
+                    unseatedTeaMemberIds.insert(mId)
+                }
+                memberSpecificActions[mId] = chosenAction
+                memberActionExpiryTick[mId] = animTick + 28
+            }
+        } else {
+            mascotOffsetX = dropPosition.width
+            mascotOffsetY = dropPosition.height
+            mascotAction = chosenAction
+        }
+        updateAllSpriteFrames()
     }
     
     func configureAudioSession() {
@@ -6346,51 +6947,64 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                 }
             }()
             
-            // Pre-render the 4 canonical animation frames for the 5-member After-School Tea Time (Matching Figure 2 from RM-500)
+            // Pre-render the 4 canonical animation frames for the 5-member After-School Tea Time (Clean blue chairs + wooden table + steaming teacups)
             var partyFrames: [UIImage] = []
             let partySize = CGSize(width: 288, height: 160)
             let partyRenderer = UIGraphicsImageRenderer(size: partySize)
             for tick in 0..<4 {
-                let pImg = partyRenderer.image { ctx in
-                    // 1. desk00 (chairs, floating flowers/notes, rising steam): frame (tick % 4)
-                    if let d0 = loadedSheets["desk00"],
-                       let d0_crop = d0.cropping(to: CGRect(x: (tick % 4) * 288, y: 0, width: 288, height: 160)) {
-                        UIImage(cgImage: d0_crop).draw(in: CGRect(x: 0, y: 0, width: 288, height: 160))
+                let pImg = partyRenderer.image { _ in
+                    let ox = (tick % 4) * 288
+                    // 1. Clean desk00 background: top flowers + 3 clean blue chairs + teacup steam (excluding duplicate chair-top cakes!)
+                    if let d0 = loadedSheets["desk00"] {
+                        if let topFlowers = d0.cropping(to: CGRect(x: ox, y: 0, width: 288, height: 74)) {
+                            UIImage(cgImage: topFlowers).draw(in: CGRect(x: 0, y: 0, width: 288, height: 74))
+                        }
+                        if let lowerChairs = d0.cropping(to: CGRect(x: ox, y: 105, width: 288, height: 55)) {
+                            UIImage(cgImage: lowerChairs).draw(in: CGRect(x: 0, y: 105, width: 288, height: 55))
+                        }
+                        if let cleanChairTop = d0.cropping(to: CGRect(x: ox + 68, y: 99, width: 49, height: 6)) {
+                            let chairTopImg = UIImage(cgImage: cleanChairTop)
+                            chairTopImg.draw(in: CGRect(x: 68, y: 99, width: 49, height: 6))
+                            chairTopImg.draw(in: CGRect(x: 125, y: 99, width: 49, height: 6))
+                            chairTopImg.draw(in: CGRect(x: 182, y: 99, width: 49, height: 6))
+                        }
+                        if let steamLeft = d0.cropping(to: CGRect(x: ox + 60, y: 80, width: 24, height: 19)) {
+                            UIImage(cgImage: steamLeft).draw(in: CGRect(x: 60, y: 80, width: 24, height: 19))
+                        }
+                        if let steamRight = d0.cropping(to: CGRect(x: ox + 170, y: 80, width: 15, height: 19)) {
+                            UIImage(cgImage: steamRight).draw(in: CGRect(x: 170, y: 80, width: 15, height: 19))
+                        }
                     }
-                    // 2. Mio: seated in chair facing right, sipping tea, row 0, col 0 (64x128) at (2, 20)
+                    // 2. Seated 5 HTT Members: Mio (left), Ritsu (left-mid), Yui (center), Mugi (right-mid), Azusa (right)
                     if let mio = loadedSheets["mio00"],
                        let mio_crop = mio.cropping(to: CGRect(x: 0, y: 0, width: 64, height: 128)) {
                         UIImage(cgImage: mio_crop).draw(in: CGRect(x: 2, y: 20, width: 64, height: 128))
                     }
-                    // 3. Ritsu: seated pointing towards Yui, row 1, col tick % 2 (80x128) at (50, 20)
                     if let ritsu = loadedSheets["ritsu00"],
                        let ritsu_crop = ritsu.cropping(to: CGRect(x: (tick % 2) * 80, y: 128, width: 80, height: 128)) {
                         UIImage(cgImage: ritsu_crop).draw(in: CGRect(x: 50, y: 20, width: 80, height: 128))
                     }
-                    // 4. Yui: seated dozing with strawberry shortcake on head, row 1, col tick % 4 (64x128) at (115, 20)
                     if let yui = loadedSheets["yui00"],
                        let yui_crop = yui.cropping(to: CGRect(x: (tick % 4) * 64, y: 128, width: 64, height: 128)) {
                         UIImage(cgImage: yui_crop).draw(in: CGRect(x: 115, y: 20, width: 64, height: 128))
                     }
-                    // 5. Mugi: seated smiling with strawberry shortcake on head, row 1, col tick % 4 (64x128) at (182, 20)
                     if let mugi = loadedSheets["tsumugi00"],
                        let mugi_crop = mugi.cropping(to: CGRect(x: (tick % 4) * 64, y: 128, width: 64, height: 128)) {
                         UIImage(cgImage: mugi_crop).draw(in: CGRect(x: 182, y: 20, width: 64, height: 128))
                     }
-                    // 6. Azusa: seated in chair facing left, sipping tea, row 0, col 0 (64x128) at (230, 20)
                     if let azusa = loadedSheets["azusa00"],
                        let azusa_crop = azusa.cropping(to: CGRect(x: 0, y: 0, width: 64, height: 128)) {
                         UIImage(cgImage: azusa_crop).draw(in: CGRect(x: 230, y: 20, width: 64, height: 128))
                     }
-                    // 7. Table: desk01 (288x160) at (0, 0)
+                    // 3. Wooden Table, Teacups & Side Armchairs: desk01 (288x160)
                     if let d1 = loadedSheets["desk01"],
                        let d1_crop = d1.cropping(to: CGRect(x: 0, y: 0, width: 288, height: 160)) {
                         UIImage(cgImage: d1_crop).draw(in: CGRect(x: 0, y: 0, width: 288, height: 160))
                     }
-                    // 8. Teacups & steam on table (from desk00 frame, y < 105) at (0, 0)
-                    if let d0 = loadedSheets["desk00"],
-                       let d0_top = d0.cropping(to: CGRect(x: (tick % 4) * 288, y: 0, width: 288, height: 105)) {
-                        UIImage(cgImage: d0_top).draw(in: CGRect(x: 0, y: 0, width: 288, height: 105))
+                    // 4. Redraw Yui's crossed arms resting on top of the wooden tabletop
+                    if let yui = loadedSheets["yui00"],
+                       let yui_arms = yui.cropping(to: CGRect(x: (tick % 4) * 64, y: 128 + 74, width: 64, height: 16)) {
+                        UIImage(cgImage: yui_arms).draw(in: CGRect(x: 115, y: 20 + 74, width: 64, height: 16))
                     }
                 }
                 partyFrames.append(pImg)
@@ -6432,6 +7046,12 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         draggedMemberId = nil
         memberSpecificActions.removeAll()
         memberActionExpiryTick.removeAll()
+        if state == .teaCake {
+            unseatedTeaMemberIds.removeAll()
+            memberPositions.removeAll()
+            mascotOffsetX = 0.0
+            mascotOffsetY = 0.0
+        }
         mascotAction = state
         updateAllSpriteFrames()
         playMascotVoice()
@@ -6439,14 +7059,11 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
 
     private func stepMascotBehavior() {
         if isDraggingMascot {
-            if animTick - dragLastActiveTick > 16 {
-                // Auto-recover if ScrollView cancelled DragGesture without firing onEnded
+            if animTick - dragLastActiveTick > 40 {
+                // Auto-recover only if gesture was genuinely abandoned for ~10s
                 isDraggingMascot = false
                 draggedMemberId = nil
             } else {
-                if selectedCharacter != .all {
-                    mascotAction = .grabbed
-                }
                 return
             }
         }
@@ -6699,13 +7316,13 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         }
     }
 
-    func renderTeaPartySceneFrame(excludingCharId: Int? = nil, tick: Int? = nil) -> UIImage? {
+    func renderTeaPartySceneFrame(includedCharIds: Set<Int> = [1, 2, 3, 4, 5], tick: Int? = nil) -> UIImage? {
         let t = (tick ?? (animTick / 2)) % 4
-        if excludingCharId == nil && !cachedTeaPartyFrames.isEmpty {
+        if includedCharIds.count == 5 && !cachedTeaPartyFrames.isEmpty {
             return cachedTeaPartyFrames[t % cachedTeaPartyFrames.count]
         }
-        let exId = excludingCharId ?? 0
-        let cKey = "teaparty_ex\(exId)_t\(t)"
+        let sortedKey = includedCharIds.sorted().map { String($0) }.joined(separator: "_")
+        let cKey = "teaparty_inc_\(sortedKey)_t\(t)"
         if let cached = croppedFrameCache[cKey] {
             return cached
         }
@@ -6713,37 +7330,58 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         let partySize = CGSize(width: 288, height: 160)
         let partyRenderer = UIGraphicsImageRenderer(size: partySize)
         let img = partyRenderer.image { _ in
-            if let d0 = spriteSheets["desk00"],
-               let d0_crop = d0.cropping(to: CGRect(x: t * 288, y: 0, width: 288, height: 160)) {
-                UIImage(cgImage: d0_crop).draw(in: CGRect(x: 0, y: 0, width: 288, height: 160))
+            let ox = t * 288
+            // 1. Clean desk00 background (3 clean blue chairs + floating petals + teacup steam)
+            if let d0 = spriteSheets["desk00"] {
+                if let topFlowers = d0.cropping(to: CGRect(x: ox, y: 0, width: 288, height: 74)) {
+                    UIImage(cgImage: topFlowers).draw(in: CGRect(x: 0, y: 0, width: 288, height: 74))
+                }
+                if let lowerChairs = d0.cropping(to: CGRect(x: ox, y: 105, width: 288, height: 55)) {
+                    UIImage(cgImage: lowerChairs).draw(in: CGRect(x: 0, y: 105, width: 288, height: 55))
+                }
+                if let cleanChairTop = d0.cropping(to: CGRect(x: ox + 68, y: 99, width: 49, height: 6)) {
+                    let chairTopImg = UIImage(cgImage: cleanChairTop)
+                    chairTopImg.draw(in: CGRect(x: 68, y: 99, width: 49, height: 6))
+                    chairTopImg.draw(in: CGRect(x: 125, y: 99, width: 49, height: 6))
+                    chairTopImg.draw(in: CGRect(x: 182, y: 99, width: 49, height: 6))
+                }
+                if let steamLeft = d0.cropping(to: CGRect(x: ox + 60, y: 80, width: 24, height: 19)) {
+                    UIImage(cgImage: steamLeft).draw(in: CGRect(x: 60, y: 80, width: 24, height: 19))
+                }
+                if let steamRight = d0.cropping(to: CGRect(x: ox + 170, y: 80, width: 15, height: 19)) {
+                    UIImage(cgImage: steamRight).draw(in: CGRect(x: 170, y: 80, width: 15, height: 19))
+                }
             }
-            if exId != 2, let mio = spriteSheets["mio00"],
+            // 2. Draw only the characters in includedCharIds at their exact seats!
+            if includedCharIds.contains(2), let mio = spriteSheets["mio00"],
                let mio_crop = mio.cropping(to: CGRect(x: 0, y: 0, width: 64, height: 128)) {
                 UIImage(cgImage: mio_crop).draw(in: CGRect(x: 2, y: 20, width: 64, height: 128))
             }
-            if exId != 3, let ritsu = spriteSheets["ritsu00"],
+            if includedCharIds.contains(3), let ritsu = spriteSheets["ritsu00"],
                let ritsu_crop = ritsu.cropping(to: CGRect(x: (t % 2) * 80, y: 128, width: 80, height: 128)) {
                 UIImage(cgImage: ritsu_crop).draw(in: CGRect(x: 50, y: 20, width: 80, height: 128))
             }
-            if exId != 1, let yui = spriteSheets["yui00"],
+            if includedCharIds.contains(1), let yui = spriteSheets["yui00"],
                let yui_crop = yui.cropping(to: CGRect(x: t * 64, y: 128, width: 64, height: 128)) {
                 UIImage(cgImage: yui_crop).draw(in: CGRect(x: 115, y: 20, width: 64, height: 128))
             }
-            if exId != 4, let mugi = spriteSheets["tsumugi00"],
+            if includedCharIds.contains(4), let mugi = spriteSheets["tsumugi00"],
                let mugi_crop = mugi.cropping(to: CGRect(x: t * 64, y: 128, width: 64, height: 128)) {
                 UIImage(cgImage: mugi_crop).draw(in: CGRect(x: 182, y: 20, width: 64, height: 128))
             }
-            if exId != 5, let azusa = spriteSheets["azusa00"],
+            if includedCharIds.contains(5), let azusa = spriteSheets["azusa00"],
                let azusa_crop = azusa.cropping(to: CGRect(x: 0, y: 0, width: 64, height: 128)) {
                 UIImage(cgImage: azusa_crop).draw(in: CGRect(x: 230, y: 20, width: 64, height: 128))
             }
+            // 3. Wooden Table, Teacups & Side Armchairs (desk01)
             if let d1 = spriteSheets["desk01"],
                let d1_crop = d1.cropping(to: CGRect(x: 0, y: 0, width: 288, height: 160)) {
                 UIImage(cgImage: d1_crop).draw(in: CGRect(x: 0, y: 0, width: 288, height: 160))
             }
-            if let d0 = spriteSheets["desk00"],
-               let d0_top = d0.cropping(to: CGRect(x: t * 288, y: 0, width: 288, height: 105)) {
-                UIImage(cgImage: d0_top).draw(in: CGRect(x: 0, y: 0, width: 288, height: 105))
+            // 4. Yui's crossed arms over tabletop
+            if includedCharIds.contains(1), let yui = spriteSheets["yui00"],
+               let yui_arms = yui.cropping(to: CGRect(x: t * 64, y: 128 + 74, width: 64, height: 16)) {
+                UIImage(cgImage: yui_arms).draw(in: CGRect(x: 115, y: 20 + 74, width: 64, height: 16))
             }
         }
         croppedFrameCache[cKey] = img
@@ -6757,8 +7395,14 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         
         for member in CharacterFilter.fiveIndividuals {
             if let exp = memberActionExpiryTick[member.charId], animTick >= exp {
-                memberSpecificActions.removeValue(forKey: member.charId)
-                memberActionExpiryTick.removeValue(forKey: member.charId)
+                if !unseatedTeaMemberIds.contains(member.charId) {
+                    memberSpecificActions.removeValue(forKey: member.charId)
+                } else {
+                    // Unseated member from tea table: periodically switch randomly among [.idle, .walkRight, .special]!
+                    let randomPool: [MascotActionState] = [.idle, .walkRight, .special]
+                    memberSpecificActions[member.charId] = randomPool.randomElement() ?? .idle
+                    memberActionExpiryTick[member.charId] = animTick + 28
+                }
             }
             let phaseTick = animTick + (member.charId * 3)
             let memberAction: MascotActionState
@@ -6767,11 +7411,15 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             } else if selectedCharacter == .all {
                 if let specific = memberSpecificActions[member.charId] {
                     memberAction = specific
+                } else if unseatedTeaMemberIds.contains(member.charId) {
+                    memberAction = .idle
                 } else if activeRoute != nil && currentSpeedKmh > 3.0 {
                     memberAction = .walkRight
                 } else {
                     memberAction = mascotAction
                 }
+            } else if isDraggingMascot {
+                memberAction = .grabbed
             } else if activeRoute != nil && currentSpeedKmh > 3.0 {
                 memberAction = .walkRight
             } else {
@@ -6800,9 +7448,18 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             if currentSpriteFrame !== targetSprite {
                 currentSpriteFrame = targetSprite
             }
-            if mascotAction == .teaCake && !cachedTeaPartyFrames.isEmpty {
-                let fIdx = (animTick / 2) % cachedTeaPartyFrames.count
-                let frame = cachedTeaPartyFrames[fIdx]
+        }
+        if mascotAction == .teaCake {
+            var activeSeated: Set<Int>
+            if selectedCharacter == .all {
+                activeSeated = Set([1, 2, 3, 4, 5]).subtracting(unseatedTeaMemberIds)
+                if isDraggingMascot, let dId = draggedMemberId {
+                    activeSeated.remove(dId)
+                }
+            } else {
+                activeSeated = isDraggingMascot ? [] : [selectedCharacter.charId]
+            }
+            if let frame = renderTeaPartySceneFrame(includedCharIds: activeSeated, tick: animTick / 2) {
                 if teaPartyCompositedFrame !== frame {
                     teaPartyCompositedFrame = frame
                 }
@@ -6963,6 +7620,13 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         reqAuto.destination = dst
         reqAuto.transportType = .automobile
         reqAuto.requestsAlternateRoutes = true
+        reqAuto.departureDate = isCustomDepartureTime ? routeDepartureDate : Date()
+        if #available(iOS 16.0, *) {
+            if travelMode == .driving {
+                reqAuto.tollPreference = drivingAvoidOptions.contains(.avoidTolls) ? .avoid : .any
+                reqAuto.highwayPreference = drivingAvoidOptions.contains(.avoidHighways) ? .avoid : .any
+            }
+        }
         
         reqWalk.destination = dst
         reqWalk.transportType = .walking
@@ -7075,31 +7739,33 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         return route.advisoryNotices.contains { $0.contains("收费") || $0.contains("Toll") }
     }
     
+    func routeHasTolls(_ route: MKRoute) -> Bool {
+        if route.advisoryNotices.contains(where: { $0.contains("收费") || $0.contains("收費") || $0.lowercased().contains("toll") }) {
+            return true
+        }
+        for step in route.steps {
+            if step.instructions.contains("收费") || step.instructions.contains("收費") {
+                return true
+            }
+        }
+        return false
+    }
+
     private func sortRoutes(_ routes: [MKRoute], by pref: RouteStrategyPreference) -> [MKRoute] {
-        switch pref {
-        case .gaodeRecommended:
-            // GaoDe Smart Recommendation: Fastest time & non-detour (does NOT force highway if local surface road like 丹沙路/龙岗大道 is faster or shorter!)
-            return routes.sorted { a, b in
-                let scoreA = a.expectedTravelTime + (a.distance * 0.08) + (routeContainsHighway(a) && a.distance < 12000 ? 180.0 : 0.0)
-                let scoreB = b.expectedTravelTime + (b.distance * 0.08) + (routeContainsHighway(b) && b.distance < 12000 ? 180.0 : 0.0)
-                return scoreA < scoreB
+        let avoidHwy = drivingAvoidOptions.contains(.avoidHighways)
+        let avoidToll = drivingAvoidOptions.contains(.avoidTolls)
+        return routes.sorted { a, b in
+            if avoidToll {
+                let aToll = routeHasTolls(a) ? 1 : 0
+                let bToll = routeHasTolls(b) ? 1 : 0
+                if aToll != bToll { return aToll < bToll }
             }
-        case .highwayFirst:
-            return routes.sorted { a, b in
-                let aHwy = routeContainsHighway(a) ? 1 : 0
-                let bHwy = routeContainsHighway(b) ? 1 : 0
-                if aHwy != bHwy { return aHwy > bHwy }
-                return a.expectedTravelTime < b.expectedTravelTime
-            }
-        case .avoidHighway:
-            return routes.sorted { a, b in
+            if avoidHwy {
                 let aHwy = routeContainsHighway(a) ? 1 : 0
                 let bHwy = routeContainsHighway(b) ? 1 : 0
                 if aHwy != bHwy { return aHwy < bHwy }
-                return a.distance < b.distance
             }
-        case .shortest:
-            return routes.sorted { $0.distance < $1.distance }
+            return a.expectedTravelTime < b.expectedTravelTime
         }
     }
     
@@ -7108,14 +7774,16 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         let sorted = sortRoutes(candidateRoutes, by: routePreference)
         candidateRoutes = sorted
         selectedRouteIndex = 0
-        applyCalculatedRoute(sorted[0], title: destinationName, isReroute: true)
+        applyCalculatedRoute(sorted[0], title: destinationName, isReroute: false)
     }
     
     func selectCandidateRoute(at index: Int) {
         guard index >= 0 && index < candidateRoutes.count else { return }
         selectedRouteIndex = index
         let chosen = candidateRoutes[index]
-        applyCalculatedRoute(chosen, title: destinationName, isReroute: true)
+        // Keep isNavigatingFocused = false so tapping a route on map or card only previews it until [开始] is pressed!
+        applyCalculatedRoute(chosen, title: destinationName, isReroute: false)
+        routeSelectionRenderTrigger += 1
     }
     
     func estimatedMinutes(for route: MKRoute) -> Int {
@@ -7134,21 +7802,36 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     func routeOptionBadgeTitle(for route: MKRoute, index: Int) -> String {
         if travelMode == .ebike || travelMode == .walking {
             if index == 0 {
-                return "推荐路线 · 有灯92%"
+                return language == .zhHant ? "最快 · 推薦路線" : "最快 · 推荐路线"
             } else if index == 1 {
-                return "备选路线二 · 有灯89%"
+                return language == .zhHant ? "備選路線 · 少紅綠燈" : "备选路线 · 少红绿灯"
             } else {
-                return "备选三 · 步行最少"
+                return language == .zhHant ? "距離較短" : "距离较短"
             }
         }
-        let hasHwy = routeContainsHighway(route)
-        if index == 0 {
-            return hasHwy ? "高德推荐 · 高速快线" : "高德推荐 · 用时短"
-        } else if index == 1 {
-            return hasHwy ? "备选二 · 走高速" : "备选二 · 不走高速"
-        } else {
-            return "方案\(index + 1) · 距离最短"
+        // Apple Maps clean subtitle style (No "高德推荐"!)
+        let minTime = candidateRoutes.map { estimatedMinutes(for: $0) }.min() ?? estimatedMinutes(for: route)
+        let thisTime = estimatedMinutes(for: route)
+        var tags: [String] = []
+        if thisTime == minTime && index == 0 {
+            tags.append(language == .en ? "Fastest" : "最快")
         }
+        if drivingAvoidOptions.contains(.avoidTolls) && !routeHasTolls(route) {
+            tags.append(language == .zhHant ? "免收費" : "免收费")
+        }
+        if drivingAvoidOptions.contains(.avoidHighways) && !routeContainsHighway(route) {
+            tags.append(language == .zhHant ? "不走高速" : "不走高速")
+        }
+        if drivingAvoidOptions.contains(.avoidRestricted) || evaluateTrafficRestrictionStatus().isRestricted {
+            tags.append(language == .zhHant ? "已避開禁行" : "已避开禁行")
+        }
+        if !route.name.isEmpty {
+            tags.append("途经\(route.name)")
+        }
+        if tags.isEmpty {
+            return index == 0 ? (language == .en ? "Fastest" : "最快") : (language == .zhHant ? "備選路線" : "备选路线")
+        }
+        return tags.joined(separator: " · ")
     }
     
     // MARK: - Intelligent Multi-Lane Recommender (车道级白/灰高亮引导) & Dynamic Speed Camera Alert
@@ -7263,7 +7946,10 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         self.keepAlivePlayer?.play()
         
         if !isReroute {
-            self.isNavigatingFocused = false // Show route overview & [开始导航] button first!
+            self.isNavigatingFocused = false // Show route overview & [开始] button first!
+            self.mapTrackingUser = false     // Zoom out to full route overview instead of locking to car!
+            self.routeOverviewFitTrigger += 1
+            self.routeSelectionRenderTrigger += 1
         }
         let steps = route.steps
         self.currentStepIndex = steps.count > 1 ? 1 : 0
@@ -8317,7 +9003,16 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     }
     
     func triggerTeaTimeReminder() {
+        isDraggingMascot = false
+        draggedMemberId = nil
+        unseatedTeaMemberIds.removeAll()
+        memberSpecificActions.removeAll()
+        memberActionExpiryTick.removeAll()
+        memberPositions.removeAll()
+        mascotOffsetX = 0.0
+        mascotOffsetY = 0.0
         mascotAction = .teaCake
+        updateAllSpriteFrames()
         let base = activeBaseId()
         let offset = [73, 121].randomElement()!
         let msg: String
