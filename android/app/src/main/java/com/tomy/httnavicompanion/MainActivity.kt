@@ -1,28 +1,40 @@
 package com.tomy.httnavicompanion
 
+import android.annotation.SuppressLint
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Looper
 import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import com.google.android.gms.location.*
 import com.tomy.httnavicompanion.ui.cockpit.CockpitScreen
 import com.tomy.httnavicompanion.ui.overlay.FloatingMascotService
 import com.tomy.httnavicompanion.ui.theme.HTTNaviCompanionTheme
 
 class MainActivity : ComponentActivity() {
 
+    private lateinit var fusedLocationClient: FusedLocationProviderClient
+    private var locationCallback: LocationCallback? = null
+
     private val requestLocationPermission = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
-    ) { _ ->
-        // Location permissions callback
+    ) { perms ->
+        val granted = perms[android.Manifest.permission.ACCESS_FINE_LOCATION] == true ||
+            perms[android.Manifest.permission.ACCESS_COARSE_LOCATION] == true
+        if (granted) {
+            startRealLocationUpdates()
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
 
         requestLocationPermission.launch(
             arrayOf(
@@ -37,6 +49,43 @@ class MainActivity : ComponentActivity() {
                     onStartFloatingPet = { startOverlayService() }
                 )
             }
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun startRealLocationUpdates() {
+        try {
+            fusedLocationClient.lastLocation.addOnSuccessListener { loc ->
+                if (loc != null) {
+                    HTTNaviApp.instance.audioPlayerManager.updateRealLocation(
+                        loc.latitude, loc.longitude, loc.speed, loc.bearing
+                    )
+                }
+            }
+
+            val req = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 1500L)
+                .setMinUpdateIntervalMillis(1000L)
+                .build()
+
+            val cb = object : LocationCallback() {
+                override fun onLocationResult(result: LocationResult) {
+                    result.lastLocation?.let { loc ->
+                        HTTNaviApp.instance.audioPlayerManager.updateRealLocation(
+                            loc.latitude, loc.longitude, loc.speed, loc.bearing
+                        )
+                    }
+                }
+            }
+            locationCallback = cb
+            fusedLocationClient.requestLocationUpdates(req, cb, Looper.getMainLooper())
+        } catch (_: Exception) {
+        }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        locationCallback?.let {
+            try { fusedLocationClient.removeLocationUpdates(it) } catch (_: Exception) {}
         }
     }
 

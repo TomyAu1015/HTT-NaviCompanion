@@ -640,29 +640,37 @@ fun AboutAndFeedbackContent(manager: AudioPlayerManager) {
     }
 }
 
-// 4. Destination Search & Route Sheet Dialog
+// 4. Destination Search & Route Sheet Dialog (Real Nominatim Online Search + OSRM Route)
 @Composable
 fun DestinationSearchSheetDialog(onDismiss: () -> Unit) {
     val app = HTTNaviApp.instance
     val manager = app.audioPlayerManager
     val lang by manager.language.collectAsState()
     val travelMode by manager.travelMode.collectAsState()
+    val onlineResults by manager.onlineSearchResults.collectAsState()
+    val isSearching by manager.isSearchingPlaces.collectAsState()
+    val userCoord by manager.userCoordinate.collectAsState()
     var queryText by remember { mutableStateOf("") }
 
     val presetPlaces = remember {
         listOf(
             PlaceSearchItem("樱丘女子高等学校 (轻音部部室)", "日本滋贺县犬上郡丰乡町 (圣地巡礼)", 1.2, com.tomy.httnavicompanion.data.LatLng(35.2036, 136.2336), "动漫圣地"),
             PlaceSearchItem("深圳湾万象城", "广东省深圳市南山区科苑南路2888号", 3.5, com.tomy.httnavicompanion.data.LatLng(22.5186, 113.9462), "购物餐饮"),
-            PlaceSearchItem("秋叶原 JEUGIA 乐器店 (吉太专卖店)", "京都市中京区三条通寺町东入", 5.8, com.tomy.httnavicompanion.data.LatLng(35.0086, 135.7681), "乐器名店"),
+            PlaceSearchItem("香港旺角信和中心 (动漫周边)", "香港九龙旺角弥敦道582-592号", 2.1, com.tomy.httnavicompanion.data.LatLng(22.3162, 114.1703), "动漫周边"),
             PlaceSearchItem("深圳宝安国际机场 T3航站楼", "广东省深圳市宝安区领航高架桥", 18.4, com.tomy.httnavicompanion.data.LatLng(22.6393, 113.8107), "交通枢纽"),
-            PlaceSearchItem("香港旺角信和中心 (动漫周边)", "香港九龙旺角弥敦道582-592号", 24.0, com.tomy.httnavicompanion.data.LatLng(22.3162, 114.1703), "动漫周边"),
+            PlaceSearchItem("香港尖沙咀海港城", "香港九龙尖沙咀广东道3-27号", 2.8, com.tomy.httnavicompanion.data.LatLng(22.2950, 114.1688), "购物地标"),
             PlaceSearchItem("广州塔 (小蛮腰)", "广东省广州市海珠区阅江西路222号", 95.0, com.tomy.httnavicompanion.data.LatLng(23.1065, 113.3245), "地标景区")
         )
     }
 
-    val filtered = remember(queryText) {
-        if (queryText.isBlank()) presetPlaces
-        else presetPlaces.filter { it.name.contains(queryText, ignoreCase = true) || it.address.contains(queryText, ignoreCase = true) }
+    val displayList = remember(queryText, onlineResults) {
+        if (queryText.isBlank()) {
+            presetPlaces
+        } else if (onlineResults.isNotEmpty()) {
+            onlineResults
+        } else {
+            presetPlaces.filter { it.name.contains(queryText, ignoreCase = true) || it.address.contains(queryText, ignoreCase = true) }
+        }
     }
 
     Dialog(
@@ -712,18 +720,22 @@ fun DestinationSearchSheetDialog(onDismiss: () -> Unit) {
 
                 OutlinedTextField(
                     value = queryText,
-                    onValueChange = { queryText = it },
-                    placeholder = { Text("输入目的地名称，或直接点击下方站点启动路线...", color = Color.Gray, fontSize = 12.sp) },
+                    onValueChange = {
+                        queryText = it
+                        if (it.length >= 2) {
+                            manager.performOnlineSearch(it)
+                        }
+                    },
+                    placeholder = { Text("输入全球任意城市/商场/景点，实时联网搜索...", color = Color.Gray, fontSize = 12.sp) },
                     singleLine = true,
                     trailingIcon = {
-                        if (queryText.isNotEmpty()) {
+                        if (isSearching) {
+                            CircularProgressIndicator(modifier = Modifier.size(18.dp), color = SheetGold, strokeWidth = 2.dp)
+                        } else if (queryText.isNotEmpty()) {
                             TextButton(
-                                onClick = {
-                                    manager.startRouteToDestination(queryText)
-                                    onDismiss()
-                                }
+                                onClick = { manager.performOnlineSearch(queryText) }
                             ) {
-                                Text("出发", color = SheetGold, fontWeight = FontWeight.Bold)
+                                Text("搜索", color = SheetGold, fontWeight = FontWeight.Bold)
                             }
                         }
                     },
@@ -736,7 +748,7 @@ fun DestinationSearchSheetDialog(onDismiss: () -> Unit) {
                     modifier = Modifier.weight(1f),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    items(filtered) { item ->
+                    items(displayList) { item ->
                         Card(
                             colors = CardDefaults.cardColors(containerColor = SheetCardBg),
                             shape = RoundedCornerShape(12.dp),
@@ -744,7 +756,7 @@ fun DestinationSearchSheetDialog(onDismiss: () -> Unit) {
                                 .fillMaxWidth()
                                 .border(1.dp, SheetGold.copy(alpha = 0.35f), RoundedCornerShape(12.dp))
                                 .clickable {
-                                    manager.startRouteToDestination(item.name)
+                                    manager.startRouteToPlace(item.name, item.coordinate)
                                     onDismiss()
                                 }
                         ) {
@@ -755,11 +767,12 @@ fun DestinationSearchSheetDialog(onDismiss: () -> Unit) {
                             ) {
                                 Column(modifier = Modifier.weight(1f)) {
                                     Text(item.name, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                                    Text(item.address, color = Color.LightGray, fontSize = 11.sp)
+                                    Text(item.address, color = Color.LightGray, fontSize = 11.sp, maxLines = 2)
                                 }
+                                Spacer(Modifier.width(8.dp))
                                 Button(
                                     onClick = {
-                                        manager.startRouteToDestination(item.name)
+                                        manager.startRouteToPlace(item.name, item.coordinate)
                                         onDismiss()
                                     },
                                     colors = ButtonDefaults.buttonColors(containerColor = SheetCrimson),

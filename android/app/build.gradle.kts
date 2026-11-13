@@ -12,8 +12,8 @@ android {
         applicationId = "com.tomy.httnavicompanion"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = 2
+        versionName = "1.6.3"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -69,6 +69,9 @@ dependencies {
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
+
+    // Real Interactive Map (osmdroid - zero API key required, supports Amap & OSM tiles)
+    implementation("org.osmdroid:osmdroid-android:6.1.20")
 
     // Location & Audio
     implementation("com.google.android.gms:play-services-location:21.3.0")

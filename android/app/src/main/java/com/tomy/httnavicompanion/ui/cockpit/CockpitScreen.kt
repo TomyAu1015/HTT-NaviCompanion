@@ -2,6 +2,8 @@ package com.tomy.httnavicompanion.ui.cockpit
 
 import android.content.res.Configuration
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.horizontalScroll
+import com.tomy.httnavicompanion.ui.map.OsmMapView
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -74,6 +76,8 @@ fun CockpitScreen(
     var albumInitialTab by remember { mutableStateOf(0) }
     var showSearchDialog by remember { mutableStateOf(false) }
     var showSoundboardDialog by remember { mutableStateOf(false) }
+    var showDoudizhuDialog by remember { mutableStateOf(false) }
+    var showVehicleDialog by remember { mutableStateOf(false) }
 
     Box(
         modifier = Modifier
@@ -116,7 +120,9 @@ fun CockpitScreen(
                         showAlbumDialog = true
                     },
                     onOpenSoundboard = { showSoundboardDialog = true },
-                    onStartFloatingPet = onStartFloatingPet
+                    onStartFloatingPet = onStartFloatingPet,
+                    onOpenDoudizhu = { showDoudizhuDialog = true },
+                    onOpenVehicle = { showVehicleDialog = true }
                 )
 
                 Row(
@@ -188,7 +194,9 @@ fun CockpitScreen(
                         showAlbumDialog = true
                     },
                     onOpenSoundboard = { showSoundboardDialog = true },
-                    onStartFloatingPet = onStartFloatingPet
+                    onStartFloatingPet = onStartFloatingPet,
+                    onOpenDoudizhu = { showDoudizhuDialog = true },
+                    onOpenVehicle = { showVehicleDialog = true }
                 )
                 SpeedometerCockpit(manager = manager, isCompact = false)
                 MainStageOrMapSection(
@@ -240,6 +248,12 @@ fun CockpitScreen(
         if (showSoundboardDialog) {
             SoundboardSheetDialog(onDismiss = { showSoundboardDialog = false })
         }
+        if (showDoudizhuDialog) {
+            KOnDoudizhuSheetDialog(onDismiss = { showDoudizhuDialog = false })
+        }
+        if (showVehicleDialog) {
+            VehicleAndPlateSettingsDialog(onDismiss = { showVehicleDialog = false })
+        }
     }
 }
 
@@ -250,7 +264,9 @@ fun TopBezelBar(
     onOpenMusic: () -> Unit,
     onOpenAlbum: () -> Unit,
     onOpenSoundboard: () -> Unit,
-    onStartFloatingPet: () -> Unit
+    onStartFloatingPet: () -> Unit,
+    onOpenDoudizhu: () -> Unit,
+    onOpenVehicle: () -> Unit
 ) {
     val showMapMode by manager.showMapMode.collectAsState()
     val isMusicPlaying by musicMgr.isPlaying.collectAsState()
@@ -259,7 +275,9 @@ fun TopBezelBar(
     var showLangMenu by remember { mutableStateOf(false) }
 
     Row(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState()),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(5.dp)
     ) {
@@ -345,7 +363,35 @@ fun TopBezelBar(
             Text("悬浮宠", color = Color(0xFF00E5FF), fontSize = 11.sp, fontWeight = FontWeight.Bold, maxLines = 1)
         }
 
-        Spacer(modifier = Modifier.weight(1f))
+        // 4.5 K-ON! Doudizhu Game
+        Row(
+            modifier = Modifier
+                .clip(RoundedCornerShape(8.dp))
+                .background(Color(0xFF1B5E20))
+                .border(1.dp, HTTGold, RoundedCornerShape(8.dp))
+                .clickable { onOpenDoudizhu() }
+                .padding(horizontal = 8.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(3.dp)
+        ) {
+            Icon(Icons.Default.Style, contentDescription = null, tint = HTTGold, modifier = Modifier.size(13.dp))
+            Text("斗地主", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+        }
+
+        // 4.6 Vehicle & Map Layer Settings
+        Row(
+            modifier = Modifier
+                .clip(RoundedCornerShape(8.dp))
+                .background(Color.White.copy(alpha = 0.14f))
+                .border(1.dp, HTTGold.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
+                .clickable { onOpenVehicle() }
+                .padding(horizontal = 8.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(3.dp)
+        ) {
+            Icon(Icons.Default.DirectionsCar, contentDescription = null, tint = HTTGold, modifier = Modifier.size(13.dp))
+            Text("车辆/图层", color = HTTCream, fontSize = 11.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+        }
 
         // 5. Language Switcher
         Box {
@@ -743,11 +789,14 @@ fun InteractiveMapBoxView(
     val isSimulating by manager.isDemoSimulating.collectAsState()
     val camMode by manager.cameraMode.collectAsState()
     val lang by manager.language.collectAsState()
-    val navArrowBmp by manager.currentNavArrowBitmap.collectAsState()
     val currentSprite by manager.currentSpriteFrame.collectAsState()
     val stepInstruction by manager.currentStepInstruction.collectAsState()
     val tlCountdown by manager.trafficLightCountdown.collectAsState()
     val tlColor by manager.trafficLightColor.collectAsState()
+    val trackingUser by manager.mapTrackingUser.collectAsState()
+    val tappedCoord by manager.tappedCoord.collectAsState()
+    val tappedTitle by manager.tappedTitle.collectAsState()
+    val tappedAddress by manager.tappedAddress.collectAsState()
 
     Box(
         modifier = Modifier
@@ -757,35 +806,13 @@ fun InteractiveMapBoxView(
             .background(Color(0xFF141D2B))
             .border(2.dp, HTTGold, RoundedCornerShape(16.dp))
     ) {
-        // Stylized Road & Navigation Radar Canvas
-        Canvas(modifier = Modifier.fillMaxSize()) {
-            val w = size.width
-            val h = size.height
-            // Grid lines
-            val step = 40.dp.toPx()
-            for (x in 0..(w / step).toInt()) {
-                drawLine(Color(0xFF1E2D42), Offset(x * step, 0f), Offset(x * step, h), 1f)
-            }
-            for (y in 0..(h / step).toInt()) {
-                drawLine(Color(0xFF1E2D42), Offset(0f, y * step), Offset(w, y * step), 1f)
-            }
-            // Highway route path
-            drawLine(
-                color = Color(0xFF00E676).copy(alpha = 0.35f),
-                start = Offset(w * 0.5f, h),
-                end = Offset(w * 0.5f, h * 0.15f),
-                strokeWidth = 34f
-            )
-            drawLine(
-                color = Color(0xFF00E5FF),
-                start = Offset(w * 0.5f, h),
-                end = Offset(w * 0.5f, h * 0.15f),
-                strokeWidth = 8f,
-                pathEffect = PathEffect.dashPathEffect(floatArrayOf(20f, 14f), 0f)
-            )
-        }
+        // Real Interactive Map (osmdroid: Amap China + OSM Global)
+        OsmMapView(
+            manager = manager,
+            modifier = Modifier.fillMaxSize()
+        )
 
-        // Top Map Action Bar: Search + Demo + Camera + Enlarge
+        // Top Map Action Bar: Search + Demo + Recenter + Camera + Enlarge
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -821,7 +848,7 @@ fun InteractiveMapBoxView(
                     .clip(RoundedCornerShape(7.dp))
                     .background(if (isSimulating) Color(0xFFFF9800) else Color(0xFF8E24AA))
                     .clickable { manager.toggleDemoSimulation() }
-                    .padding(horizontal = 7.dp, vertical = 5.dp)
+                    .padding(horizontal = 6.dp, vertical = 5.dp)
             ) {
                 Text(if (isSimulating) "停止" else "模拟", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
             }
@@ -829,9 +856,19 @@ fun InteractiveMapBoxView(
             Box(
                 modifier = Modifier
                     .clip(RoundedCornerShape(7.dp))
+                    .background(if (trackingUser) Color(0xFF2E7D32) else Color.Black.copy(alpha = 0.75f))
+                    .clickable { manager.triggerFastRecenter() }
+                    .padding(horizontal = 6.dp, vertical = 5.dp)
+            ) {
+                Icon(Icons.Default.MyLocation, contentDescription = null, tint = Color.White, modifier = Modifier.size(13.dp))
+            }
+
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(7.dp))
                     .background(Color(0xFF1976D2))
                     .clickable { manager.toggleCameraMode() }
-                    .padding(horizontal = 7.dp, vertical = 5.dp)
+                    .padding(horizontal = 6.dp, vertical = 5.dp)
             ) {
                 Text(camMode.shortTitle(lang), color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
             }
@@ -841,22 +878,51 @@ fun InteractiveMapBoxView(
                     .clip(RoundedCornerShape(7.dp))
                     .background(HTTCrimson)
                     .clickable { manager.setMapEnlarged(true) }
-                    .padding(horizontal = 7.dp, vertical = 5.dp)
+                    .padding(horizontal = 6.dp, vertical = 5.dp)
             ) {
                 Text("放大", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
             }
         }
 
-        // Center RM-500HTT Vehicle Character Arrow
-        if (navArrowBmp != null) {
-            Image(
-                bitmap = navArrowBmp!!.asImageBitmap(),
-                contentDescription = null,
-                filterQuality = FilterQuality.None,
+        // Tapped POI Card Overlay (Compact)
+        if (tappedCoord != null) {
+            Row(
                 modifier = Modifier
-                    .size(72.dp, 92.dp)
-                    .align(Alignment.Center)
-            )
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp, vertical = 38.dp)
+                    .align(Alignment.TopCenter)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(Color.Black.copy(alpha = 0.88f))
+                    .border(1.dp, HTTGold, RoundedCornerShape(10.dp))
+                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(tappedTitle, color = HTTGold, fontSize = 11.sp, fontWeight = FontWeight.Black, maxLines = 1)
+                    Text(tappedAddress, color = Color.LightGray, fontSize = 9.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(HTTCrimson)
+                            .clickable { manager.startRouteToPlace(tappedTitle, tappedCoord!!) }
+                            .padding(horizontal = 8.dp, vertical = 4.dp)
+                    ) {
+                        Text("去这里", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                    }
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(Color.DarkGray)
+                            .clickable { manager.clearTappedPOI() }
+                            .padding(horizontal = 6.dp, vertical = 4.dp)
+                    ) {
+                        Text("✕", color = Color.White, fontSize = 10.sp)
+                    }
+                }
+            }
         }
 
         // Bottom-left Mascot Companion + Bottom-right Traffic Light & Step
@@ -1391,63 +1457,37 @@ fun EnlargedNavigationHUDView(
     val tlCountdown by manager.trafficLightCountdown.collectAsState()
     val speed by manager.currentSpeedKmh.collectAsState()
     val speedLimit by manager.speedLimitKmh.collectAsState()
-    val navArrowBmp by manager.currentNavArrowBitmap.collectAsState()
     val currentSprite by manager.currentSpriteFrame.collectAsState()
     val bubbleText by manager.currentSpeechBubble.collectAsState()
     val camDist by manager.upcomingCameraDistance.collectAsState()
     val saDist by manager.upcomingServiceAreaDist.collectAsState()
     val saName by manager.upcomingServiceAreaName.collectAsState()
+    val remKm by manager.remainingRouteDistanceKm.collectAsState()
+    val remMins by manager.remainingRouteMinutes.collectAsState()
+    val candidateRoutes by manager.candidateRoutes.collectAsState()
+    val selectedRouteIdx by manager.selectedRouteIndex.collectAsState()
+    val tappedCoord by manager.tappedCoord.collectAsState()
+    val tappedTitle by manager.tappedTitle.collectAsState()
+    val tappedAddress by manager.tappedAddress.collectAsState()
 
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(Color(0xFF0E1622))
     ) {
-        // Full-Screen Road Canvas
-        Canvas(modifier = Modifier.fillMaxSize()) {
-            val w = size.width
-            val h = size.height
-            val step = 48.dp.toPx()
-            for (x in 0..(w / step).toInt()) {
-                drawLine(Color(0xFF1A2639), Offset(x * step, 0f), Offset(x * step, h), 1f)
-            }
-            for (y in 0..(h / step).toInt()) {
-                drawLine(Color(0xFF1A2639), Offset(0f, y * step), Offset(w, y * step), 1f)
-            }
-            drawLine(
-                color = Color(0xFF00E676).copy(alpha = 0.28f),
-                start = Offset(w * 0.55f, h),
-                end = Offset(w * 0.55f, 0f),
-                strokeWidth = 64f
-            )
-            drawLine(
-                color = Color(0xFF00E5FF),
-                start = Offset(w * 0.55f, h),
-                end = Offset(w * 0.55f, 0f),
-                strokeWidth = 10f,
-                pathEffect = PathEffect.dashPathEffect(floatArrayOf(28f, 18f), 0f)
-            )
-        }
-
-        // Center RM-500HTT Vehicle Character Arrow
-        if (navArrowBmp != null) {
-            Image(
-                bitmap = navArrowBmp!!.asImageBitmap(),
-                contentDescription = null,
-                filterQuality = FilterQuality.None,
-                modifier = Modifier
-                    .size(96.dp, 124.dp)
-                    .align(Alignment.Center)
-            )
-        }
+        // Real Full-Screen Interactive Map (osmdroid)
+        OsmMapView(
+            manager = manager,
+            modifier = Modifier.fillMaxSize()
+        )
 
         // Left HUD Overlay Stack matching iOS enlargedNavigationHUDView
         Column(
             modifier = Modifier
-                .width(if (isLandscape) 340.dp else 360.dp)
+                .width(if (isLandscape) 330.dp else 350.dp)
                 .fillMaxHeight()
-                .padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+                .padding(10.dp),
+            verticalArrangement = Arrangement.spacedBy(7.dp)
         ) {
             // 1. Turn-by-Turn Card
             Card(
@@ -1456,14 +1496,28 @@ fun EnlargedNavigationHUDView(
                 modifier = Modifier.fillMaxWidth().border(1.5.dp, HTTGold, RoundedCornerShape(14.dp))
             ) {
                 Row(
-                    modifier = Modifier.padding(12.dp),
+                    modifier = Modifier.padding(10.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    Icon(Icons.Default.TurnRight, contentDescription = null, tint = HTTGold, modifier = Modifier.size(32.dp))
-                    Column {
-                        Text("${distMeters}米", color = Color(0xFF00E676), fontSize = 20.sp, fontWeight = FontWeight.Black, fontFamily = FontFamily.Monospace)
-                        Text(stepInstruction, color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+                    Icon(Icons.Default.TurnRight, contentDescription = null, tint = HTTGold, modifier = Modifier.size(30.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("${distMeters}米", color = Color(0xFF00E676), fontSize = 18.sp, fontWeight = FontWeight.Black, fontFamily = FontFamily.Monospace)
+                            if (remKm > 0.05) {
+                                Text(
+                                    String.format("余 %.1fkm · %d分钟", remKm, remMins),
+                                    color = HTTGold,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                        Text(stepInstruction, color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 2)
                     }
                 }
             }
@@ -1508,7 +1562,34 @@ fun EnlargedNavigationHUDView(
                 }
             }
 
-            // 3. Electronic Eye & Highway Service Area Strip
+            // 3. Candidate Routes Selector (when multiple routes available)
+            if (candidateRoutes.size > 1) {
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    candidateRoutes.forEachIndexed { idx, r ->
+                        val sel = idx == selectedRouteIdx
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(if (sel) HTTCrimson else Color.Black.copy(alpha = 0.78f))
+                                .border(1.dp, if (sel) HTTGold else Color.White.copy(alpha = 0.25f), RoundedCornerShape(8.dp))
+                                .clickable { manager.selectRoute(idx) }
+                                .padding(horizontal = 6.dp, vertical = 4.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                "${r.name} · ${(r.durationSeconds / 60).toInt()}分",
+                                color = Color.White,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1
+                            )
+                        }
+                    }
+                }
+            }
+
+            // 4. Electronic Eye & Highway Service Area Strip
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(6.dp)
@@ -1549,7 +1630,7 @@ fun EnlargedNavigationHUDView(
 
             Spacer(modifier = Modifier.weight(1f))
 
-            // 4. Bottom Floating Island: Speed + Mascot + Speech Bubble
+            // 5. Bottom Floating Island: Speed + Mascot + Speech Bubble
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1585,13 +1666,49 @@ fun EnlargedNavigationHUDView(
             }
         }
 
-        // Top-Right Exit Full-Screen & Search Controls
+        // Tapped Map Point POI Detail Card
+        if (tappedCoord != null) {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = Color.Black.copy(alpha = 0.90f)),
+                shape = RoundedCornerShape(14.dp),
+                modifier = Modifier
+                    .width(260.dp)
+                    .align(Alignment.BottomEnd)
+                    .padding(12.dp)
+                    .border(1.5.dp, HTTGold, RoundedCornerShape(14.dp))
+            ) {
+                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(tappedTitle, color = HTTGold, fontSize = 13.sp, fontWeight = FontWeight.Black, modifier = Modifier.weight(1f))
+                        IconButton(onClick = { manager.clearTappedPOI() }, modifier = Modifier.size(20.dp)) {
+                            Icon(Icons.Default.Close, contentDescription = null, tint = Color.White, modifier = Modifier.size(14.dp))
+                        }
+                    }
+                    Text(tappedAddress, color = Color.LightGray, fontSize = 10.sp, maxLines = 2)
+                    Button(
+                        onClick = { manager.startRouteToPlace(tappedTitle, tappedCoord!!) },
+                        colors = ButtonDefaults.buttonColors(containerColor = HTTCrimson),
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.fillMaxWidth().height(34.dp),
+                        contentPadding = PaddingValues(0.dp)
+                    ) {
+                        Text("导航到这里", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
+
+        // Top-Right Exit Full-Screen, Search, Recenter, Zoom Controls
         Column(
             modifier = Modifier
                 .align(Alignment.TopEnd)
                 .padding(12.dp),
             horizontalAlignment = Alignment.End,
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+            verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             Button(
                 onClick = { manager.setMapEnlarged(false) },
@@ -1611,6 +1728,33 @@ fun EnlargedNavigationHUDView(
                 Icon(Icons.Default.Search, contentDescription = null, tint = HTTGold, modifier = Modifier.size(16.dp))
                 Spacer(Modifier.width(4.dp))
                 Text("切换目的地", color = HTTGold, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            }
+
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                FloatingActionButton(
+                    onClick = { manager.triggerFastRecenter() },
+                    containerColor = Color.Black.copy(alpha = 0.82f),
+                    contentColor = HTTGold,
+                    modifier = Modifier.size(38.dp)
+                ) {
+                    Icon(Icons.Default.MyLocation, contentDescription = null, modifier = Modifier.size(18.dp))
+                }
+                FloatingActionButton(
+                    onClick = { manager.triggerZoom(1) },
+                    containerColor = Color.Black.copy(alpha = 0.82f),
+                    contentColor = Color.White,
+                    modifier = Modifier.size(38.dp)
+                ) {
+                    Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                }
+                FloatingActionButton(
+                    onClick = { manager.triggerZoom(-1) },
+                    containerColor = Color.Black.copy(alpha = 0.82f),
+                    contentColor = Color.White,
+                    modifier = Modifier.size(38.dp)
+                ) {
+                    Icon(Icons.Default.Remove, contentDescription = null, modifier = Modifier.size(18.dp))
+                }
             }
         }
     }
