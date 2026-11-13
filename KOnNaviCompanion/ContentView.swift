@@ -2816,8 +2816,8 @@ struct ContentView: View {
                 if manager.mascotAction == .teaCake {
                     // Authentic Canonical RM-500 5-Member Seated Afternoon Tea Scene ([Mio, Ritsu, Yui, Mugi, Azusa])
                     // When one member is lifted, renderTeaPartySceneFrame excludes ONLY that lifted member so the other 4 & wooden table stay 100% stationary!
-                    let activeLiftedId: String? = manager.isDraggingMascot ? manager.draggedMemberId : nil
-                    let dynamicTeaScene = manager.renderTeaPartySceneFrame(excludingCharId: activeLiftedId, tick: manager.animationTick)
+                    let activeLiftedId: Int? = manager.isDraggingMascot ? manager.draggedMemberId : nil
+                    let dynamicTeaScene = manager.renderTeaPartySceneFrame(excludingCharId: activeLiftedId)
                         ?? manager.teaPartyCompositedFrame
                         ?? manager.cachedTeaPartyFrames.first
                     let seatedOrder: [AudioPlayerManager.CharacterFilter] = [.mio, .ritsu, .yui, .mugi, .azusa]

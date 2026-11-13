@@ -133,6 +133,15 @@ enum TransitSortStrategy: String, CaseIterable, Identifiable {
         case (.lessWalking, .en): return "Less Walking"
         }
     }
+    
+    var icon: String {
+        switch self {
+        case .suggested: return "sparkles"
+        case .faster: return "bolt.fill"
+        case .fewerTransfers: return "arrow.triangle.swap"
+        case .lessWalking: return "figure.walk"
+        }
+    }
 }
 
 enum TransitVehicleMode: String, CaseIterable, Identifiable, Hashable {
@@ -1030,6 +1039,22 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         }
     }
     
+    func transitPreferencesSummaryTitle(_ lang: AppLanguage) -> String {
+        let total = TransitVehicleMode.allCases.count
+        if preferredTransitVehicles.count >= total || preferredTransitVehicles.isEmpty {
+            switch lang {
+            case .zhHans: return "偏好设置"
+            case .zhHant: return "偏好設置"
+            case .en: return "Preferences"
+            }
+        }
+        switch lang {
+        case .zhHans: return "偏好设置(\(preferredTransitVehicles.count))"
+        case .zhHant: return "偏好設置(\(preferredTransitVehicles.count))"
+        case .en: return "Prefs(\(preferredTransitVehicles.count))"
+        }
+    }
+    
     func applyTransitFiltersAndSort() {
         let sourcePlans = rawTransitPlans.isEmpty ? transitPlans : rawTransitPlans
         guard !sourcePlans.isEmpty else { return }
@@ -1039,7 +1064,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         
         // 1. Filter by preferred vehicle modes (巴士 / 地铁与轻轨 / 通勤铁路 / 渡轮)
         var filtered = sourcePlans.filter { plan in
-            let transitSteps = plan.steps.filter { /usr/bin/bash.kind != .walk }
+            let transitSteps = plan.steps.filter { $0.kind != .walk }
             if transitSteps.isEmpty { return true }
             return transitSteps.allSatisfy { step in
                 switch step.kind {
@@ -1991,7 +2016,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                     acNotice: "⛴️ 渡輪航綫 · 班次約 6~10 分鐘一班",
                     exitDesc: "下船出閘",
                     colorHex: "#00897B",
-                    intervalDesc: "維港渡輪 · 票價 HK.0"
+                    intervalDesc: "維港渡輪 · 票價 HK$5.0"
                 ),
                 TransitStepItem(
                     kind: .walk,
@@ -2019,7 +2044,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                 priceYuan: "HK$5.0",
                 startExitDesc: "渡輪碼頭登船",
                 warningNotice: "⛴️ 天星小輪/新渡輪過海，免地鐵擠迫",
-                realtimeArrivalText: "渡輪即將開出，6分鐘 📡 · HK.0",
+                realtimeArrivalText: "渡輪即將開出，6分鐘 📡 · HK$5.0",
                 steps: hkFerrySteps
             )
             self.rawTransitPlans = [hkPlan1, hkPlan2, hkPlan3]
