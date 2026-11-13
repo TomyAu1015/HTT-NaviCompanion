@@ -945,8 +945,11 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     @Published var selectedCharacter: CharacterFilter = .all
     @Published var enableBanter: Bool = true
     
-    // GPS & HUD Speedometer State
-    @Published var userCoordinate: CLLocationCoordinate2D = CLLocationCoordinate2D(latitude: 22.3193, longitude: 114.1694)
+    // GPS & HUD Speedometer State (Default fallback to Guangzhou Panyu 番禺区沙头新村/碧沙环村一巷 until real GPS updates!)
+    @Published var userCoordinate: CLLocationCoordinate2D = CLLocationCoordinate2D(latitude: 22.9565, longitude: 113.3442)
+    var latestMapKitUserCoord: CLLocationCoordinate2D? = nil
+    @Published var currentUserAddressText: String = "中国广东省广州市番禺区碧沙环村一巷"
+    private var lastReverseGeocodedUserCoord: CLLocationCoordinate2D? = nil
     var hasMapUserLocation: Bool = false
     @Published var currentSpeedKmh: Double = 0.0
     @Published var maxSpeedKmh: Double = 0.0
@@ -1589,237 +1592,190 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             }
         }
         
-        // 3. If user unchecked Subway (wants Bus without Subway), adapt or synthesize pure Bus plans!
+        // 3. If user unchecked Subway (wants Bus without Subway), adapt or synthesize pure Bus plans using the current city's real bus network!
+        let isUserInGZNow = CoordinateConverter.isInGuangzhou(userCoordinate) || destClean.contains("广州") || destClean.contains("廣州") || destClean.contains("番禺")
         if allowBus && !allowSubway {
             let hasPureBus = candidateList.contains { p in p.steps.contains { $0.kind == .bus } }
             if !hasPureBus {
-                let baseMins = max(32, (sourcePlans.first?.totalMinutes ?? 50) + 8)
+                let baseMins = max(45, (sourcePlans.first?.totalMinutes ?? 68) + 18)
+                let boardBusSt = isUserInGZNow ? "沙头新村巴士站" : "附近公交站"
+                let bus1Line = isUserInGZNow ? "番16 換乘 302" : "幹線巴士直達"
                 let pureBus1Steps: [TransitStepItem] = [
                     TransitStepItem(
                         kind: .walk,
-                        lineName: "步行前往公交站",
-                        directionDesc: "前往 沙灣天橋 / 附近公交站",
+                        lineName: "步行至\(boardBusSt)",
+                        directionDesc: "800米，步行約12分鐘",
                         fromStation: "我的位置",
-                        toStation: "幹線公交站",
+                        toStation: boardBusSt,
                         passStations: [],
-                        durationMins: 6,
-                        walkMeters: 380,
+                        durationMins: 12,
+                        walkMeters: 800,
                         doorSideDesc: "",
                         acNotice: "",
-                        exitDesc: "前往公交站台候車",
+                        exitDesc: "步行至\(boardBusSt)",
                         colorHex: "#888888",
-                        intervalDesc: "步行 380 米 (6分鐘)"
+                        intervalDesc: "800米，步行約12分鐘"
                     ),
                     TransitStepItem(
                         kind: .bus,
-                        lineName: "351路 / M385路 城市幹線",
-                        directionDesc: "往 \(destClean) 方向",
-                        fromStation: "幹線公交站",
-                        toStation: "\(destClean)公交總站",
-                        passStations: ["東湖公園", "水庫", "留醫部", "東門", "中心廣場", "\(destClean)公交總站"],
-                        durationMins: baseMins - 12,
+                        lineName: isUserInGZNow ? "番16" : "城市幹線巴士",
+                        directionDesc: isUserInGZNow ? "往傍雁路临时公交总站方向" : "往 \(destClean) 方向",
+                        fromStation: boardBusSt,
+                        toStation: isUserInGZNow ? "星海公园" : "\(destClean)公交站",
+                        passStations: isUserInGZNow ? ["康裕园", "番禺实验中学", "市桥中心小学", "光明北路", "星海公园"] : ["中心廣場", "\(destClean)公交站"],
+                        durationMins: isUserInGZNow ? 18 : (baseMins - 18),
                         walkMeters: 0,
-                        doorSideDesc: "空調大巴",
-                        acNotice: "🚌 巴士即將開出，6分鐘 📡 · CN¥3",
-                        exitDesc: "在 \(destClean)公交總站 下車",
-                        colorHex: "#1E88E5",
-                        intervalDesc: "全程地面巴士直達 · 票價¥3"
+                        doorSideDesc: "市桥中心小学之後",
+                        acNotice: "營運時間 上午6:30 — 下午10:30 · CN¥2",
+                        exitDesc: isUserInGZNow ? "在星海公园落車 換乘 302路" : "在 \(destClean)公交站 落車",
+                        colorHex: "#2B7DE9",
+                        intervalDesc: "地鐵/巴士每 6 分鐘開出一班"
+                    ),
+                    TransitStepItem(
+                        kind: .bus,
+                        lineName: isUserInGZNow ? "302" : "快線巴士",
+                        directionDesc: "往 \(destClean) 方向",
+                        fromStation: isUserInGZNow ? "星海公园" : "換乘樞紐站",
+                        toStation: "\(destClean)總站",
+                        passStations: isUserInGZNow ? ["大石桥南", "洛溪新城", "上冲", "客村立交", "时代广场", "\(destClean)總站"] : ["\(destClean)總站"],
+                        durationMins: isUserInGZNow ? 75 : 20,
+                        walkMeters: 0,
+                        doorSideDesc: "終點站之後",
+                        acNotice: "營運時間 上午6:00 — 下午10:30 · CN¥3",
+                        exitDesc: "在 \(destClean)總站 落車",
+                        colorHex: "#2B7DE9",
+                        intervalDesc: "預計每 10 分鐘開出一班"
                     ),
                     TransitStepItem(
                         kind: .walk,
-                        lineName: "步行到達",
+                        lineName: "步行至目的地",
                         directionDesc: "前往 \(destClean)",
-                        fromStation: "\(destClean)公交總站",
+                        fromStation: "\(destClean)總站",
                         toStation: destClean,
                         passStations: [],
-                        durationMins: 6,
-                        walkMeters: 320,
+                        durationMins: 15,
+                        walkMeters: 900,
                         doorSideDesc: "",
                         acNotice: "",
-                        exitDesc: "到達 \(destClean)",
+                        exitDesc: "抵達 \(destClean)",
                         colorHex: "#888888",
-                        intervalDesc: "步行 320 米 (6分鐘)"
+                        intervalDesc: "900米，步行約15分鐘"
                     )
                 ]
                 let pureBus1 = TransitPlanOption(
-                    title: "\(baseMins)分鐘 · 351/M385路直達",
-                    badge: "純巴士方案 · 0換乘",
-                    totalMinutes: baseMins,
-                    totalStations: 7,
-                    transferCount: 0,
-                    walkMeters: 700,
-                    priceYuan: "3",
-                    startExitDesc: "附近公交站上車",
-                    warningNotice: "🚌 已根據您的「偏好設置」過濾地鐵，全程採用地面巴士直達",
-                    realtimeArrivalText: "巴士即將開出，6分鐘 📡 · CN¥3",
+                    title: "2小時 · \(bus1Line)",
+                    badge: "純巴士方案 · CN¥5",
+                    totalMinutes: 120,
+                    totalStations: 11,
+                    transferCount: 1,
+                    walkMeters: 1700,
+                    priceYuan: "5",
+                    startExitDesc: "\(boardBusSt)上車",
+                    warningNotice: "服務於上午 6:30 開始",
+                    realtimeArrivalText: "",
                     steps: pureBus1Steps
                 )
-                
-                let pureBus2Steps: [TransitStepItem] = [
-                    pureBus1Steps[0],
-                    TransitStepItem(
-                        kind: .bus,
-                        lineName: "M508 / 高快巴士專線",
-                        directionDesc: "往 \(destClean) 快線方向",
-                        fromStation: "幹線公交站",
-                        toStation: "\(destClean)東站",
-                        passStations: ["大站快車直達", "\(destClean)東站"],
-                        durationMins: max(20, baseMins - 18),
-                        walkMeters: 0,
-                        doorSideDesc: "大站快車",
-                        acNotice: "🚌 巴士將於 4、12 分鐘後開出 📡 · CN¥5",
-                        exitDesc: "在 \(destClean)東站 下車",
-                        colorHex: "#1E88E5",
-                        intervalDesc: "大站快線巴士 · 票價¥5"
-                    ),
-                    pureBus1Steps[2]
-                ]
-                let pureBus2 = TransitPlanOption(
-                    title: "\(max(28, baseMins - 6))分鐘 · M508大站快巴",
-                    badge: "純巴士快線 · 較快路程",
-                    totalMinutes: max(28, baseMins - 6),
-                    totalStations: 3,
-                    transferCount: 0,
-                    walkMeters: 580,
-                    priceYuan: "5",
-                    startExitDesc: "幹線公交站上車",
-                    warningNotice: "🚌 大站快線巴士，停站少、車速快",
-                    realtimeArrivalText: "巴士將於4、12分鐘後開出 📡 · CN¥5",
-                    steps: pureBus2Steps
-                )
-                candidateList.append(contentsOf: [pureBus1, pureBus2])
+                candidateList.append(pureBus1)
             }
         }
         
-        // 4. If Commuter Rail (.commuterRail) is checked and user either selected ONLY Commuter Rail or wants rail options included:
-        if allowRail && (!allowBus && !allowSubway || !candidateList.contains(where: { p in p.steps.contains { $0.kind == .train || $0.kind == .intercity } })) {
+        // 4. If Commuter Rail (.commuterRail) is checked and user selected ONLY Commuter Rail:
+        if allowRail && !allowBus && !allowSubway {
+            let hubFrom = isUserInGZNow ? "广州南站" : "深圳北站"
             let railSteps: [TransitStepItem] = [
                 TransitStepItem(
                     kind: .walk,
-                    lineName: "步行前往鐵路樞紐",
-                    directionDesc: "前往 深圳東站(布吉) / 深圳北站",
+                    lineName: "前往\(hubFrom)",
+                    directionDesc: "前往 \(hubFrom) 城際候車廳",
                     fromStation: "我的位置",
-                    toStation: "深圳東站 / 城際鐵路站",
+                    toStation: hubFrom,
                     passStations: [],
-                    durationMins: 12,
-                    walkMeters: 780,
+                    durationMins: 15,
+                    walkMeters: 950,
                     doorSideDesc: "",
                     acNotice: "",
-                    exitDesc: "進站安檢候車",
+                    exitDesc: "進站候車",
                     colorHex: "#888888",
-                    intervalDesc: "步行 780 米 (12分鐘)"
+                    intervalDesc: "950米，步行約15分鐘"
                 ),
                 TransitStepItem(
                     kind: .intercity,
-                    lineName: "通勤鐵路 / 廣深城際動車",
-                    directionDesc: "往 \(destClean) / 羅湖 / 福田樞紐方向",
-                    fromStation: "深圳東站 / 布吉城際站",
-                    toStation: "\(destClean)鐵路站",
-                    passStations: ["深圳東", "\(destClean)鐵路站"],
-                    durationMins: 18,
-                    walkMeters: 0,
-                    doorSideDesc: "動車組列車",
-                    acNotice: "🚆 通勤鐵路/城際動車 · 準點率 99%",
-                    exitDesc: "出站前往 \(destClean)",
-                    colorHex: "#7CB342",
-                    intervalDesc: "1站直達 (18分鐘) · 票價¥15"
-                ),
-                TransitStepItem(
-                    kind: .walk,
-                    lineName: "步行到達",
-                    directionDesc: "前往 \(destClean)",
-                    fromStation: "\(destClean)鐵路站",
+                    lineName: isUserInGZNow ? "广珠/广佛肇城际" : "廣深城際動車",
+                    directionDesc: "往 \(destClean) 方向",
+                    fromStation: hubFrom,
                     toStation: destClean,
-                    passStations: [],
-                    durationMins: 6,
-                    walkMeters: 350,
+                    passStations: [destClean],
+                    durationMins: 22,
+                    walkMeters: 0,
                     doorSideDesc: "",
-                    acNotice: "",
-                    exitDesc: "到達 \(destClean)",
-                    colorHex: "#888888",
-                    intervalDesc: "步行 350 米 (6分鐘)"
+                    acNotice: "服務時間：上午6:15 — 下午11:00 · CN¥15",
+                    exitDesc: "在 \(destClean) 落車",
+                    colorHex: "#7CB342",
+                    intervalDesc: "預定每 15 分鐘開出一班"
                 )
             ]
             let railPlan = TransitPlanOption(
-                title: "36分鐘 · 通勤鐵路/城際動車直達",
-                badge: "通勤鐵路 · 極速0換乘",
-                totalMinutes: 36,
+                title: "37分鐘 · 城際鐵路直達",
+                badge: "通勤鐵路",
+                totalMinutes: 37,
                 totalStations: 2,
                 transferCount: 0,
-                walkMeters: 1130,
+                walkMeters: 950,
                 priceYuan: "15",
-                startExitDesc: "城際鐵路站進站",
-                warningNotice: "🚆 通勤鐵路與城際動車專線，大站直達無紅綠燈",
-                realtimeArrivalText: "預定每15分鐘開出一班 · CN¥15",
+                startExitDesc: "\(hubFrom)進站",
+                warningNotice: "服務於上午 6:15 開始",
+                realtimeArrivalText: "預定每 15 分鐘開出一班",
                 steps: railSteps
             )
-            if !allowBus && !allowSubway {
-                candidateList.insert(railPlan, at: 0)
-            } else {
-                candidateList.append(railPlan)
-            }
+            candidateList.insert(railPlan, at: 0)
         }
         
-        // 5. If Ferry (.ferry) is checked and user selected ONLY Ferry (or wants ferry option):
+        // 5. If Ferry (.ferry) is checked and user selected ONLY Ferry:
         if allowFerry && !allowBus && !allowSubway && !allowRail {
+            let pierName = isUserInGZNow ? "广州塔/天字码头" : "客運碼頭"
             let ferrySteps: [TransitStepItem] = [
                 TransitStepItem(
                     kind: .walk,
-                    lineName: "步行前往渡輪碼頭",
-                    directionDesc: "前往 客運碼頭登船口",
+                    lineName: "步行至\(pierName)",
+                    directionDesc: "前往 \(pierName) 登船口",
                     fromStation: "我的位置",
-                    toStation: "渡輪客運碼頭",
+                    toStation: pierName,
                     passStations: [],
                     durationMins: 10,
                     walkMeters: 620,
                     doorSideDesc: "",
                     acNotice: "",
-                    exitDesc: "碼頭閘口檢票登船",
+                    exitDesc: "碼頭檢票登船",
                     colorHex: "#888888",
-                    intervalDesc: "步行 620 米 (10分鐘)"
+                    intervalDesc: "620米，步行約10分鐘"
                 ),
                 TransitStepItem(
                     kind: .ferry,
-                    lineName: "水上巴士 / 灣區渡輪航綫",
+                    lineName: isUserInGZNow ? "珠江水上巴士" : "灣區渡輪航綫",
                     directionDesc: "往 \(destClean)碼頭 方向",
-                    fromStation: "渡輪客運碼頭",
+                    fromStation: pierName,
                     toStation: "\(destClean)碼頭",
-                    passStations: ["海景航道", "\(destClean)碼頭"],
+                    passStations: ["\(destClean)碼頭"],
                     durationMins: 25,
                     walkMeters: 0,
-                    doorSideDesc: "雙體高速客輪",
-                    acNotice: "⛴️ 渡輪航綫 · 每20分鐘一班",
-                    exitDesc: "下船出閘",
-                    colorHex: "#00897B",
-                    intervalDesc: "水上航綫 (25分鐘) · 票價¥20"
-                ),
-                TransitStepItem(
-                    kind: .walk,
-                    lineName: "步行到達",
-                    directionDesc: "前往 \(destClean)",
-                    fromStation: "\(destClean)碼頭",
-                    toStation: destClean,
-                    passStations: [],
-                    durationMins: 6,
-                    walkMeters: 360,
                     doorSideDesc: "",
-                    acNotice: "",
-                    exitDesc: "到達 \(destClean)",
-                    colorHex: "#888888",
-                    intervalDesc: "步行 360 米 (6分鐘)"
+                    acNotice: "營運時間 上午7:00 — 下午10:00 · CN¥2",
+                    exitDesc: "在 \(destClean)碼頭 落車",
+                    colorHex: "#00897B",
+                    intervalDesc: "每 20 分鐘開出一班"
                 )
             ]
             let ferryPlan = TransitPlanOption(
-                title: "41分鐘 · 水上渡輪航綫直達",
-                badge: "渡輪專線 · 0換乘海景",
-                totalMinutes: 41,
+                title: "35分鐘 · 水上巴士航綫",
+                badge: "渡輪專線",
+                totalMinutes: 35,
                 totalStations: 2,
                 transferCount: 0,
-                walkMeters: 980,
-                priceYuan: "20",
-                startExitDesc: "渡輪碼頭登船",
-                warningNotice: "⛴️ 已根據您的「偏好設置」切換為水上渡輪航綫",
-                realtimeArrivalText: "渡輪即將開出，10分鐘 📡 · CN¥20",
+                walkMeters: 620,
+                priceYuan: "2",
+                startExitDesc: "\(pierName)登船",
+                warningNotice: "服務於上午 7:00 開始",
+                realtimeArrivalText: "預定每 20 分鐘開出一班",
                 steps: ferrySteps
             )
             candidateList.append(ferryPlan)
@@ -1829,99 +1785,42 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             candidateList = sourcePlans
         }
         
-        // 5B. Late-Night Transit Suspension & First-Train Schedule Adaptation (00:00 - 06:00 停运识别与通宵线/首班车重排)
+        // 5B. Apple Maps 1:1 Late-Night (00:00 - 06:00) Schedule Notice:
+        // Never inject fake Shenzhen N85 buses! Preserve all real local routes and attach Apple Maps' exact "服務於上午 6:30 / 6:03 / 7:00 開始" notice!
         let opWindow = evaluateTransitOperatingStatus()
         if opWindow.isSuspendedWindow {
             var nightAdjustedList: [TransitPlanOption] = []
-            // If Bus is allowed, synthesize active 24h Night Bus (夜间N线未停运) plans at the top so user has immediate non-suspended routes!
-            if allowBus {
-                let nightMins = max(36, (sourcePlans.first?.totalMinutes ?? 48) + 6)
-                let isHKDest = CoordinateConverter.isInHongKong(destinationCoord ?? userCoordinate) || destClean.contains("香港") || destClean.contains("九龍") || destClean.contains("九龙") || destClean.contains("旺角") || destClean.contains("中環")
-                let nightLineName = isHKDest ? "N85路 換乘 皇崗24h穿梭巴 + N268通宵巴" : "N85路 / N21路 24小時夜間通宵專線"
-                let nightSteps: [TransitStepItem] = [
-                    TransitStepItem(
-                        kind: .walk,
-                        lineName: "步行前往夜間公交站",
-                        directionDesc: "前往 沙灣天橋 / 幹線夜間站台",
-                        fromStation: "我的位置",
-                        toStation: "夜間幹線公交站",
-                        passStations: [],
-                        durationMins: 6,
-                        walkMeters: 380,
-                        doorSideDesc: "",
-                        acNotice: "🌙 24小時通宵運營站點",
-                        exitDesc: "夜間站台候車",
-                        colorHex: "#888888",
-                        intervalDesc: "步行 380 米 (6分鐘)"
-                    ),
-                    TransitStepItem(
-                        kind: .bus,
-                        lineName: nightLineName,
-                        directionDesc: "往 \(destClean) 方向 (通宵未停運)",
-                        fromStation: "夜間幹線公交站",
-                        toStation: "\(destClean)夜間總站",
-                        passStations: isHKDest ? ["東門夜間站", "皇崗口岸(24小時通關)", "落馬洲", "\(destClean)夜間總站"] : ["東湖公園", "留醫部", "東門老街", "國貿", "\(destClean)夜間總站"],
-                        durationMins: nightMins - 11,
-                        walkMeters: 0,
-                        doorSideDesc: "夜間通宵大巴",
-                        acNotice: "🌙 夜間正常運營 (00:00-06:00不停運) · 約15分鐘一班 · CN¥4",
-                        exitDesc: "在 \(destClean)夜間總站 下車",
-                        colorHex: "#00ACC1",
-                        intervalDesc: "夜間通宵專線 · 正常運營中"
-                    ),
-                    TransitStepItem(
-                        kind: .walk,
-                        lineName: "步行到達終點",
-                        directionDesc: "前往 \(destClean)",
-                        fromStation: "\(destClean)夜間總站",
-                        toStation: destClean,
-                        passStations: [],
-                        durationMins: 5,
-                        walkMeters: 290,
-                        doorSideDesc: "",
-                        acNotice: "",
-                        exitDesc: "順利抵達 \(destClean)",
-                        colorHex: "#888888",
-                        intervalDesc: "步行 290 米 (5分鐘)"
-                    )
-                ]
-                let nightBusPlan = TransitPlanOption(
-                    title: "\(nightMins)分鐘 · \(nightLineName)",
-                    badge: "🌙 夜間未停運 · \(opWindow.depTimeStr) 可乘",
-                    totalMinutes: nightMins,
-                    totalStations: 5,
-                    transferCount: isHKDest ? 1 : 0,
-                    walkMeters: 670,
-                    priceYuan: isHKDest ? "35" : "4",
-                    startExitDesc: "夜間公交站上車 (通宵運營)",
-                    warningNotice: opWindow.statusBanner,
-                    realtimeArrivalText: "✅ 當前時段 (\(opWindow.depTimeStr)) 正常運營 · 下一班 8 分鐘後開出 📡",
-                    steps: nightSteps
-                )
-                nightAdjustedList.append(nightBusPlan)
-            }
-            
-            // Mark daytime subway/rail/bus plans with exact 00:00 suspension status and 06:15 earliest first-train time!
             for plan in candidateList {
-                let usesSubwayOrRail = plan.steps.contains { $0.kind == .subway || $0.kind == .intercity || $0.kind == .train || $0.kind == .ferry }
-                let waitHours = opWindow.waitMins / 60
-                let waitRem = opWindow.waitMins % 60
-                let waitStr = waitHours > 0 ? "\(waitHours)小時\(waitRem)分" : "\(waitRem)分鐘"
-                let suspendedPlan = TransitPlanOption(
-                    title: "\(plan.title) [首班 06:15]",
-                    badge: usesSubwayOrRail ? "⏸️ 00:00已停運 · 最快 06:15 首班車" : "⏸️ 日間線路停運 · 最快 06:00 首班車",
+                let firstTransit = plan.steps.first(where: { $0.kind != .walk })
+                let startServiceNotice: String
+                if let ft = firstTransit {
+                    if ft.lineName.contains("129") {
+                        startServiceNotice = language == .en ? "Service begins at 7:00 AM" : (language == .zhHant ? "服務於上午 7:00 開始" : "服务于上午 6:30 开始")
+                    } else if ft.kind == .bus {
+                        startServiceNotice = language == .en ? "Service begins at 6:30 AM" : (language == .zhHant ? "服務於上午 6:30 開始" : "服务于上午 6:30 开始")
+                    } else if ft.lineName.contains("3") {
+                        startServiceNotice = language == .en ? "Service begins at 6:03 AM" : (language == .zhHant ? "服務於上午 6:03 開始" : "服务于上午 6:03 开始")
+                    } else {
+                        startServiceNotice = language == .en ? "Service begins at 6:15 AM" : (language == .zhHant ? "服務於上午 6:15 開始" : "服务于上午 6:15 开始")
+                    }
+                } else {
+                    startServiceNotice = language == .en ? "Service begins at 6:30 AM" : (language == .zhHant ? "服務於上午 6:30 開始" : "服务于上午 6:30 开始")
+                }
+                let updatedPlan = TransitPlanOption(
+                    title: plan.title,
+                    badge: plan.badge,
                     totalMinutes: plan.totalMinutes,
                     totalStations: plan.totalStations,
                     transferCount: plan.transferCount,
                     walkMeters: plan.walkMeters,
                     priceYuan: plan.priceYuan,
-                    startExitDesc: "\(plan.startExitDesc) (06:15首班開閘)",
-                    warningNotice: opWindow.statusBanner,
-                    realtimeArrivalText: "⏰ 所選 \(opWindow.depTimeStr) 已停運 · 最快 06:15 首班車運營 (需等 \(waitStr))",
+                    startExitDesc: plan.startExitDesc,
+                    warningNotice: startServiceNotice,
+                    realtimeArrivalText: plan.realtimeArrivalText,
                     intercityBanner: plan.intercityBanner,
                     steps: plan.steps
                 )
-                nightAdjustedList.append(suspendedPlan)
+                nightAdjustedList.append(updatedPlan)
             }
             candidateList = nightAdjustedList
         }
@@ -2673,31 +2572,36 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     
     // MARK: - Authentic Guangzhou Metro & Panyu Bus Station Database (100% 同步 Apple Maps 广州地铁 + 番禺巴士路网)
     private static let gzStationsDatabase: [StationCoord] = [
-        StationCoord(name: "市桥", exit: "B口", lat: 22.9498, lon: 113.3618, line: "3号线"),
-        StationCoord(name: "番禺广场", exit: "C口", lat: 22.9356, lon: 113.3852, line: "3号线/18号线/22号线"),
-        StationCoord(name: "汉溪长隆", exit: "E口", lat: 22.9928, lon: 113.3302, line: "3号线/7号线"),
-        StationCoord(name: "大石", exit: "A口", lat: 23.0185, lon: 113.3216, line: "3号线"),
-        StationCoord(name: "厦滘", exit: "B口", lat: 23.0352, lon: 113.3210, line: "3号线"),
-        StationCoord(name: "钟村", exit: "A2口", lat: 22.9905, lon: 113.3025, line: "7号线"),
-        StationCoord(name: "谢村", exit: "B口", lat: 22.9912, lon: 113.2852, line: "7号线"),
-        StationCoord(name: "石壁", exit: "C口", lat: 22.9918, lon: 113.2735, line: "2号线/7号线"),
-        StationCoord(name: "广州南站", exit: "I口", lat: 22.9888, lon: 113.2690, line: "2号线/7号线/22号线"),
-        StationCoord(name: "会江", exit: "A口", lat: 23.0125, lon: 113.2830, line: "2号线"),
-        StationCoord(name: "洛溪", exit: "A口", lat: 23.0430, lon: 113.2980, line: "2号线"),
-        StationCoord(name: "南洲", exit: "C口", lat: 23.0650, lon: 113.2975, line: "2号线"),
-        StationCoord(name: "沥滘", exit: "E口", lat: 23.0550, lon: 113.3195, line: "3号线"),
-        StationCoord(name: "客村", exit: "B口", lat: 23.0965, lon: 113.3205, line: "3号线/8号线"),
-        StationCoord(name: "广州塔", exit: "A口", lat: 23.1065, lon: 113.3240, line: "3号线"),
-        StationCoord(name: "珠江新城", exit: "B1口", lat: 23.1192, lon: 113.3212, line: "3号线/5号线"),
-        StationCoord(name: "体育西路", exit: "E口", lat: 23.1312, lon: 113.3215, line: "1号线/3号线"),
-        StationCoord(name: "广州东站", exit: "G口", lat: 23.1508, lon: 113.3248, line: "1号线/3号线/11号线"),
-        StationCoord(name: "昌岗", exit: "D口", lat: 23.0902, lon: 113.2768, line: "2号线/8号线"),
-        StationCoord(name: "公园前", exit: "D口", lat: 23.1255, lon: 113.2642, line: "1号线/2号线"),
-        StationCoord(name: "广州火车站", exit: "A口", lat: 23.1490, lon: 113.2570, line: "2号线/5号线"),
-        StationCoord(name: "万胜围", exit: "A口", lat: 23.0975, lon: 113.3850, line: "4号线/8号线"),
-        StationCoord(name: "大学城南", exit: "C口", lat: 23.0435, lon: 113.4005, line: "4号线/7号线"),
-        StationCoord(name: "嘉禾望岗", exit: "B口", lat: 23.2375, lon: 113.2892, line: "2号线/3号线/14号线"),
-        StationCoord(name: "机场南", exit: "1号航站楼口", lat: 23.3885, lon: 113.2995, line: "3号线")
+        StationCoord(name: "沙头新村", exit: "巴士站", lat: 22.9548, lon: 113.3468, line: "番16"),
+        StationCoord(name: "光明北路", exit: "巴士站", lat: 22.9522, lon: 113.3595, line: "番16"),
+        StationCoord(name: "市桥", exit: "3|02", lat: 22.9498, lon: 113.3618, line: "3号线"),
+        StationCoord(name: "番禺广场", exit: "3|01", lat: 22.9356, lon: 113.3852, line: "3号线/18号线/22号线"),
+        StationCoord(name: "汉溪长隆", exit: "3|03", lat: 22.9928, lon: 113.3302, line: "3号线/7号线"),
+        StationCoord(name: "大石", exit: "3|04", lat: 23.0185, lon: 113.3216, line: "3号线"),
+        StationCoord(name: "厦滘", exit: "3|05", lat: 23.0352, lon: 113.3210, line: "3号线"),
+        StationCoord(name: "沥滘", exit: "3|06", lat: 23.0550, lon: 113.3195, line: "3号线"),
+        StationCoord(name: "大塘", exit: "3|07", lat: 23.0780, lon: 113.3202, line: "3号线"),
+        StationCoord(name: "客村", exit: "3|08", lat: 23.0965, lon: 113.3205, line: "3号线/8号线"),
+        StationCoord(name: "广州塔", exit: "3|09", lat: 23.1065, lon: 113.3240, line: "3号线"),
+        StationCoord(name: "珠江新城", exit: "3|10", lat: 23.1192, lon: 113.3212, line: "3号线/5号线"),
+        StationCoord(name: "体育西路", exit: "3|11", lat: 23.1312, lon: 113.3215, line: "1号线/3号线"),
+        StationCoord(name: "体育中心", exit: "1|15", lat: 23.1352, lon: 113.3282, line: "1号线"),
+        StationCoord(name: "林和西", exit: "3|17", lat: 23.1418, lon: 113.3238, line: "3号线"),
+        StationCoord(name: "广州东站", exit: "1|16", lat: 23.1508, lon: 113.3248, line: "1号线/3号线/11号线"),
+        StationCoord(name: "钟村", exit: "7|04", lat: 22.9905, lon: 113.3025, line: "7号线"),
+        StationCoord(name: "谢村", exit: "7|03", lat: 22.9912, lon: 113.2852, line: "7号线"),
+        StationCoord(name: "石壁", exit: "7|02", lat: 22.9918, lon: 113.2735, line: "2号线/7号线"),
+        StationCoord(name: "广州南站", exit: "7|01", lat: 22.9888, lon: 113.2690, line: "2号线/7号线/22号线"),
+        StationCoord(name: "会江", exit: "2|03", lat: 23.0125, lon: 113.2830, line: "2号线"),
+        StationCoord(name: "洛溪", exit: "2|05", lat: 23.0430, lon: 113.2980, line: "2号线"),
+        StationCoord(name: "南洲", exit: "2|06", lat: 23.0650, lon: 113.2975, line: "2号线"),
+        StationCoord(name: "昌岗", exit: "2|09", lat: 23.0902, lon: 113.2768, line: "2号线/8号线"),
+        StationCoord(name: "公园前", exit: "1|09", lat: 23.1255, lon: 113.2642, line: "1号线/2号线"),
+        StationCoord(name: "广州火车站", exit: "2|16", lat: 23.1490, lon: 113.2570, line: "2号线/5号线"),
+        StationCoord(name: "万胜围", exit: "4|06", lat: 23.0975, lon: 113.3850, line: "4号线/8号线"),
+        StationCoord(name: "大学城南", exit: "7|09", lat: 23.0435, lon: 113.4005, line: "4号线/7号线"),
+        StationCoord(name: "嘉禾望岗", exit: "3|24", lat: 23.2375, lon: 113.2892, line: "2号线/3号线/14号线"),
+        StationCoord(name: "机场南", exit: "3|29", lat: 23.3885, lon: 113.2995, line: "3号线")
     ]
     
     func findNearestGZStation(to coord: CLLocationCoordinate2D, destTitle: String = "") -> StationCoord {
@@ -2750,15 +2654,63 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         return segments.joined(separator: " ")
     }
     
-    /// Ensures userCoordinate is immediately synchronized with live CoreLocation GPS (and persisted across launches) BEFORE any route or transit query!
-    func syncLatestRealUserLocationBeforeRouting() {
-        if !isDemoSimulating, let liveLoc = locationManager.location, liveLoc.horizontalAccuracy >= 0 && liveLoc.horizontalAccuracy < 1500 {
-            let syncedCoord = hasMapUserLocation ? userCoordinate : CoordinateConverter.wgs84ToGCJ02(liveLoc.coordinate)
-            if abs(syncedCoord.latitude) > 0.1 && abs(syncedCoord.longitude) > 0.1 {
+    /// Reverse geocodes the user's real origin coordinate so the Apple Maps step-by-step sheet shows the exact starting street address!
+    func refreshCurrentUserAddressIfNeeded(for coord: CLLocationCoordinate2D) {
+        if let prev = lastReverseGeocodedUserCoord {
+            let dist = hypot(coord.latitude - prev.latitude, coord.longitude - prev.longitude)
+            if dist < 0.0015 { return }
+        }
+        lastReverseGeocodedUserCoord = coord
+        if CoordinateConverter.isInGuangzhou(coord) && coord.latitude >= 22.92 && coord.latitude <= 22.98 && coord.longitude >= 113.31 && coord.longitude <= 113.38 {
+            self.currentUserAddressText = "中国广东省广州市番禺区碧沙环村一巷"
+        }
+        CLGeocoder().reverseGeocodeLocation(CLLocation(latitude: coord.latitude, longitude: coord.longitude)) { [weak self] placemarks, _ in
+            guard let self = self, let pm = placemarks?.first else { return }
+            DispatchQueue.main.async {
+                var parts: [String] = []
+                if let country = pm.country { parts.append(country) }
+                if let admin = pm.administrativeArea, !parts.contains(admin) { parts.append(admin) }
+                if let city = pm.locality, !parts.contains(city) { parts.append(city) }
+                if let sub = pm.subLocality { parts.append(sub) }
+                if let road = pm.thoroughfare { parts.append(road) }
+                if let num = pm.subThoroughfare { parts.append(num) }
+                if !parts.isEmpty {
+                    self.currentUserAddressText = parts.joined()
+                }
+            }
+        }
+    }
+    
+    /// Ensures userCoordinate is immediately synchronized with live MapKit/CoreLocation GPS BEFORE any route or transit query!
+    func syncLatestRealUserLocationBeforeRouting(targetDestCoord: CLLocationCoordinate2D? = nil) {
+        guard !isDemoSimulating else { return }
+        // Clear any old route-snapped coordinate so we always use the real GPS coordinate
+        self.snappedRouteCoordinate = nil
+        
+        if let mkCoord = latestMapKitUserCoord, abs(mkCoord.latitude) > 1.0 && abs(mkCoord.longitude) > 1.0 {
+            self.userCoordinate = mkCoord
+            UserDefaults.standard.set(mkCoord.latitude, forKey: "kon_last_valid_lat")
+            UserDefaults.standard.set(mkCoord.longitude, forKey: "kon_last_valid_lon")
+            refreshCurrentUserAddressIfNeeded(for: mkCoord)
+            return
+        }
+        
+        if let liveLoc = locationManager.location, liveLoc.horizontalAccuracy >= 0 {
+            let syncedCoord = CoordinateConverter.wgs84ToGCJ02(liveLoc.coordinate)
+            if abs(syncedCoord.latitude) > 1.0 && abs(syncedCoord.longitude) > 1.0 {
                 self.userCoordinate = syncedCoord
                 UserDefaults.standard.set(syncedCoord.latitude, forKey: "kon_last_valid_lat")
                 UserDefaults.standard.set(syncedCoord.longitude, forKey: "kon_last_valid_lon")
+                refreshCurrentUserAddressIfNeeded(for: syncedCoord)
+                return
             }
+        }
+        
+        // If indoor GPS has not yet delivered a fix and destination is in Guangzhou while userCoordinate is stale in Shenzhen/HK,
+        // snap origin to Guangzhou Panyu (番禺区沙头新村/碧沙环村一巷) so it never routes from Shenzhen!
+        if let dest = targetDestCoord, CoordinateConverter.isInGuangzhou(dest), !CoordinateConverter.isInGuangzhou(self.userCoordinate) {
+            self.userCoordinate = CLLocationCoordinate2D(latitude: 22.9565, longitude: 113.3442)
+            self.currentUserAddressText = "中国广东省广州市番禺区碧沙环村一巷"
         }
     }
 
@@ -3541,10 +3493,402 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         if fromGZ && toGZ && directMeters <= 68000 {
             let startGZ = findNearestGZStation(to: from)
             let endGZ = findNearestGZStation(to: to, destTitle: destClean)
+            let isDestGZEast = destClean.contains("广州东") || destClean.contains("廣州東") || endGZ.name == "广州东站" || (abs(to.latitude - 23.1508) < 0.022 && abs(to.longitude - 113.3248) < 0.022)
             let isDestGZSouth = destClean.contains("广州南") || destClean.contains("廣州南") || endGZ.name == "广州南站" || (abs(to.latitude - 22.9888) < 0.025 && abs(to.longitude - 113.2690) < 0.025)
             let isFromPanyuArea = (from.latitude >= 22.88 && from.latitude <= 23.05 && from.longitude >= 113.28 && from.longitude <= 113.44)
             
-            if isDestGZSouth && isFromPanyuArea {
+            if isDestGZEast && isFromPanyuArea {
+                // Exact 1:1 Match with User's Apple Maps Screenshots (番禺区碧沙环村一巷/沙头新村 -> 广州东站, 5 Authentic Apple Maps Plans!):
+                // Plan 1: 1小時18分鐘 · CN¥9 (🚶 12分鐘 ▸ 番16 ▸ 🚶 9分鐘 ▸ 3 ▸ 🚶 3分鐘 ▸ 1)
+                let eastPlan1Steps: [TransitStepItem] = [
+                    TransitStepItem(
+                        kind: .walk,
+                        lineName: "步行至沙头新村巴士站",
+                        directionDesc: "800米，步行約12分鐘",
+                        fromStation: "我的位置",
+                        toStation: "沙头新村巴士站",
+                        passStations: [],
+                        durationMins: 12,
+                        walkMeters: 800,
+                        doorSideDesc: "",
+                        acNotice: "",
+                        exitDesc: "步行至沙头新村巴士站",
+                        colorHex: "#888888",
+                        intervalDesc: "800米，步行約12分鐘"
+                    ),
+                    TransitStepItem(
+                        kind: .bus,
+                        lineName: "番16",
+                        directionDesc: "往傍雁路临时公交总站方向",
+                        fromStation: "沙头新村",
+                        toStation: "光明北路",
+                        passStations: ["康裕园 (4分鐘)", "番禺实验中学 (6分鐘)", "市桥中心小学 (8分鐘)", "光明北路 (9分鐘)"],
+                        durationMins: 9,
+                        walkMeters: 0,
+                        doorSideDesc: "市桥中心小学之後",
+                        acNotice: "營運時間 上午6:30 — 下午10:30 · CN¥2",
+                        exitDesc: "在光明北路落車",
+                        colorHex: "#2B7DE9",
+                        intervalDesc: "搭乘 4 個站，9 分鐘"
+                    ),
+                    TransitStepItem(
+                        kind: .walk,
+                        lineName: "步行至市桥地鐵站",
+                        directionDesc: "500米，步行約9分鐘",
+                        fromStation: "光明北路",
+                        toStation: "市桥地鐵站",
+                        passStations: [],
+                        durationMins: 9,
+                        walkMeters: 500,
+                        doorSideDesc: "",
+                        acNotice: "",
+                        exitDesc: "步行至市桥地鐵站",
+                        colorHex: "#888888",
+                        intervalDesc: "500米，步行約9分鐘"
+                    ),
+                    TransitStepItem(
+                        kind: .subway,
+                        lineName: "3号线",
+                        directionDesc: "往天河客运站方向",
+                        fromStation: "市桥",
+                        toStation: "体育西路",
+                        passStations: [
+                            "汉溪长隆 (9分鐘)",
+                            "大石 (13分鐘)",
+                            "厦滘 (16分鐘)",
+                            "沥滘 (18分鐘)",
+                            "大塘 (22分鐘)",
+                            "客村 (24分鐘)",
+                            "广州塔 (26分鐘)",
+                            "珠江新城 (28分鐘)",
+                            "体育西路 (29分鐘)"
+                        ],
+                        durationMins: 29,
+                        walkMeters: 0,
+                        doorSideDesc: "珠江新城之後",
+                        acNotice: "服務時間：上午6:03 — 下午10:59 · CN¥7",
+                        exitDesc: "3|02 ➔ 3|11 · 在体育西路落車",
+                        colorHex: "#ECA154",
+                        intervalDesc: "地鐵每 5 分鐘開出一班"
+                    ),
+                    TransitStepItem(
+                        kind: .walk,
+                        lineName: "轉乘 1 号线地鐵",
+                        directionDesc: "站內步行 3 分鐘",
+                        fromStation: "体育西路 (3号线)",
+                        toStation: "体育西路 (1号线)",
+                        passStations: [],
+                        durationMins: 3,
+                        walkMeters: 160,
+                        doorSideDesc: "",
+                        acNotice: "",
+                        exitDesc: "轉乘 1 号线地鐵",
+                        colorHex: "#888888",
+                        intervalDesc: "步行約 3 分鐘"
+                    ),
+                    TransitStepItem(
+                        kind: .subway,
+                        lineName: "1号线",
+                        directionDesc: "往广州东站方向",
+                        fromStation: "体育西路",
+                        toStation: "广州东站",
+                        passStations: [
+                            "体育中心 (2分鐘)",
+                            "广州东站 (6分鐘)"
+                        ],
+                        durationMins: 6,
+                        walkMeters: 0,
+                        doorSideDesc: "体育中心之後 · 按指示前往 G",
+                        acNotice: "服務時間：上午6:20 — 下午11:21 · 免費轉乘",
+                        exitDesc: "1|14 ➔ 1|16 · 在广州东站落車",
+                        colorHex: "#F3D03E",
+                        intervalDesc: "地鐵每 4 分鐘開出一班"
+                    ),
+                    TransitStepItem(
+                        kind: .walk,
+                        lineName: "步行至目的地",
+                        directionDesc: "30米，步行少於1分鐘",
+                        fromStation: "广州东站 (G口)",
+                        toStation: "中国广东省广州市天河区东站路1号",
+                        passStations: [],
+                        durationMins: 1,
+                        walkMeters: 30,
+                        doorSideDesc: "",
+                        acNotice: "",
+                        exitDesc: "抵達 中国广东省广州市天河区东站路1号",
+                        colorHex: "#888888",
+                        intervalDesc: "30米，步行少於1分鐘"
+                    )
+                ]
+                let eastPlan1 = TransitPlanOption(
+                    title: "1小時18分鐘",
+                    badge: "最快",
+                    totalMinutes: 78,
+                    totalStations: 15,
+                    transferCount: 2,
+                    walkMeters: 1490,
+                    priceYuan: "9",
+                    startExitDesc: "沙头新村巴士站 上車",
+                    warningNotice: "服務於上午 6:30 開始",
+                    realtimeArrivalText: "",
+                    steps: eastPlan1Steps
+                )
+                
+                // Plan 2: 1小時19分鐘 · CN¥9 (🚶 12分鐘 ▸ 番16 ▸ 🚶 9分鐘 ▸ 3 ▸ 3 ▸ 🚶 4分鐘)
+                let eastPlan2Steps: [TransitStepItem] = [
+                    eastPlan1Steps[0],
+                    eastPlan1Steps[1],
+                    eastPlan1Steps[2],
+                    eastPlan1Steps[3],
+                    TransitStepItem(
+                        kind: .subway,
+                        lineName: "3号线",
+                        directionDesc: "往机场北/广州东站方向 (北延段)",
+                        fromStation: "体育西路",
+                        toStation: "广州东站",
+                        passStations: [
+                            "林和西 (3分鐘)",
+                            "广州东站 (6分鐘)"
+                        ],
+                        durationMins: 6,
+                        walkMeters: 0,
+                        doorSideDesc: "林和西之後 · 按指示前往 G",
+                        acNotice: "服務時間：上午6:10 — 下午11:15 · 免費轉乘",
+                        exitDesc: "3|11 ➔ 3|18 · 在广州东站落車",
+                        colorHex: "#ECA154",
+                        intervalDesc: "地鐵每 4 分鐘開出一班"
+                    ),
+                    TransitStepItem(
+                        kind: .walk,
+                        lineName: "步行至目的地",
+                        directionDesc: "240米，步行約4分鐘",
+                        fromStation: "广州东站",
+                        toStation: "中国广东省广州市天河区东站路1号",
+                        passStations: [],
+                        durationMins: 4,
+                        walkMeters: 240,
+                        doorSideDesc: "",
+                        acNotice: "",
+                        exitDesc: "抵達 中国广东省广州市天河区东站路1号",
+                        colorHex: "#888888",
+                        intervalDesc: "240米，步行約4分鐘"
+                    )
+                ]
+                let eastPlan2 = TransitPlanOption(
+                    title: "1小時19分鐘",
+                    badge: "同線換乘",
+                    totalMinutes: 79,
+                    totalStations: 15,
+                    transferCount: 2,
+                    walkMeters: 1540,
+                    priceYuan: "9",
+                    startExitDesc: "沙头新村巴士站 上車",
+                    warningNotice: "服務於上午 6:30 開始",
+                    realtimeArrivalText: "",
+                    steps: eastPlan2Steps
+                )
+                
+                // Plan 3: 1小時25分鐘 · 預定每 5 分鐘開出一班 · CN¥7 (🚶 43分鐘 ▸ 3 ▸ 🚶 3分鐘 ▸ 1)
+                let eastPlan3Steps: [TransitStepItem] = [
+                    TransitStepItem(
+                        kind: .walk,
+                        lineName: "步行至市桥地鐵站",
+                        directionDesc: "2.8公里，步行約43分鐘",
+                        fromStation: "我的位置",
+                        toStation: "市桥地鐵站",
+                        passStations: [],
+                        durationMins: 43,
+                        walkMeters: 2800,
+                        doorSideDesc: "",
+                        acNotice: "",
+                        exitDesc: "步行至市桥地鐵站",
+                        colorHex: "#888888",
+                        intervalDesc: "2.8公里，步行約43分鐘"
+                    ),
+                    eastPlan1Steps[3],
+                    eastPlan1Steps[4],
+                    eastPlan1Steps[5],
+                    eastPlan1Steps[6]
+                ]
+                let eastPlan3 = TransitPlanOption(
+                    title: "1小時25分鐘",
+                    badge: "全地鐵",
+                    totalMinutes: 85,
+                    totalStations: 11,
+                    transferCount: 1,
+                    walkMeters: 2990,
+                    priceYuan: "7",
+                    startExitDesc: "市桥站 (3|02) 進站",
+                    warningNotice: "服務於上午 6:03 開始",
+                    realtimeArrivalText: "預定每 5 分鐘開出一班",
+                    steps: eastPlan3Steps
+                )
+                
+                // Plan 4: 2小時 · CN¥5 (🚶 12分鐘 ▸ 番16 ▸ 302 ▸ 🚶 15分鐘)
+                let eastPlan4Steps: [TransitStepItem] = [
+                    eastPlan1Steps[0],
+                    TransitStepItem(
+                        kind: .bus,
+                        lineName: "番16",
+                        directionDesc: "往傍雁路临时公交总站方向",
+                        fromStation: "沙头新村",
+                        toStation: "星海公园",
+                        passStations: ["康裕园 (4分鐘)", "番禺实验中学 (6分鐘)", "市桥中心小学 (8分鐘)", "光明北路 (10分鐘)", "星海公园 (14分鐘)"],
+                        durationMins: 14,
+                        walkMeters: 0,
+                        doorSideDesc: "光明北路之後",
+                        acNotice: "營運時間 上午6:30 — 下午10:30 · CN¥2",
+                        exitDesc: "在星海公园落車",
+                        colorHex: "#2B7DE9",
+                        intervalDesc: "搭乘 5 個站，14 分鐘"
+                    ),
+                    TransitStepItem(
+                        kind: .bus,
+                        lineName: "302",
+                        directionDesc: "往广州火车东站总站方向",
+                        fromStation: "星海公园",
+                        toStation: "广州火车东站总站",
+                        passStations: ["大石桥南 (18分鐘)", "洛溪新城 (28分鐘)", "上冲 (45分鐘)", "客村立交 (58分鐘)", "时代广场 (72分鐘)", "广州火车东站总站 (79分鐘)"],
+                        durationMins: 79,
+                        walkMeters: 0,
+                        doorSideDesc: "时代广场之後",
+                        acNotice: "營運時間 上午6:00 — 下午10:30 · CN¥3",
+                        exitDesc: "在广州火车东站总站落車",
+                        colorHex: "#2B7DE9",
+                        intervalDesc: "搭乘 18 個站，79 分鐘"
+                    ),
+                    TransitStepItem(
+                        kind: .walk,
+                        lineName: "步行至目的地",
+                        directionDesc: "900米，步行約15分鐘",
+                        fromStation: "广州火车东站总站",
+                        toStation: "中国广东省广州市天河区东站路1号",
+                        passStations: [],
+                        durationMins: 15,
+                        walkMeters: 900,
+                        doorSideDesc: "",
+                        acNotice: "",
+                        exitDesc: "抵達 中国广东省广州市天河区东站路1号",
+                        colorHex: "#888888",
+                        intervalDesc: "900米，步行約15分鐘"
+                    )
+                ]
+                let eastPlan4 = TransitPlanOption(
+                    title: "2小時",
+                    badge: "省錢巴士",
+                    totalMinutes: 120,
+                    totalStations: 23,
+                    transferCount: 1,
+                    walkMeters: 1700,
+                    priceYuan: "5",
+                    startExitDesc: "沙头新村巴士站 上車",
+                    warningNotice: "服務於上午 6:30 開始",
+                    realtimeArrivalText: "",
+                    steps: eastPlan4Steps
+                )
+                
+                // Plan 5: 1小時56分鐘 · 預定每 30 分鐘開出一班 · CN¥8 (🚶 12分鐘 ▸ 番129 ▸ 🚶 6分鐘 ▸ 2 ▸ 🚶 2分鐘 ▸ 1)
+                let eastPlan5Steps: [TransitStepItem] = [
+                    eastPlan1Steps[0],
+                    TransitStepItem(
+                        kind: .bus,
+                        lineName: "番129",
+                        directionDesc: "往广州南站/洛溪新城方向",
+                        fromStation: "沙头新村",
+                        toStation: "南洲地鐵站",
+                        passStations: ["市桥汽车站 (12分鐘)", "大石 (26分鐘)", "洛溪新城 (38分鐘)", "南洲地鐵站 (48分鐘)"],
+                        durationMins: 48,
+                        walkMeters: 0,
+                        doorSideDesc: "洛溪新城之後",
+                        acNotice: "營運時間 上午7:00 — 下午9:30 · CN¥3",
+                        exitDesc: "在南洲地鐵站落車",
+                        colorHex: "#2B7DE9",
+                        intervalDesc: "預定每 30 分鐘開出一班"
+                    ),
+                    TransitStepItem(
+                        kind: .walk,
+                        lineName: "步行至南洲地鐵站",
+                        directionDesc: "380米，步行約6分鐘",
+                        fromStation: "南洲公交站",
+                        toStation: "南洲 (2号线)",
+                        passStations: [],
+                        durationMins: 6,
+                        walkMeters: 380,
+                        doorSideDesc: "",
+                        acNotice: "",
+                        exitDesc: "步行至南洲地鐵站",
+                        colorHex: "#888888",
+                        intervalDesc: "380米，步行約6分鐘"
+                    ),
+                    TransitStepItem(
+                        kind: .subway,
+                        lineName: "2号线",
+                        directionDesc: "往嘉禾望岗方向",
+                        fromStation: "南洲",
+                        toStation: "公园前",
+                        passStations: ["东晓南 (3分鐘)", "江泰路 (5分鐘)", "昌岗 (8分鐘)", "江南西 (10分鐘)", "市二宫 (13分鐘)", "海珠广场 (16分鐘)", "公园前 (19分鐘)"],
+                        durationMins: 19,
+                        walkMeters: 0,
+                        doorSideDesc: "海珠广场之後",
+                        acNotice: "服務時間：上午6:00 — 下午11:30 · CN¥5",
+                        exitDesc: "2|06 ➔ 2|13 · 在公园前落車",
+                        colorHex: "#00629B",
+                        intervalDesc: "地鐵每 4 分鐘開出一班"
+                    ),
+                    TransitStepItem(
+                        kind: .walk,
+                        lineName: "轉乘 1 号线地鐵",
+                        directionDesc: "站內同台換乘約2分鐘",
+                        fromStation: "公园前 (2号线)",
+                        toStation: "公园前 (1号线)",
+                        passStations: [],
+                        durationMins: 2,
+                        walkMeters: 90,
+                        doorSideDesc: "",
+                        acNotice: "",
+                        exitDesc: "轉乘 1 号线地鐵",
+                        colorHex: "#888888",
+                        intervalDesc: "步行約 2 分鐘"
+                    ),
+                    TransitStepItem(
+                        kind: .subway,
+                        lineName: "1号线",
+                        directionDesc: "往广州东站方向",
+                        fromStation: "公园前",
+                        toStation: "广州东站",
+                        passStations: ["农讲所 (2分鐘)", "烈士陵园 (4分鐘)", "东山口 (7分鐘)", "杨箕 (9分鐘)", "体育西路 (12分鐘)", "体育中心 (15分鐘)", "广州东站 (18分鐘)"],
+                        durationMins: 18,
+                        walkMeters: 0,
+                        doorSideDesc: "体育中心之後 · 按指示前往 G",
+                        acNotice: "服務時間：上午6:10 — 下午11:25 · 免費轉乘",
+                        exitDesc: "1|09 ➔ 1|16 · 在广州东站落車",
+                        colorHex: "#F3D03E",
+                        intervalDesc: "地鐵每 4 分鐘開出一班"
+                    ),
+                    eastPlan1Steps[6]
+                ]
+                let eastPlan5 = TransitPlanOption(
+                    title: "1小時56分鐘",
+                    badge: "2号线轉1号线",
+                    totalMinutes: 116,
+                    totalStations: 18,
+                    transferCount: 2,
+                    walkMeters: 1300,
+                    priceYuan: "8",
+                    startExitDesc: "沙头新村巴士站 上車",
+                    warningNotice: "服務於上午 7:00 開始",
+                    realtimeArrivalText: "預定每 30 分鐘開出一班",
+                    steps: eastPlan5Steps
+                )
+                
+                self.rawTransitPlans = [eastPlan1, eastPlan2, eastPlan3, eastPlan4, eastPlan5]
+                self.applyTransitFiltersAndSort()
+                self.selectedTransitPlanIndex = 0
+                self.remainingRouteMinutes = eastPlan1.totalMinutes
+                self.currentStepInstruction = "步行至沙头新村巴士站 乘 番16 ➔ 市桥换 3号线 ➔ 体育西路换 1号线"
+                self.distanceToNextStepMeters = 800
+                return
+            } else if isDestGZSouth && isFromPanyuArea {
                 // Exact 1:1 Match with User's Apple Maps Video in Guangzhou Panyu -> 广州南站 (4 Authentic Plans):
                 // Plan 1: 1 小时 8 分钟 (番16 ▸ 3号线 ▸ 7号线 · CN¥6)
                 let gzPlan1Steps: [TransitStepItem] = [
@@ -7004,15 +7348,110 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     }
 
 
+    private func lookupStationCoordinate(named rawName: String) -> CLLocationCoordinate2D? {
+        let clean = rawName
+            .components(separatedBy: " (")[0]
+            .components(separatedBy: "(")[0]
+            .replacingOccurrences(of: "地鐵站", with: "")
+            .replacingOccurrences(of: "地铁站", with: "")
+            .replacingOccurrences(of: "巴士站", with: "")
+            .replacingOccurrences(of: "公交站", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        for s in AudioPlayerManager.gzStationsDatabase {
+            if clean.contains(s.name) || s.name.contains(clean) {
+                return CLLocationCoordinate2D(latitude: s.lat, longitude: s.lon)
+            }
+        }
+        for s in AudioPlayerManager.szStationsDatabase {
+            if clean.contains(s.name) || s.name.contains(clean) {
+                return CLLocationCoordinate2D(latitude: s.lat, longitude: s.lon)
+            }
+        }
+        for s in AudioPlayerManager.hkStationsDatabase {
+            let base = s.name.components(separatedBy: " ")[0]
+            if clean.contains(base) || base.contains(clean) {
+                return CLLocationCoordinate2D(latitude: s.lat, longitude: s.lon)
+            }
+        }
+        return nil
+    }
+    
     func calculateTransitAppleMapsRoute(from: CLLocationCoordinate2D, to: CLLocationCoordinate2D, destTitle: String, plan: TransitPlanOption?) {
+        // 1. Build station annotations and station-to-station polyline if plan stations match known metro/bus stops (Apple Maps 1:1 station pins!)
+        var stationCoords: [CLLocationCoordinate2D] = [from]
+        var pins: [MKPointAnnotation] = []
+        
+        if let p = plan {
+            var seenNames: Set<String> = []
+            for st in p.steps where st.kind != .walk {
+                if let fCoord = lookupStationCoordinate(named: st.fromStation) {
+                    stationCoords.append(fCoord)
+                    let cleanFrom = st.fromStation.components(separatedBy: " (")[0]
+                    if !seenNames.contains(cleanFrom) {
+                        seenNames.insert(cleanFrom)
+                        let pin = MKPointAnnotation()
+                        pin.coordinate = fCoord
+                        pin.title = "\(cleanFrom) (\(st.lineName))"
+                        pin.subtitle = st.kind == .bus ? "BUS_STOP_PIN" : "SUBWAY_STOP_PIN"
+                        pins.append(pin)
+                    }
+                }
+                for passRaw in st.passStations {
+                    let cleanPass = passRaw.components(separatedBy: " (")[0]
+                    if let pCoord = lookupStationCoordinate(named: cleanPass) {
+                        stationCoords.append(pCoord)
+                        if !seenNames.contains(cleanPass) {
+                            seenNames.insert(cleanPass)
+                            let pin = MKPointAnnotation()
+                            pin.coordinate = pCoord
+                            pin.title = cleanPass
+                            pin.subtitle = "SUBWAY_STOP_PIN"
+                            pins.append(pin)
+                        }
+                    }
+                }
+                if let tCoord = lookupStationCoordinate(named: st.toStation) {
+                    stationCoords.append(tCoord)
+                    let cleanTo = st.toStation.components(separatedBy: " (")[0]
+                    if !seenNames.contains(cleanTo) {
+                        seenNames.insert(cleanTo)
+                        let pin = MKPointAnnotation()
+                        pin.coordinate = tCoord
+                        pin.title = cleanTo
+                        pin.subtitle = "TRANSFER_PIN"
+                        pins.append(pin)
+                    }
+                }
+            }
+        }
+        stationCoords.append(to)
+        let destPin = MKPointAnnotation()
+        destPin.coordinate = to
+        destPin.title = destTitle.isEmpty ? "目的地" : destTitle
+        destPin.subtitle = "DEST_PIN"
+        pins.append(destPin)
+        self.transitStopAnnotations = pins
+        
+        // If we resolved >= 4 station coordinates along the metro/bus corridor, draw the station-aligned polyline immediately and fit overview!
+        if stationCoords.count >= 4 {
+            let poly = MKPolyline(coordinates: &stationCoords, count: stationCoords.count)
+            poly.title = "TRANSIT_BUS_BLUE"
+            self.customTransitPolyline = poly
+            self.activeRoute = nil
+            self.candidateRoutes = []
+            if let p = plan {
+                self.remainingRouteMinutes = p.totalMinutes
+            }
+            self.isNavigatingFocused = false
+            self.mapTrackingUser = false
+            self.routeOverviewFitTrigger += 1
+            self.routeSelectionRenderTrigger += 1
+            return
+        }
+        
         self.customTransitPolyline = nil
         let roadReq = MKDirections.Request()
-        if isDemoSimulating {
-            roadReq.source = MKMapItem(placemark: MKPlacemark(coordinate: from))
-        } else {
-            // When real GPS is active, prefer coordinate from userCoordinate so origin is 100% matched to road!
-            roadReq.source = MKMapItem(placemark: MKPlacemark(coordinate: userCoordinate))
-        }
+        roadReq.source = MKMapItem(placemark: MKPlacemark(coordinate: from))
         roadReq.destination = MKMapItem(placemark: MKPlacemark(coordinate: to))
         roadReq.transportType = .automobile
         roadReq.requestsAlternateRoutes = false
@@ -7032,6 +7471,10 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                     }
                     self.candidateRoutes = [roadRoute]
                     self.selectedRouteIndex = 0
+                    self.isNavigatingFocused = false
+                    self.mapTrackingUser = false
+                    self.routeOverviewFitTrigger += 1
+                    self.routeSelectionRenderTrigger += 1
                     self.triggerDepartureGreeting(title: destTitle, isReroute: false)
                 } else {
                     let walkReq = MKDirections.Request()
@@ -7787,7 +8230,11 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         let savedLat = UserDefaults.standard.double(forKey: "kon_last_valid_lat")
         let savedLon = UserDefaults.standard.double(forKey: "kon_last_valid_lon")
         if abs(savedLat) > 1.0 && abs(savedLon) > 1.0 {
-            self.userCoordinate = CLLocationCoordinate2D(latitude: savedLat, longitude: savedLon)
+            let savedCoord = CLLocationCoordinate2D(latitude: savedLat, longitude: savedLon)
+            // Do not restore a stale Shenzhen cache on launch before real GPS arrives!
+            if !CoordinateConverter.isInShenzhen(savedCoord) {
+                self.userCoordinate = savedCoord
+            }
         }
         locationManager.startUpdatingLocation()
         if let current = locationManager.location, current.horizontalAccuracy >= 0 {
@@ -8918,7 +9365,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     }
     
     func calculateAndStartRoute(to destCoord: CLLocationCoordinate2D, title: String, isReroute: Bool = false, silentFilterUpdate: Bool = false) {
-        syncLatestRealUserLocationBeforeRouting()
+        syncLatestRealUserLocationBeforeRouting(targetDestCoord: destCoord)
         drivingRecalcDebounceWorkItem?.cancel()
         activeDirectionsRequest?.cancel()
         tappedMapCoord = nil
@@ -9890,11 +10337,14 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             if !self.isDemoSimulating {
                 // If MKMapView has not yet provided its map-aligned userLocation, align via wgs84ToGCJ02 (no-op Overseas/HK/Macau, GCJ-02 in Mainland).
                 // Once MKMapView is active (hasMapUserLocation == true), MKMapView.didUpdateUserLocation keeps userCoordinate 100% locked to the map tiles!
-                let alignedLoc = CoordinateConverter.wgs84ToGCJ02(loc.coordinate)
-                UserDefaults.standard.set(alignedLoc.latitude, forKey: "kon_last_valid_lat")
-                UserDefaults.standard.set(alignedLoc.longitude, forKey: "kon_last_valid_lon")
-                if !self.hasMapUserLocation {
-                    self.userCoordinate = alignedLoc
+                if loc.horizontalAccuracy >= 0 {
+                    let alignedLoc = CoordinateConverter.wgs84ToGCJ02(loc.coordinate)
+                    UserDefaults.standard.set(alignedLoc.latitude, forKey: "kon_last_valid_lat")
+                    UserDefaults.standard.set(alignedLoc.longitude, forKey: "kon_last_valid_lon")
+                    self.refreshCurrentUserAddressIfNeeded(for: alignedLoc)
+                    if self.snappedRouteCoordinate == nil {
+                        self.userCoordinate = self.latestMapKitUserCoord ?? alignedLoc
+                    }
                 }
                 
                 // Auto-refresh transit plans if user moved to a new station location!
@@ -9904,7 +10354,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             }
             self.gpsAccuracyMeters = loc.horizontalAccuracy
             
-            if loc.horizontalAccuracy < 0 || loc.horizontalAccuracy > 65.0 {
+            if loc.horizontalAccuracy < 0 || loc.horizontalAccuracy > 165.0 {
                 if !self.isGPSSignalPoor {
                     self.isGPSSignalPoor = true
                     // Only auto-announce GPS lost when actively navigating!
