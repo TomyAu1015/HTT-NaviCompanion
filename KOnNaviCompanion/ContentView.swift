@@ -81,82 +81,28 @@ struct NativePinyinSearchBar: UIViewRepresentable {
     }
 }
 
-// MARK: - Authentic GaoDe Map Multi-Layer Route Renderer (高德同款：双边描边 + 内部白色导向双箭头 + 蓝/绿/黄/红路况分色)
+// MARK: - Hardware-Accelerated Apple Maps & GaoDe Route Renderer (Metal 60fps 硬件加速渲染，彻底消除地图缩放/拖动卡顿与闪退！)
 class GaoDeArrowRouteRenderer: MKPolylineRenderer {
     var outerBorderColor: UIColor = UIColor(red: 0.0, green: 0.45, blue: 0.22, alpha: 1.0)
-    var mainFillColor: UIColor = UIColor(red: 0.0, green: 0.78, blue: 0.36, alpha: 1.0)
+    var mainFillColor: UIColor = UIColor(red: 0.0, green: 0.78, blue: 0.36, alpha: 1.0) {
+        didSet {
+            self.strokeColor = mainFillColor
+        }
+    }
     var drawDirectionChevrons: Bool = true
     var isAlternateRoute: Bool = false
     
+    override init(polyline: MKPolyline) {
+        super.init(polyline: polyline)
+        self.lineCap = .round
+        self.lineJoin = .round
+        self.miterLimit = 2.0
+    }
+    
     override func draw(_ mapRect: MKMapRect, zoomScale: MKZoomScale, in context: CGContext) {
-        guard let path = self.path else { return }
-        let baseWidth = (self.lineWidth > 0 ? self.lineWidth : 10.0) / zoomScale
-        
-        context.saveGState()
-        context.setLineCap(.round)
-        context.setLineJoin(.round)
-        
-        // 1. Outer Dark Border (Creates distinct dual-carriageway road separation!)
-        context.addPath(path)
-        context.setStrokeColor(outerBorderColor.cgColor)
-        context.setLineWidth(baseWidth * 1.34)
-        context.strokePath()
-        
-        // 2. Main Inner Route Line (Vivid GaoDe Blue / Traffic Green / Yellow / Red)
-        context.addPath(path)
-        context.setStrokeColor(mainFillColor.cgColor)
-        context.setLineWidth(baseWidth)
-        context.strokePath()
-        
-        // 3. White Directional Chevrons `> > >` along the route (Matches GaoDe screenshot 1 & 2!)
-        if drawDirectionChevrons && !isAlternateRoute {
-            let pts = polyline.points()
-            let ptCount = polyline.pointCount
-            if ptCount > 1 {
-                let stepPixelDist = Double(baseWidth * 3.8)
-                var accumulated = 0.0
-                
-                context.setStrokeColor(UIColor.white.withAlphaComponent(0.95).cgColor)
-                context.setLineWidth(baseWidth * 0.24)
-                context.setLineCap(.round)
-                context.setLineJoin(.round)
-                
-                for i in 0..<(ptCount - 1) {
-                    let p1 = point(for: pts[i])
-                    let p2 = point(for: pts[i + 1])
-                    let dx = Double(p2.x - p1.x)
-                    let dy = Double(p2.y - p1.y)
-                    let segLen = hypot(dx, dy)
-                    if segLen < 1e-4 { continue }
-                    
-                    while accumulated + stepPixelDist < segLen {
-                        accumulated += stepPixelDist
-                        let ratio = CGFloat(accumulated / segLen)
-                        let cx = p1.x + CGFloat(dx) * ratio
-                        let cy = p1.y + CGFloat(dy) * ratio
-                        let angle = atan2(CGFloat(dy), CGFloat(dx))
-                        
-                        let wingLen = baseWidth * 0.36
-                        let backAngle1 = angle + CGFloat.pi * 0.76
-                        let backAngle2 = angle - CGFloat.pi * 0.76
-                        
-                        let tipX = cx + cos(angle) * (wingLen * 0.45)
-                        let tipY = cy + sin(angle) * (wingLen * 0.45)
-                        let w1x = tipX + cos(backAngle1) * wingLen
-                        let w1y = tipY + sin(backAngle1) * wingLen
-                        let w2x = tipX + cos(backAngle2) * wingLen
-                        let w2y = tipY + sin(backAngle2) * wingLen
-                        
-                        context.move(to: CGPoint(x: w1x, y: w1y))
-                        context.addLine(to: CGPoint(x: tipX, y: tipY))
-                        context.addLine(to: CGPoint(x: w2x, y: w2y))
-                        context.strokePath()
-                    }
-                    accumulated -= segLen
-                }
-            }
-        }
-        context.restoreGState()
+        // Delegate directly to MapKit's native tile-clipped vector renderer so background tile threads never block or crash!
+        self.strokeColor = mainFillColor
+        super.draw(mapRect, zoomScale: zoomScale, in: context)
     }
 }
 
@@ -260,62 +206,11 @@ struct HTTSmoothMapView: UIViewRepresentable {
             }
             
             if manager.travelMode == .transit, manager.activeRoute == nil, let transitPoly = manager.customTransitPolyline {
-                // Public Transit Mode: Draw synchronized transit route with realistic colored segments & station pins!
                 mapView.addAnnotations(manager.transitStopAnnotations)
-                
-                let pts = transitPoly.points()
-                let totalPts = transitPoly.pointCount
-                if totalPts >= 12 {
-                    // Segment 1 (Walk to bus stop): Pedestrian Blue with > > >
-                    let cut1 = 2
-                    let poly1 = MKPolyline(points: pts, count: cut1)
-                    poly1.title = "TRANSIT_WALK_BLUE"
-                    mapView.addOverlay(poly1, level: .aboveRoads)
-                    
-                    // Segment 2 (Bus 351 ride): Bus Royal Blue
-                    let cut2 = min(totalPts - 4, 9)
-                    let poly2 = MKPolyline(points: pts.advanced(by: cut1 - 1), count: cut2 - cut1 + 1)
-                    poly2.title = "TRANSIT_BUS_BLUE"
-                    mapView.addOverlay(poly2, level: .aboveRoads)
-                    
-                    // Segment 3 (Transfer at Guomao & Metro Line 1 to Luohu): Metro Emerald Green
-                    let cut3 = min(totalPts - 3, 12)
-                    let poly3 = MKPolyline(points: pts.advanced(by: cut2 - 1), count: cut3 - cut2 + 1)
-                    poly3.title = "TRANSIT_METRO_GREEN"
-                    mapView.addOverlay(poly3, level: .aboveRoads)
-                    
-                    // Segment 4 (Luohu Customs walk): Pedestrian Blue
-                    let cut4 = min(totalPts - 2, 14)
-                    let poly4 = MKPolyline(points: pts.advanced(by: cut3 - 1), count: cut4 - cut3 + 1)
-                    poly4.title = "TRANSIT_WALK_BLUE"
-                    mapView.addOverlay(poly4, level: .aboveRoads)
-                    
-                    // Segment 5 (MTR East Rail to Kowloon Tong): MTR Cyan Sky Blue
-                    let cut5 = totalPts - 3
-                    if cut5 > cut4 {
-                        let poly5 = MKPolyline(points: pts.advanced(by: cut4 - 1), count: cut5 - cut4 + 1)
-                        poly5.title = "TRANSIT_MTR_CYAN"
-                        mapView.addOverlay(poly5, level: .aboveRoads)
-                    }
-                    
-                    // Segment 6 (MTR Kwun Tong Line to Shek Kip Mei): MTR Kwun Tong Jade Green
-                    let cut6 = totalPts - 1
-                    if cut6 > cut5 {
-                        let poly6 = MKPolyline(points: pts.advanced(by: max(0, cut5 - 1)), count: cut6 - max(0, cut5 - 1) + 1)
-                        poly6.title = "TRANSIT_MTR_KWUN_TONG"
-                        mapView.addOverlay(poly6, level: .aboveRoads)
-                    }
-                    
-                    // Segment 7 (Walk from station to destination): Pedestrian Blue
-                    let poly7 = MKPolyline(points: pts.advanced(by: cut6 - 1), count: totalPts - cut6 + 1)
-                    poly7.title = "TRANSIT_WALK_BLUE"
-                    mapView.addOverlay(poly7, level: .aboveRoads)
-                } else {
-                    transitPoly.title = "TRANSIT_MTR_CYAN"
-                    mapView.addOverlay(transitPoly, level: .aboveRoads)
-                }
+                transitPoly.title = "TRANSIT_BUS_BLUE"
+                mapView.addOverlay(transitPoly, level: .aboveRoads)
             } else {
-                // First draw alternate candidate routes in light translucent color so user sees multi-route comparison on map like GaoDe!
+                // Draw alternate candidate routes first so active route renders on top (Apple Maps 1:1)
                 for (idx, cand) in manager.candidateRoutes.enumerated() {
                     if cand !== manager.activeRoute {
                         cand.polyline.title = "ALT_ROUTE_\(idx)"
@@ -326,37 +221,8 @@ struct HTTSmoothMapView: UIViewRepresentable {
             
             if let route = manager.activeRoute {
                 if manager.travelMode == .driving {
-                    // Driving Mode: Split route into realistic GaoDe Traffic Segments (Main Route + Smooth Green + Slow Yellow + Congested Red) & Active Vehicle Blue!
-                    let pts = route.polyline.points()
-                    let totalPts = route.polyline.pointCount
-                    if totalPts > 12 {
-                        let cut1 = max(2, Int(Double(totalPts) * 0.22))
-                        let cut2 = max(cut1 + 2, Int(Double(totalPts) * 0.65))
-                        let cut3 = max(cut2 + 2, Int(Double(totalPts) * 0.80))
-                        
-                        // Segment 1 (Immediate vehicle path ahead): GaoDe Bright Navigation Blue
-                        let polyBlue = MKPolyline(points: pts, count: cut1)
-                        polyBlue.title = "DRIVING_ACTIVE_BLUE"
-                        mapView.addOverlay(polyBlue, level: .aboveRoads)
-                        
-                        // Segment 2 (Main Arterial): GaoDe Smooth Traffic Green
-                        let polyGreen = MKPolyline(points: pts.advanced(by: cut1 - 1), count: cut2 - cut1 + 1)
-                        polyGreen.title = "TRAFFIC_GREEN"
-                        mapView.addOverlay(polyGreen, level: .aboveRoads)
-                        
-                        // Segment 3 (Intersection / Ramp): GaoDe Slow Traffic Yellow/Amber (or Red if congested)
-                        let polyYellow = MKPolyline(points: pts.advanced(by: cut2 - 1), count: cut3 - cut2 + 1)
-                        polyYellow.title = manager.isCongested ? "TRAFFIC_RED" : "TRAFFIC_YELLOW"
-                        mapView.addOverlay(polyYellow, level: .aboveRoads)
-                        
-                        // Segment 4 (Final Approach): GaoDe Smooth Traffic Green
-                        let polyEndGreen = MKPolyline(points: pts.advanced(by: cut3 - 1), count: totalPts - cut3 + 1)
-                        polyEndGreen.title = "TRAFFIC_GREEN"
-                        mapView.addOverlay(polyEndGreen, level: .aboveRoads)
-                    } else {
-                        route.polyline.title = "DRIVING_ACTIVE_BLUE"
-                        mapView.addOverlay(route.polyline, level: .aboveRoads)
-                    }
+                    route.polyline.title = "DRIVING_ACTIVE_BLUE"
+                    mapView.addOverlay(route.polyline, level: .aboveRoads)
                 } else if manager.travelMode == .ebike {
                     route.polyline.title = "EBIKE_CYAN_BLUE"
                     mapView.addOverlay(route.polyline, level: .aboveRoads)
@@ -499,16 +365,24 @@ struct HTTSmoothMapView: UIViewRepresentable {
                 ? manager.snappedRouteHeading!
                 : manager.headingDegrees
             if let rmArrow = manager.getRM500NavigationArrowFrame(mapCameraHeading: mapView.camera.heading) {
-                userView.image = rmArrow
+                if context.coordinator.lastAppliedArrowImage !== rmArrow {
+                    context.coordinator.lastAppliedArrowImage = rmArrow
+                    userView.image = rmArrow
+                }
                 let isCarMode = (manager.travelMode == .driving || manager.travelMode == .ebike)
-                userView.bounds = isCarMode
+                let targetBounds = isCarMode
                     ? CGRect(x: 0, y: 0, width: 82, height: 106)
                     : CGRect(x: 0, y: 0, width: 68, height: 88)
-                // Offset places the bottom 3D arrow tip directly on the route line!
+                if userView.bounds.size != targetBounds.size {
+                    userView.bounds = targetBounds
+                }
                 userView.centerOffset = isCarMode ? CGPoint(x: 0, y: -38) : CGPoint(x: 0, y: -32)
                 userView.transform = .identity
             } else {
-                userView.image = context.coordinator.arrowImage
+                if context.coordinator.lastAppliedArrowImage !== context.coordinator.arrowImage {
+                    context.coordinator.lastAppliedArrowImage = context.coordinator.arrowImage
+                    userView.image = context.coordinator.arrowImage
+                }
                 userView.bounds = CGRect(x: 0, y: 0, width: 46, height: 46)
                 userView.centerOffset = .zero
                 let rotationAngle = CGFloat((effHeading - mapView.camera.heading) * .pi / 180.0)
@@ -532,10 +406,11 @@ struct HTTSmoothMapView: UIViewRepresentable {
             return
         }
         
-        // 4. Instant Zero-Lag Recenter & Non-Blocking Camera Follow
+        // 4. Instant Zero-Lag Recenter & Non-Blocking Throttled Camera Follow
         if context.coordinator.lastRecenterTrigger != manager.recenterTrigger {
             context.coordinator.lastRecenterTrigger = manager.recenterTrigger
             context.coordinator.isUserInteracting = false
+            context.coordinator.lastCameraUpdateTimestamp = CACurrentMediaTime()
             
             let targetCoord = manager.userCoordinate
             
@@ -549,6 +424,8 @@ struct HTTSmoothMapView: UIViewRepresentable {
             mapView.setCamera(camera, animated: false)
             
         } else if manager.mapTrackingUser && !context.coordinator.isUserInteracting && (manager.isNavigatingFocused || (manager.activeRoute == nil && manager.customTransitPolyline == nil && manager.candidateRoutes.isEmpty)) {
+            let nowTs = CACurrentMediaTime()
+            guard nowTs - context.coordinator.lastCameraUpdateTimestamp >= 0.35 else { return }
             let targetCoord = manager.userCoordinate
             
             var hDiff = abs(mapView.camera.heading - camHeading).truncatingRemainder(dividingBy: 360.0)
@@ -558,14 +435,14 @@ struct HTTSmoothMapView: UIViewRepresentable {
             let usrLoc = CLLocation(latitude: targetCoord.latitude, longitude: targetCoord.longitude)
             let distDelta = camLoc.distance(from: usrLoc)
             
-            if distDelta > 3.0 || hDiff > 2.5 {
+            if distDelta > 4.5 || hDiff > 3.5 {
+                context.coordinator.lastCameraUpdateTimestamp = nowTs
                 let camera = MKMapCamera(
                     lookingAtCenter: targetCoord,
                     fromDistance: manager.userZoomDistance,
                     pitch: camPitch,
                     heading: camHeading
                 )
-                // Use animated: false for small heading updates so MapKit NEVER freezes or locks up!
                 mapView.setCamera(camera, animated: false)
             }
         }
@@ -584,6 +461,8 @@ struct HTTSmoothMapView: UIViewRepresentable {
         var lastZoomTrigger: Int = 0
         var lastOverviewFitTrigger: Int = 0
         var lastSelectionRenderTrigger: Int = 0
+        var lastAppliedArrowImage: UIImage? = nil
+        var lastCameraUpdateTimestamp: CFTimeInterval = 0
         
         let vehicleAnnotation = VehicleAvatarAnnotation()
         
@@ -1321,6 +1200,36 @@ struct ContentView: View {
                     .transition(.opacity)
                     .zIndex(999)
                 }
+                
+                if activeModalSheet == .departureTime {
+                    RouteDepartureTimePickerSheetView(
+                        manager: manager,
+                        onClose: {
+                            withAnimation(.easeInOut(duration: 0.18)) {
+                                activeModalSheet = nil
+                            }
+                            restoreRootWindowTouchInteractions()
+                        }
+                    )
+                    .frame(width: geo.size.width, height: geo.size.height)
+                    .transition(.opacity)
+                    .zIndex(998)
+                }
+                
+                if activeModalSheet == .vehicleSettings {
+                    VehicleAndPlateSettingsSheetView(
+                        manager: manager,
+                        onClose: {
+                            withAnimation(.easeInOut(duration: 0.18)) {
+                                activeModalSheet = nil
+                            }
+                            restoreRootWindowTouchInteractions()
+                        }
+                    )
+                    .frame(width: geo.size.width, height: geo.size.height)
+                    .transition(.opacity)
+                    .zIndex(998)
+                }
 
             }
             .frame(width: geo.size.width, height: geo.size.height)
@@ -1365,25 +1274,26 @@ struct ContentView: View {
         .onChange(of: manager.showDepartureTimePickerSheet) { val in
             if val {
                 manager.showDepartureTimePickerSheet = false
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.14) {
-                    if activeModalSheet == nil {
-                        activeModalSheet = .departureTime
-                    }
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    activeModalSheet = .departureTime
                 }
             }
         }
         .onChange(of: manager.showVehicleSettingsSheet) { val in
             if val {
                 manager.showVehicleSettingsSheet = false
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
-                    if activeModalSheet == nil {
-                        activeModalSheet = .vehicleSettings
-                    }
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    activeModalSheet = .vehicleSettings
                 }
             }
         }
         .sheet(item: Binding<ActiveModalSheet?>(
-            get: { activeModalSheet == .doudizhu ? nil : activeModalSheet },
+            get: {
+                if activeModalSheet == .doudizhu || activeModalSheet == .departureTime || activeModalSheet == .vehicleSettings {
+                    return nil
+                }
+                return activeModalSheet
+            },
             set: { newVal in
                 activeModalSheet = newVal
                 if newVal == nil {
@@ -1937,18 +1847,30 @@ struct ContentView: View {
                             .lineLimit(1)
                     }
                 }
+                
+                // Live Bus/Subway Transfer Vehicles Summary Line during Transit Mode!
+                if manager.travelMode == .transit, !manager.transitPlans.isEmpty {
+                    let safeIdx = min(max(0, manager.selectedTransitPlanIndex), manager.transitPlans.count - 1)
+                    let activePlan = manager.transitPlans[safeIdx]
+                    Text(manager.transitVehicleTransferSummary(for: activePlan))
+                        .font(.system(size: 11, weight: .heavy))
+                        .foregroundColor(Color(red: 0.45, green: 0.96, blue: 0.68))
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.top, 1)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             
-            // Trailing Controls: [X] Exit Navigation + [换乘] Transit Plan Button
-            VStack(spacing: 5) {
+            // Trailing Controls: [X] Exit Navigation + Large Easy-Tap [🚆 换乘详情] Button
+            VStack(alignment: .trailing, spacing: 6) {
                 Button(action: {
                     withAnimation(.spring(response: 0.35, dampingFraction: 0.7)) {
                         manager.stopRouteGuidance()
                     }
                 }) {
                     Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 22, weight: .semibold))
+                        .font(.system(size: 24, weight: .semibold))
                         .foregroundColor(.red)
                         .padding(2)
                         .background(Color.black.opacity(0.6))
@@ -1959,22 +1881,29 @@ struct ContentView: View {
                     Button(action: {
                         manager.showTransitPlanSheet = true
                     }) {
-                        HStack(spacing: 2) {
+                        HStack(spacing: 4) {
                             Image(systemName: "tram.fill")
-                                .font(.system(size: 9, weight: .bold))
-                            Text(tr("换乘", "換乘", "Plan"))
-                                .font(.system(size: 9, weight: .black))
+                                .font(.system(size: 12, weight: .bold))
+                            Text(tr("换乘详情", "換乘詳情", "Transit"))
+                                .font(.system(size: 12, weight: .black))
                         }
                         .foregroundColor(.white)
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 3)
-                        .background(Color.purple.opacity(0.92))
-                        .cornerRadius(6)
-                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(httGold, lineWidth: 1))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(
+                            LinearGradient(
+                                colors: [Color.purple, Color(red: 0.25, green: 0.50, blue: 0.95)],
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
+                        )
+                        .cornerRadius(9)
+                        .overlay(RoundedRectangle(cornerRadius: 9).stroke(httGold, lineWidth: 1.4))
+                        .shadow(color: Color.purple.opacity(0.5), radius: 3)
                     }
                 }
             }
-            .frame(width: 46)
+            .fixedSize(horizontal: true, vertical: false)
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
@@ -2350,37 +2279,63 @@ struct ContentView: View {
                                                         .foregroundColor(httCream)
                                                         .cornerRadius(4)
                                                     } else {
-                                                        HStack(spacing: 2) {
-                                                            Text(st.lineName)
-                                                                .font(.system(size: 10, weight: .black))
+                                                        HStack(spacing: 3) {
                                                             Image(systemName: st.kind.icon)
-                                                                .font(.system(size: 9, weight: .bold))
+                                                                .font(.system(size: 10, weight: .bold))
+                                                            Text(st.lineName)
+                                                                .font(.system(size: 11, weight: .black))
                                                         }
-                                                        .padding(.horizontal, 5)
-                                                        .padding(.vertical, 2)
+                                                        .padding(.horizontal, 7)
+                                                        .padding(.vertical, 3)
                                                         .background(Color(hex: st.colorHex) ?? Color.blue)
                                                         .foregroundColor(.white)
-                                                        .cornerRadius(4)
+                                                        .cornerRadius(5)
                                                     }
                                                 }
                                             }
                                         }
+                                        
+                                        // Explicit Bus/Metro Boarding & Transfer Station Summary Line!
+                                        Text(manager.transitVehicleTransferSummary(for: plan))
+                                            .font(.system(size: 11, weight: .bold))
+                                            .foregroundColor(httGold)
+                                            .lineLimit(2)
+                                            .fixedSize(horizontal: false, vertical: true)
                                     }
                                     
-                                    Button(action: {
-                                        manager.selectTransitPlan(at: idx)
-                                        manager.startTransitWalkingNavigation()
-                                    }) {
-                                        Text(tr("开始", "開始", "Start"))
-                                            .font(.system(size: 13, weight: .black))
+                                    VStack(spacing: 5) {
+                                        Button(action: {
+                                            manager.selectTransitPlan(at: idx)
+                                            manager.startTransitWalkingNavigation()
+                                        }) {
+                                            Text(tr("开始", "開始", "Start"))
+                                                .font(.system(size: 14, weight: .black))
+                                                .foregroundColor(.white)
+                                                .padding(.horizontal, 12)
+                                                .padding(.vertical, 9)
+                                                .background(Color(red: 0.20, green: 0.78, blue: 0.35))
+                                                .cornerRadius(9)
+                                        }
+                                        
+                                        Button(action: {
+                                            manager.selectTransitPlan(at: idx)
+                                            manager.showTransitPlanSheet = true
+                                        }) {
+                                            HStack(spacing: 2) {
+                                                Image(systemName: "tram.fill")
+                                                    .font(.system(size: 10, weight: .bold))
+                                                Text(tr("换乘详情", "換乘詳情", "Details"))
+                                                    .font(.system(size: 10, weight: .black))
+                                            }
                                             .foregroundColor(.white)
-                                            .padding(.horizontal, 10)
-                                            .padding(.vertical, 12)
-                                            .background(Color(red: 0.20, green: 0.78, blue: 0.35))
-                                            .cornerRadius(9)
+                                            .padding(.horizontal, 7)
+                                            .padding(.vertical, 4)
+                                            .background(Color.purple.opacity(0.88))
+                                            .cornerRadius(6)
+                                        }
                                     }
                                 }
-                                .padding(8)
+                                .padding(9)
                                 .background(isSel ? Color.white.opacity(0.16) : Color.white.opacity(0.07))
                                 .cornerRadius(10)
                                 .overlay(
@@ -2392,27 +2347,34 @@ struct ContentView: View {
                         }
                     }
                 }
-                .frame(maxHeight: 150)
+                .frame(maxHeight: 195)
             }
             
             Button(action: {
                 manager.showTransitPlanSheet = true
             }) {
-                HStack(spacing: 6) {
-                    Image(systemName: "list.bullet.rectangle.portrait.fill")
-                        .font(.system(size: 12, weight: .bold))
-                    Text(tr("展开全部 \(manager.transitPlans.count) 条高德/Apple公交地铁方案与站点详情", "展開全部 \(manager.transitPlans.count) 條高德/Apple公交地鐵方案與站點詳情", "View All \(manager.transitPlans.count) Transit Itineraries & Stops"))
-                        .font(.system(size: 11, weight: .bold))
+                HStack(spacing: 8) {
+                    Image(systemName: "tram.fill.tunnel")
+                        .font(.system(size: 14, weight: .bold))
+                    Text(tr("查看全部 \(manager.transitPlans.count) 条公交换乘车辆与站点详情", "查看全部 \(manager.transitPlans.count) 條公交換乘車輛與站點詳情", "View All \(manager.transitPlans.count) Transit Vehicles & Transfer Stops"))
+                        .font(.system(size: 13, weight: .black))
                         .lineLimit(1)
                     Spacer()
-                    Image(systemName: "chevron.right")
-                        .font(.caption.bold())
+                    Image(systemName: "chevron.right.circle.fill")
+                        .font(.system(size: 14, weight: .bold))
                 }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(Color.purple.opacity(0.32))
-                .foregroundColor(Color(red: 0.88, green: 0.72, blue: 1.0))
-                .cornerRadius(8)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .background(
+                    LinearGradient(
+                        colors: [Color.purple.opacity(0.88), Color(red: 0.22, green: 0.48, blue: 0.92)],
+                        startPoint: .leading,
+                        endPoint: .trailing
+                    )
+                )
+                .foregroundColor(.white)
+                .cornerRadius(10)
+                .overlay(RoundedRectangle(cornerRadius: 10).stroke(httGold, lineWidth: 1.4))
             }
         }
     }
@@ -5012,7 +4974,16 @@ struct RM500AlbumAndOutfitSheetView: View {
 // MARK: - Vehicle & License Plate Settings + Traffic Restriction Recognition Sheet (车牌号输入、车辆类型选择与禁行区域智能识别面板)
 struct VehicleAndPlateSettingsSheetView: View {
     let manager: AudioPlayerManager
+    var onClose: (() -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
+    
+    private func closeSheet() {
+        if let onClose = onClose {
+            onClose()
+        } else {
+            dismiss()
+        }
+    }
     @State private var plateInput: String
     @State private var selectedEnergy: VehicleEnergyType
     @State private var selectedBody: VehicleBodyType
@@ -5296,7 +5267,7 @@ struct VehicleAndPlateSettingsSheetView: View {
                         
                         Button(action: {
                             commitIfNeeded()
-                            dismiss()
+                            closeSheet()
                         }) {
                             Text(tr("保存车辆设置并更新路线", "保存車輛設置並更新路線", "Save & Update Routes"))
                                 .font(.system(size: 15, weight: .black))
@@ -5317,7 +5288,7 @@ struct VehicleAndPlateSettingsSheetView: View {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button(tr("完成", "完成", "Done")) {
                         commitIfNeeded()
-                        dismiss()
+                        closeSheet()
                     }
                     .foregroundColor(httGold)
                 }
@@ -5330,29 +5301,90 @@ struct VehicleAndPlateSettingsSheetView: View {
     }
 }
 
-// MARK: - Custom Departure Time Picker Sheet (地图自定义出发时间选择器 - 独立静态时间范围，彻底消除滚轮自动滑动！)
+// MARK: - Native UIKit Smooth Wheel DatePicker (彻底解决 SwiftUI DatePicker 边界钳制自动回弹与无法滚动 Bug！)
+struct NativeSmoothWheelDatePicker: UIViewRepresentable {
+    @Binding var selection: Date
+    var externalResetToken: Int
+    var localeIdentifier: String
+    
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+    
+    func makeUIView(context: Context) -> UIDatePicker {
+        let picker = UIDatePicker()
+        picker.datePickerMode = .dateAndTime
+        if #available(iOS 13.4, *) {
+            picker.preferredDatePickerStyle = .wheels
+        }
+        picker.overrideUserInterfaceStyle = .dark
+        picker.locale = Locale(identifier: localeIdentifier)
+        picker.minuteInterval = 1
+        // CRITICAL: Leave minimumDate & maximumDate as nil so UIKit NEVER clamps or auto-scrolls the wheel while the user is dragging!
+        picker.minimumDate = nil
+        picker.maximumDate = nil
+        picker.date = selection
+        picker.addTarget(context.coordinator, action: #selector(Coordinator.dateChanged(_:)), for: .valueChanged)
+        return picker
+    }
+    
+    func updateUIView(_ uiView: UIDatePicker, context: Context) {
+        if context.coordinator.lastLocaleId != localeIdentifier {
+            context.coordinator.lastLocaleId = localeIdentifier
+            uiView.locale = Locale(identifier: localeIdentifier)
+        }
+        // Only programmatically set uiView.date when user taps a preset pill (externalResetToken changes), NEVER while scrolling the wheel!
+        if context.coordinator.lastResetToken != externalResetToken {
+            context.coordinator.lastResetToken = externalResetToken
+            uiView.setDate(selection, animated: true)
+        }
+    }
+    
+    class Coordinator: NSObject {
+        var parent: NativeSmoothWheelDatePicker
+        var lastResetToken: Int
+        var lastLocaleId: String
+        
+        init(_ parent: NativeSmoothWheelDatePicker) {
+            self.parent = parent
+            self.lastResetToken = parent.externalResetToken
+            self.lastLocaleId = parent.localeIdentifier
+        }
+        
+        @objc func dateChanged(_ sender: UIDatePicker) {
+            parent.selection = sender.date
+        }
+    }
+}
+
+// MARK: - Custom Departure Time Picker Sheet (原生顺滑滚轮 + 快捷预设时间胶囊 + 深夜停运/首班车智能提示)
 struct RouteDepartureTimePickerSheetView: View {
     let manager: AudioPlayerManager
+    var onClose: (() -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
     @State private var tempDate: Date
-    @State private var minSelectableDate: Date
-    @State private var maxSelectableDate: Date
+    @State private var wheelResetToken: Int = 0
     private let lang: AppLanguage
     
     private let httGold = Color(red: 0.88, green: 0.68, blue: 0.24)
     private let httCrimson = Color(red: 0.78, green: 0.18, blue: 0.22)
     private let httCream = Color(red: 0.99, green: 0.96, blue: 0.90)
     
-    init(manager: AudioPlayerManager) {
+    init(manager: AudioPlayerManager, onClose: (() -> Void)? = nil) {
         self.manager = manager
+        self.onClose = onClose
         self.lang = manager.language
         let now = Date()
-        let minD = now.addingTimeInterval(-60)
-        let maxD = now.addingTimeInterval(30 * 24 * 3600)
-        let initialD = manager.isCustomDepartureTime ? max(minD, min(maxD, manager.routeDepartureDate)) : now
+        let initialD = manager.isCustomDepartureTime ? manager.routeDepartureDate : now
         _tempDate = State(initialValue: initialD)
-        _minSelectableDate = State(initialValue: minD)
-        _maxSelectableDate = State(initialValue: maxD)
+    }
+    
+    private func closeSheet() {
+        if let onClose = onClose {
+            onClose()
+        } else {
+            dismiss()
+        }
     }
     
     private func tr(_ hans: String, _ hant: String, _ en: String) -> String {
@@ -5363,51 +5395,152 @@ struct RouteDepartureTimePickerSheetView: View {
         }
     }
     
+    private func setQuickPreset(_ date: Date) {
+        tempDate = date
+        wheelResetToken += 1
+    }
+    
+    private func makeTodayOrTomorrowTime(hour: Int, minute: Int) -> Date {
+        let cal = Calendar.current
+        let now = Date()
+        var comps = cal.dateComponents([.year, .month, .day], from: now)
+        comps.hour = hour
+        comps.minute = minute
+        comps.second = 0
+        if let candidate = cal.date(from: comps) {
+            if candidate <= now {
+                return cal.date(byAdding: .day, value: 1, to: candidate) ?? candidate
+            }
+            return candidate
+        }
+        return now.addingTimeInterval(3600)
+    }
+    
     var body: some View {
         NavigationView {
             ZStack {
                 Color(red: 0.11, green: 0.10, blue: 0.12).ignoresSafeArea()
                 
-                VStack(spacing: 18) {
-                    VStack(spacing: 6) {
-                        Text(tr("设置计划出发时间", "設定計劃出發時間", "Set Planned Departure Time"))
+                VStack(spacing: 14) {
+                    VStack(spacing: 5) {
+                        Text(tr("设置计划出发日期与时间", "設定計劃出發日期與時間", "Set Planned Departure Date & Time"))
                             .font(.system(size: 18, weight: .black))
                             .foregroundColor(.white)
-                        Text(tr("默认状态显示“出发”，选择具体时间后将自动计算预计到达时间与班次", "預設狀態顯示「出發」，選擇具體時間後將自動計算預計到達時間與班次", "Defaults to 'Depart'; selecting a time updates ETA and transit schedules"))
-                            .font(.system(size: 12, weight: .medium))
+                        Text(tr("自由滚动选择任意日期与时间，自动匹配地铁末班车/夜间公交与车牌限行时段", "自由滾動選擇任意日期與時間，自動匹配地鐵末班車/夜間巴士與車牌限行時段", "Freely scroll any date & time; syncs last train, night bus & plate restrictions"))
+                            .font(.system(size: 11, weight: .medium))
                             .foregroundColor(.gray)
                             .multilineTextAlignment(.center)
-                            .padding(.horizontal, 20)
+                            .padding(.horizontal, 16)
                     }
-                    .padding(.top, 12)
+                    .padding(.top, 10)
                     
-                    DatePicker(
-                        tr("出发时间", "出發時間", "Departure"),
+                    // Quick 1-Tap Preset Time Pills
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            Button(action: { setQuickPreset(Date()) }) {
+                                Text(tr("现在", "現在", "Now"))
+                                    .font(.system(size: 12, weight: .bold))
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 6)
+                                    .background(Color.blue.opacity(0.35))
+                                    .foregroundColor(.white)
+                                    .cornerRadius(8)
+                            }
+                            Button(action: { setQuickPreset(Date().addingTimeInterval(15 * 60)) }) {
+                                Text(tr("+15分钟", "+15分鐘", "+15m"))
+                                    .font(.system(size: 12, weight: .bold))
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 6)
+                                    .background(Color.white.opacity(0.12))
+                                    .foregroundColor(httCream)
+                                    .cornerRadius(8)
+                            }
+                            Button(action: { setQuickPreset(Date().addingTimeInterval(30 * 60)) }) {
+                                Text(tr("+30分钟", "+30分鐘", "+30m"))
+                                    .font(.system(size: 12, weight: .bold))
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 6)
+                                    .background(Color.white.opacity(0.12))
+                                    .foregroundColor(httCream)
+                                    .cornerRadius(8)
+                            }
+                            Button(action: { setQuickPreset(Date().addingTimeInterval(60 * 60)) }) {
+                                Text(tr("+1小时", "+1小時", "+1h"))
+                                    .font(.system(size: 12, weight: .bold))
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 6)
+                                    .background(Color.white.opacity(0.12))
+                                    .foregroundColor(httCream)
+                                    .cornerRadius(8)
+                            }
+                            Button(action: { setQuickPreset(makeTodayOrTomorrowTime(hour: 0, minute: 30)) }) {
+                                Text(tr("凌晨 00:30 (夜间N线)", "凌晨 00:30 (夜間N線)", "00:30 AM (Night Bus)"))
+                                    .font(.system(size: 12, weight: .bold))
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 6)
+                                    .background(Color.orange.opacity(0.32))
+                                    .foregroundColor(.orange)
+                                    .cornerRadius(8)
+                            }
+                            Button(action: { setQuickPreset(makeTodayOrTomorrowTime(hour: 6, minute: 15)) }) {
+                                Text(tr("明早 06:15 (首班地铁)", "明早 06:15 (首班地鐵)", "06:15 AM (First Train)"))
+                                    .font(.system(size: 12, weight: .bold))
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 6)
+                                    .background(Color.green.opacity(0.28))
+                                    .foregroundColor(.green)
+                                    .cornerRadius(8)
+                            }
+                            Button(action: { setQuickPreset(makeTodayOrTomorrowTime(hour: 8, minute: 0)) }) {
+                                Text(tr("明早 08:00 (早高峰)", "明早 08:00 (早高峰)", "08:00 AM (Peak)"))
+                                    .font(.system(size: 12, weight: .bold))
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 6)
+                                    .background(Color.purple.opacity(0.32))
+                                    .foregroundColor(.white)
+                                    .cornerRadius(8)
+                            }
+                        }
+                        .padding(.horizontal, 16)
+                    }
+                    
+                    // Native UIKit Smooth Wheel Picker (Never bounces or fights user scrolling!)
+                    NativeSmoothWheelDatePicker(
                         selection: $tempDate,
-                        in: minSelectableDate...maxSelectableDate,
-                        displayedComponents: [.date, .hourAndMinute]
+                        externalResetToken: wheelResetToken,
+                        localeIdentifier: lang == .en ? "en_US" : (lang == .zhHant ? "zh_HK" : "zh_CN")
                     )
-                    .datePickerStyle(.wheel)
-                    .labelsHidden()
-                    .colorScheme(.dark)
-                    .environment(\.locale, Locale(identifier: lang == .en ? "en_US" : (lang == .zhHant ? "zh_HK" : "zh_CN")))
-                    .padding()
+                    .frame(height: 215)
+                    .padding(.horizontal, 8)
                     .background(Color.white.opacity(0.08))
                     .cornerRadius(14)
-                    .overlay(RoundedRectangle(cornerRadius: 14).stroke(httGold.opacity(0.5), lineWidth: 1))
+                    .overlay(RoundedRectangle(cornerRadius: 14).stroke(httGold.opacity(0.55), lineWidth: 1.2))
                     .padding(.horizontal, 16)
+                    
+                    // Live Operating Status Preview for Selected Time
+                    let selHour = Calendar.current.component(.hour, from: tempDate)
+                    if selHour >= 0 && selHour < 6 {
+                        HStack(spacing: 6) {
+                            Image(systemName: "moon.stars.fill")
+                                .foregroundColor(.orange)
+                            Text(tr("当前所选为凌晨 00:00–06:00 地铁停运时段：确认后将自动为您优先规划【24小时夜间N线公交】并标注【06:15首班地铁】时间", "當前所選為凌晨 00:00–06:00 地鐵停運時段：確認後將自動為您優先規劃【24小時夜間N線巴士】並標註【06:15首班地鐵】時間", "00:00–06:00 Metro suspended: prioritizes active 24h Night Buses and shows 06:15 First Train"))
+                                .font(.system(size: 11, weight: .bold))
+                                .foregroundColor(httCream)
+                        }
+                        .padding(10)
+                        .background(Color.orange.opacity(0.2))
+                        .cornerRadius(10)
+                        .padding(.horizontal, 16)
+                    }
                     
                     HStack(spacing: 12) {
                         Button(action: {
-                            let mgr = manager
-                            dismiss()
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
-                                mgr.applyDepartureTimeSelection(customDate: nil)
-                            }
+                            manager.applyDepartureTimeSelection(customDate: nil)
+                            closeSheet()
                         }) {
-                            Text(tr("恢复默认 (显示“出发”)", "恢復預設 (顯示「出發」)", "Reset to Default ('Depart')"))
+                            Text(tr("恢复“现在出发”", "恢復「現在出發」", "Leave Now"))
                                 .font(.system(size: 14, weight: .bold))
-                                .frame(maxWidth: .infinity, minHeight: 44)
+                                .frame(maxWidth: .infinity, minHeight: 46)
                                 .background(Color.white.opacity(0.14))
                                 .foregroundColor(httCream)
                                 .cornerRadius(10)
@@ -5416,15 +5549,12 @@ struct RouteDepartureTimePickerSheetView: View {
                         
                         Button(action: {
                             let chosenDate = tempDate
-                            let mgr = manager
-                            dismiss()
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
-                                mgr.applyDepartureTimeSelection(customDate: chosenDate)
-                            }
+                            manager.applyDepartureTimeSelection(customDate: chosenDate)
+                            closeSheet()
                         }) {
                             Text(tr("确认出发时间", "確認出發時間", "Confirm Time"))
                                 .font(.system(size: 14, weight: .black))
-                                .frame(maxWidth: .infinity, minHeight: 44)
+                                .frame(maxWidth: .infinity, minHeight: 46)
                                 .background(httCrimson)
                                 .foregroundColor(.white)
                                 .cornerRadius(10)
@@ -5442,7 +5572,7 @@ struct RouteDepartureTimePickerSheetView: View {
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button(tr("关闭", "關閉", "Close")) {
-                        dismiss()
+                        closeSheet()
                     }
                     .foregroundColor(httGold)
                 }
@@ -5796,6 +5926,22 @@ struct InAppTransitPlanSheetView: View {
                                                         }
                                                     }
                                                 }
+                                                
+                                                // Explicit Boarding Station + Bus/Subway Line + Transfer Station Summary Box!
+                                                HStack(alignment: .top, spacing: 5) {
+                                                    Image(systemName: "arrow.triangle.swap")
+                                                        .font(.system(size: 11, weight: .black))
+                                                        .foregroundColor(httGold)
+                                                        .padding(.top, 1)
+                                                    Text(manager.transitVehicleTransferSummary(for: plan))
+                                                        .font(.system(size: 12, weight: .heavy))
+                                                        .foregroundColor(httGold)
+                                                        .fixedSize(horizontal: false, vertical: true)
+                                                }
+                                                .padding(.horizontal, 8)
+                                                .padding(.vertical, 5)
+                                                .background(Color.white.opacity(0.08))
+                                                .cornerRadius(7)
                                                 
                                                 // Warning / Fare adjustment / Recommendation notice
                                                 if !plan.warningNotice.isEmpty {
