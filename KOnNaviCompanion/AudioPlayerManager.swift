@@ -3562,7 +3562,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                     intervalDesc: "步行前往口岸联检大厅 (18分钟)"
                 )
             ]
-            let luohuPlan1 = TransitPlanOption(
+            _ = TransitPlanOption(
                 title: "1小时9分 · 351路直达",
                 badge: "高德推荐 · 综合最优",
                 totalMinutes: 69,
@@ -3624,7 +3624,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                     intervalDesc: "步行 200 米 (7分钟)"
                 )
             ]
-            let luohuPlan2 = TransitPlanOption(
+            _ = TransitPlanOption(
                 title: "1小时32分 · M373路直达",
                 badge: "较低费用 · 21站",
                 totalMinutes: 92,
@@ -3716,7 +3716,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                     intervalDesc: "步行 160 米 (7分钟)"
                 )
             ]
-            let luohuPlan3 = TransitPlanOption(
+            _ = TransitPlanOption(
                 title: "1小时3分 · 351路换地铁1号线",
                 badge: "地铁接驳 · 11站",
                 totalMinutes: 63,

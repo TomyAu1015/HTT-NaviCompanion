@@ -5111,7 +5111,7 @@ struct InAppTransitPlanSheetView: View {
     }
     
     @ViewBuilder
-    private func intercityOverviewSection(ic: IntercityTrainBanner) -> some View {
+    private func intercityOverviewSection(ic: IntercityTrainBannerInfo) -> some View {
         VStack(spacing: 10) {
             if ic.hasFlightOption {
                 HStack {
