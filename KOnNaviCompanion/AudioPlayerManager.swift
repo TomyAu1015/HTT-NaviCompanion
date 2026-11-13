@@ -109,6 +109,66 @@ enum AppLanguage: String, CaseIterable, Identifiable {
     var id: String { self.rawValue }
 }
 
+enum TransitSortStrategy: String, CaseIterable, Identifiable {
+    case suggested = "suggested"       // 建议路线
+    case faster = "faster"             // 较快路程
+    case fewerTransfers = "transfers"  // 较少转乘
+    case lessWalking = "walking"       // 较少步行
+    
+    var id: String { self.rawValue }
+    
+    func title(_ lang: AppLanguage) -> String {
+        switch (self, lang) {
+        case (.suggested, .zhHans): return "建议路线"
+        case (.suggested, .zhHant): return "建議路線"
+        case (.suggested, .en): return "Suggested"
+        case (.faster, .zhHans): return "较快路程"
+        case (.faster, .zhHant): return "較快路程"
+        case (.faster, .en): return "Faster"
+        case (.fewerTransfers, .zhHans): return "较少转乘"
+        case (.fewerTransfers, .zhHant): return "較少轉乘"
+        case (.fewerTransfers, .en): return "Fewer Transfers"
+        case (.lessWalking, .zhHans): return "较少步行"
+        case (.lessWalking, .zhHant): return "較少步行"
+        case (.lessWalking, .en): return "Less Walking"
+        }
+    }
+}
+
+enum TransitVehicleMode: String, CaseIterable, Identifiable, Hashable {
+    case bus = "bus"                   // 巴士
+    case subwayLightRail = "subway"    // 地铁与轻轨
+    case commuterRail = "rail"         // 通勤铁路
+    case ferry = "ferry"               // 渡轮
+    
+    var id: String { self.rawValue }
+    
+    func title(_ lang: AppLanguage) -> String {
+        switch (self, lang) {
+        case (.bus, .zhHans), (.bus, .zhHant): return "巴士"
+        case (.bus, .en): return "Bus"
+        case (.subwayLightRail, .zhHans): return "地铁与轻轨"
+        case (.subwayLightRail, .zhHant): return "地鐵與輕軌"
+        case (.subwayLightRail, .en): return "Subway & Light Rail"
+        case (.commuterRail, .zhHans): return "通勤铁路"
+        case (.commuterRail, .zhHant): return "通勤鐵路"
+        case (.commuterRail, .en): return "Commuter Rail"
+        case (.ferry, .zhHans): return "渡轮"
+        case (.ferry, .zhHant): return "渡輪"
+        case (.ferry, .en): return "Ferry"
+        }
+    }
+    
+    var icon: String {
+        switch self {
+        case .bus: return "bus.fill"
+        case .subwayLightRail: return "tram.fill"
+        case .commuterRail: return "train.side.front.car"
+        case .ferry: return "ferry.fill"
+        }
+    }
+}
+
 enum MascotActionState: String, CaseIterable {
     case idle = "idle"
     case walkLeft = "walkLeft"
@@ -135,9 +195,9 @@ enum MascotActionState: String, CaseIterable {
         case (.panic, .zhHans): return "超速惊慌"
         case (.panic, .zhHant): return "超速驚慌"
         case (.panic, .en): return "Overspeed!"
-        case (.teaCake, .zhHans): return "顶蛋糕下午茶"
-        case (.teaCake, .zhHant): return "頂蛋糕下午茶"
-        case (.teaCake, .en): return "Tea & Cake"
+        case (.teaCake, .zhHans): return "喝下午茶"
+        case (.teaCake, .zhHant): return "喝下午茶"
+        case (.teaCake, .en): return "Tea Time"
         }
     }
 }
@@ -320,6 +380,7 @@ struct TransitStepItem: Identifiable {
         case bus
         case intercity
         case train
+        case ferry
         
         var icon: String {
             switch self {
@@ -328,6 +389,7 @@ struct TransitStepItem: Identifiable {
             case .bus: return "bus.fill"
             case .intercity: return "tram.circle.fill"
             case .train: return "train.side.front.car"
+            case .ferry: return "ferry.fill"
             }
         }
     }
@@ -669,7 +731,17 @@ class PlaceSearchEngine: NSObject, ObservableObject, MKLocalSearchCompleterDeleg
 class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLLocationManagerDelegate {
     static let shared = AudioPlayerManager()
     
-    @Published var language: AppLanguage = .zhHans
+    @Published var language: AppLanguage = {
+        if let saved = UserDefaults.standard.string(forKey: "kon_app_language"),
+           let parsed = AppLanguage(rawValue: saved) {
+            return parsed
+        }
+        return .zhHans
+    }() {
+        didSet {
+            UserDefaults.standard.set(language.rawValue, forKey: "kon_app_language")
+        }
+    }
 
     // MARK: - App Metadata & Author Information (多语言制作作者与版本)
     var appVersion: String { "1.0" }
@@ -697,10 +769,12 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     private var voiceQueue: [(id: Int, quote: String)] = []
     
     // Mascot Animation State
-    @Published var mascotAction: MascotActionState = .idle
+    @Published var mascotAction: MascotActionState = .teaCake
     @Published var currentSpriteFrame: UIImage? = nil
     @Published var allMemberFrames: [Int: UIImage] = [:]
     @Published var deskSpriteFrame: UIImage? = nil
+    @Published var teaPartyCompositedFrame: UIImage? = nil
+    var cachedTeaPartyFrames: [UIImage] = []
     @Published var arrowOutfit: RM500ArrowOutfit = .winterUniform
     @Published var useRM500ThemeSkin: Bool = true
     var walkStepFrame: Int = 0
@@ -765,9 +839,17 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     @Published var isHUDMirrored: Bool = false
     @Published var drivingSeconds: Int = 0
     
-    // Built-In Map Navigation State (Default to Stage Mode on App Launch!)
-    @Published var showMapMode: Bool = false
-    @Published var isMapEnlarged: Bool = false // Auto-enlarges on active navigation!
+    // Built-In Map Navigation State (Persisted across app launches per user's last choice!)
+    @Published var showMapMode: Bool = UserDefaults.standard.bool(forKey: "kon_show_map_mode") {
+        didSet {
+            UserDefaults.standard.set(showMapMode, forKey: "kon_show_map_mode")
+        }
+    }
+    @Published var isMapEnlarged: Bool = UserDefaults.standard.bool(forKey: "kon_is_map_enlarged") {
+        didSet {
+            UserDefaults.standard.set(isMapEnlarged, forKey: "kon_is_map_enlarged")
+        }
+    } // Auto-enlarges on active navigation!
     @Published var travelMode: NavigationTravelMode = .driving {
         didSet {
             guard oldValue != travelMode else { return }
@@ -802,9 +884,9 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     private var currentTapRequestId: Int = 0
     private var currentTapResolvedByPOI: Bool = false
     
-    // GaoDe Navigation State Helper: Only true when there is an active destination AND route/guidance
+    // GaoDe Navigation State Helper: Only true when navigation is actively started (never shows top banner when not navigating!)
     var hasActiveNavigation: Bool {
-        return destinationCoord != nil && (activeRoute != nil || customTransitPolyline != nil || isNavigatingFocused || isDemoSimulating)
+        return destinationCoord != nil && (isNavigatingFocused || isDemoSimulating) && (activeRoute != nil || customTransitPolyline != nil || travelMode == .transit)
     }
     @Published var currentStepIndex: Int = 0
     @Published var currentStepInstruction: String = ""
@@ -877,9 +959,146 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     @Published var snappedRouteCoordinate: CLLocationCoordinate2D? = nil
     @Published var snappedRouteHeading: Double? = nil
     private var trafficLightCalibrationOffset: Int = 0
+    @Published var rawTransitPlans: [TransitPlanOption] = []
     @Published var transitPlans: [TransitPlanOption] = []
     @Published var selectedTransitPlanIndex: Int = 0
     @Published var showTransitPlanSheet: Bool = false
+    
+    // Departure Time & Transit Sort / Vehicle Mode Preferences
+    @Published var routeDepartureDate: Date = Date() {
+        didSet {
+            if isCustomDepartureTime {
+                applyTransitFiltersAndSort()
+            }
+        }
+    }
+    @Published var isCustomDepartureTime: Bool = false {
+        didSet {
+            applyTransitFiltersAndSort()
+        }
+    }
+    @Published var showDepartureTimePickerSheet: Bool = false
+    @Published var transitSortStrategy: TransitSortStrategy = .suggested {
+        didSet {
+            applyTransitFiltersAndSort()
+        }
+    }
+    @Published var preferredTransitVehicles: Set<TransitVehicleMode> = Set(TransitVehicleMode.allCases) {
+        didSet {
+            applyTransitFiltersAndSort()
+        }
+    }
+    
+    func departureButtonTitle(_ lang: AppLanguage) -> String {
+        if !isCustomDepartureTime {
+            switch lang {
+            case .zhHans: return "出发"
+            case .zhHant: return "出發"
+            case .en: return "Depart"
+            }
+        }
+        let fmt = DateFormatter()
+        fmt.dateFormat = "HH:mm"
+        let tStr = fmt.string(from: routeDepartureDate)
+        switch lang {
+        case .zhHans: return "出发 \(tStr)"
+        case .zhHant: return "出發 \(tStr)"
+        case .en: return "Dep \(tStr)"
+        }
+    }
+    
+    func estimatedArrivalTimeString(durationMinutes: Int) -> String {
+        let baseDate = isCustomDepartureTime ? routeDepartureDate : Date()
+        let arrDate = baseDate.addingTimeInterval(TimeInterval(max(1, durationMinutes) * 60))
+        let fmt = DateFormatter()
+        fmt.dateFormat = "HH:mm"
+        let tStr = fmt.string(from: arrDate)
+        switch language {
+        case .zhHans: return "预计 \(tStr) 到达"
+        case .zhHant: return "預計 \(tStr) 到達"
+        case .en: return "ETA \(tStr)"
+        }
+    }
+    
+    func toggleTransitVehiclePreference(_ mode: TransitVehicleMode) {
+        if preferredTransitVehicles.contains(mode) {
+            if preferredTransitVehicles.count > 1 {
+                preferredTransitVehicles.remove(mode)
+            }
+        } else {
+            preferredTransitVehicles.insert(mode)
+        }
+    }
+    
+    func applyTransitFiltersAndSort() {
+        let sourcePlans = rawTransitPlans.isEmpty ? transitPlans : rawTransitPlans
+        guard !sourcePlans.isEmpty else { return }
+        if rawTransitPlans.isEmpty {
+            rawTransitPlans = sourcePlans
+        }
+        
+        // 1. Filter by preferred vehicle modes (巴士 / 地铁与轻轨 / 通勤铁路 / 渡轮)
+        var filtered = sourcePlans.filter { plan in
+            let transitSteps = plan.steps.filter { /usr/bin/bash.kind != .walk }
+            if transitSteps.isEmpty { return true }
+            return transitSteps.allSatisfy { step in
+                switch step.kind {
+                case .bus: return preferredTransitVehicles.contains(.bus)
+                case .subway: return preferredTransitVehicles.contains(.subwayLightRail)
+                case .intercity, .train: return preferredTransitVehicles.contains(.commuterRail)
+                case .ferry: return preferredTransitVehicles.contains(.ferry)
+                case .walk: return true
+                }
+            }
+        }
+        if filtered.isEmpty {
+            // Fallback to plans that contain at least one selected vehicle mode
+            filtered = sourcePlans.filter { plan in
+                plan.steps.contains { step in
+                    switch step.kind {
+                    case .bus: return preferredTransitVehicles.contains(.bus)
+                    case .subway: return preferredTransitVehicles.contains(.subwayLightRail)
+                    case .intercity, .train: return preferredTransitVehicles.contains(.commuterRail)
+                    case .ferry: return preferredTransitVehicles.contains(.ferry)
+                    case .walk: return false
+                    }
+                }
+            }
+        }
+        if filtered.isEmpty {
+            filtered = sourcePlans
+        }
+        
+        // 2. Sort by transitSortStrategy (建议路线 / 较快路程 / 较少转乘 / 较少步行)
+        let sorted: [TransitPlanOption]
+        switch transitSortStrategy {
+        case .suggested:
+            sorted = filtered
+        case .faster:
+            sorted = filtered.sorted { a, b in
+                if a.totalMinutes != b.totalMinutes { return a.totalMinutes < b.totalMinutes }
+                return a.transferCount < b.transferCount
+            }
+        case .fewerTransfers:
+            sorted = filtered.sorted { a, b in
+                if a.transferCount != b.transferCount { return a.transferCount < b.transferCount }
+                return a.totalMinutes < b.totalMinutes
+            }
+        case .lessWalking:
+            sorted = filtered.sorted { a, b in
+                if a.walkMeters != b.walkMeters { return a.walkMeters < b.walkMeters }
+                return a.totalMinutes < b.totalMinutes
+            }
+        }
+        
+        transitPlans = sorted
+        if selectedTransitPlanIndex >= transitPlans.count {
+            selectedTransitPlanIndex = 0
+        }
+        if let first = transitPlans.first {
+            remainingRouteMinutes = first.totalMinutes
+        }
+    }
     @Published var customTransitPolyline: MKPolyline? = nil
     @Published var transitStopAnnotations: [MKPointAnnotation] = []
     @Published var currentRoadLanes: [RoadLaneItem] = [
@@ -1743,7 +1962,68 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                 steps: hkPlan2Steps
             )
             
-            self.transitPlans = [hkPlan1, hkPlan2]
+            let hkFerrySteps: [TransitStepItem] = [
+                TransitStepItem(
+                    kind: .walk,
+                    lineName: "步行前往碼頭",
+                    directionDesc: "前往 尖沙咀/中環天星碼頭",
+                    fromStation: "我的位置",
+                    toStation: "渡輪碼頭",
+                    passStations: [],
+                    durationMins: 5,
+                    walkMeters: 320,
+                    doorSideDesc: "",
+                    acNotice: "",
+                    exitDesc: "支持八達通/支付寶拍卡入閘",
+                    colorHex: "#888888",
+                    intervalDesc: "步行 320 米 (5分鐘)"
+                ),
+                TransitStepItem(
+                    kind: .ferry,
+                    lineName: "天星小輪 / 新渡輪航綫",
+                    directionDesc: "往 \(destClean) 方向",
+                    fromStation: "渡輪碼頭",
+                    toStation: "\(destClean)碼頭",
+                    passStations: ["維多利亞港海景航道"],
+                    durationMins: 12,
+                    walkMeters: 0,
+                    doorSideDesc: "雙層客輪",
+                    acNotice: "⛴️ 渡輪航綫 · 班次約 6~10 分鐘一班",
+                    exitDesc: "下船出閘",
+                    colorHex: "#00897B",
+                    intervalDesc: "維港渡輪 · 票價 HK.0"
+                ),
+                TransitStepItem(
+                    kind: .walk,
+                    lineName: "步行到達",
+                    directionDesc: "前往 \(destClean)",
+                    fromStation: "\(destClean)碼頭",
+                    toStation: destClean,
+                    passStations: [],
+                    durationMins: 4,
+                    walkMeters: 240,
+                    doorSideDesc: "",
+                    acNotice: "",
+                    exitDesc: "到達 \(destClean)",
+                    colorHex: "#888888",
+                    intervalDesc: "步行 240 米 (4分鐘)"
+                )
+            ]
+            let hkPlan3 = TransitPlanOption(
+                title: "\(mtrMins + 18)分鐘 · 渡輪海景直達",
+                badge: "渡輪航綫 · 少轉乘",
+                totalMinutes: mtrMins + 18,
+                totalStations: 2,
+                transferCount: 0,
+                walkMeters: 560,
+                priceYuan: "HK$5.0",
+                startExitDesc: "渡輪碼頭登船",
+                warningNotice: "⛴️ 天星小輪/新渡輪過海，免地鐵擠迫",
+                realtimeArrivalText: "渡輪即將開出，6分鐘 📡 · HK.0",
+                steps: hkFerrySteps
+            )
+            self.rawTransitPlans = [hkPlan1, hkPlan2, hkPlan3]
+            self.applyTransitFiltersAndSort()
             self.selectedTransitPlanIndex = 0
             self.remainingRouteMinutes = hkPlan1.totalMinutes
             self.currentStepInstruction = "步行 \(w1)米 前往 \(startHK.name) 乘港鐵MTR"
@@ -2290,7 +2570,8 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                 steps: hsrPlanSteps
             )
             
-            self.transitPlans = [cbPlan1, cbPlan2, cbPlan3]
+            self.rawTransitPlans = [cbPlan1, cbPlan2, cbPlan3]
+            self.applyTransitFiltersAndSort()
             self.selectedTransitPlanIndex = 0
             self.remainingRouteMinutes = cbPlan1.totalMinutes
             self.currentStepInstruction = "步行 380米 前往沙灣天橋 乘坐351路"
@@ -2677,7 +2958,8 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                 steps: kTrainSteps
             )
             
-            self.transitPlans = [natPlan1, natPlan2, natPlan3]
+            self.rawTransitPlans = [natPlan1, natPlan2, natPlan3]
+            self.applyTransitFiltersAndSort()
             self.selectedTransitPlanIndex = 0
             self.remainingRouteMinutes = natPlan1.totalMinutes
             self.currentStepInstruction = "長途導航：前往深圳北站乘高鐵 / 或寶安機場直飛 \(destClean)"
@@ -2855,7 +3137,8 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                 steps: prdPlan2Steps
             )
             
-            self.transitPlans = [icPlan1, icPlan2]
+            self.rawTransitPlans = [icPlan1, icPlan2]
+            self.applyTransitFiltersAndSort()
             self.selectedTransitPlanIndex = 0
             self.remainingRouteMinutes = icPlan1.totalMinutes
             self.currentStepInstruction = "跨市導航：前往 \(startSt.name) 乘地鐵至深圳北站換乘高鐵往 \(destClean)"
@@ -3015,7 +3298,8 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                 steps: ovSteps2
             )
             
-            self.transitPlans = [ovPlan1, ovPlan2]
+            self.rawTransitPlans = [ovPlan1, ovPlan2]
+            self.applyTransitFiltersAndSort()
             self.selectedTransitPlanIndex = 0
             self.remainingRouteMinutes = ovPlan1.totalMinutes
             self.currentStepInstruction = "步行 \(w1)米 前往 \(startStLabel) 乘車"
@@ -3196,7 +3480,8 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                     steps: localWalkSteps
                 )
                 
-                self.transitPlans = [localPlan1, localPlan2, localPlan3]
+                self.rawTransitPlans = [localPlan1, localPlan2, localPlan3]
+            self.applyTransitFiltersAndSort()
                 self.selectedTransitPlanIndex = 0
                 self.remainingRouteMinutes = localPlan1.totalMinutes
                 self.remainingRouteDistanceKm = Double(directMeters) / 1000.0
@@ -3482,10 +3767,272 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                 steps: plan4Steps
             )
             
-            self.transitPlans = [luohuPlan1, luohuPlan2, luohuPlan3, luohuPlan4]
+            // Plan A (Apple Maps & GaoDe #1): 1小時10分鐘 · 351路直達 · CN¥3 (🚶6分鐘 ▸ 351 🚌 ▸ 🚶16分鐘)
+            let amapPlan1Steps: [TransitStepItem] = [
+                TransitStepItem(
+                    kind: .walk,
+                    lineName: "步行前往公交站",
+                    directionDesc: "前往 沙灣天橋 公交站",
+                    fromStation: "我的位置",
+                    toStation: "沙灣天橋",
+                    passStations: [],
+                    durationMins: 6,
+                    walkMeters: 380,
+                    doorSideDesc: "",
+                    acNotice: "",
+                    exitDesc: "前往 沙灣天橋 站台 (建設路三島中心總站方向)",
+                    colorHex: "#888888",
+                    intervalDesc: "步行 380 米 (6分鐘) · 沙灣天橋上車"
+                ),
+                TransitStepItem(
+                    kind: .bus,
+                    lineName: "351",
+                    directionDesc: "往 建設路三島中心總站 方向",
+                    fromStation: "沙灣天橋",
+                    toStation: "建設路三島中心總站",
+                    passStations: ["沙灣路北", "翠湖文體公園", "東湖人行天橋", "水庫", "水庫新村1", "竹園賓館1", "留醫部", "東門3", "金城大廈1", "建設路三島中心總站"],
+                    durationMins: 48,
+                    walkMeters: 0,
+                    doorSideDesc: "空調大巴",
+                    acNotice: "🚌 巴士即將開出，9分鐘 📡 · CN¥3",
+                    exitDesc: "在 建設路三島中心總站 下車",
+                    colorHex: "#1E88E5",
+                    intervalDesc: "11站 (48分鐘) · 首06:00 末20:30 · 票價¥3"
+                ),
+                TransitStepItem(
+                    kind: .walk,
+                    lineName: "步行到達",
+                    directionDesc: "前往 深圳羅湖口岸 (出境)",
+                    fromStation: "建設路三島中心總站",
+                    toStation: "深圳羅湖口岸 (出境)",
+                    passStations: [],
+                    durationMins: 16,
+                    walkMeters: 800,
+                    doorSideDesc: "",
+                    acNotice: "🛂 羅湖口岸通關時間：06:30 - 24:00",
+                    exitDesc: "直行到達 深圳羅湖口岸 聯檢大廳",
+                    colorHex: "#888888",
+                    intervalDesc: "步行前往口岸聯檢大廳 (16分鐘)"
+                )
+            ]
+            let amapPlan1 = TransitPlanOption(
+                title: "1小時10分鐘 · 351路直達",
+                badge: "建議路線 · 0換乘",
+                totalMinutes: 70,
+                totalStations: 11,
+                transferCount: 0,
+                walkMeters: 1180,
+                priceYuan: "3",
+                startExitDesc: "沙灣天橋上車",
+                warningNotice: "🚌 351路沙灣直達羅湖火車站與口岸大廈，無需進地鐵換乘繞路",
+                realtimeArrivalText: "巴士即將開出，9分鐘 📡 · CN¥3",
+                steps: amapPlan1Steps
+            )
+            
+            // Plan B (Apple Maps & GaoDe #2): 1小時6分鐘 · 351路 換乘 地鐵1號線(羅寶線) · CN¥5 (🚶6分鐘 ▸ 351 🚌 ▸ 🚶3分鐘 ▸ 1號線 🚇 ▸ 🚶8分鐘)
+            let amapPlan2 = TransitPlanOption(
+                title: "1小時6分鐘 · 351路換地鐵1號線",
+                badge: "較快路程 · 地鐵接駁",
+                totalMinutes: 66,
+                totalStations: 11,
+                transferCount: 1,
+                walkMeters: 771,
+                priceYuan: "5",
+                startExitDesc: "沙灣天橋上車",
+                warningNotice: "⚠️ 地铁1号线 (罗宝线) 资费调整",
+                realtimeArrivalText: "巴士即將開出，9分鐘 📡 · CN¥5",
+                steps: plan3Steps
+            )
+            
+            // Plan C (Apple Maps & GaoDe #3): 1小時22分鐘 · 地鐵3號線 換乘 地鐵1號線(羅寶線) · CN¥5 (🚶40分鐘 ▸ 3號線 🚇 ▸ 🚶3分鐘 ▸ 1號線 🚇 ▸ 🚶8分鐘)
+            let amapPlan3Steps: [TransitStepItem] = [
+                TransitStepItem(
+                    kind: .walk,
+                    lineName: "步行前往地鐵站",
+                    directionDesc: "前往 丹竹頭 / 大芬 地鐵站",
+                    fromStation: "我的位置",
+                    toStation: "丹竹頭 (A口)",
+                    passStations: [],
+                    durationMins: 40,
+                    walkMeters: 2400,
+                    doorSideDesc: "",
+                    acNotice: "",
+                    exitDesc: "從 丹竹頭 (A口) 進站乘車",
+                    colorHex: "#888888",
+                    intervalDesc: "步行 2.4 公里 (40分鐘)"
+                ),
+                TransitStepItem(
+                    kind: .subway,
+                    lineName: "3",
+                    directionDesc: "往 福保 方向 (地鐵3號線/龍崗線)",
+                    fromStation: "丹竹頭 (A口)",
+                    toStation: "老街",
+                    passStations: ["大芬", "木棉灣", "布吉", "草埔", "水貝", "田貝", "翠竹", "曬布", "老街"],
+                    durationMins: 26,
+                    walkMeters: 0,
+                    doorSideDesc: "右側開門",
+                    acNotice: "🚇 預定每7分鐘開出一班",
+                    exitDesc: "在 老街站 同站台換乘地鐵1號線",
+                    colorHex: "#0076C0",
+                    intervalDesc: "9站 (26分鐘) · 票價¥5"
+                ),
+                TransitStepItem(
+                    kind: .walk,
+                    lineName: "站內換乘",
+                    directionDesc: "前往 地鐵1號線 (羅寶線) 站台",
+                    fromStation: "老街 (3號線)",
+                    toStation: "老街 (1號線)",
+                    passStations: [],
+                    durationMins: 3,
+                    walkMeters: 120,
+                    doorSideDesc: "",
+                    acNotice: "",
+                    exitDesc: "同站台對面換乘1號線往羅湖方向",
+                    colorHex: "#888888",
+                    intervalDesc: "站內換乘 (3分鐘)"
+                ),
+                TransitStepItem(
+                    kind: .subway,
+                    lineName: "1",
+                    directionDesc: "往 羅湖 方向 (地鐵1號線/羅寶線)",
+                    fromStation: "老街",
+                    toStation: "羅湖 (A2口)",
+                    passStations: ["國貿", "羅湖"],
+                    durationMins: 5,
+                    walkMeters: 0,
+                    doorSideDesc: "右側開門",
+                    acNotice: "⚠️ 地铁1号线 (罗宝线) 资费调整",
+                    exitDesc: "從 羅湖 (A2口) 出站",
+                    colorHex: "#00A862",
+                    intervalDesc: "2站 (5分鐘) · 首06:20 末00:07"
+                ),
+                TransitStepItem(
+                    kind: .walk,
+                    lineName: "步行到達",
+                    directionDesc: "前往 深圳羅湖口岸 (出境)",
+                    fromStation: "羅湖 (A2口)",
+                    toStation: "深圳羅湖口岸 (出境)",
+                    passStations: [],
+                    durationMins: 8,
+                    walkMeters: 260,
+                    doorSideDesc: "",
+                    acNotice: "",
+                    exitDesc: "到達 深圳羅湖口岸 (出境)",
+                    colorHex: "#888888",
+                    intervalDesc: "步行 260 米 (8分鐘)"
+                )
+            ]
+            let amapPlan3 = TransitPlanOption(
+                title: "1小時22分鐘 · 地鐵3號線換1號線",
+                badge: "地鐵與輕軌 · 準點",
+                totalMinutes: 82,
+                totalStations: 11,
+                transferCount: 1,
+                walkMeters: 2780,
+                priceYuan: "5",
+                startExitDesc: "丹竹頭/大芬地鐵站進站",
+                warningNotice: "⚠️ 地铁1号线 (罗宝线) 资费调整",
+                realtimeArrivalText: "預定每7分鐘開出一班 · CN¥5",
+                steps: amapPlan3Steps
+            )
+            
+            // Plan D (Apple Maps #4): 1小時6分鐘 · 351/306 換乘 M508 · CN¥5.5 (🚶6分鐘 ▸ 351/306 🚌 ▸ M508 🚌 ▸ 🚶7分鐘)
+            let amapPlan4Steps: [TransitStepItem] = [
+                TransitStepItem(
+                    kind: .walk,
+                    lineName: "步行前往公交站",
+                    directionDesc: "前往 沙灣天橋 公交站",
+                    fromStation: "我的位置",
+                    toStation: "沙灣天橋",
+                    passStations: [],
+                    durationMins: 6,
+                    walkMeters: 380,
+                    doorSideDesc: "",
+                    acNotice: "",
+                    exitDesc: "前往 沙灣天橋 站台",
+                    colorHex: "#888888",
+                    intervalDesc: "步行 380 米 (6分鐘)"
+                ),
+                TransitStepItem(
+                    kind: .bus,
+                    lineName: "351 / 306",
+                    directionDesc: "往 羅湖/火車站 方向",
+                    fromStation: "沙灣天橋",
+                    toStation: "水庫 / 草埔地鐵站",
+                    passStations: ["沙灣路北", "翠湖文體公園", "東湖人行天橋", "水庫"],
+                    durationMins: 22,
+                    walkMeters: 0,
+                    doorSideDesc: "空調巴士",
+                    acNotice: "🚌 巴士將於 1、9 分鐘後開出 📡",
+                    exitDesc: "同站台換乘 M508 路快線巴士",
+                    colorHex: "#1E88E5",
+                    intervalDesc: "4站 (22分鐘) · 票價¥3"
+                ),
+                TransitStepItem(
+                    kind: .bus,
+                    lineName: "M508",
+                    directionDesc: "往 火車站總站 方向",
+                    fromStation: "水庫 / 草埔地鐵站",
+                    toStation: "火車站總站",
+                    passStations: ["留醫部", "東門", "金城大廈", "火車站總站"],
+                    durationMins: 31,
+                    walkMeters: 0,
+                    doorSideDesc: "大站快車",
+                    acNotice: "🚌 直達羅湖火車站廣場",
+                    exitDesc: "在 火車站總站 下車",
+                    colorHex: "#1E88E5",
+                    intervalDesc: "4站 (31分鐘) · 票價¥2.5"
+                ),
+                TransitStepItem(
+                    kind: .walk,
+                    lineName: "步行到達",
+                    directionDesc: "前往 深圳羅湖口岸 (出境)",
+                    fromStation: "火車站總站",
+                    toStation: "深圳羅湖口岸 (出境)",
+                    passStations: [],
+                    durationMins: 7,
+                    walkMeters: 260,
+                    doorSideDesc: "",
+                    acNotice: "",
+                    exitDesc: "直達 深圳羅湖口岸 (出境)",
+                    colorHex: "#888888",
+                    intervalDesc: "步行 260 米 (7分鐘)"
+                )
+            ]
+            let amapPlan4 = TransitPlanOption(
+                title: "1小時6分鐘 · 351/306換M508",
+                badge: "較快路程 · 巴士聯運",
+                totalMinutes: 66,
+                totalStations: 8,
+                transferCount: 1,
+                walkMeters: 640,
+                priceYuan: "5.5",
+                startExitDesc: "沙灣天橋上車",
+                warningNotice: "🚌 351/306路同站台無縫換乘M508路直達火車站總站",
+                realtimeArrivalText: "巴士將於1、9分鐘後開出 📡 · CN¥5.5",
+                steps: amapPlan4Steps
+            )
+            
+            // Plan E (Apple Maps & GaoDe #5): 1小時35分鐘 · M373路直達 · CN¥2.5 (🚶8分鐘 ▸ M373 🚌 ▸ 🚶7分鐘)
+            let amapPlan5 = TransitPlanOption(
+                title: "1小時35分鐘 · M373路直達",
+                badge: "較低費用 · 0換乘",
+                totalMinutes: 95,
+                totalStations: 21,
+                transferCount: 0,
+                walkMeters: 964,
+                priceYuan: "2.5",
+                startExitDesc: "沙灣天橋上車",
+                warningNotice: "🚌 直達火車站西廣場，下車即達羅湖口岸",
+                realtimeArrivalText: "預定每14分鐘開出一班 · CN¥2.5",
+                steps: plan2Steps
+            )
+            
+            self.rawTransitPlans = [amapPlan1, amapPlan2, amapPlan3, amapPlan4, amapPlan5, luohuPlan4]
+            self.applyTransitFiltersAndSort()
             self.selectedTransitPlanIndex = 0
-            self.remainingRouteMinutes = luohuPlan1.totalMinutes
-            self.currentStepInstruction = "步行前往沙湾天桥 乘坐351路(建设路三岛中心总站方向)"
+            self.remainingRouteMinutes = self.transitPlans.first?.totalMinutes ?? 70
+            self.currentStepInstruction = "步行前往沙灣天橋 乘坐351路(建設路三島中心總站方向)"
             self.distanceToNextStepMeters = 380
             return
             }
@@ -3765,7 +4312,8 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                 steps: bcPlan4Steps
             )
             
-            self.transitPlans = [bcPlan1, bcPlan2, bcPlan3, bcPlan4]
+            self.rawTransitPlans = [bcPlan1, bcPlan2, bcPlan3, bcPlan4]
+            self.applyTransitFiltersAndSort()
             self.selectedTransitPlanIndex = 0
             self.remainingRouteMinutes = bcPlan1.totalMinutes
             self.remainingRouteDistanceKm = 6.2
@@ -3975,7 +4523,8 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                 steps: plan3Steps
             )
             
-            self.transitPlans = [plan1, plan2, plan3]
+            self.rawTransitPlans = [plan1, plan2, plan3]
+            self.applyTransitFiltersAndSort()
             self.selectedTransitPlanIndex = 0
             self.remainingRouteMinutes = plan1.totalMinutes
             self.currentStepInstruction = "步行 \(walk1)米 前往 \(boardBusStop) 乘 M385路"
@@ -4073,8 +4622,69 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                 steps: directMetroSteps
             )
             
-            self.transitPlans = [plan1]
-            self.selectedTransitPlanIndex = 0
+        let companionBusSteps: [TransitStepItem] = [
+            TransitStepItem(
+                kind: .walk,
+                lineName: "步行前往公交站",
+                directionDesc: "前往 \(startSt.name) 公交站",
+                fromStation: "我的位置",
+                toStation: "\(startSt.name)公交站",
+                passStations: [],
+                durationMins: max(2, walkStartMin - 1),
+                walkMeters: max(80, walkStartDist - 60),
+                doorSideDesc: "",
+                acNotice: "",
+                exitDesc: "前往道路旁公交站台候車",
+                colorHex: "#888888",
+                intervalDesc: "步行 \(max(80, walkStartDist - 60)) 米"
+            ),
+            TransitStepItem(
+                kind: .bus,
+                lineName: "351 / M133 / 城市幹線巴士",
+                directionDesc: "往 \(destClean) 方向",
+                fromStation: "\(startSt.name)公交站",
+                toStation: "\(endSt.name)公交站",
+                passStations: ["市民廣場", "中心路口", "\(endSt.name)站"],
+                durationMins: plan1.totalMinutes + 8,
+                walkMeters: 0,
+                doorSideDesc: "空調大巴",
+                acNotice: "🚌 巴士即將開出，5分鐘 📡 · CN¥2.5",
+                exitDesc: "在 \(endSt.name)公交站 下車",
+                colorHex: "#1E88E5",
+                intervalDesc: "0換乘地面直達 · 票價¥2.5"
+            ),
+            TransitStepItem(
+                kind: .walk,
+                lineName: "步行到達",
+                directionDesc: "前往 \(destClean)",
+                fromStation: "\(endSt.name)公交站",
+                toStation: destClean,
+                passStations: [],
+                durationMins: walkEndMin,
+                walkMeters: max(60, walkEndDist - 40),
+                doorSideDesc: "",
+                acNotice: "",
+                exitDesc: "直達 \(destClean)",
+                colorHex: "#888888",
+                intervalDesc: "步行 \(max(60, walkEndDist - 40)) 米"
+            )
+        ]
+        let busCompanionPlan = TransitPlanOption(
+            title: "\(plan1.totalMinutes + 11)分鐘 · 幹線巴士直達",
+            badge: "較少步行 · 0換乘巴士",
+            totalMinutes: plan1.totalMinutes + 11,
+            totalStations: max(4, plan1.totalStations + 1),
+            transferCount: 0,
+            walkMeters: max(140, walkStartDist + walkEndDist - 100),
+            priceYuan: "2.5",
+            startExitDesc: "\(startSt.name)公交站上車",
+            warningNotice: "🚌 地面公交直達，免上下地鐵扶梯與安檢",
+            realtimeArrivalText: "巴士即將開出，5分鐘 📡 · CN¥2.5",
+            steps: companionBusSteps
+        )
+        self.rawTransitPlans = [plan1, busCompanionPlan]
+        self.applyTransitFiltersAndSort()
+        self.selectedTransitPlanIndex = 0
             self.remainingRouteMinutes = plan1.totalMinutes
             self.currentStepInstruction = "步行 \(walkStartDist)米 前往 \(startSt.name) (\(startSt.exit)) 乘坐1号线(直达)"
             self.distanceToNextStepMeters = Double(walkStartDist)
@@ -4168,8 +4778,69 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                 steps: directMetroSteps
             )
             
-            self.transitPlans = [plan1]
-            self.selectedTransitPlanIndex = 0
+        let companionBusSteps: [TransitStepItem] = [
+            TransitStepItem(
+                kind: .walk,
+                lineName: "步行前往公交站",
+                directionDesc: "前往 \(startSt.name) 公交站",
+                fromStation: "我的位置",
+                toStation: "\(startSt.name)公交站",
+                passStations: [],
+                durationMins: max(2, walkStartMin - 1),
+                walkMeters: max(80, walkStartDist - 60),
+                doorSideDesc: "",
+                acNotice: "",
+                exitDesc: "前往道路旁公交站台候車",
+                colorHex: "#888888",
+                intervalDesc: "步行 \(max(80, walkStartDist - 60)) 米"
+            ),
+            TransitStepItem(
+                kind: .bus,
+                lineName: "351 / M133 / 城市幹線巴士",
+                directionDesc: "往 \(destClean) 方向",
+                fromStation: "\(startSt.name)公交站",
+                toStation: "\(endSt.name)公交站",
+                passStations: ["市民廣場", "中心路口", "\(endSt.name)站"],
+                durationMins: plan1.totalMinutes + 8,
+                walkMeters: 0,
+                doorSideDesc: "空調大巴",
+                acNotice: "🚌 巴士即將開出，5分鐘 📡 · CN¥2.5",
+                exitDesc: "在 \(endSt.name)公交站 下車",
+                colorHex: "#1E88E5",
+                intervalDesc: "0換乘地面直達 · 票價¥2.5"
+            ),
+            TransitStepItem(
+                kind: .walk,
+                lineName: "步行到達",
+                directionDesc: "前往 \(destClean)",
+                fromStation: "\(endSt.name)公交站",
+                toStation: destClean,
+                passStations: [],
+                durationMins: walkEndMin,
+                walkMeters: max(60, walkEndDist - 40),
+                doorSideDesc: "",
+                acNotice: "",
+                exitDesc: "直達 \(destClean)",
+                colorHex: "#888888",
+                intervalDesc: "步行 \(max(60, walkEndDist - 40)) 米"
+            )
+        ]
+        let busCompanionPlan = TransitPlanOption(
+            title: "\(plan1.totalMinutes + 11)分鐘 · 幹線巴士直達",
+            badge: "較少步行 · 0換乘巴士",
+            totalMinutes: plan1.totalMinutes + 11,
+            totalStations: max(4, plan1.totalStations + 1),
+            transferCount: 0,
+            walkMeters: max(140, walkStartDist + walkEndDist - 100),
+            priceYuan: "2.5",
+            startExitDesc: "\(startSt.name)公交站上車",
+            warningNotice: "🚌 地面公交直達，免上下地鐵扶梯與安檢",
+            realtimeArrivalText: "巴士即將開出，5分鐘 📡 · CN¥2.5",
+            steps: companionBusSteps
+        )
+        self.rawTransitPlans = [plan1, busCompanionPlan]
+        self.applyTransitFiltersAndSort()
+        self.selectedTransitPlanIndex = 0
             self.remainingRouteMinutes = plan1.totalMinutes
             self.currentStepInstruction = "步行 \(walkStartDist)米 至 \(startSt.name)站 乘3号线直达"
             self.distanceToNextStepMeters = Double(walkStartDist)
@@ -4324,7 +4995,68 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             steps: plan1Steps
         )
         
-        self.transitPlans = [plan1]
+        let companionBusSteps: [TransitStepItem] = [
+            TransitStepItem(
+                kind: .walk,
+                lineName: "步行前往公交站",
+                directionDesc: "前往 \(startSt.name) 公交站",
+                fromStation: "我的位置",
+                toStation: "\(startSt.name)公交站",
+                passStations: [],
+                durationMins: max(2, walkStartMin - 1),
+                walkMeters: max(80, walkStartDist - 60),
+                doorSideDesc: "",
+                acNotice: "",
+                exitDesc: "前往道路旁公交站台候車",
+                colorHex: "#888888",
+                intervalDesc: "步行 \(max(80, walkStartDist - 60)) 米"
+            ),
+            TransitStepItem(
+                kind: .bus,
+                lineName: "351 / M133 / 城市幹線巴士",
+                directionDesc: "往 \(destClean) 方向",
+                fromStation: "\(startSt.name)公交站",
+                toStation: "\(endSt.name)公交站",
+                passStations: ["市民廣場", "中心路口", "\(endSt.name)站"],
+                durationMins: plan1.totalMinutes + 8,
+                walkMeters: 0,
+                doorSideDesc: "空調大巴",
+                acNotice: "🚌 巴士即將開出，5分鐘 📡 · CN¥2.5",
+                exitDesc: "在 \(endSt.name)公交站 下車",
+                colorHex: "#1E88E5",
+                intervalDesc: "0換乘地面直達 · 票價¥2.5"
+            ),
+            TransitStepItem(
+                kind: .walk,
+                lineName: "步行到達",
+                directionDesc: "前往 \(destClean)",
+                fromStation: "\(endSt.name)公交站",
+                toStation: destClean,
+                passStations: [],
+                durationMins: walkEndMin,
+                walkMeters: max(60, walkEndDist - 40),
+                doorSideDesc: "",
+                acNotice: "",
+                exitDesc: "直達 \(destClean)",
+                colorHex: "#888888",
+                intervalDesc: "步行 \(max(60, walkEndDist - 40)) 米"
+            )
+        ]
+        let busCompanionPlan = TransitPlanOption(
+            title: "\(plan1.totalMinutes + 11)分鐘 · 幹線巴士直達",
+            badge: "較少步行 · 0換乘巴士",
+            totalMinutes: plan1.totalMinutes + 11,
+            totalStations: max(4, plan1.totalStations + 1),
+            transferCount: 0,
+            walkMeters: max(140, walkStartDist + walkEndDist - 100),
+            priceYuan: "2.5",
+            startExitDesc: "\(startSt.name)公交站上車",
+            warningNotice: "🚌 地面公交直達，免上下地鐵扶梯與安檢",
+            realtimeArrivalText: "巴士即將開出，5分鐘 📡 · CN¥2.5",
+            steps: companionBusSteps
+        )
+        self.rawTransitPlans = [plan1, busCompanionPlan]
+        self.applyTransitFiltersAndSort()
         self.selectedTransitPlanIndex = 0
         self.remainingRouteMinutes = plan1.totalMinutes
         self.currentStepInstruction = "步行 \(walkStartDist)米 前往 \(startSt.name) (\(startSt.exit))"
@@ -5588,10 +6320,65 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                     }
                 }
             }()
+            
+            // Pre-render the 4 canonical animation frames for the 5-member After-School Tea Time (Matching Figure 2 from RM-500)
+            var partyFrames: [UIImage] = []
+            let partySize = CGSize(width: 288, height: 160)
+            let partyRenderer = UIGraphicsImageRenderer(size: partySize)
+            for tick in 0..<4 {
+                let pImg = partyRenderer.image { ctx in
+                    // 1. desk00 (chairs, floating flowers/notes, rising steam): frame (tick % 4)
+                    if let d0 = loadedSheets["desk00"],
+                       let d0_crop = d0.cropping(to: CGRect(x: (tick % 4) * 288, y: 0, width: 288, height: 160)) {
+                        UIImage(cgImage: d0_crop).draw(in: CGRect(x: 0, y: 0, width: 288, height: 160))
+                    }
+                    // 2. Mio: seated in chair facing right, sipping tea, row 0, col 0 (64x128) at (2, 20)
+                    if let mio = loadedSheets["mio00"],
+                       let mio_crop = mio.cropping(to: CGRect(x: 0, y: 0, width: 64, height: 128)) {
+                        UIImage(cgImage: mio_crop).draw(in: CGRect(x: 2, y: 20, width: 64, height: 128))
+                    }
+                    // 3. Ritsu: seated pointing towards Yui, row 1, col tick % 2 (80x128) at (50, 20)
+                    if let ritsu = loadedSheets["ritsu00"],
+                       let ritsu_crop = ritsu.cropping(to: CGRect(x: (tick % 2) * 80, y: 128, width: 80, height: 128)) {
+                        UIImage(cgImage: ritsu_crop).draw(in: CGRect(x: 50, y: 20, width: 80, height: 128))
+                    }
+                    // 4. Yui: seated dozing with strawberry shortcake on head, row 1, col tick % 4 (64x128) at (115, 20)
+                    if let yui = loadedSheets["yui00"],
+                       let yui_crop = yui.cropping(to: CGRect(x: (tick % 4) * 64, y: 128, width: 64, height: 128)) {
+                        UIImage(cgImage: yui_crop).draw(in: CGRect(x: 115, y: 20, width: 64, height: 128))
+                    }
+                    // 5. Mugi: seated smiling with strawberry shortcake on head, row 1, col tick % 4 (64x128) at (182, 20)
+                    if let mugi = loadedSheets["tsumugi00"],
+                       let mugi_crop = mugi.cropping(to: CGRect(x: (tick % 4) * 64, y: 128, width: 64, height: 128)) {
+                        UIImage(cgImage: mugi_crop).draw(in: CGRect(x: 182, y: 20, width: 64, height: 128))
+                    }
+                    // 6. Azusa: seated in chair facing left, sipping tea, row 0, col 0 (64x128) at (230, 20)
+                    if let azusa = loadedSheets["azusa00"],
+                       let azusa_crop = azusa.cropping(to: CGRect(x: 0, y: 0, width: 64, height: 128)) {
+                        UIImage(cgImage: azusa_crop).draw(in: CGRect(x: 230, y: 20, width: 64, height: 128))
+                    }
+                    // 7. Table: desk01 (288x160) at (0, 0)
+                    if let d1 = loadedSheets["desk01"],
+                       let d1_crop = d1.cropping(to: CGRect(x: 0, y: 0, width: 288, height: 160)) {
+                        UIImage(cgImage: d1_crop).draw(in: CGRect(x: 0, y: 0, width: 288, height: 160))
+                    }
+                    // 8. Teacups & steam on table (from desk00 frame, y < 105) at (0, 0)
+                    if let d0 = loadedSheets["desk00"],
+                       let d0_top = d0.cropping(to: CGRect(x: (tick % 4) * 288, y: 0, width: 288, height: 105)) {
+                        UIImage(cgImage: d0_top).draw(in: CGRect(x: 0, y: 0, width: 288, height: 105))
+                    }
+                }
+                partyFrames.append(pImg)
+            }
+            
             DispatchQueue.main.async {
                 self.spriteSheets = loadedSheets
                 if let d = deskImg {
                     self.deskSpriteFrame = d
+                }
+                self.cachedTeaPartyFrames = partyFrames
+                if let first = partyFrames.first {
+                    self.teaPartyCompositedFrame = first
                 }
             }
         } catch {
@@ -5887,6 +6674,57 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         }
     }
 
+    func renderTeaPartySceneFrame(excludingCharId: Int? = nil, tick: Int? = nil) -> UIImage? {
+        let t = (tick ?? (animTick / 2)) % 4
+        if excludingCharId == nil && !cachedTeaPartyFrames.isEmpty {
+            return cachedTeaPartyFrames[t % cachedTeaPartyFrames.count]
+        }
+        let exId = excludingCharId ?? 0
+        let cKey = "teaparty_ex\(exId)_t\(t)"
+        if let cached = croppedFrameCache[cKey] {
+            return cached
+        }
+        guard !spriteSheets.isEmpty else { return cachedTeaPartyFrames.first }
+        let partySize = CGSize(width: 288, height: 160)
+        let partyRenderer = UIGraphicsImageRenderer(size: partySize)
+        let img = partyRenderer.image { _ in
+            if let d0 = spriteSheets["desk00"],
+               let d0_crop = d0.cropping(to: CGRect(x: t * 288, y: 0, width: 288, height: 160)) {
+                UIImage(cgImage: d0_crop).draw(in: CGRect(x: 0, y: 0, width: 288, height: 160))
+            }
+            if exId != 2, let mio = spriteSheets["mio00"],
+               let mio_crop = mio.cropping(to: CGRect(x: 0, y: 0, width: 64, height: 128)) {
+                UIImage(cgImage: mio_crop).draw(in: CGRect(x: 2, y: 20, width: 64, height: 128))
+            }
+            if exId != 3, let ritsu = spriteSheets["ritsu00"],
+               let ritsu_crop = ritsu.cropping(to: CGRect(x: (t % 2) * 80, y: 128, width: 80, height: 128)) {
+                UIImage(cgImage: ritsu_crop).draw(in: CGRect(x: 50, y: 20, width: 80, height: 128))
+            }
+            if exId != 1, let yui = spriteSheets["yui00"],
+               let yui_crop = yui.cropping(to: CGRect(x: t * 64, y: 128, width: 64, height: 128)) {
+                UIImage(cgImage: yui_crop).draw(in: CGRect(x: 115, y: 20, width: 64, height: 128))
+            }
+            if exId != 4, let mugi = spriteSheets["tsumugi00"],
+               let mugi_crop = mugi.cropping(to: CGRect(x: t * 64, y: 128, width: 64, height: 128)) {
+                UIImage(cgImage: mugi_crop).draw(in: CGRect(x: 182, y: 20, width: 64, height: 128))
+            }
+            if exId != 5, let azusa = spriteSheets["azusa00"],
+               let azusa_crop = azusa.cropping(to: CGRect(x: 0, y: 0, width: 64, height: 128)) {
+                UIImage(cgImage: azusa_crop).draw(in: CGRect(x: 230, y: 20, width: 64, height: 128))
+            }
+            if let d1 = spriteSheets["desk01"],
+               let d1_crop = d1.cropping(to: CGRect(x: 0, y: 0, width: 288, height: 160)) {
+                UIImage(cgImage: d1_crop).draw(in: CGRect(x: 0, y: 0, width: 288, height: 160))
+            }
+            if let d0 = spriteSheets["desk00"],
+               let d0_top = d0.cropping(to: CGRect(x: t * 288, y: 0, width: 288, height: 105)) {
+                UIImage(cgImage: d0_top).draw(in: CGRect(x: 0, y: 0, width: 288, height: 105))
+            }
+        }
+        croppedFrameCache[cKey] = img
+        return img
+    }
+
     private func updateAllSpriteFrames() {
         guard !spriteSheets.isEmpty else { return }
         var updatedFrames = allMemberFrames
@@ -5936,6 +6774,13 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             let targetSprite = updatedFrames[activeAllMemberChar.charId] ?? updatedFrames[1]
             if currentSpriteFrame !== targetSprite {
                 currentSpriteFrame = targetSprite
+            }
+            if mascotAction == .teaCake && !cachedTeaPartyFrames.isEmpty {
+                let fIdx = (animTick / 2) % cachedTeaPartyFrames.count
+                let frame = cachedTeaPartyFrames[fIdx]
+                if teaPartyCompositedFrame !== frame {
+                    teaPartyCompositedFrame = frame
+                }
             }
         }
         walkStepFrame = (animTick / 2) % 2
@@ -6664,6 +7509,11 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         destinationCoord = nil
         destinationName = ""
         currentStepInstruction = ""
+        distanceToNextStepMeters = 0.0
+        remainingRouteDistanceKm = 0.0
+        remainingRouteMinutes = 0
+        transitPhase = .idle
+        rawTransitPlans.removeAll()
         transitPlans.removeAll()
         showTransitPlanSheet = false
         announcedStepThresholds.removeAll()
@@ -7298,16 +8148,24 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     }
     
     func triggerCharacterTap(member: CharacterFilter? = nil) {
-        if selectedCharacter == .all, let m = member, m != .all {
-            // In 5-Member Stage Mode, tapping one member ONLY animates that specific member while the other 4 remain in their own idle pose!
-            memberSpecificActions[m.charId] = .special
-            memberActionExpiryTick[m.charId] = animTick + 16
-            updateAllSpriteFrames()
-            playMascotVoice(for: m)
+        if selectedCharacter == .all {
+            if let m = member, m != .all {
+                if mascotAction != .teaCake {
+                    // In standing 5-Member Stage Mode, tapping one member ONLY animates that specific member while the other 4 remain in their own pose!
+                    memberSpecificActions[m.charId] = .special
+                    memberActionExpiryTick[m.charId] = animTick + 16
+                    updateAllSpriteFrames()
+                }
+                playMascotVoice(for: m)
+                return
+            }
+            // When selecting .all (五人同台), keep default .teaCake (喝下午茶) and play voice!
+            let target = activeAllMemberChar
+            playMascotVoice(for: target)
             return
         }
         mascotAction = .special
-        let target = member ?? ((selectedCharacter == .all) ? activeAllMemberChar : selectedCharacter)
+        let target = member ?? selectedCharacter
         playMascotVoice(for: target)
     }
     

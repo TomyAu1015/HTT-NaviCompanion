@@ -857,6 +857,7 @@ enum ActiveModalSheet: String, Identifiable {
     case gaoDeWeb
     case flights
     case trains
+    case departureTime
     
     var id: String { self.rawValue }
 }
@@ -1086,6 +1087,9 @@ struct ContentView: View {
         .onChange(of: manager.showAllTrainTicketsSheet) { val in
             if val { activeModalSheet = .trains; manager.showAllTrainTicketsSheet = false }
         }
+        .onChange(of: manager.showDepartureTimePickerSheet) { val in
+            if val { activeModalSheet = .departureTime; manager.showDepartureTimePickerSheet = false }
+        }
         .sheet(item: $activeModalSheet) { sheet in
             switch sheet {
             case .soundboard:
@@ -1106,6 +1110,8 @@ struct ContentView: View {
                 InAppFlightTicketScheduleSheetView(manager: manager)
             case .trains:
                 InAppTrainTicketScheduleSheetView(manager: manager)
+            case .departureTime:
+                RouteDepartureTimePickerSheetView(manager: manager)
             }
         }
     }
@@ -1129,14 +1135,12 @@ struct ContentView: View {
                     VStack(alignment: .leading, spacing: 5) {
                         if manager.hasActiveNavigation {
                             topNavigationBannerCard
-                        }
-                        
-                        if manager.activeRoute != nil || manager.customTransitPolyline != nil || manager.isDemoSimulating {
                             laneGuidanceAndTrafficLightBar
                         }
                         
                         if !manager.isNavigatingFocused {
                             travelModeSelectorBar
+                                .zIndex(20)
                         }
                         
                         electronicEyeAndHighwayHUDStrip
@@ -1292,34 +1296,33 @@ struct ContentView: View {
                 .padding(.top, 6)
                 .padding(.bottom, 8)
             } else {
-                // PORTRAIT LAYOUT: Kept 100% Identical as requested!
-                VStack(spacing: 5) {
-                    // Top Navigation Guidance Card (Hidden when no active navigation!)
+                // PORTRAIT LAYOUT: Fixed Top Action Row + Non-Overlapping Travel Mode Bar (Zero Hit-Test Shift!)
+                VStack(spacing: 6) {
+                    // Top Navigation Guidance Card & Lane Bar (ONLY shown when active navigation is running!)
                     if manager.hasActiveNavigation {
                         topNavigationBannerCard
                             .padding(.horizontal, 12)
                             .padding(.top, 8)
-                    }
-                    
-                    // Multi-Lane Guidance Bar (3~4 Lanes: Recommended in Bright White, Others in Dimmed Gray) + Traffic Light Countdown!
-                    if manager.activeRoute != nil || manager.customTransitPolyline != nil || manager.isDemoSimulating {
+                        
                         laneGuidanceAndTrafficLightBar
                             .padding(.horizontal, 12)
                     }
                     
-                    // Show Travel Mode switcher bar ONLY before pressing [开始导航] (Hidden during focused driving!)
+                    // Show Travel Mode switcher bar ONLY before pressing [开始导航] (Dedicated row with high zIndex & vertical separation!)
                     if !manager.isNavigatingFocused {
                         travelModeSelectorBar
                             .padding(.horizontal, 12)
+                            .padding(.top, manager.hasActiveNavigation ? 0 : 6)
+                            .zIndex(25)
                     }
                     
-                    // Electronic Speed Camera + Traffic Status (Left) vs Right Side Tool Column
+                    // Electronic Speed Camera + Traffic Status (Left) vs Right Side Tool Column (Separated below travelModeSelectorBar so [搜索] and [返回驾驶舱] never overlap [步行] or [公交/地铁]!)
                     HStack(alignment: .top, spacing: 6) {
                         electronicEyeAndHighwayHUDStrip
                         
                         Spacer(minLength: 4)
                         
-                        // Right Side Stack: Top Row [搜索] [🎵 音乐] [缩小] + Vertical Toolbar (Compass, Recenter, Zoom)
+                        // Right Side Stack: Top Row [搜索] [🎵 音乐] [返回驾驶舱] + Vertical Toolbar (Compass, Recenter, Zoom)
                         VStack(alignment: .trailing, spacing: 6) {
                             // Row 1: [🔍 搜索] + [🎵 音乐] + [缩小] Cockpit Button
                             HStack(spacing: 5) {
@@ -1638,11 +1641,7 @@ struct ContentView: View {
             VStack(spacing: 5) {
                 Button(action: {
                     withAnimation(.spring(response: 0.35, dampingFraction: 0.7)) {
-                        if manager.activeRoute != nil || manager.customTransitPolyline != nil {
-                            manager.stopRouteGuidance()
-                        } else {
-                            manager.isMapEnlarged = false
-                        }
+                        manager.stopRouteGuidance()
                     }
                 }) {
                     Image(systemName: "xmark.circle.fill")
@@ -1781,44 +1780,236 @@ struct ContentView: View {
         }
     }
     
-    private func transitPlanTabButton(plan: TransitPlanOption, index: Int) -> some View {
-        let isSel = (manager.selectedTransitPlanIndex == index)
-        return Button(action: {
-            withAnimation(.easeInOut(duration: 0.2)) {
-                manager.selectTransitPlan(at: index)
-            }
-        }) {
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 5) {
-                    Image(systemName: "tram.fill")
-                        .font(.system(size: 11, weight: .bold))
-                    Text(plan.badge)
-                        .font(.system(size: 12, weight: .black))
+    // MARK: - Departure Time Menu Button (默认显示“出发”) + Transit Sort Strategy & Vehicle Preferences Menus
+    private var departureTimeMenuButton: some View {
+        Menu {
+            Button(action: {
+                manager.isCustomDepartureTime = false
+                manager.routeDepartureDate = Date()
+            }) {
+                HStack {
+                    Text(tr("现在出发 (默认显示“出发”)", "現在出發 (預設顯示「出發」)", "Leave Now (Default 'Depart')"))
+                    if !manager.isCustomDepartureTime { Image(systemName: "checkmark") }
                 }
-                Text(plan.subtitleSummary)
-                    .font(.system(size: 10, weight: .bold, design: .monospaced))
-                    .opacity(0.9)
             }
-            .padding(.horizontal, 11)
-            .padding(.vertical, 7)
-            .background(isSel ? Color.purple : Color.white.opacity(0.14))
+            Button(action: {
+                manager.routeDepartureDate = Date().addingTimeInterval(15 * 60)
+                manager.isCustomDepartureTime = true
+            }) {
+                Text(tr("15 分钟后出发", "15 分鐘後出發", "Leave in 15 min"))
+            }
+            Button(action: {
+                manager.routeDepartureDate = Date().addingTimeInterval(30 * 60)
+                manager.isCustomDepartureTime = true
+            }) {
+                Text(tr("30 分钟后出发", "30 分鐘後出發", "Leave in 30 min"))
+            }
+            Button(action: {
+                manager.routeDepartureDate = Date().addingTimeInterval(60 * 60)
+                manager.isCustomDepartureTime = true
+            }) {
+                Text(tr("1 小时后出发", "1 小時後出發", "Leave in 1 hour"))
+            }
+            Divider()
+            Button(action: {
+                manager.showDepartureTimePickerSheet = true
+            }) {
+                Label(tr("自定义出发时间...", "自訂出發時間...", "Custom Departure Time..."), systemImage: "calendar.badge.clock")
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "clock.fill")
+                    .font(.system(size: 10, weight: .bold))
+                Text(manager.departureButtonTitle(manager.language))
+                    .font(.system(size: 11, weight: .heavy))
+                    .lineLimit(1)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 9, weight: .bold))
+            }
+            .padding(.horizontal, 9)
+            .padding(.vertical, 6)
+            .background(manager.isCustomDepartureTime ? httGold : Color.white.opacity(0.15))
+            .foregroundColor(manager.isCustomDepartureTime ? .black : .white)
+            .cornerRadius(14)
+            .overlay(RoundedRectangle(cornerRadius: 14).stroke(httGold.opacity(0.75), lineWidth: 1))
+        }
+    }
+    
+    private var transitPreferencesMenuButton: some View {
+        Menu {
+            ForEach(TransitVehicleMode.allCases) { vMode in
+                Button(action: {
+                    manager.toggleTransitVehiclePreference(vMode)
+                }) {
+                    HStack {
+                        Label(vMode.title(manager.language), systemImage: vMode.icon)
+                        if manager.preferredTransitVehicles.contains(vMode) {
+                            Image(systemName: "checkmark")
+                        }
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "slider.horizontal.3")
+                    .font(.system(size: 10, weight: .bold))
+                Text(manager.transitPreferencesSummaryTitle(manager.language))
+                    .font(.system(size: 11, weight: .heavy))
+                    .lineLimit(1)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 9, weight: .bold))
+            }
+            .padding(.horizontal, 9)
+            .padding(.vertical, 6)
+            .background(manager.preferredTransitVehicles.count < TransitVehicleMode.allCases.count ? Color.blue.opacity(0.85) : Color.white.opacity(0.15))
             .foregroundColor(.white)
-            .cornerRadius(10)
-            .overlay(
-                RoundedRectangle(cornerRadius: 10)
-                    .stroke(isSel ? httGold : Color.white.opacity(0.2), lineWidth: isSel ? 2 : 1)
-            )
+            .cornerRadius(14)
+            .overlay(RoundedRectangle(cornerRadius: 14).stroke(httGold.opacity(0.75), lineWidth: 1))
+        }
+    }
+    
+    private var transitSortStrategyMenuButton: some View {
+        Menu {
+            ForEach(TransitSortStrategy.allCases) { strat in
+                Button(action: {
+                    manager.transitSortStrategy = strat
+                }) {
+                    HStack {
+                        Label(strat.title(manager.language), systemImage: strat.icon)
+                        if manager.transitSortStrategy == strat {
+                            Image(systemName: "checkmark")
+                        }
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: manager.transitSortStrategy.icon)
+                    .font(.system(size: 10, weight: .bold))
+                Text(manager.transitSortStrategy.title(manager.language))
+                    .font(.system(size: 11, weight: .heavy))
+                    .lineLimit(1)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 9, weight: .bold))
+            }
+            .padding(.horizontal, 9)
+            .padding(.vertical, 6)
+            .background(manager.transitSortStrategy != .suggested ? Color.purple.opacity(0.88) : Color.white.opacity(0.15))
+            .foregroundColor(.white)
+            .cornerRadius(14)
+            .overlay(RoundedRectangle(cornerRadius: 14).stroke(httGold.opacity(0.75), lineWidth: 1))
         }
     }
     
     private var transitPreNavSection: some View {
-        VStack(spacing: 8) {
+        VStack(alignment: .leading, spacing: 8) {
+            // Unified Filter Bar: [出发 ⌄] [偏好设置 ⌄] [建议路线 ⌄] (Replaces old purple tabs!)
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    ForEach(Array(manager.transitPlans.enumerated()), id: \.element.id) { idx, plan in
-                        transitPlanTabButton(plan: plan, index: idx)
+                HStack(spacing: 7) {
+                    departureTimeMenuButton
+                    transitPreferencesMenuButton
+                    transitSortStrategyMenuButton
+                }
+            }
+            
+            // Multi-Itinerary Compact Route Cards (Aligned with GaoDe & Apple Maps!)
+            if !manager.transitPlans.isEmpty {
+                ScrollView(.vertical, showsIndicators: true) {
+                    VStack(spacing: 7) {
+                        ForEach(Array(manager.transitPlans.enumerated()), id: \.element.id) { idx, plan in
+                            let isSel = (manager.selectedTransitPlanIndex == idx)
+                            Button(action: {
+                                withAnimation(.easeInOut(duration: 0.2)) {
+                                    manager.selectTransitPlan(at: idx)
+                                }
+                            }) {
+                                HStack(alignment: .center, spacing: 8) {
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                                            Text(plan.formattedDuration)
+                                                .font(.system(size: 15, weight: .black))
+                                                .foregroundColor(.white)
+                                            Text(manager.estimatedArrivalTimeString(durationMinutes: plan.totalMinutes))
+                                                .font(.system(size: 10, weight: .bold))
+                                                .foregroundColor(httGold)
+                                            Spacer()
+                                            Text("CN¥\(plan.priceYuan)")
+                                                .font(.system(size: 12, weight: .black))
+                                                .foregroundColor(httGold)
+                                        }
+                                        
+                                        if !plan.realtimeArrivalText.isEmpty {
+                                            Text("\(plan.realtimeArrivalText) · \(plan.badge)")
+                                                .font(.system(size: 10, weight: .bold))
+                                                .foregroundColor(Color(red: 0.45, green: 0.95, blue: 0.65))
+                                                .lineLimit(1)
+                                        }
+                                        
+                                        // Step pills with triangle arrows
+                                        ScrollView(.horizontal, showsIndicators: false) {
+                                            HStack(spacing: 4) {
+                                                ForEach(Array(plan.steps.enumerated()), id: \.element.id) { sIdx, st in
+                                                    if sIdx > 0 {
+                                                        Image(systemName: "play.fill")
+                                                            .font(.system(size: 6))
+                                                            .foregroundColor(.gray)
+                                                    }
+                                                    if st.kind == .walk {
+                                                        HStack(spacing: 2) {
+                                                            Image(systemName: "figure.walk")
+                                                                .font(.system(size: 9, weight: .bold))
+                                                            Text("\(st.durationMins)")
+                                                                .font(.system(size: 10, weight: .bold))
+                                                        }
+                                                        .padding(.horizontal, 5)
+                                                        .padding(.vertical, 2)
+                                                        .background(Color.white.opacity(0.14))
+                                                        .foregroundColor(httCream)
+                                                        .cornerRadius(4)
+                                                    } else {
+                                                        HStack(spacing: 2) {
+                                                            Text(st.lineName)
+                                                                .font(.system(size: 10, weight: .black))
+                                                            Image(systemName: st.kind.icon)
+                                                                .font(.system(size: 9, weight: .bold))
+                                                        }
+                                                        .padding(.horizontal, 5)
+                                                        .padding(.vertical, 2)
+                                                        .background(Color(hex: st.colorHex) ?? Color.blue)
+                                                        .foregroundColor(.white)
+                                                        .cornerRadius(4)
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    
+                                    Button(action: {
+                                        manager.selectTransitPlan(at: idx)
+                                        manager.startTransitWalkingNavigation()
+                                    }) {
+                                        Text(tr("开始", "開始", "GO"))
+                                            .font(.system(size: 13, weight: .black))
+                                            .foregroundColor(.white)
+                                            .padding(.horizontal, 10)
+                                            .padding(.vertical, 12)
+                                            .background(Color.green)
+                                            .cornerRadius(9)
+                                    }
+                                }
+                                .padding(8)
+                                .background(isSel ? Color.white.opacity(0.16) : Color.white.opacity(0.07))
+                                .cornerRadius(10)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 10)
+                                        .stroke(isSel ? httGold : Color.white.opacity(0.15), lineWidth: isSel ? 1.6 : 1)
+                                )
+                            }
+                            .buttonStyle(PlainButtonStyle())
+                        }
                     }
                 }
+                .frame(maxHeight: 150)
             }
             
             Button(action: {
@@ -1827,16 +2018,17 @@ struct ContentView: View {
                 HStack(spacing: 6) {
                     Image(systemName: "list.bullet.rectangle.portrait.fill")
                         .font(.system(size: 12, weight: .bold))
-                    Text(tr("查看完整公交地铁换乘时间轴与车站", "查看完整公交地鐵換乘時間軸與車站", "View Full Transit Timeline & Stations"))
-                        .font(.system(size: 12, weight: .bold))
+                    Text(tr("展开全部 \(manager.transitPlans.count) 条高德/Apple公交地铁方案与站点详情", "展開全部 \(manager.transitPlans.count) 條高德/Apple公交地鐵方案與站點詳情", "View All \(manager.transitPlans.count) Transit Itineraries & Stops"))
+                        .font(.system(size: 11, weight: .bold))
+                        .lineLimit(1)
                     Spacer()
                     Image(systemName: "chevron.right")
                         .font(.caption.bold())
                 }
                 .padding(.horizontal, 10)
                 .padding(.vertical, 6)
-                .background(Color.purple.opacity(0.3))
-                .foregroundColor(Color(red: 0.85, green: 0.65, blue: 1.0))
+                .background(Color.purple.opacity(0.32))
+                .foregroundColor(Color(red: 0.88, green: 0.72, blue: 1.0))
                 .cornerRadius(8)
             }
         }
@@ -1926,16 +2118,26 @@ struct ContentView: View {
     // Bottom Pre-Navigation Card: Enlarged Highway Strategy (高速优先/不走高速/距离最短) + Separate Candidate Routes Row + Anti-Mistouch [🚀 开始导航] Button!
     private var bottomPreNavRouteSelectionCard: some View {
         VStack(spacing: 9) {
-            // Destination Title Header Row with Close Route Button
+            // Destination Title Header Row with Departure Time [出发 ⌄] + Close Route Button
             HStack(spacing: 6) {
                 Image(systemName: "mappin.and.ellipse")
                     .font(.system(size: 13, weight: .bold))
                     .foregroundColor(httGold)
-                Text(manager.destinationName.isEmpty ? tr("规划路线", "規劃路線", "Planned Route") : manager.destinationName)
-                    .font(.system(size: 14, weight: .black))
-                    .foregroundColor(.white)
-                    .lineLimit(1)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(manager.destinationName.isEmpty ? tr("规划路线", "規劃路線", "Planned Route") : manager.destinationName)
+                        .font(.system(size: 14, weight: .black))
+                        .foregroundColor(.white)
+                        .lineLimit(1)
+                    if manager.remainingRouteMinutes > 0 {
+                        Text(manager.estimatedArrivalTimeString(durationMinutes: manager.remainingRouteMinutes))
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundColor(httGold)
+                    }
+                }
                 Spacer()
+                if manager.travelMode != .transit {
+                    departureTimeMenuButton
+                }
                 Button(action: {
                     manager.stopRouteGuidance()
                 }) {
@@ -2592,7 +2794,7 @@ struct ContentView: View {
                     posePill(title: tr("待机", "待機", "Idle"), state: .idle)
                     posePill(title: tr("散步", "散步", "Walk"), state: .walkRight)
                     posePill(title: tr("招牌动作", "招牌動作", "Dance"), state: .special)
-                    posePill(title: tr("顶蛋糕", "頂蛋糕", "Cake"), state: .teaCake)
+                    posePill(title: tr("喝下午茶", "喝下午茶", "Tea Time"), state: .teaCake)
                     Spacer()
                     Text(manager.isDraggingMascot
                          ? tr("提起挣扎!", "提起掙扎!", "Lifted!")
@@ -2611,63 +2813,149 @@ struct ContentView: View {
             .zIndex(3)
             
             if manager.selectedCharacter == .all {
-                let walkShift: CGFloat = (manager.mascotAction == .walkLeft || manager.mascotAction == .walkRight)
-                    ? (manager.mascotOffsetX * 0.45)
-                    : 0.0
-                HStack(alignment: .bottom, spacing: 2) {
-                    ForEach(AudioPlayerManager.CharacterFilter.fiveIndividuals) { member in
-                        if let frame = manager.allMemberFrames[member.charId] {
-                            let isThisDragged = manager.isDraggingMascot && manager.draggedMemberId == member.charId
-                            let savedPos = manager.memberPositions[member.charId] ?? .zero
-                            VStack(spacing: 0) {
-                                Image(uiImage: frame)
-                                    .interpolation(.none)
-                                    .resizable()
-                                    .scaledToFit()
-                                    .frame(height: isCompactStage ? 64 : 76)
-                                Text(member.displayName(manager.language))
-                                    .font(.system(size: 9, weight: .bold))
-                                    .padding(.horizontal, 4)
-                                    .padding(.vertical, 1)
-                                    .background(characterThemeColor(member).opacity(0.88))
-                                    .foregroundColor(.white)
-                                    .cornerRadius(4)
-                            }
-                            .offset(
-                                x: savedPos.width + (isThisDragged ? dragOffset.width : walkShift),
-                                y: savedPos.height + (isThisDragged ? dragOffset.height : 0)
-                            )
-                            .onTapGesture {
-                                manager.triggerCharacterTap(member: member)
-                            }
-                            .highPriorityGesture(
-                                DragGesture(minimumDistance: 4)
-                                    .onChanged { value in
-                                        let wasDragging = manager.isDraggingMascot
-                                        manager.markDragActive(memberId: member.charId)
-                                        if !wasDragging {
-                                            manager.playMascotVoice(for: member)
+                if manager.mascotAction == .teaCake {
+                    // Authentic Canonical RM-500 5-Member Seated Afternoon Tea Scene ([Mio, Ritsu, Yui, Mugi, Azusa])
+                    // When one member is lifted, renderTeaPartySceneFrame excludes ONLY that lifted member so the other 4 & wooden table stay 100% stationary!
+                    let activeLiftedId: String? = manager.isDraggingMascot ? manager.draggedMemberId : nil
+                    let dynamicTeaScene = manager.renderTeaPartySceneFrame(excludingCharId: activeLiftedId, tick: manager.animationTick)
+                        ?? manager.teaPartyCompositedFrame
+                        ?? manager.cachedTeaPartyFrames.first
+                    let seatedOrder: [AudioPlayerManager.CharacterFilter] = [.mio, .ritsu, .yui, .mugi, .azusa]
+                    let seatCenterXRatios: [CGFloat] = [0.13, 0.31, 0.50, 0.69, 0.87]
+                    
+                    if let teaPartyImg = dynamicTeaScene {
+                        ZStack(alignment: .bottom) {
+                            Image(uiImage: teaPartyImg)
+                                .interpolation(.none)
+                                .resizable()
+                                .scaledToFit()
+                                .frame(height: isCompactStage ? stageHeight - 16 : stageHeight - 12)
+                                .padding(.bottom, 2)
+                                .overlay(
+                                    GeometryReader { sceneGeo in
+                                        ZStack {
+                                            ForEach(0..<seatedOrder.count, id: \.self) { sIdx in
+                                                let member = seatedOrder[sIdx]
+                                                let seatX = sceneGeo.size.width * seatCenterXRatios[sIdx]
+                                                let seatY = sceneGeo.size.height * 0.54
+                                                let isLifted = manager.isDraggingMascot && manager.draggedMemberId == member.charId
+                                                
+                                                // Interactive Seat Hit Zone (Tap to speak, Drag to lift individually without moving the other 4!)
+                                                Rectangle()
+                                                    .fill(Color.clear)
+                                                    .contentShape(Rectangle())
+                                                    .frame(width: sceneGeo.size.width * 0.19, height: sceneGeo.size.height * 0.82)
+                                                    .position(x: seatX, y: seatY)
+                                                    .onTapGesture {
+                                                        manager.triggerCharacterTap(member: member)
+                                                    }
+                                                    .highPriorityGesture(
+                                                        DragGesture(minimumDistance: 4)
+                                                            .onChanged { value in
+                                                                let wasDragging = manager.isDraggingMascot
+                                                                manager.markDragActive(memberId: member.charId)
+                                                                if !wasDragging {
+                                                                    manager.playMascotVoice(for: member)
+                                                                }
+                                                                dragOffset = value.translation
+                                                            }
+                                                            .onEnded { _ in
+                                                                withAnimation(.spring(response: 0.35, dampingFraction: 0.68)) {
+                                                                    manager.isDraggingMascot = false
+                                                                    manager.draggedMemberId = nil
+                                                                    dragOffset = .zero
+                                                                }
+                                                            }
+                                                    )
+                                                
+                                                // Floating Lifted Sprite for the single grabbed member
+                                                if isLifted, let grabbedFrame = manager.allMemberFrames[member.charId] {
+                                                    Image(uiImage: grabbedFrame)
+                                                        .interpolation(.none)
+                                                        .resizable()
+                                                        .scaledToFit()
+                                                        .frame(width: isCompactStage ? 64 : 76, height: isCompactStage ? 64 : 76)
+                                                        .position(
+                                                            x: seatX + dragOffset.width,
+                                                            y: seatY + dragOffset.height
+                                                        )
+                                                        .allowsHitTesting(false)
+                                                }
+                                            }
                                         }
-                                        dragOffset = value.translation
                                     }
-                                    .onEnded { value in
-                                        let oldPos = manager.memberPositions[member.charId] ?? .zero
-                                        let maxBoundX = stageWidth * 0.35
-                                        let newX = min(max(oldPos.width + value.translation.width, -maxBoundX), maxBoundX)
-                                        let newY = min(max(oldPos.height + value.translation.height, -45), 35)
-                                        withAnimation(.spring(response: 0.35, dampingFraction: 0.65)) {
-                                            manager.memberPositions[member.charId] = CGSize(width: newX, height: newY)
-                                            manager.isDraggingMascot = false
-                                            manager.draggedMemberId = nil
-                                            dragOffset = .zero
+                                )
+                        }
+                        .zIndex(2)
+                    }
+                } else {
+                    // Non-tea-time 5-member standing/walking/special mode:
+                    // Each member is anchored in a ZStack at a fixed slotX so lifting one member NEVER causes the other 4 to shift!
+                    let walkShift: CGFloat = (manager.mascotAction == .walkLeft || manager.mascotAction == .walkRight)
+                        ? (manager.mascotOffsetX * 0.45)
+                        : 0.0
+                    let members = AudioPlayerManager.CharacterFilter.fiveIndividuals
+                    ZStack(alignment: .bottom) {
+                        ForEach(Array(members.enumerated()), id: \.element.id) { idx, member in
+                            if let frame = manager.allMemberFrames[member.charId] {
+                                let isThisDragged = manager.isDraggingMascot && manager.draggedMemberId == member.charId
+                                let savedPos = manager.memberPositions[member.charId] ?? .zero
+                                let fixedSlotX = CGFloat(idx - 2) * (stageWidth * 0.185)
+                                let spriteHeight: CGFloat = isCompactStage ? 64 : 76
+                                
+                                VStack(spacing: 0) {
+                                    Image(uiImage: frame)
+                                        .interpolation(.none)
+                                        .resizable()
+                                        .scaledToFit()
+                                        .frame(width: spriteHeight, height: spriteHeight)
+                                    Text(member.displayName(manager.language))
+                                        .font(.system(size: 9, weight: .bold))
+                                        .padding(.horizontal, 4)
+                                        .padding(.vertical, 1)
+                                        .background(characterThemeColor(member).opacity(0.88))
+                                        .foregroundColor(.white)
+                                        .cornerRadius(4)
+                                }
+                                .frame(width: stageWidth * 0.18)
+                                .offset(
+                                    x: fixedSlotX + savedPos.width + (isThisDragged ? dragOffset.width : walkShift),
+                                    y: savedPos.height + (isThisDragged ? dragOffset.height : 0)
+                                )
+                                .zIndex(isThisDragged ? 10 : Double(idx))
+                                .onTapGesture {
+                                    manager.triggerCharacterTap(member: member)
+                                }
+                                .highPriorityGesture(
+                                    DragGesture(minimumDistance: 4)
+                                        .onChanged { value in
+                                            let wasDragging = manager.isDraggingMascot
+                                            manager.markDragActive(memberId: member.charId)
+                                            if !wasDragging {
+                                                manager.playMascotVoice(for: member)
+                                            }
+                                            dragOffset = value.translation
                                         }
-                                    }
-                            )
+                                        .onEnded { value in
+                                            let oldPos = manager.memberPositions[member.charId] ?? .zero
+                                            let maxBoundX = stageWidth * 0.35
+                                            let newX = min(max(oldPos.width + value.translation.width, -maxBoundX), maxBoundX)
+                                            let newY = min(max(oldPos.height + value.translation.height, -45), 35)
+                                            withAnimation(.spring(response: 0.35, dampingFraction: 0.65)) {
+                                                manager.memberPositions[member.charId] = CGSize(width: newX, height: newY)
+                                                manager.isDraggingMascot = false
+                                                manager.draggedMemberId = nil
+                                                dragOffset = .zero
+                                            }
+                                        }
+                                )
+                            }
                         }
                     }
+                    .frame(width: stageWidth)
+                    .padding(.bottom, charBottomPad)
+                    .zIndex(2)
                 }
-                .padding(.bottom, charBottomPad)
-                .zIndex(2)
             } else if let sprite = manager.currentSpriteFrame {
                 Image(uiImage: sprite)
                     .interpolation(.none)
@@ -2707,8 +2995,8 @@ struct ContentView: View {
                     .zIndex(2)
             }
             
-            // Complete Afternoon Tea Cake Table (desk01 wooden table + desk00 cakes & chairs) clearly visible at the front of the stage!
-            if let deskImg = manager.deskSpriteFrame {
+            // Complete Afternoon Tea Cake Table (desk01 wooden table + desk00 cakes & chairs)
+            if let deskImg = manager.deskSpriteFrame, manager.selectedCharacter != .all && manager.mascotAction == .teaCake {
                 Image(uiImage: deskImg)
                     .interpolation(.none)
                     .resizable()
@@ -2786,6 +3074,9 @@ struct ContentView: View {
                 ForEach(AudioPlayerManager.CharacterFilter.allCases) { char in
                     Button(action: {
                         manager.selectedCharacter = char
+                        if char == .all {
+                            manager.mascotAction = .teaCake
+                        }
                         manager.resetPositions()
                         manager.triggerCharacterTap(member: char)
                     }) {
@@ -2838,7 +3129,7 @@ struct ContentView: View {
                 }
                 
                 tacticalButton(
-                    title: tr("顶蛋糕下午茶", "頂蛋糕下午茶", "Tea Time"),
+                    title: tr("喝下午茶", "喝下午茶", "Tea Time"),
                     subtitle: tr("桌宠蛋糕休息", "桌寵蛋糕休息", "Cake Break"),
                     icon: "birthday.cake.fill",
                     color: Color(red: 0.82, green: 0.56, blue: 0.18),
@@ -4091,81 +4382,329 @@ struct RM500AlbumAndOutfitSheetView: View {
 }
 
 
-// MARK: - Native Built-In GaoDe-Style Transit, Intercity Rail & High-Speed Train Modal Sheet (高德同款跨城火车/城际/地铁公交全能面板)
-struct InAppTransitPlanSheetView: View {
+// MARK: - Custom Departure Time Picker Sheet (地图自定义出发时间选择器)
+struct RouteDepartureTimePickerSheetView: View {
     @ObservedObject var manager: AudioPlayerManager
     @Environment(\.dismiss) private var dismiss
-    @State private var expandedStepIds: Set<UUID> = []
+    @State private var tempDate: Date = Date()
     
     private let httGold = Color(red: 0.88, green: 0.68, blue: 0.24)
     private let httCrimson = Color(red: 0.78, green: 0.18, blue: 0.22)
     private let httCream = Color(red: 0.99, green: 0.96, blue: 0.90)
     
-        private func sheetPlanTabButton(plan: TransitPlanOption, index: Int) -> some View {
-        let isSel = (manager.selectedTransitPlanIndex == index)
-        return Button(action: {
-            withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
-                manager.selectTransitPlan(at: index)
-            }
-        }) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(plan.badge)
-                    .font(.system(size: 12, weight: .black))
-                Text(plan.shortPriceSummary)
-                    .font(.system(size: 14, weight: .heavy, design: .rounded))
-                Text(plan.transferAndWalkSummary)
-                    .font(.system(size: 10, weight: .bold))
-                    .opacity(0.85)
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 8)
-            .background(isSel ? Color.purple : Color.white.opacity(0.10))
-            .foregroundColor(.white)
-            .cornerRadius(12)
-            .overlay(
-                RoundedRectangle(cornerRadius: 12)
-                    .stroke(isSel ? httGold : Color.clear, lineWidth: 2)
-            )
+    private func tr(_ hans: String, _ hant: String, _ en: String) -> String {
+        switch manager.language {
+        case .zhHans: return hans
+        case .zhHant: return hant
+        case .en: return en
         }
     }
+    
+    var body: some View {
+        NavigationView {
+            ZStack {
+                Color(red: 0.11, green: 0.10, blue: 0.12).ignoresSafeArea()
+                
+                VStack(spacing: 18) {
+                    VStack(spacing: 6) {
+                        Text(tr("设置计划出发时间", "設定計劃出發時間", "Set Planned Departure Time"))
+                            .font(.system(size: 18, weight: .black))
+                            .foregroundColor(.white)
+                        Text(tr("默认状态显示“出发”，选择具体时间后将自动计算预计到达时间与班次", "預設狀態顯示「出發」，選擇具體時間後將自動計算預計到達時間與班次", "Defaults to 'Depart'; selecting a time updates ETA and transit schedules"))
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundColor(.gray)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, 20)
+                    }
+                    .padding(.top, 12)
+                    
+                    DatePicker(
+                        tr("出发时间", "出發時間", "Departure"),
+                        selection: $tempDate,
+                        in: Date()...Date().addingTimeInterval(7 * 24 * 3600),
+                        displayedComponents: [.date, .hourAndMinute]
+                    )
+                    .datePickerStyle(.wheel)
+                    .labelsHidden()
+                    .colorScheme(.dark)
+                    .padding()
+                    .background(Color.white.opacity(0.08))
+                    .cornerRadius(14)
+                    .overlay(RoundedRectangle(cornerRadius: 14).stroke(httGold.opacity(0.5), lineWidth: 1))
+                    .padding(.horizontal, 16)
+                    
+                    HStack(spacing: 12) {
+                        Button(action: {
+                            manager.isCustomDepartureTime = false
+                            manager.routeDepartureDate = Date()
+                            dismiss()
+                        }) {
+                            Text(tr("恢复默认 (显示“出发”)", "恢復預設 (顯示「出發」)", "Reset to Default ('Depart')"))
+                                .font(.system(size: 14, weight: .bold))
+                                .frame(maxWidth: .infinity, minHeight: 44)
+                                .background(Color.white.opacity(0.14))
+                                .foregroundColor(httCream)
+                                .cornerRadius(10)
+                        }
+                        
+                        Button(action: {
+                            manager.routeDepartureDate = tempDate
+                            manager.isCustomDepartureTime = true
+                            dismiss()
+                        }) {
+                            Text(tr("确认出发时间", "確認出發時間", "Confirm Time"))
+                                .font(.system(size: 14, weight: .black))
+                                .frame(maxWidth: .infinity, minHeight: 44)
+                                .background(httCrimson)
+                                .foregroundColor(.white)
+                                .cornerRadius(10)
+                                .overlay(RoundedRectangle(cornerRadius: 10).stroke(httGold, lineWidth: 1.5))
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                    
+                    Spacer()
+                }
+            }
+            .navigationTitle(tr("出发时间", "出發時間", "Departure Time"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button(tr("关闭", "關閉", "Close")) {
+                        dismiss()
+                    }
+                    .foregroundColor(httGold)
+                }
+            }
+            .onAppear {
+                tempDate = manager.routeDepartureDate
+            }
+        }
+    }
+}
 
+// MARK: - Native Built-In GaoDe + Apple Maps Dual-Aligned Transit Modal Sheet (支持高德+Apple地图多行程列表、出发时间、路线排序、交通工具偏好设置)
+struct InAppTransitPlanSheetView: View {
+    @ObservedObject var manager: AudioPlayerManager
+    @Environment(\.dismiss) private var dismiss
+    @State private var expandedPlanIds: Set<UUID> = []
+    @State private var expandedStepIds: Set<UUID> = []
+    @State private var showSheetDeparturePicker: Bool = false
+    
+    private let httGold = Color(red: 0.88, green: 0.68, blue: 0.24)
+    private let httCrimson = Color(red: 0.78, green: 0.18, blue: 0.22)
+    private let httCream = Color(red: 0.99, green: 0.96, blue: 0.90)
+    
+    private func tr(_ hans: String, _ hant: String, _ en: String) -> String {
+        switch manager.language {
+        case .zhHans: return hans
+        case .zhHant: return hant
+        case .en: return en
+        }
+    }
+    
+    // Consolidated Filter Pill 1: Departure Time [出发 ⌄]
+    private var sheetDepartureMenuPill: some View {
+        Menu {
+            Button(action: {
+                manager.isCustomDepartureTime = false
+                manager.routeDepartureDate = Date()
+            }) {
+                HStack {
+                    Text(tr("现在出发 (默认显示“出发”)", "現在出發 (預設顯示「出發」)", "Leave Now (Default 'Depart')"))
+                    if !manager.isCustomDepartureTime { Image(systemName: "checkmark") }
+                }
+            }
+            Button(action: {
+                manager.routeDepartureDate = Date().addingTimeInterval(15 * 60)
+                manager.isCustomDepartureTime = true
+            }) {
+                Text(tr("15 分钟后出发", "15 分鐘後出發", "Leave in 15 min"))
+            }
+            Button(action: {
+                manager.routeDepartureDate = Date().addingTimeInterval(30 * 60)
+                manager.isCustomDepartureTime = true
+            }) {
+                Text(tr("30 分钟后出发", "30 分鐘後出發", "Leave in 30 min"))
+            }
+            Button(action: {
+                manager.routeDepartureDate = Date().addingTimeInterval(60 * 60)
+                manager.isCustomDepartureTime = true
+            }) {
+                Text(tr("1 小时后出发", "1 小時後出發", "Leave in 1 hour"))
+            }
+            Divider()
+            Button(action: {
+                showSheetDeparturePicker = true
+            }) {
+                Label(tr("自定义出发时间...", "自訂出發時間...", "Custom Departure Time..."), systemImage: "calendar.badge.clock")
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "clock")
+                    .font(.system(size: 11, weight: .bold))
+                Text(manager.departureButtonTitle(manager.language))
+                    .font(.system(size: 13, weight: .bold))
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 10, weight: .bold))
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            .background(manager.isCustomDepartureTime ? httGold : Color.white.opacity(0.14))
+            .foregroundColor(manager.isCustomDepartureTime ? .black : .white)
+            .cornerRadius(18)
+            .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.white.opacity(0.25), lineWidth: 1))
+        }
+    }
+    
+    // Consolidated Filter Pill 2: Transit Vehicle Preferences [偏好设置 ⌄] (巴士 / 地铁与轻轨 / 通勤铁路 / 渡轮)
+    private var sheetVehiclePreferencesMenuPill: some View {
+        Menu {
+            ForEach(TransitVehicleMode.allCases) { vMode in
+                Button(action: {
+                    manager.toggleTransitVehiclePreference(vMode)
+                }) {
+                    HStack {
+                        Label(vMode.title(manager.language), systemImage: vMode.icon)
+                        if manager.preferredTransitVehicles.contains(vMode) {
+                            Image(systemName: "checkmark")
+                        }
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "slider.horizontal.3")
+                    .font(.system(size: 11, weight: .bold))
+                Text(manager.transitPreferencesSummaryTitle(manager.language))
+                    .font(.system(size: 13, weight: .bold))
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 10, weight: .bold))
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            .background(manager.preferredTransitVehicles.count < TransitVehicleMode.allCases.count ? Color.blue : Color.white.opacity(0.14))
+            .foregroundColor(.white)
+            .cornerRadius(18)
+            .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.white.opacity(0.25), lineWidth: 1))
+        }
+    }
+    
+    // Consolidated Filter Pill 3: Route Sort Strategy [建议路线 ⌄] (建议路线 / 较快路程 / 较少转乘 / 较少步行)
+    private var sheetSortStrategyMenuPill: some View {
+        Menu {
+            ForEach(TransitSortStrategy.allCases) { strat in
+                Button(action: {
+                    manager.transitSortStrategy = strat
+                }) {
+                    HStack {
+                        Label(strat.title(manager.language), systemImage: strat.icon)
+                        if manager.transitSortStrategy == strat {
+                            Image(systemName: "checkmark")
+                        }
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: manager.transitSortStrategy.icon)
+                    .font(.system(size: 11, weight: .bold))
+                Text(manager.transitSortStrategy.title(manager.language))
+                    .font(.system(size: 13, weight: .bold))
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 10, weight: .bold))
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            .background(manager.transitSortStrategy != .suggested ? Color.purple : Color.white.opacity(0.14))
+            .foregroundColor(.white)
+            .cornerRadius(18)
+            .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.white.opacity(0.25), lineWidth: 1))
+        }
+    }
+    
     var body: some View {
         NavigationView {
             ZStack {
                 Color(red: 0.11, green: 0.10, blue: 0.12).ignoresSafeArea()
                 
                 VStack(spacing: 0) {
-                    // 1. Plan Tabs (方案1/方案2/方案3)
-                    ScrollView(.horizontal, showsIndicators: false) {
+                    // 1. Apple Maps / GaoDe Style Origin -> Destination Box + Consolidated Filter Bar (Replaces old top purple tabs!)
+                    VStack(spacing: 10) {
                         HStack(spacing: 10) {
-                            ForEach(Array(manager.transitPlans.enumerated()), id: \.element.id) { idx, plan in
-                                sheetPlanTabButton(plan: plan, index: idx)
+                            VStack(spacing: 3) {
+                                Image(systemName: "location.circle.fill")
+                                    .font(.system(size: 14))
+                                    .foregroundColor(.blue)
+                                Circle()
+                                    .fill(Color.gray.opacity(0.6))
+                                    .frame(width: 3, height: 3)
+                                Image(systemName: "mappin.circle.fill")
+                                    .font(.system(size: 14))
+                                    .foregroundColor(.red)
+                            }
+                            
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text(tr("我的位置", "我的位置", "My Location"))
+                                    .font(.system(size: 13, weight: .bold))
+                                    .foregroundColor(.white.opacity(0.9))
+                                Divider().background(Color.white.opacity(0.15))
+                                Text(manager.destinationName.isEmpty ? tr("目的地", "目的地", "Destination") : manager.destinationName)
+                                    .font(.system(size: 14, weight: .black))
+                                    .foregroundColor(httGold)
+                                    .lineLimit(1)
+                            }
+                            Spacer()
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(Color.white.opacity(0.08))
+                        .cornerRadius(12)
+                        
+                        // Unified Filter Pills: [🚆 公共交通] [出发 ⌄] [偏好设置 ⌄] [建议路线 ⌄]
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 8) {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "tram.fill")
+                                        .font(.system(size: 11, weight: .bold))
+                                    Text(tr("公共交通", "公共交通", "Transit"))
+                                        .font(.system(size: 13, weight: .bold))
+                                }
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 7)
+                                .background(Color.blue)
+                                .foregroundColor(.white)
+                                .cornerRadius(18)
+                                
+                                sheetDepartureMenuPill
+                                sheetVehiclePreferencesMenuPill
+                                sheetSortStrategyMenuPill
                             }
                         }
-                        .padding(.horizontal)
-                        .padding(.vertical, 10)
                     }
-                    .background(Color.black.opacity(0.6))
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .background(Color.black.opacity(0.65))
                     
                     Divider().background(Color.white.opacity(0.15))
                     
-                    // 2. Active Plan Detailed Station & Transfer Timeline (高德同款：支持跨城火车卡片、顺风车卡片、城际铁路与市内地铁公交)
+                    // 2. Multi-Route Vertical Itinerary List (Simultaneously displays GaoDe & Apple Maps synchronized routes!)
                     if manager.transitPlans.isEmpty || manager.destinationCoord == nil {
                         VStack(spacing: 14) {
                             Spacer()
                             Image(systemName: "tram.fill")
                                 .font(.system(size: 44))
                                 .foregroundColor(httGold)
-                            Text("暂无有效导航目的地")
+                            Text(tr("暂无有效导航目的地", "暫無有效導航目的地", "No Active Destination"))
                                 .font(.system(size: 17, weight: .black))
                                 .foregroundColor(.white)
-                            Text("请先在地图上点击选择目的地，或输入搜索终点并点击【路线/导航】，即可自动规划推荐公交地铁换乘方案。")
+                            Text(tr("请先在地图上点击选择目的地，或输入搜索终点并点击【路线/导航】，即可自动规划推荐公交地铁换乘方案。", "請先在地圖上點擊選擇目的地，或輸入搜尋終點並點擊【路線/導航】，即可自動規劃推薦公交地鐵換乘方案。", "Select a destination on the map or search to generate transit itineraries."))
                                 .font(.system(size: 13, weight: .medium))
                                 .foregroundColor(.gray)
                                 .multilineTextAlignment(.center)
                                 .padding(.horizontal, 28)
                             Button(action: { dismiss() }) {
-                                Text("返回地图选点")
+                                Text(tr("返回地图选点", "返回地圖選點", "Back to Map"))
                                     .font(.system(size: 14, weight: .bold))
                                     .foregroundColor(.black)
                                     .padding(.horizontal, 20)
@@ -4176,637 +4715,188 @@ struct InAppTransitPlanSheetView: View {
                             Spacer()
                         }
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    } else if manager.selectedTransitPlanIndex < manager.transitPlans.count {
-                        let activePlan = manager.transitPlans[manager.selectedTransitPlanIndex]
-                        
+                    } else {
                         ScrollView(.vertical, showsIndicators: true) {
-                            VStack(alignment: .leading, spacing: 10) {
-                                // IF CROSS-CITY OR NATIONWIDE LONG-DISTANCE: Show GaoDe Flight (✈️ 飛機) + Normal Train (🚂 火車) + High-Speed Rail (🚄 高鐵動車) matching Screenshot 3 & 4!
-                                if let ic = activePlan.intercityBanner {
-                                    VStack(spacing: 12) {
-                                        // 1. IF LONG-DISTANCE FLIGHT AVAILABLE: Show ✈️ 飛機 Card (宝安机场 -> 浦东机场 / 虹桥机场)
-                                        if ic.hasFlightOption {
-                                            VStack(alignment: .leading, spacing: 10) {
-                                                HStack {
-                                                    Image(systemName: "airplane")
-                                                        .font(.system(size: 14, weight: .bold))
-                                                        .foregroundColor(.white)
-                                                        .padding(5)
-                                                        .background(Color.blue)
-                                                        .cornerRadius(6)
-                                                    Text("飛機")
-                                                        .font(.system(size: 17, weight: .black))
-                                                        .foregroundColor(.white)
-                                                    Spacer()
-                                                    Text("\(ic.flight1Duration)  \(ic.flight1TotalFrom)")
-                                                        .font(.system(size: 15, weight: .black))
-                                                        .foregroundColor(httGold)
-                                                }
-                                                
-                                                // Flight Option 1 (Direct Low Price: 宝安机场 -> 浦东机场 ¥580起)
-                                                VStack(alignment: .leading, spacing: 6) {
-                                                    HStack {
-                                                        Text("\(ic.flight1Duration) \(ic.flight1TotalFrom)")
-                                                            .font(.system(size: 14, weight: .black))
-                                                            .foregroundColor(.white)
-                                                        Spacer()
-                                                        Text(ic.flight1Badge)
-                                                            .font(.system(size: 10, weight: .bold))
-                                                            .foregroundColor(Color.green)
-                                                            .padding(.horizontal, 6)
-                                                            .padding(.vertical, 2)
-                                                            .background(Color.green.opacity(0.16))
-                                                            .cornerRadius(4)
-                                                    }
-                                                    
-                                                    HStack(spacing: 6) {
-                                                        Circle().stroke(Color.green, lineWidth: 2).frame(width: 8, height: 8)
-                                                        Text("去機場")
-                                                            .foregroundColor(.gray)
-                                                        Button(action: { manager.openGaoDeLivePortal(mode: 0) }) {
-                                                            Text(ic.flight1ToAirportText)
-                                                                .foregroundColor(Color(red: 0.4, green: 0.78, blue: 1.0))
-                                                        }
-                                                    }
-                                                    .font(.system(size: 11, weight: .bold))
-                                                    
-                                                    HStack {
-                                                        Image(systemName: "airplane")
-                                                            .foregroundColor(.blue)
-                                                        Text(ic.flight1FromAirport)
-                                                            .font(.system(size: 15, weight: .black))
-                                                            .foregroundColor(.white)
-                                                        Spacer()
-                                                        VStack(spacing: 2) {
-                                                            Text(ic.flight1AirTime)
-                                                                .font(.system(size: 10, weight: .bold))
-                                                                .foregroundColor(.gray)
-                                                            Rectangle().fill(Color.gray.opacity(0.5)).frame(width: 55, height: 1)
-                                                            Text(ic.flight1CountText)
-                                                                .font(.system(size: 10, weight: .bold))
-                                                                .foregroundColor(.gray)
-                                                        }
-                                                        Spacer()
-                                                        Text(ic.flight1ToAirport)
-                                                            .font(.system(size: 15, weight: .black))
-                                                            .foregroundColor(.white)
-                                                        Text(ic.flight1TicketPrice)
-                                                            .font(.system(size: 15, weight: .black))
-                                                            .foregroundColor(.orange)
-                                                        Button(action: { manager.openFlightTicketsSheet() }) {
-                                                            Text("全部\n班次")
-                                                                .font(.system(size: 9, weight: .bold))
-                                                                .foregroundColor(Color(red: 0.4, green: 0.78, blue: 1.0))
-                                                                .padding(5)
-                                                                .background(Color.blue.opacity(0.15))
-                                                                .cornerRadius(5)
-                                                        }
-                                                    }
-                                                    .padding(9)
-                                                    .background(Color.white.opacity(0.08))
-                                                    .cornerRadius(8)
-                                                    
-                                                    HStack(spacing: 6) {
-                                                        Circle().stroke(Color.red, lineWidth: 2).frame(width: 8, height: 8)
-                                                        Text("去終點")
-                                                            .foregroundColor(.gray)
-                                                        Text(ic.flight1ToDestText)
-                                                            .foregroundColor(Color(red: 0.4, green: 0.78, blue: 1.0))
-                                                    }
-                                                    .font(.system(size: 11, weight: .bold))
-                                                }
-                                                
-                                                Divider().background(Color.white.opacity(0.12))
-                                                
-                                                // Flight Option 2 (Fastest: 宝安机场 -> 虹桥机场 ¥1825起)
-                                                VStack(alignment: .leading, spacing: 6) {
-                                                    HStack {
-                                                        Text("\(ic.flight2Duration) \(ic.flight2TotalFrom)")
-                                                            .font(.system(size: 14, weight: .black))
-                                                            .foregroundColor(.white)
-                                                        Spacer()
-                                                        Text(ic.flight2Badge)
-                                                            .font(.system(size: 10, weight: .bold))
-                                                            .foregroundColor(Color.green)
-                                                            .padding(.horizontal, 6)
-                                                            .padding(.vertical, 2)
-                                                            .background(Color.green.opacity(0.16))
-                                                            .cornerRadius(4)
-                                                    }
-                                                    
-                                                    HStack {
-                                                        Image(systemName: "airplane")
-                                                            .foregroundColor(.blue)
-                                                        Text(ic.flight1FromAirport)
-                                                            .font(.system(size: 15, weight: .black))
-                                                            .foregroundColor(.white)
-                                                        Spacer()
-                                                        VStack(spacing: 2) {
-                                                            Text(ic.flight2AirTime)
-                                                                .font(.system(size: 10, weight: .bold))
-                                                                .foregroundColor(.gray)
-                                                            Rectangle().fill(Color.gray.opacity(0.5)).frame(width: 55, height: 1)
-                                                            Text(ic.flight2CountText)
-                                                                .font(.system(size: 10, weight: .bold))
-                                                                .foregroundColor(.gray)
-                                                        }
-                                                        Spacer()
-                                                        Text(ic.flight2ToAirport)
-                                                            .font(.system(size: 15, weight: .black))
-                                                            .foregroundColor(.white)
-                                                        Text(ic.flight2TicketPrice)
-                                                            .font(.system(size: 15, weight: .black))
-                                                            .foregroundColor(.orange)
-                                                        Button(action: { manager.openFlightTicketsSheet() }) {
-                                                            Text("全部\n班次")
-                                                                .font(.system(size: 9, weight: .bold))
-                                                                .foregroundColor(Color(red: 0.4, green: 0.78, blue: 1.0))
-                                                                .padding(5)
-                                                                .background(Color.blue.opacity(0.15))
-                                                                .cornerRadius(5)
-                                                        }
-                                                    }
-                                                    .padding(9)
-                                                    .background(Color.white.opacity(0.08))
-                                                    .cornerRadius(8)
-                                                    
-                                                    HStack(spacing: 6) {
-                                                        Circle().stroke(Color.red, lineWidth: 2).frame(width: 8, height: 8)
-                                                        Text("去終點")
-                                                            .foregroundColor(.gray)
-                                                        Text(ic.flight2ToDestText)
-                                                            .foregroundColor(Color(red: 0.4, green: 0.78, blue: 1.0))
-                                                    }
-                                                    .font(.system(size: 11, weight: .bold))
-                                                }
-                                            }
-                                            .padding(12)
-                                            .background(Color.black.opacity(0.58))
-                                            .cornerRadius(12)
-                                            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.cyan.opacity(0.45), lineWidth: 1))
-                                        }
-                                        
-                                        // 2. IF NORMAL SLEEPER TRAIN AVAILABLE: Show 🚂 火車 Card (深圳东 -> 嘉兴 ¥223.5起)
-                                        if ic.hasNormalTrainOption {
-                                            VStack(alignment: .leading, spacing: 10) {
-                                                HStack {
-                                                    Image(systemName: "tram.fill")
-                                                        .font(.system(size: 14, weight: .bold))
-                                                        .foregroundColor(.white)
-                                                        .padding(5)
-                                                        .background(Color.blue)
-                                                        .cornerRadius(6)
-                                                    Text("火車")
-                                                        .font(.system(size: 17, weight: .black))
-                                                        .foregroundColor(.white)
-                                                    Spacer()
-                                                    Text("\(ic.normalTrainDuration)  \(ic.normalTrainTotalFrom)")
-                                                        .font(.system(size: 15, weight: .black))
-                                                        .foregroundColor(httGold)
-                                                }
-                                                
-                                                HStack(spacing: 6) {
-                                                    Circle().stroke(Color.green, lineWidth: 2).frame(width: 8, height: 8)
-                                                    Text("去火車站")
-                                                        .foregroundColor(.gray)
-                                                    Button(action: { manager.openGaoDeLivePortal(mode: 0) }) {
-                                                        Text(ic.normalTrainToStText)
-                                                            .foregroundColor(Color(red: 0.4, green: 0.78, blue: 1.0))
-                                                    }
-                                                }
-                                                .font(.system(size: 11, weight: .bold))
-                                                
-                                                HStack {
-                                                    Image(systemName: "tram.fill")
-                                                        .foregroundColor(.blue)
-                                                    Text(ic.normalTrainFromSt)
-                                                        .font(.system(size: 15, weight: .black))
-                                                        .foregroundColor(.white)
-                                                    Spacer()
-                                                    VStack(spacing: 2) {
-                                                        Text(ic.normalTrainRunTime)
-                                                            .font(.system(size: 10, weight: .bold))
-                                                            .foregroundColor(.gray)
-                                                        Rectangle().fill(Color.gray.opacity(0.5)).frame(width: 55, height: 1)
-                                                        Text(ic.normalTrainCountText)
-                                                            .font(.system(size: 10, weight: .bold))
-                                                            .foregroundColor(.gray)
-                                                    }
-                                                    Spacer()
-                                                    Text(ic.normalTrainToSt)
-                                                        .font(.system(size: 15, weight: .black))
-                                                        .foregroundColor(.white)
-                                                    Text(ic.normalTrainTicketPrice)
-                                                        .font(.system(size: 15, weight: .black))
-                                                        .foregroundColor(.orange)
-                                                    Button(action: { manager.openGaoDeLivePortal(mode: 2) }) {
-                                                        Text("全部\n班次")
-                                                            .font(.system(size: 9, weight: .bold))
-                                                            .foregroundColor(Color(red: 0.4, green: 0.78, blue: 1.0))
-                                                            .padding(5)
-                                                            .background(Color.blue.opacity(0.15))
-                                                            .cornerRadius(5)
-                                                    }
-                                                }
-                                                .padding(9)
-                                                .background(Color.white.opacity(0.08))
-                                                .cornerRadius(8)
-                                                
-                                                HStack(spacing: 6) {
-                                                    Circle().stroke(Color.red, lineWidth: 2).frame(width: 8, height: 8)
-                                                    Text("去終點")
-                                                        .foregroundColor(.gray)
-                                                    Text(ic.normalTrainToDestText)
-                                                        .foregroundColor(Color(red: 0.4, green: 0.78, blue: 1.0))
-                                                }
-                                                .font(.system(size: 11, weight: .bold))
-                                            }
-                                            .padding(12)
-                                            .background(Color.black.opacity(0.58))
-                                            .cornerRadius(12)
-                                            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.blue.opacity(0.45), lineWidth: 1))
-                                        }
-                                        
-                                        // 3. Card C: 🚄 高鐵動車 (High-Speed Rail Overview Card: 深圳北 -> 上海南 ¥845起)
-                                        VStack(alignment: .leading, spacing: 10) {
-                                            HStack {
-                                                Image(systemName: "train.side.front.car")
-                                                    .font(.system(size: 14, weight: .bold))
-                                                    .foregroundColor(.white)
-                                                    .padding(5)
-                                                    .background(Color.blue)
-                                                    .cornerRadius(6)
-                                                Text(ic.hasFlightOption ? "高鐵動車" : "火車 / 高鐵跨城方案")
-                                                    .font(.system(size: 17, weight: .black))
-                                                    .foregroundColor(.white)
-                                                Spacer()
-                                                Text("\(ic.durationText)  \(ic.startPriceText)")
-                                                    .font(.system(size: 15, weight: .black))
-                                                    .foregroundColor(httGold)
-                                            }
-                                            
-                                            HStack(spacing: 6) {
-                                                Circle().stroke(Color.green, lineWidth: 2).frame(width: 8, height: 8)
-                                                Text("去火車站")
-                                                    .foregroundColor(.gray)
-                                                Button(action: { manager.openGaoDeLivePortal(mode: 0) }) {
-                                                    Text(ic.toStationBusText)
-                                                        .foregroundColor(Color(red: 0.4, green: 0.78, blue: 1.0))
-                                                }
-                                            }
-                                            .font(.system(size: 12, weight: .bold))
-                                            
-                                            // Train Ticket Box (深圳北 ➔ 上海南 ¥845起 [全部班次])
-                                            HStack {
-                                                Image(systemName: "tram.fill")
-                                                    .foregroundColor(.blue)
-                                                Text(ic.fromTrainSt)
-                                                    .font(.system(size: 15, weight: .black))
-                                                    .foregroundColor(.white)
-                                                Spacer()
-                                                VStack(spacing: 2) {
-                                                    Text(ic.trainRunTime)
-                                                        .font(.system(size: 10, weight: .bold))
-                                                        .foregroundColor(.gray)
-                                                    Rectangle().fill(Color.gray.opacity(0.5)).frame(width: 60, height: 1)
-                                                    Text(ic.trainFreqText)
-                                                        .font(.system(size: 10, weight: .bold))
-                                                        .foregroundColor(.gray)
-                                                }
-                                                Spacer()
-                                                Text(ic.toTrainSt)
-                                                    .font(.system(size: 15, weight: .black))
-                                                    .foregroundColor(.white)
-                                                Text(ic.trainTicketPrice)
-                                                    .font(.system(size: 15, weight: .black))
-                                                    .foregroundColor(.orange)
-                                                Button(action: { manager.openTrainTicketsSheet() }) {
-                                                    Text("全部\n班次")
-                                                        .font(.system(size: 9, weight: .bold))
-                                                        .foregroundColor(Color(red: 0.4, green: 0.78, blue: 1.0))
-                                                        .padding(5)
-                                                        .background(Color.blue.opacity(0.15))
-                                                        .cornerRadius(5)
-                                                }
-                                            }
-                                            .padding(10)
-                                            .background(Color.white.opacity(0.08))
-                                            .cornerRadius(8)
-                                            
-                                            HStack(spacing: 6) {
-                                                Circle().stroke(Color.red, lineWidth: 2).frame(width: 8, height: 8)
-                                                Text("去終點")
-                                                    .foregroundColor(.gray)
-                                                Text(ic.fromStationBusText)
-                                                    .foregroundColor(Color(red: 0.4, green: 0.78, blue: 1.0))
-                                            }
-                                            .font(.system(size: 12, weight: .bold))
-                                        }
-                                        .padding(12)
-                                        .background(Color.black.opacity(0.55))
-                                        .cornerRadius(12)
-                                        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.blue.opacity(0.45), lineWidth: 1))
-                                        
-
-                                    }
-                                    .padding(.horizontal)
-                                    .padding(.top, 8)
+                            VStack(alignment: .leading, spacing: 12) {
+                                // Show Cross-City Flight / High-Speed Rail / Train overview banner if applicable
+                                if let firstPlan = manager.transitPlans.first, let ic = firstPlan.intercityBanner {
+                                    intercityOverviewSection(ic: ic)
                                 }
                                 
-                                // GaoDe Summary strip (5小時20分 步行3.8公里 + 🚶40 [地鐵3號綫] [惠州208路] [城際(惠州北-番禺)] 🚶17 + 首班車提醒!)
-                                VStack(alignment: .leading, spacing: 9) {
-                                    if !activePlan.warningNotice.isEmpty {
-                                        Text(activePlan.warningNotice)
-                                            .font(.system(size: 11, weight: .bold))
-                                            .foregroundColor(Color(red: 1.0, green: 0.42, blue: 0.38))
-                                            .padding(.horizontal, 10)
-                                            .padding(.vertical, 6)
-                                            .frame(maxWidth: .infinity, alignment: .leading)
-                                            .background(Color.red.opacity(0.16))
-                                            .cornerRadius(6)
-                                    }
+                                // Render ALL matching transit route options in a clean Apple Maps + GaoDe Maps vertical card list!
+                                ForEach(Array(manager.transitPlans.enumerated()), id: \.element.id) { idx, plan in
+                                    let isSelectedPlan = (manager.selectedTransitPlanIndex == idx)
+                                    let isExpanded = expandedPlanIds.contains(plan.id) || (expandedPlanIds.isEmpty && idx == manager.selectedTransitPlanIndex)
                                     
-                                    HStack(alignment: .firstTextBaseline, spacing: 8) {
-                                        Text(activePlan.formattedDuration)
-                                            .font(.system(size: 24, weight: .black))
-                                            .foregroundColor(.white)
-                                        Text(activePlan.formattedWalk)
-                                            .font(.system(size: 14, weight: .bold))
-                                            .foregroundColor(.gray)
-                                        Spacer()
-                                        Text("¥\(activePlan.priceYuan)")
-                                            .font(.system(size: 18, weight: .black))
-                                            .foregroundColor(httGold)
-                                    }
-                                    
-                                    HStack(spacing: 6) {
-                                        Text(activePlan.formattedWalk)
-                                        Text("·")
-                                        Text("\(activePlan.totalStations) 站")
-                                        Text("·")
-                                        Text(activePlan.startExitDesc)
-                                            .foregroundColor(Color(red: 0.45, green: 0.85, blue: 1.0))
-                                    }
-                                    .font(.system(size: 12, weight: .bold))
-                                    .foregroundColor(httCream.opacity(0.85))
-                                    
-                                    // GaoDe Step Overview Pill Bar (🚶40 -> [地鐵3號綫] -> [惠州208路] -> [城際(惠州北--番禺)] -> 🚶17)
-                                    ScrollView(.horizontal, showsIndicators: false) {
-                                        HStack(spacing: 6) {
-                                            ForEach(Array(activePlan.steps.enumerated()), id: \.element.id) { idx, st in
-                                                if st.kind == .walk {
-                                                    HStack(spacing: 2) {
-                                                        Image(systemName: "figure.walk")
-                                                            .font(.system(size: 10, weight: .bold))
-                                                        Text("\(st.durationMins)分鐘")
-                                                            .font(.system(size: 11, weight: .bold))
-                                                    }
-                                                    .padding(.horizontal, 6)
-                                                    .padding(.vertical, 4)
-                                                    .background(Color.white.opacity(0.12))
-                                                    .foregroundColor(httCream)
-                                                    .cornerRadius(5)
-                                                } else if st.kind == .bus {
-                                                    Text(st.lineName)
-                                                        .font(.system(size: 11, weight: .black))
-                                                        .padding(.horizontal, 8)
-                                                        .padding(.vertical, 4)
-                                                        .background(Color.blue.opacity(0.12))
-                                                        .foregroundColor(Color(red: 0.35, green: 0.75, blue: 1.0))
-                                                        .cornerRadius(5)
-                                                        .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.blue, lineWidth: 1.2))
-                                                } else {
-                                                    HStack(spacing: 3) {
-                                                        if st.kind == .intercity || st.kind == .train {
-                                                            Image(systemName: "tram.fill")
-                                                                .font(.system(size: 10))
-                                                        }
-                                                        Text(st.lineName)
-                                                            .font(.system(size: 11, weight: .black))
-                                                    }
-                                                    .padding(.horizontal, 8)
-                                                    .padding(.vertical, 4)
-                                                    .background(stepColor(for: st))
-                                                    .foregroundColor(.white)
-                                                    .cornerRadius(5)
-                                                }
-                                            }
-                                        }
-                                    }
-                                    
-                                    if !activePlan.realtimeArrivalText.isEmpty {
-                                        Button(action: {
-                                            if activePlan.realtimeArrivalText.contains("班") || activePlan.realtimeArrivalText.contains("車") || activePlan.realtimeArrivalText.contains("车") {
-                                                manager.openTrainTicketsSheet()
-                                            } else {
-                                                manager.openGaoDeLivePortal(mode: 2)
-                                            }
-                                        }) {
-                                            HStack {
-                                                Text(activePlan.realtimeArrivalText)
-                                                    .font(.system(size: 11, weight: .bold))
-                                                    .foregroundColor(Color.green)
-                                                Spacer()
-                                                Image(systemName: "chevron.right")
-                                                    .font(.caption2)
-                                                    .foregroundColor(.gray)
-                                            }
-                                            .padding(.horizontal, 10)
-                                            .padding(.vertical, 6)
-                                            .background(Color.white.opacity(0.08))
-                                            .cornerRadius(6)
-                                        }
-                                    }
-                                }
-                                .padding()
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .background(Color.black.opacity(0.45))
-                                
-                                // Vertical Step-by-Step Timeline (含可开合站台与车厢强冷/弱冷)
-                                VStack(alignment: .leading, spacing: 0) {
-                                    ForEach(Array(activePlan.steps.enumerated()), id: \.element.id) { stepIdx, step in
-                                        HStack(alignment: .top, spacing: 14) {
-                                            // Left Icon & Vertical Track Line
-                                            VStack(spacing: 0) {
-                                                Circle()
-                                                    .fill(stepColor(for: step))
-                                                    .frame(width: 28, height: 28)
-                                                    .overlay(
-                                                        Image(systemName: step.kind.icon)
-                                                            .font(.system(size: 13, weight: .bold))
-                                                            .foregroundColor(.white)
-                                                    )
-                                                
-                                                if stepIdx < activePlan.steps.count - 1 {
-                                                    Rectangle()
-                                                        .fill(stepColor(for: step).opacity(0.6))
-                                                        .frame(width: 3)
-                                                        .frame(minHeight: 52)
-                                                }
-                                            }
-                                            
-                                            // Right Step Info
+                                    VStack(alignment: .leading, spacing: 10) {
+                                        // Top Summary Area (Apple Maps + GaoDe Dual Style)
+                                        HStack(alignment: .top, spacing: 10) {
                                             VStack(alignment: .leading, spacing: 6) {
-                                                HStack {
-                                                    Text(step.fromStation)
-                                                        .font(.system(size: 16, weight: .black))
+                                                // Duration + Source Badge + Arrival ETA
+                                                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                                    Text(plan.formattedDuration)
+                                                        .font(.system(size: 22, weight: .black))
                                                         .foregroundColor(.white)
                                                     
-                                                    if !step.exitDesc.isEmpty && step.kind == .walk {
-                                                        Text(step.exitDesc)
+                                                    Text(plan.badge)
+                                                        .font(.system(size: 10, weight: .bold))
+                                                        .padding(.horizontal, 6)
+                                                        .padding(.vertical, 2)
+                                                        .background(isSelectedPlan ? Color.purple.opacity(0.85) : Color.white.opacity(0.14))
+                                                        .foregroundColor(isSelectedPlan ? .white : httGold)
+                                                        .cornerRadius(5)
+                                                    
+                                                    Text(manager.estimatedArrivalTimeString(durationMinutes: plan.totalMinutes))
+                                                        .font(.system(size: 11, weight: .bold))
+                                                        .foregroundColor(httGold)
+                                                }
+                                                
+                                                // Real-time Departure Frequency + Fare (e.g. "巴士即將開出，9分鐘 📡 · CN¥3")
+                                                HStack(spacing: 5) {
+                                                    if !plan.realtimeArrivalText.isEmpty {
+                                                        Text(plan.realtimeArrivalText)
+                                                            .font(.system(size: 12, weight: .bold))
+                                                            .foregroundColor(Color(red: 0.45, green: 0.96, blue: 0.65))
+                                                        Image(systemName: "dot.radiowaves.up.forward")
                                                             .font(.system(size: 11, weight: .bold))
-                                                            .foregroundColor(Color(red: 0.45, green: 0.85, blue: 1.0))
+                                                            .foregroundColor(.green)
+                                                        Text("·")
+                                                            .foregroundColor(.gray)
+                                                    }
+                                                    Text("CN¥\(plan.priceYuan)")
+                                                        .font(.system(size: 13, weight: .black))
+                                                        .foregroundColor(httCream)
+                                                    Text("·")
+                                                        .foregroundColor(.gray)
+                                                    Text("\(plan.formattedWalk) · \(plan.totalStations)站")
+                                                        .font(.system(size: 11, weight: .semibold))
+                                                        .foregroundColor(.gray)
+                                                }
+                                                
+                                                // Step Flow Pills with `▸` arrows (Matching Apple Maps & GaoDe!)
+                                                ScrollView(.horizontal, showsIndicators: false) {
+                                                    HStack(spacing: 5) {
+                                                        ForEach(Array(plan.steps.enumerated()), id: \.element.id) { sIdx, st in
+                                                            if sIdx > 0 {
+                                                                Image(systemName: "play.fill")
+                                                                    .font(.system(size: 7, weight: .bold))
+                                                                    .foregroundColor(.gray)
+                                                            }
+                                                            if st.kind == .walk {
+                                                                HStack(spacing: 2) {
+                                                                    Image(systemName: "figure.walk")
+                                                                        .font(.system(size: 11, weight: .bold))
+                                                                    Text("\(st.durationMins)\(tr("分钟", "分鐘", "m"))")
+                                                                        .font(.system(size: 11, weight: .bold))
+                                                                }
+                                                                .padding(.horizontal, 7)
+                                                                .padding(.vertical, 4)
+                                                                .background(Color.white.opacity(0.14))
+                                                                .foregroundColor(httCream)
+                                                                .cornerRadius(6)
+                                                            } else {
+                                                                HStack(spacing: 4) {
+                                                                    Text(st.lineName)
+                                                                        .font(.system(size: 11, weight: .black))
+                                                                        .padding(.horizontal, 7)
+                                                                        .padding(.vertical, 3)
+                                                                        .background(stepColor(for: st))
+                                                                        .foregroundColor(.white)
+                                                                        .cornerRadius(5)
+                                                                    Image(systemName: st.kind.icon)
+                                                                        .font(.system(size: 12, weight: .bold))
+                                                                        .foregroundColor(.white.opacity(0.85))
+                                                                }
+                                                            }
+                                                        }
                                                     }
                                                 }
                                                 
-                                                if step.kind != .walk {
-                                                    // Line Name Badge & Direction
-                                                    HStack(spacing: 6) {
-                                                        Text(step.lineName)
-                                                            .font(.system(size: 12, weight: .black))
-                                                            .padding(.horizontal, 6)
-                                                            .padding(.vertical, 3)
-                                                            .background(stepColor(for: step))
-                                                            .foregroundColor(.white)
-                                                            .cornerRadius(5)
-                                                        
-                                                        Text(step.directionDesc)
-                                                            .font(.system(size: 12, weight: .bold))
-                                                            .foregroundColor(.gray)
-                                                    }
-                                                    
-                                                    // Air-conditioning / Realtime Notice
-                                                    if !step.acNotice.isEmpty {
-                                                        Text(step.acNotice)
-                                                            .font(.system(size: 10, weight: .medium))
-                                                            .foregroundColor(Color(red: 0.4, green: 0.8, blue: 1.0))
-                                                    }
-                                                    
-                                                    // Expandable / Collapsible Stations Badge (^ X站 (X分钟)) - 可开合！
-                                                    if !step.passStations.isEmpty {
-                                                        VStack(alignment: .leading, spacing: 5) {
-                                                            Button(action: {
-                                                                withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) {
-                                                                    if expandedStepIds.contains(step.id) {
-                                                                        expandedStepIds.remove(step.id)
-                                                                    } else {
-                                                                        expandedStepIds.insert(step.id)
-                                                                    }
-                                                                }
-                                                            }) {
-                                                                HStack(spacing: 5) {
-                                                                    Image(systemName: expandedStepIds.contains(step.id) ? "chevron.up" : "chevron.down")
-                                                                        .font(.system(size: 10, weight: .bold))
-                                                                    Text("\(step.passStations.count + 1) 站 (\(step.durationMins) 分钟)")
-                                                                        .font(.system(size: 12, weight: .heavy))
-                                                                    Text(expandedStepIds.contains(step.id) ? "点击收起站台" : "点击展开经停车站")
-                                                                        .font(.system(size: 10, weight: .medium))
-                                                                        .opacity(0.8)
-                                                                }
-                                                                .foregroundColor(Color.cyan)
-                                                                .padding(.horizontal, 8)
-                                                                .padding(.vertical, 4)
-                                                                .background(Color.cyan.opacity(0.12))
-                                                                .cornerRadius(6)
-                                                            }
-                                                            
-                                                            // Expanded Station Sub-List (垂直站点连线)
-                                                            if expandedStepIds.contains(step.id) {
-                                                                VStack(alignment: .leading, spacing: 6) {
-                                                                    ForEach(step.passStations, id: \.self) { stName in
-                                                                        HStack(spacing: 8) {
-                                                                            Circle()
-                                                                                .fill(Color.gray.opacity(0.7))
-                                                                                .frame(width: 5, height: 5)
-                                                                            Text(stName)
-                                                                                .font(.system(size: 12, weight: .medium))
-                                                                                .foregroundColor(.white.opacity(0.9))
-                                                                        }
-                                                                        .padding(.leading, 8)
-                                                                    }
-                                                                }
-                                                                .padding(.vertical, 4)
-                                                                .transition(.opacity.combined(with: .move(edge: .top)))
-                                                            }
-                                                        }
-                                                    }
-                                                    
-                                                    // Interval & First/Last Train Desc
-                                                    if !step.intervalDesc.isEmpty {
-                                                        Text(step.intervalDesc)
-                                                            .font(.system(size: 10, weight: .medium))
-                                                            .foregroundColor(.gray)
-                                                    }
-                                                    
-                                                    // Target Destination Station & Door Side
-                                                    HStack {
-                                                        Text(step.toStation)
-                                                            .font(.system(size: 15, weight: .black))
-                                                            .foregroundColor(.white)
-                                                        
-                                                        if !step.doorSideDesc.isEmpty {
-                                                            Text(step.doorSideDesc)
-                                                                .font(.system(size: 11, weight: .bold))
-                                                                .foregroundColor(httGold)
-                                                                .padding(.horizontal, 5)
-                                                                .padding(.vertical, 2)
-                                                                .background(Color.black.opacity(0.6))
-                                                                .cornerRadius(4)
-                                                        }
+                                                // Warning / Fare adjustment / Recommendation notice
+                                                if !plan.warningNotice.isEmpty {
+                                                    HStack(spacing: 5) {
+                                                        Image(systemName: "exclamationmark.circle.fill")
+                                                            .font(.system(size: 12))
+                                                            .foregroundColor(.orange)
+                                                        Text(plan.warningNotice)
+                                                            .font(.system(size: 11, weight: .bold))
+                                                            .foregroundColor(Color(red: 1.0, green: 0.78, blue: 0.35))
+                                                            .lineLimit(2)
                                                     }
                                                     .padding(.top, 2)
-                                                } else if step.kind == .walk {
-                                                    // Walking segment description & duration
-                                                    Text(step.intervalDesc)
-                                                        .font(.system(size: 12, weight: .bold))
-                                                        .foregroundColor(httCream.opacity(0.85))
-                                                    
-                                                    // One-click Walking Navigation Button
-                                                    if stepIdx == 0 {
-                                                        Button(action: {
-                                                            dismiss()
-                                                            manager.startTransitWalkingNavigation()
-                                                        }) {
-                                                            HStack(spacing: 5) {
-                                                                Image(systemName: "figure.walk.circle.fill")
-                                                                    .font(.system(size: 13, weight: .bold))
-                                                                Text("开启第一段步行实景导航 (前往 \(step.toStation))")
-                                                                    .font(.system(size: 11, weight: .bold))
-                                                            }
-                                                            .padding(.horizontal, 8)
-                                                            .padding(.vertical, 5)
-                                                            .background(Color.green.opacity(0.2))
-                                                            .foregroundColor(Color.green)
-                                                            .cornerRadius(6)
-                                                        }
-                                                    }
                                                 }
                                             }
-                                            .padding(.bottom, 18)
                                             
-                                            Spacer()
+                                            Spacer(minLength: 4)
+                                            
+                                            // Right-aligned Green [开始 / 開始] Button (Apple Maps 1:1 style!)
+                                            VStack(spacing: 8) {
+                                                Button(action: {
+                                                    manager.selectTransitPlan(at: idx)
+                                                    dismiss()
+                                                    manager.startTransitWalkingNavigation()
+                                                }) {
+                                                    Text(tr("开始", "開始", "Start"))
+                                                        .font(.system(size: 15, weight: .black))
+                                                        .foregroundColor(.white)
+                                                        .frame(width: 62, height: 52)
+                                                        .background(Color(red: 0.20, green: 0.78, blue: 0.35))
+                                                        .cornerRadius(12)
+                                                        .shadow(color: Color.green.opacity(0.35), radius: 4, x: 0, y: 2)
+                                                }
+                                                
+                                                Button(action: {
+                                                    withAnimation(.spring(response: 0.3, dampingFraction: 0.78)) {
+                                                        manager.selectTransitPlan(at: idx)
+                                                        if expandedPlanIds.contains(plan.id) {
+                                                            expandedPlanIds.remove(plan.id)
+                                                        } else {
+                                                            expandedPlanIds.insert(plan.id)
+                                                        }
+                                                    }
+                                                }) {
+                                                    HStack(spacing: 2) {
+                                                        Text(isExpanded ? tr("收起站点", "收起站點", "Hide") : tr("站点详情", "站點詳情", "Stops"))
+                                                            .font(.system(size: 10, weight: .bold))
+                                                        Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                                                            .font(.system(size: 9, weight: .bold))
+                                                    }
+                                                    .foregroundColor(httGold)
+                                                }
+                                            }
+                                        }
+                                        .contentShape(Rectangle())
+                                        .onTapGesture {
+                                            withAnimation(.spring(response: 0.3, dampingFraction: 0.78)) {
+                                                manager.selectTransitPlan(at: idx)
+                                                if expandedPlanIds.contains(plan.id) {
+                                                    expandedPlanIds.remove(plan.id)
+                                                } else {
+                                                    expandedPlanIds.insert(plan.id)
+                                                }
+                                            }
+                                        }
+                                        
+                                        // Expandable Station-by-Station Timeline for this Route Card
+                                        if isExpanded {
+                                            Divider().background(Color.white.opacity(0.15))
+                                            planStepTimelineView(plan: plan, planIndex: idx)
                                         }
                                     }
+                                    .padding(14)
+                                    .background(isSelectedPlan ? Color.white.opacity(0.11) : Color.black.opacity(0.48))
+                                    .cornerRadius(14)
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 14)
+                                            .stroke(isSelectedPlan ? httGold : Color.white.opacity(0.14), lineWidth: isSelectedPlan ? 1.8 : 1)
+                                    )
                                 }
-                                .padding()
                             }
+                            .padding(14)
                         }
-                    } else {
-                        // Loading fallback
-                        VStack(spacing: 12) {
-                            Spacer()
-                            ProgressView()
-                                .progressViewStyle(CircularProgressViewStyle(tint: httGold))
-                                .scaleEffect(1.4)
-                            Text("正在根据您当前位置匹配最佳跨城/市内公共交通路线...")
-                                .font(.subheadline.bold())
-                                .foregroundColor(httCream)
-                            Spacer()
-                        }
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
                     
-                    // 3. Bottom One-Click Start Guidance in App (Zero External Jump!)
+                    // 3. Bottom One-Click Start Guidance in App
                     Button(action: {
                         dismiss()
                         manager.startTransitWalkingNavigation()
@@ -4814,7 +4904,7 @@ struct InAppTransitPlanSheetView: View {
                         HStack(spacing: 8) {
                             Image(systemName: "tram.circle.fill")
                                 .font(.title3)
-                            Text("开始全流程乘车指引 (含步行导航)")
+                            Text(tr("开始当前选中方案全流程乘车指引", "開始當前選中方案全流程乘車指引", "Start Selected Transit Guidance"))
                                 .font(.system(size: 15, weight: .black))
                         }
                         .frame(maxWidth: .infinity, minHeight: 46)
@@ -4828,29 +4918,258 @@ struct InAppTransitPlanSheetView: View {
                         .foregroundColor(.white)
                         .cornerRadius(12)
                         .overlay(RoundedRectangle(cornerRadius: 12).stroke(httGold, lineWidth: 1.8))
-                        .padding()
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 10)
                     }
                 }
             }
-            .navigationTitle("放课后茶会 · 内置公交地铁导航")
+            .navigationTitle(tr("放课后茶会 · 公交地铁导航", "放課後茶會 · 公交地鐵導航", "HTT · Transit Navigation"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("关闭") {
+                    Button(tr("关闭", "關閉", "Close")) {
                         dismiss()
                     }
                     .foregroundColor(httGold)
                 }
             }
             .onAppear {
-                manager.refreshTransitPlansForCurrentLocation(force: true)
+                if manager.transitPlans.isEmpty {
+                    manager.refreshTransitPlansForCurrentLocation(force: true)
+                }
             }
+        }
+        .sheet(isPresented: $showSheetDeparturePicker) {
+            RouteDepartureTimePickerSheetView(manager: manager)
         }
         .sheet(isPresented: $manager.showAllFlightTicketsSheet) {
             InAppFlightTicketScheduleSheetView(manager: manager)
         }
         .sheet(isPresented: $manager.showAllTrainTicketsSheet) {
             InAppTrainTicketScheduleSheetView(manager: manager)
+        }
+    }
+    
+    @ViewBuilder
+    private func planStepTimelineView(plan: TransitPlanOption, planIndex: Int) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(plan.steps.enumerated()), id: \.element.id) { stepIdx, step in
+                HStack(alignment: .top, spacing: 12) {
+                    VStack(spacing: 0) {
+                        Circle()
+                            .fill(stepColor(for: step))
+                            .frame(width: 26, height: 26)
+                            .overlay(
+                                Image(systemName: step.kind.icon)
+                                    .font(.system(size: 12, weight: .bold))
+                                    .foregroundColor(.white)
+                            )
+                        
+                        if stepIdx < plan.steps.count - 1 {
+                            Rectangle()
+                                .fill(stepColor(for: step).opacity(0.6))
+                                .frame(width: 3)
+                                .frame(minHeight: 46)
+                        }
+                    }
+                    
+                    VStack(alignment: .leading, spacing: 5) {
+                        HStack {
+                            Text(step.fromStation)
+                                .font(.system(size: 15, weight: .black))
+                                .foregroundColor(.white)
+                            
+                            if !step.exitDesc.isEmpty && step.kind == .walk {
+                                Text(step.exitDesc)
+                                    .font(.system(size: 11, weight: .bold))
+                                    .foregroundColor(Color(red: 0.45, green: 0.85, blue: 1.0))
+                            }
+                        }
+                        
+                        if step.kind != .walk {
+                            HStack(spacing: 6) {
+                                Text(step.lineName)
+                                    .font(.system(size: 11, weight: .black))
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 3)
+                                    .background(stepColor(for: step))
+                                    .foregroundColor(.white)
+                                    .cornerRadius(5)
+                                
+                                Text(step.directionDesc)
+                                    .font(.system(size: 11, weight: .bold))
+                                    .foregroundColor(.gray)
+                            }
+                            
+                            if !step.acNotice.isEmpty {
+                                Text(step.acNotice)
+                                    .font(.system(size: 10, weight: .medium))
+                                    .foregroundColor(Color(red: 0.4, green: 0.8, blue: 1.0))
+                            }
+                            
+                            if !step.passStations.isEmpty {
+                                VStack(alignment: .leading, spacing: 5) {
+                                    Button(action: {
+                                        withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) {
+                                            if expandedStepIds.contains(step.id) {
+                                                expandedStepIds.remove(step.id)
+                                            } else {
+                                                expandedStepIds.insert(step.id)
+                                            }
+                                        }
+                                    }) {
+                                        HStack(spacing: 5) {
+                                            Image(systemName: expandedStepIds.contains(step.id) ? "chevron.up" : "chevron.down")
+                                                .font(.system(size: 10, weight: .bold))
+                                            Text("\(step.passStations.count + 1) \(tr("站", "站", "stops")) (\(step.durationMins) \(tr("分钟", "分鐘", "min")))")
+                                                .font(.system(size: 11, weight: .heavy))
+                                            Text(expandedStepIds.contains(step.id) ? tr("点击收起站台", "點擊收起站台", "Hide stops") : tr("点击展开经停车站", "點擊展開經停車站", "Show stops"))
+                                                .font(.system(size: 10, weight: .medium))
+                                                .opacity(0.8)
+                                        }
+                                        .foregroundColor(Color.cyan)
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 4)
+                                        .background(Color.cyan.opacity(0.12))
+                                        .cornerRadius(6)
+                                    }
+                                    
+                                    if expandedStepIds.contains(step.id) {
+                                        VStack(alignment: .leading, spacing: 5) {
+                                            ForEach(step.passStations, id: \.self) { stName in
+                                                HStack(spacing: 8) {
+                                                    Circle()
+                                                        .fill(Color.gray.opacity(0.7))
+                                                        .frame(width: 5, height: 5)
+                                                    Text(stName)
+                                                        .font(.system(size: 11, weight: .medium))
+                                                        .foregroundColor(.white.opacity(0.9))
+                                                }
+                                                .padding(.leading, 8)
+                                            }
+                                        }
+                                        .padding(.vertical, 3)
+                                    }
+                                }
+                            }
+                            
+                            if !step.intervalDesc.isEmpty {
+                                Text(step.intervalDesc)
+                                    .font(.system(size: 10, weight: .medium))
+                                    .foregroundColor(.gray)
+                            }
+                            
+                            HStack {
+                                Text(step.toStation)
+                                    .font(.system(size: 14, weight: .black))
+                                    .foregroundColor(.white)
+                                
+                                if !step.doorSideDesc.isEmpty {
+                                    Text(step.doorSideDesc)
+                                        .font(.system(size: 10, weight: .bold))
+                                        .foregroundColor(httGold)
+                                        .padding(.horizontal, 5)
+                                        .padding(.vertical, 2)
+                                        .background(Color.black.opacity(0.6))
+                                        .cornerRadius(4)
+                                }
+                            }
+                            .padding(.top, 2)
+                        } else {
+                            Text(step.intervalDesc)
+                                .font(.system(size: 11, weight: .bold))
+                                .foregroundColor(httCream.opacity(0.85))
+                            
+                            if stepIdx == 0 {
+                                Button(action: {
+                                    manager.selectTransitPlan(at: planIndex)
+                                    dismiss()
+                                    manager.startTransitWalkingNavigation()
+                                }) {
+                                    HStack(spacing: 5) {
+                                        Image(systemName: "figure.walk.circle.fill")
+                                            .font(.system(size: 12, weight: .bold))
+                                        Text(tr("开启第一段步行实景导航 (前往 \(step.toStation))", "開啟第一段步行實景導航 (前往 \(step.toStation))", "Start Walking Guidance to \(step.toStation)"))
+                                            .font(.system(size: 11, weight: .bold))
+                                    }
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 5)
+                                    .background(Color.green.opacity(0.2))
+                                    .foregroundColor(Color.green)
+                                    .cornerRadius(6)
+                                }
+                            }
+                        }
+                    }
+                    .padding(.bottom, 14)
+                    
+                    Spacer()
+                }
+            }
+        }
+        .padding(.top, 6)
+    }
+    
+    @ViewBuilder
+    private func intercityOverviewSection(ic: IntercityTrainBanner) -> some View {
+        VStack(spacing: 10) {
+            if ic.hasFlightOption {
+                HStack {
+                    Image(systemName: "airplane")
+                        .foregroundColor(.white)
+                        .padding(5)
+                        .background(Color.blue)
+                        .cornerRadius(6)
+                    Text(tr("跨城飞机方案", "跨城飛機方案", "Flights"))
+                        .font(.system(size: 15, weight: .black))
+                        .foregroundColor(.white)
+                    Spacer()
+                    Text("\(ic.flight1Duration) · \(ic.flight1TotalFrom)")
+                        .font(.system(size: 13, weight: .black))
+                        .foregroundColor(httGold)
+                    Button(action: { manager.openFlightTicketsSheet() }) {
+                        Text(tr("全部航班", "全部航班", "Flights"))
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundColor(.cyan)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 4)
+                            .background(Color.blue.opacity(0.2))
+                            .cornerRadius(6)
+                    }
+                }
+                .padding(10)
+                .background(Color.black.opacity(0.55))
+                .cornerRadius(10)
+                .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.cyan.opacity(0.4), lineWidth: 1))
+            }
+            
+            HStack {
+                Image(systemName: "train.side.front.car")
+                    .foregroundColor(.white)
+                    .padding(5)
+                    .background(Color.blue)
+                    .cornerRadius(6)
+                Text("\(ic.fromTrainSt) ➔ \(ic.toTrainSt)")
+                    .font(.system(size: 14, weight: .black))
+                    .foregroundColor(.white)
+                Spacer()
+                Text("\(ic.durationText) · \(ic.trainTicketPrice)")
+                    .font(.system(size: 13, weight: .black))
+                    .foregroundColor(httGold)
+                Button(action: { manager.openTrainTicketsSheet() }) {
+                    Text(tr("全部班次", "全部班次", "Trains"))
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundColor(.cyan)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 4)
+                        .background(Color.blue.opacity(0.2))
+                        .cornerRadius(6)
+                }
+            }
+            .padding(10)
+            .background(Color.black.opacity(0.55))
+            .cornerRadius(10)
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.blue.opacity(0.4), lineWidth: 1))
         }
     }
     
@@ -4866,6 +5185,8 @@ struct InAppTransitPlanSheetView: View {
             return Color(hex: step.colorHex) ?? Color(red: 0.48, green: 0.70, blue: 0.02)
         case .train:
             return Color(hex: step.colorHex) ?? Color.blue
+        case .ferry:
+            return Color(hex: step.colorHex) ?? Color(red: 0.00, green: 0.62, blue: 0.72)
         }
     }
 }
