@@ -8233,6 +8233,49 @@ struct KOnDoudizhuSheetView: View {
                 .background(Color.black.opacity(0.45))
                 .cornerRadius(12)
                 
+                // 4. Official K-ON! Poker Deck & Card Back Preview Strip (轻音少女专属扑克牌面与背板预览)
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(tr("4. 轻音少女专属扑克牌面与背板预览", "4. 輕音少女專屬撲克牌面與背板預覽", "4. K-ON! Custom Poker Deck Preview"))
+                        .font(.system(size: 13, weight: .black))
+                        .foregroundColor(httGold)
+                    
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            if let backImg = ddz.cardBackImage() {
+                                VStack(spacing: 3) {
+                                    Image(uiImage: backImg)
+                                        .resizable()
+                                        .scaledToFill()
+                                        .frame(width: 48, height: 68)
+                                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(httGold, lineWidth: 1.2))
+                                    Text(tr("专属背板", "專屬背板", "Back"))
+                                        .font(.system(size: 9, weight: .bold))
+                                        .foregroundColor(httGold)
+                                }
+                            }
+                            ForEach([("joker_17", "大王·澪"), ("joker_16", "小王·唯"), ("♥_14", "红桃A·唯"), ("♠_14", "黑桃A·梓"), ("♣_14", "梅花A·紬"), ("♦_14", "方块A·律")], id: \.0) { item in
+                                if let cImg = ddz.cardImage(for: item.0) {
+                                    VStack(spacing: 3) {
+                                        Image(uiImage: cImg)
+                                            .resizable()
+                                            .scaledToFill()
+                                            .frame(width: 48, height: 68)
+                                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                                            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.white.opacity(0.6), lineWidth: 1))
+                                        Text(item.1)
+                                            .font(.system(size: 9, weight: .bold))
+                                            .foregroundColor(httCream)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                .padding(12)
+                .background(Color.black.opacity(0.45))
+                .cornerRadius(12)
+                
                 // Prominent Start Game Button
                 Button(action: {
                     ddz.startNewRound()
@@ -8265,233 +8308,290 @@ struct KOnDoudizhuSheetView: View {
     
     // MARK: - 2. Active Doudizhu Game Table View
     private var gameTableContentView: some View {
-        VStack(spacing: 8) {
-            // Top Row: 3 Landlord Hole Cards (三张底牌) + Multiplier + Card Counter Toggle
-            HStack(spacing: 10) {
-                HStack(spacing: 4) {
-                    Text(tr("底牌:", "底牌:", "Hole:"))
+        GeometryReader { geo in
+            let isLandscape = geo.size.width > geo.size.height
+            let usableWidth = max(280, geo.size.width - 24)
+            let centerStageWidth = max(120, usableWidth - 196)
+            VStack(spacing: isLandscape ? 6 : 8) {
+                // Top Row: 3 Landlord Hole Cards (三张底牌) + Multiplier + Card Counter Toggle
+                HStack(spacing: 10) {
+                    HStack(spacing: 4) {
+                        Text(tr("底牌:", "底牌:", "Hole:"))
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundColor(httCream)
+                        ForEach(ddz.holeCards) { hc in
+                            if ddz.phase == .bidding {
+                                if let backImg = ddz.cardBackImage() {
+                                    Image(uiImage: backImg)
+                                        .resizable()
+                                        .scaledToFill()
+                                        .frame(width: 28, height: 40)
+                                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                                        .overlay(RoundedRectangle(cornerRadius: 4).stroke(httGold, lineWidth: 1))
+                                } else {
+                                    RoundedRectangle(cornerRadius: 4)
+                                        .fill(httCrimson)
+                                        .frame(width: 28, height: 40)
+                                }
+                            } else {
+                                miniPokerCardView(card: hc)
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color.black.opacity(0.45))
+                    .cornerRadius(8)
+                    
+                    Text("倍数 x\(ddz.multiplier)")
+                        .font(.system(size: 12, weight: .black, design: .monospaced))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 6)
+                        .background(httCrimson)
+                        .foregroundColor(httGold)
+                        .cornerRadius(8)
+                    
+                    Spacer()
+                    
+                    Button(action: {
+                        withAnimation { ddz.showCardCounter.toggle() }
+                    }) {
+                        HStack(spacing: 3) {
+                            Image(systemName: "number.square.fill")
+                            Text(tr("记牌器", "記牌器", "Counter"))
+                        }
                         .font(.system(size: 11, weight: .bold))
-                        .foregroundColor(httCream)
-                    ForEach(ddz.holeCards) { hc in
-                        if ddz.phase == .bidding {
-                            RoundedRectangle(cornerRadius: 4)
-                                .fill(httCrimson)
-                                .frame(width: 26, height: 36)
-                                .overlay(
-                                    Text("HTT")
-                                        .font(.system(size: 7, weight: .black))
-                                        .foregroundColor(httGold)
-                                )
-                                .overlay(RoundedRectangle(cornerRadius: 4).stroke(httGold, lineWidth: 1))
-                        } else {
-                            miniPokerCardView(card: hc)
-                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 6)
+                        .background(ddz.showCardCounter ? httGold : Color.black.opacity(0.45))
+                        .foregroundColor(ddz.showCardCounter ? .black : httCream)
+                        .cornerRadius(8)
                     }
-                }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .background(Color.black.opacity(0.45))
-                .cornerRadius(8)
-                
-                Text("倍数 x\(ddz.multiplier)")
-                    .font(.system(size: 12, weight: .black, design: .monospaced))
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 6)
-                    .background(httCrimson)
-                    .foregroundColor(httGold)
-                    .cornerRadius(8)
-                
-                Spacer()
-                
-                Button(action: {
-                    withAnimation { ddz.showCardCounter.toggle() }
-                }) {
-                    HStack(spacing: 3) {
-                        Image(systemName: "number.square.fill")
-                        Text(tr("记牌器", "記牌器", "Counter"))
-                    }
-                    .font(.system(size: 11, weight: .bold))
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 6)
-                    .background(ddz.showCardCounter ? httGold : Color.black.opacity(0.45))
-                    .foregroundColor(ddz.showCardCounter ? .black : httCream)
-                    .cornerRadius(8)
-                }
-                .buttonStyle(PlainButtonStyle())
-                
-                Button(action: {
-                    ddz.startNewRound()
-                }) {
-                    Image(systemName: "arrow.clockwise.circle.fill")
-                        .font(.system(size: 20))
-                        .foregroundColor(httGold)
-                }
-                .buttonStyle(PlainButtonStyle())
-            }
-            .padding(.horizontal, 12)
-            
-            // Optional Card Counter Bar (记牌器: 大王..3)
-            if ddz.showCardCounter {
-                let ranksDesc = [17, 16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3]
-                let rankLabels = ["大王", "小王", "2", "A", "K", "Q", "J", "10", "9", "8", "7", "6", "5", "4", "3"]
-                HStack(spacing: 2) {
-                    ForEach(0..<ranksDesc.count, id: \.self) { rIdx in
-                        let rem = ddz.remainingCount(forRank: ranksDesc[rIdx])
-                        VStack(spacing: 1) {
-                            Text(rankLabels[rIdx])
-                                .font(.system(size: 8, weight: .black))
-                                .foregroundColor(rIdx <= 2 ? httGold : .white)
-                            Text("\(rem)")
-                                .font(.system(size: 10, weight: .heavy, design: .monospaced))
-                                .foregroundColor(rem == 0 ? .gray.opacity(0.4) : (rem == 4 ? .orange : httCream))
-                        }
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 3)
-                        .background(Color.black.opacity(0.45))
-                        .cornerRadius(4)
-                    }
-                }
-                .padding(.horizontal, 12)
-            }
-            
-            // Middle Arena: Left Opponent (Seat 2) + Center Played Cards + Right Opponent (Seat 1)
-            let leftSeatIdx = (ddz.mySeatIndex + 2) % 3
-            let rightSeatIdx = (ddz.mySeatIndex + 1) % 3
-            
-            HStack(alignment: .top, spacing: 8) {
-                if leftSeatIdx < ddz.seats.count {
-                    opponentSeatPanel(seat: ddz.seats[leftSeatIdx], isLeft: true)
-                }
-                
-                Spacer(minLength: 4)
-                
-                // Center Table Last Played Hand Banner
-                VStack(spacing: 6) {
-                    if let lastHand = ddz.lastValidHand, ddz.lastPlaySeat >= 0, ddz.lastPlaySeat < ddz.seats.count {
-                        Text("[\(ddz.seats[ddz.lastPlaySeat].name)] 出牌：\(lastHand.category.localizedName(manager.language))")
-                            .font(.system(size: 11, weight: .black))
+                    .buttonStyle(PlainButtonStyle())
+                    
+                    Button(action: {
+                        ddz.startNewRound()
+                    }) {
+                        Image(systemName: "arrow.clockwise.circle.fill")
+                            .font(.system(size: 20))
                             .foregroundColor(httGold)
-                        
-                        ScrollView(.horizontal, showsIndicators: false) {
-                            HStack(spacing: -10) {
-                                ForEach(lastHand.cards) { c in
-                                    tablePokerCardView(card: c)
-                                }
-                            }
-                            .padding(.horizontal, 8)
-                        }
-                    } else {
-                        Text(ddz.phase == .bidding
-                             ? tr("正在叫地主阶段...", "正在叫地主階段...", "Bidding for Landlord...")
-                             : tr("等待出牌...", "等待出牌...", "Waiting for play..."))
-                            .font(.system(size: 12, weight: .bold))
-                            .foregroundColor(httCream.opacity(0.75))
-                            .padding(.top, 24)
                     }
+                    .buttonStyle(PlainButtonStyle())
                 }
-                .frame(maxWidth: .infinity)
-                
-                Spacer(minLength: 4)
-                
-                if rightSeatIdx < ddz.seats.count {
-                    opponentSeatPanel(seat: ddz.seats[rightSeatIdx], isLeft: false)
-                }
-            }
-            .padding(.horizontal, 12)
-            
-            Spacer(minLength: 4)
-            
-            // My Last Played Cards or Action Status
-            if ddz.mySeatIndex < ddz.seats.count {
-                let me = ddz.seats[ddz.mySeatIndex]
-                if !me.lastActionText.isEmpty {
-                    Text("我的状态: \(me.lastActionText)")
-                        .font(.system(size: 11, weight: .black))
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 3)
-                        .background(Color.black.opacity(0.5))
-                        .foregroundColor(httGold)
-                        .cornerRadius(6)
-                }
-            }
-            
-            // Action Control Bar (Bidding / Playing / Round Over)
-            playerActionControlBar
                 .padding(.horizontal, 12)
-            
-            // Bottom Player Hand & Info Bar
-            if ddz.mySeatIndex < ddz.seats.count {
-                let me = ddz.seats[ddz.mySeatIndex]
-                VStack(spacing: 6) {
-                    // Hand Cards Fan (Scrollable & Tappable, pops up by 14pt when selected!)
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: -14) {
-                            ForEach(me.hand) { card in
-                                let isSelected = ddz.selectedCardIds.contains(card.id)
-                                Button(action: {
-                                    withAnimation(.spring(response: 0.22, dampingFraction: 0.7)) {
-                                        ddz.toggleSelectCard(card)
-                                    }
-                                }) {
-                                    handPokerCardView(card: card, isSelected: isSelected)
-                                }
-                                .buttonStyle(PlainButtonStyle())
+                
+                // Optional Card Counter Bar (记牌器: 大王..3)
+                if ddz.showCardCounter {
+                    let ranksDesc = [17, 16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3]
+                    let rankLabels = ["大王", "小王", "2", "A", "K", "Q", "J", "10", "9", "8", "7", "6", "5", "4", "3"]
+                    HStack(spacing: 2) {
+                        ForEach(0..<ranksDesc.count, id: \.self) { rIdx in
+                            let rem = ddz.remainingCount(forRank: ranksDesc[rIdx])
+                            VStack(spacing: 1) {
+                                Text(rankLabels[rIdx])
+                                    .font(.system(size: 8, weight: .black))
+                                    .foregroundColor(rIdx <= 2 ? httGold : .white)
+                                Text("\(rem)")
+                                    .font(.system(size: 10, weight: .heavy, design: .monospaced))
+                                    .foregroundColor(rem == 0 ? .gray.opacity(0.4) : (rem == 4 ? .orange : httCream))
                             }
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 3)
+                            .background(Color.black.opacity(0.45))
+                            .cornerRadius(4)
                         }
-                        .padding(.horizontal, 16)
-                        .padding(.top, 16)
-                        .padding(.bottom, 4)
+                    }
+                    .padding(.horizontal, 12)
+                }
+                
+                // Middle Arena: Left Opponent (Seat 2) + Center Played Cards + Right Opponent (Seat 1)
+                let leftSeatIdx = (ddz.mySeatIndex + 2) % 3
+                let rightSeatIdx = (ddz.mySeatIndex + 1) % 3
+                
+                HStack(alignment: .top, spacing: 8) {
+                    if leftSeatIdx < ddz.seats.count {
+                        opponentSeatPanel(seat: ddz.seats[leftSeatIdx], isLeft: true)
                     }
                     
-                    // My Seat Footer Bar
-                    HStack(spacing: 10) {
-                        if let sprite = manager.allMemberFrames[me.characterId] {
-                            Image(uiImage: sprite)
-                                .interpolation(.none)
-                                .resizable()
-                                .scaledToFit()
-                                .frame(width: 36, height: 42)
-                        }
-                        VStack(alignment: .leading, spacing: 2) {
-                            HStack(spacing: 6) {
-                                Text(me.name)
-                                    .font(.system(size: 13, weight: .black))
-                                    .foregroundColor(.white)
-                                if ddz.phase != .bidding {
-                                    Text(me.isLandlord ? "🎩 地主" : "🌾 农民")
-                                        .font(.system(size: 10, weight: .black))
-                                        .padding(.horizontal, 6)
-                                        .padding(.vertical, 2)
-                                        .background(me.isLandlord ? httGold : Color.green.opacity(0.8))
-                                        .foregroundColor(me.isLandlord ? .black : .white)
-                                        .cornerRadius(4)
+                    Spacer(minLength: 4)
+                    
+                    // Center Table Last Played Hand Banner (auto-fits within centerStageWidth)
+                    VStack(spacing: 6) {
+                        if let lastHand = ddz.lastValidHand, ddz.lastPlaySeat >= 0, ddz.lastPlaySeat < ddz.seats.count {
+                            Text("[\(ddz.seats[ddz.lastPlaySeat].name)] 出牌：\(lastHand.category.localizedName(manager.language))")
+                                .font(.system(size: 11, weight: .black))
+                                .foregroundColor(httGold)
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.8)
+                            
+                            let cCount = lastHand.cards.count
+                            let cardW: CGFloat = 46
+                            let cardH: CGFloat = 68
+                            let defaultStep: CGFloat = 26
+                            let fitStep: CGFloat = cCount > 1 ? min(defaultStep, max(12, (centerStageWidth - cardW) / CGFloat(cCount - 1))) : 0
+                            let rowW: CGFloat = cCount > 0 ? cardW + CGFloat(max(0, cCount - 1)) * fitStep : cardW
+                            ZStack(alignment: .leading) {
+                                ForEach(Array(lastHand.cards.enumerated()), id: \.element.id) { idx, c in
+                                    tablePokerCardView(card: c)
+                                        .offset(x: CGFloat(idx) * fitStep)
+                                        .zIndex(Double(idx))
                                 }
                             }
-                            Text("手牌: \(me.hand.count) 张 · 积分: \(me.score)")
-                                .font(.system(size: 11, weight: .bold, design: .monospaced))
-                                .foregroundColor(httGold)
-                        }
-                        Spacer()
-                        if ddz.currentTurnSeat == ddz.mySeatIndex && ddz.phase != .roundOver {
-                            Text(tr("👉 轮到你操作", "👉 輪到你操作", "👉 Your Turn"))
-                                .font(.system(size: 11, weight: .black))
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 4)
-                                .background(Color.green)
-                                .foregroundColor(.white)
-                                .cornerRadius(6)
+                            .frame(width: rowW, height: cardH, alignment: .leading)
+                            .frame(maxWidth: .infinity, alignment: .center)
+                        } else {
+                            Text(ddz.phase == .bidding
+                                 ? tr("正在叫地主阶段...", "正在叫地主階段...", "Bidding for Landlord...")
+                                 : tr("等待出牌...", "等待出牌...", "Waiting for play..."))
+                                .font(.system(size: 12, weight: .bold))
+                                .foregroundColor(httCream.opacity(0.75))
+                                .padding(.top, 24)
                         }
                     }
+                    .frame(maxWidth: .infinity)
+                    
+                    Spacer(minLength: 4)
+                    
+                    if rightSeatIdx < ddz.seats.count {
+                        opponentSeatPanel(seat: ddz.seats[rightSeatIdx], isLeft: false)
+                    }
+                }
+                .padding(.horizontal, 12)
+                
+                Spacer(minLength: 2)
+                
+                // My Last Played Cards or Action Status
+                if ddz.mySeatIndex < ddz.seats.count {
+                    let me = ddz.seats[ddz.mySeatIndex]
+                    if !me.lastActionText.isEmpty {
+                        Text("我的状态: \(me.lastActionText)")
+                            .font(.system(size: 11, weight: .black))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 3)
+                            .background(Color.black.opacity(0.5))
+                            .foregroundColor(httGold)
+                            .cornerRadius(6)
+                    }
+                }
+                
+                // Action Control Bar (Bidding / Playing / Round Over)
+                playerActionControlBar
                     .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
-                    .background(Color.black.opacity(0.60))
-                    .cornerRadius(12)
-                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(ddz.currentTurnSeat == ddz.mySeatIndex ? httGold : Color.white.opacity(0.2), lineWidth: 1.5))
-                    .padding(.horizontal, 12)
-                    .padding(.bottom, 8)
+                
+                // Bottom Player Hand & Info Bar (竖屏自适应双排全显，绝不截断右侧手牌)
+                if ddz.mySeatIndex < ddz.seats.count {
+                    let me = ddz.seats[ddz.mySeatIndex]
+                    VStack(spacing: 6) {
+                        adaptivePlayerHandView(hand: me.hand, usableWidth: usableWidth, isLandscape: isLandscape)
+                            .padding(.horizontal, 12)
+                        
+                        // My Seat Footer Bar
+                        HStack(spacing: 10) {
+                            if let sprite = manager.allMemberFrames[me.characterId] {
+                                Image(uiImage: sprite)
+                                    .interpolation(.none)
+                                    .resizable()
+                                    .scaledToFit()
+                                    .frame(width: 36, height: 42)
+                            }
+                            VStack(alignment: .leading, spacing: 2) {
+                                HStack(spacing: 6) {
+                                    Text(me.name)
+                                        .font(.system(size: 13, weight: .black))
+                                        .foregroundColor(.white)
+                                    if ddz.phase != .bidding {
+                                        Text(me.isLandlord ? "🎩 地主" : "🌾 农民")
+                                            .font(.system(size: 10, weight: .black))
+                                            .padding(.horizontal, 6)
+                                            .padding(.vertical, 2)
+                                            .background(me.isLandlord ? httGold : Color.green.opacity(0.8))
+                                            .foregroundColor(me.isLandlord ? .black : .white)
+                                            .cornerRadius(4)
+                                    }
+                                }
+                                Text("手牌: \(me.hand.count) 张 · 积分: \(me.score)")
+                                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                                    .foregroundColor(httGold)
+                            }
+                            Spacer()
+                            if ddz.currentTurnSeat == ddz.mySeatIndex && ddz.phase != .roundOver {
+                                Text(tr("👉 轮到你操作", "👉 輪到你操作", "👉 Your Turn"))
+                                    .font(.system(size: 11, weight: .black))
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 4)
+                                    .background(Color.green)
+                                    .foregroundColor(.white)
+                                    .cornerRadius(6)
+                            }
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(Color.black.opacity(0.60))
+                        .cornerRadius(12)
+                        .overlay(RoundedRectangle(cornerRadius: 12).stroke(ddz.currentTurnSeat == ddz.mySeatIndex ? httGold : Color.white.opacity(0.2), lineWidth: 1.5))
+                        .padding(.horizontal, 12)
+                        .padding(.bottom, 8)
+                    }
                 }
             }
         }
+    }
+    
+    // MARK: - 竖屏/横屏全可见自适应手牌扇形区（竖屏 >10 张自动双排居中叠放，<=10 张或横屏单排动态步进）
+    @ViewBuilder
+    private func adaptivePlayerHandView(hand: [DoudizhuCard], usableWidth: CGFloat, isLandscape: Bool) -> some View {
+        let count = hand.count
+        if count == 0 {
+            EmptyView()
+        } else if !isLandscape && count > 10 {
+            // 竖屏下超过10张牌（地主最多20张）：自动分为上下两排居中显示（每排最多10张），无需左右滑动即可一眼看全所有牌
+            let topCount = (count + 1) / 2
+            let topCards = Array(hand.prefix(topCount))
+            let bottomCards = Array(hand.dropFirst(topCount))
+            let cardW: CGFloat = 62
+            let cardH: CGFloat = 90
+            VStack(spacing: -22) {
+                fittedCardRowView(cards: topCards, usableWidth: usableWidth, cardW: cardW, cardH: cardH)
+                    .zIndex(1)
+                fittedCardRowView(cards: bottomCards, usableWidth: usableWidth, cardW: cardW, cardH: cardH)
+                    .zIndex(2)
+            }
+            .padding(.top, 14)
+            .padding(.bottom, 2)
+        } else {
+            let cardW: CGFloat = 62
+            let cardH: CGFloat = 90
+            fittedCardRowView(cards: hand, usableWidth: usableWidth, cardW: cardW, cardH: cardH)
+                .padding(.top, 14)
+                .padding(.bottom, 2)
+        }
+    }
+    
+    private func fittedCardRowView(cards: [DoudizhuCard], usableWidth: CGFloat, cardW: CGFloat, cardH: CGFloat) -> some View {
+        let count = cards.count
+        let maxStep: CGFloat = 36.0
+        let minStep: CGFloat = 20.0
+        let rawStep: CGFloat = count > 1 ? (usableWidth - cardW - 4) / CGFloat(count - 1) : maxStep
+        let step: CGFloat = count > 1 ? min(maxStep, max(minStep, rawStep)) : 0
+        let totalWidth: CGFloat = count > 0 ? cardW + CGFloat(max(0, count - 1)) * step : cardW
+        
+        return ZStack(alignment: .leading) {
+            ForEach(Array(cards.enumerated()), id: \.element.id) { idx, card in
+                let isSelected = ddz.selectedCardIds.contains(card.id)
+                Button(action: {
+                    withAnimation(.spring(response: 0.22, dampingFraction: 0.7)) {
+                        ddz.toggleSelectCard(card)
+                    }
+                }) {
+                    handPokerCardView(card: card, isSelected: isSelected)
+                }
+                .buttonStyle(PlainButtonStyle())
+                .offset(x: CGFloat(idx) * step)
+                .zIndex(Double(idx))
+            }
+        }
+        .frame(width: totalWidth, height: cardH + 16, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: .center)
     }
     
     @ViewBuilder
@@ -8649,11 +8749,15 @@ struct KOnDoudizhuSheetView: View {
                 .foregroundColor(.white)
                 .lineLimit(1)
             
-            HStack(spacing: 3) {
-                RoundedRectangle(cornerRadius: 3)
-                    .fill(httCrimson)
-                    .frame(width: 12, height: 16)
-                    .overlay(RoundedRectangle(cornerRadius: 3).stroke(httGold, lineWidth: 0.8))
+            HStack(spacing: 4) {
+                if let backImg = ddz.cardBackImage() {
+                    Image(uiImage: backImg)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: 16, height: 22)
+                        .clipShape(RoundedRectangle(cornerRadius: 3))
+                        .overlay(RoundedRectangle(cornerRadius: 3).stroke(httGold, lineWidth: 0.8))
+                }
                 Text("\(seat.hand.count)")
                     .font(.system(size: 13, weight: .black, design: .monospaced))
                     .foregroundColor(seat.hand.count <= 2 ? .red : httGold)
@@ -8680,72 +8784,104 @@ struct KOnDoudizhuSheetView: View {
     }
     
     private func handPokerCardView(card: DoudizhuCard, isSelected: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Text(card.displayRank)
-                .font(.system(size: card.rank >= 16 ? 11 : 15, weight: .black, design: .rounded))
-                .foregroundColor(card.isRedCard ? Color(red: 0.85, green: 0.12, blue: 0.15) : .black)
-                .padding(.leading, 5)
-                .padding(.top, 4)
-            
-            Text(card.suit.rawValue)
-                .font(.system(size: 12, weight: .bold))
-                .foregroundColor(card.isRedCard ? Color(red: 0.85, green: 0.12, blue: 0.15) : .black)
-                .padding(.leading, 5)
-            
-            Spacer()
-            
-            HStack {
-                Spacer()
-                Text(card.suit.rawValue)
-                    .font(.system(size: 18))
-                    .foregroundColor(card.isRedCard ? Color(red: 0.85, green: 0.12, blue: 0.15).opacity(0.85) : .black.opacity(0.85))
-                    .padding(.trailing, 5)
-                    .padding(.bottom, 4)
+        ZStack(alignment: .topLeading) {
+            if let img = ddz.cardImage(for: card) {
+                Image(uiImage: img)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: 62, height: 90)
+                    .clipped()
+            } else {
+                Color.white
+                    .frame(width: 62, height: 90)
             }
+            
+            // Crisp top-left corner index badge so overlapping cards in a 20-card fan are 100% readable at a glance!
+            VStack(spacing: -1) {
+                Text(card.displayRank)
+                    .font(.system(size: card.rank >= 16 ? 9 : 12, weight: .black, design: .rounded))
+                    .foregroundColor(card.isRedCard ? Color(red: 0.85, green: 0.10, blue: 0.15) : .black)
+                if card.rank < 16 {
+                    Text(card.suit.rawValue)
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundColor(card.isRedCard ? Color(red: 0.85, green: 0.10, blue: 0.15) : .black)
+                }
+            }
+            .padding(.horizontal, 3.5)
+            .padding(.vertical, 2)
+            .background(Color.white.opacity(0.90))
+            .cornerRadius(4)
+            .padding(.leading, 3)
+            .padding(.top, 3)
         }
-        .frame(width: 48, height: 70)
-        .background(isSelected ? Color(red: 1.0, green: 0.98, blue: 0.85) : Color.white)
-        .cornerRadius(7)
+        .frame(width: 62, height: 90)
+        .clipShape(RoundedRectangle(cornerRadius: 7))
         .overlay(
             RoundedRectangle(cornerRadius: 7)
-                .stroke(isSelected ? httCrimson : Color.gray.opacity(0.45), lineWidth: isSelected ? 2.2 : 1.0)
+                .stroke(isSelected ? httGold : Color.white.opacity(0.85), lineWidth: isSelected ? 2.5 : 1.0)
         )
-        .shadow(color: Color.black.opacity(0.35), radius: 2, x: -1, y: 2)
-        .offset(y: isSelected ? -14 : 0)
+        .shadow(color: Color.black.opacity(0.42), radius: 3, x: -1, y: 2)
+        .offset(y: isSelected ? -16 : 0)
     }
     
     private func tablePokerCardView(card: DoudizhuCard) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Text(card.displayRank)
-                .font(.system(size: card.rank >= 16 ? 9 : 12, weight: .black))
-                .foregroundColor(card.isRedCard ? Color(red: 0.85, green: 0.12, blue: 0.15) : .black)
-                .padding(.leading, 4)
-                .padding(.top, 3)
-            Text(card.suit.rawValue)
-                .font(.system(size: 10))
-                .foregroundColor(card.isRedCard ? Color(red: 0.85, green: 0.12, blue: 0.15) : .black)
-                .padding(.leading, 4)
-            Spacer()
+        ZStack(alignment: .topLeading) {
+            if let img = ddz.cardImage(for: card) {
+                Image(uiImage: img)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: 48, height: 70)
+                    .clipped()
+            } else {
+                Color.white
+                    .frame(width: 48, height: 70)
+            }
+            
+            VStack(spacing: -1) {
+                Text(card.displayRank)
+                    .font(.system(size: card.rank >= 16 ? 8 : 10, weight: .black))
+                    .foregroundColor(card.isRedCard ? Color(red: 0.85, green: 0.10, blue: 0.15) : .black)
+                if card.rank < 16 {
+                    Text(card.suit.rawValue)
+                        .font(.system(size: 8, weight: .bold))
+                        .foregroundColor(card.isRedCard ? Color(red: 0.85, green: 0.10, blue: 0.15) : .black)
+                }
+            }
+            .padding(.horizontal, 2.5)
+            .padding(.vertical, 1)
+            .background(Color.white.opacity(0.88))
+            .cornerRadius(3)
+            .padding(.leading, 2)
+            .padding(.top, 2)
         }
-        .frame(width: 36, height: 50)
-        .background(Color.white)
-        .cornerRadius(5)
-        .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.gray.opacity(0.5), lineWidth: 0.8))
-        .shadow(color: .black.opacity(0.3), radius: 1.5, x: 0, y: 1)
+        .frame(width: 48, height: 70)
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.white.opacity(0.85), lineWidth: 1.0))
+        .shadow(color: .black.opacity(0.35), radius: 2, x: 0, y: 1)
     }
     
     private func miniPokerCardView(card: DoudizhuCard) -> some View {
-        VStack(spacing: 0) {
+        ZStack(alignment: .topLeading) {
+            if let img = ddz.cardImage(for: card) {
+                Image(uiImage: img)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: 28, height: 40)
+                    .clipped()
+            } else {
+                Color.white
+                    .frame(width: 28, height: 40)
+            }
             Text(card.displayRank)
-                .font(.system(size: card.rank >= 16 ? 7 : 10, weight: .black))
-                .foregroundColor(card.isRedCard ? Color(red: 0.85, green: 0.12, blue: 0.15) : .black)
-            Text(card.suit.rawValue)
-                .font(.system(size: 8))
-                .foregroundColor(card.isRedCard ? Color(red: 0.85, green: 0.12, blue: 0.15) : .black)
+                .font(.system(size: card.rank >= 16 ? 6 : 8, weight: .black))
+                .foregroundColor(card.isRedCard ? Color(red: 0.85, green: 0.10, blue: 0.15) : .black)
+                .padding(.horizontal, 2)
+                .background(Color.white.opacity(0.88))
+                .cornerRadius(2)
+                .padding(1.5)
         }
-        .frame(width: 26, height: 36)
-        .background(Color.white)
-        .cornerRadius(4)
+        .frame(width: 28, height: 40)
+        .clipShape(RoundedRectangle(cornerRadius: 4))
         .overlay(RoundedRectangle(cornerRadius: 4).stroke(httGold, lineWidth: 1))
     }
 }
