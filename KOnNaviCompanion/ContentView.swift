@@ -380,9 +380,10 @@ struct HTTSmoothMapView: UIViewRepresentable {
                 }
                 
                 // Add Start Point (起) and Destination Point (終) Annotations like GaoDe!
-                if let firstPt = route.polyline.points().pointee as MKMapPoint? {
+                if route.polyline.pointCount > 0 {
+                    let firstCoord = route.polyline.points()[0].coordinate
                     let startPin = MKPointAnnotation()
-                    startPin.coordinate = firstPt.coordinate
+                    startPin.coordinate = firstCoord
                     startPin.title = "我的位置"
                     startPin.subtitle = "START_PIN"
                     mapView.addAnnotation(startPin)
@@ -1326,10 +1327,24 @@ struct ContentView: View {
             if val { activeModalSheet = .trains; manager.showAllTrainTicketsSheet = false }
         }
         .onChange(of: manager.showDepartureTimePickerSheet) { val in
-            if val { activeModalSheet = .departureTime; manager.showDepartureTimePickerSheet = false }
+            if val {
+                manager.showDepartureTimePickerSheet = false
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.14) {
+                    if activeModalSheet == nil {
+                        activeModalSheet = .departureTime
+                    }
+                }
+            }
         }
         .onChange(of: manager.showVehicleSettingsSheet) { val in
-            if val { activeModalSheet = .vehicleSettings; manager.showVehicleSettingsSheet = false }
+            if val {
+                manager.showVehicleSettingsSheet = false
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+                    if activeModalSheet == nil {
+                        activeModalSheet = .vehicleSettings
+                    }
+                }
+            }
         }
         .sheet(item: $activeModalSheet) { sheet in
             switch sheet {
@@ -1984,7 +1999,7 @@ struct ContentView: View {
             ForEach(NavigationTravelMode.allCases) { mode in
                 let isSel = (manager.travelMode == mode)
                 Button(action: {
-                    manager.stop()
+                    guard manager.travelMode != mode else { return }
                     manager.travelMode = mode
                 }) {
                     Label(
@@ -2014,11 +2029,7 @@ struct ContentView: View {
     private var departureTimeMenuButton: some View {
         Menu {
             Button(action: {
-                manager.isCustomDepartureTime = false
-                manager.routeDepartureDate = Date()
-                if manager.travelMode == .driving {
-                    manager.recalculateOrResortDrivingRoutes()
-                }
+                manager.applyDepartureTimeSelection(customDate: nil)
             }) {
                 Label(
                     (!manager.isCustomDepartureTime ? "✓ " : "    ") + tr("现在出发", "現在出發", "Leave Now"),
@@ -2026,29 +2037,17 @@ struct ContentView: View {
                 )
             }
             Button(action: {
-                manager.routeDepartureDate = Date().addingTimeInterval(15 * 60)
-                manager.isCustomDepartureTime = true
-                if manager.travelMode == .driving {
-                    manager.recalculateOrResortDrivingRoutes()
-                }
+                manager.applyDepartureTimeSelection(customDate: Date().addingTimeInterval(15 * 60))
             }) {
                 Label(tr("15 分钟后出发", "15 分鐘後出發", "In 15 min"), systemImage: "clock.badge.checkmark")
             }
             Button(action: {
-                manager.routeDepartureDate = Date().addingTimeInterval(30 * 60)
-                manager.isCustomDepartureTime = true
-                if manager.travelMode == .driving {
-                    manager.recalculateOrResortDrivingRoutes()
-                }
+                manager.applyDepartureTimeSelection(customDate: Date().addingTimeInterval(30 * 60))
             }) {
                 Label(tr("30 分钟后出发", "30 分鐘後出發", "In 30 min"), systemImage: "clock.badge.checkmark")
             }
             Button(action: {
-                manager.routeDepartureDate = Date().addingTimeInterval(60 * 60)
-                manager.isCustomDepartureTime = true
-                if manager.travelMode == .driving {
-                    manager.recalculateOrResortDrivingRoutes()
-                }
+                manager.applyDepartureTimeSelection(customDate: Date().addingTimeInterval(60 * 60))
             }) {
                 Label(tr("1 小时后出发", "1 小時後出發", "In 1 hour"), systemImage: "clock.badge.checkmark")
             }
@@ -2502,11 +2501,12 @@ struct ContentView: View {
                 }
                 
                 // 4. Vertical List of Candidate Routes (Tap card to inspect route on map; tap green [开始] button to start navigation!)
-                if !manager.candidateRoutes.isEmpty {
+                let routesSnapshot = Array(manager.candidateRoutes.enumerated())
+                if !routesSnapshot.isEmpty {
                     ScrollView(.vertical, showsIndicators: true) {
                         VStack(spacing: 7) {
-                            ForEach(0..<manager.candidateRoutes.count, id: \.self) { idx in
-                                appleMapsCandidateRouteCard(route: manager.candidateRoutes[idx], index: idx)
+                            ForEach(routesSnapshot, id: \.offset) { idx, routeItem in
+                                appleMapsCandidateRouteCard(route: routeItem, index: idx)
                             }
                         }
                     }
@@ -4918,20 +4918,51 @@ struct RM500AlbumAndOutfitSheetView: View {
 
 // MARK: - Vehicle & License Plate Settings + Traffic Restriction Recognition Sheet (车牌号输入、车辆类型选择与禁行区域智能识别面板)
 struct VehicleAndPlateSettingsSheetView: View {
-    @ObservedObject var manager: AudioPlayerManager
+    let manager: AudioPlayerManager
     @Environment(\.dismiss) private var dismiss
-    @State private var plateInput: String = ""
+    @State private var plateInput: String
+    @State private var selectedEnergy: VehicleEnergyType
+    @State private var selectedBody: VehicleBodyType
+    @State private var selectedAvoids: Set<DrivingAvoidanceOption>
+    @State private var didCommitChanges: Bool = false
+    private let lang: AppLanguage
     
     private let httGold = Color(red: 0.88, green: 0.68, blue: 0.24)
     private let httCrimson = Color(red: 0.78, green: 0.18, blue: 0.22)
     private let httCream = Color(red: 0.99, green: 0.96, blue: 0.90)
     private let provincePrefixes = ["粤", "港", "澳", "京", "沪", "浙", "苏", "川", "鄂", "湘", "桂", "闽"]
     
+    init(manager: AudioPlayerManager) {
+        self.manager = manager
+        self.lang = manager.language
+        _plateInput = State(initialValue: manager.vehicleLicensePlate)
+        _selectedEnergy = State(initialValue: manager.vehicleEnergyType)
+        _selectedBody = State(initialValue: manager.vehicleBodyType)
+        _selectedAvoids = State(initialValue: manager.drivingAvoidOptions)
+    }
+    
     private func tr(_ hans: String, _ hant: String, _ en: String) -> String {
-        switch manager.language {
+        switch lang {
         case .zhHans: return hans
         case .zhHant: return hant
         case .en: return en
+        }
+    }
+    
+    private func commitIfNeeded() {
+        guard !didCommitChanges else { return }
+        didCommitChanges = true
+        let finalPlate = plateInput.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        let finalEnergy = selectedEnergy
+        let finalBody = selectedBody
+        let finalAvoids = selectedAvoids
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+            manager.commitVehicleAndAvoidanceSettings(
+                plate: finalPlate,
+                energy: finalEnergy,
+                body: finalBody,
+                avoidOptions: finalAvoids
+            )
         }
     }
     
@@ -4942,8 +4973,12 @@ struct VehicleAndPlateSettingsSheetView: View {
                 
                 ScrollView(.vertical, showsIndicators: true) {
                     VStack(alignment: .leading, spacing: 16) {
-                        // 1. Live Restriction Diagnosis Card
-                        let status = manager.evaluateTrafficRestrictionStatus()
+                        // 1. Live Restriction Diagnosis Card (computed from local state so tapping options never triggers background MKMapView mutations while sheet is open)
+                        let status = manager.evaluateTrafficRestrictionStatus(
+                            overridePlate: plateInput,
+                            overrideEnergy: selectedEnergy,
+                            overrideBody: selectedBody
+                        )
                         VStack(alignment: .leading, spacing: 6) {
                             HStack {
                                 Image(systemName: status.isRestricted ? "exclamationmark.triangle.fill" : "checkmark.shield.fill")
@@ -4980,13 +5015,9 @@ struct VehicleAndPlateSettingsSheetView: View {
                                     .background(Color(red: 0.0, green: 0.38, blue: 0.85))
                                     .cornerRadius(10)
                                     .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.white, lineWidth: 1.5))
-                                    .onChange(of: plateInput) { newVal in
-                                        manager.vehicleLicensePlate = newVal.uppercased()
-                                    }
                                 
                                 Button(action: {
                                     plateInput = ""
-                                    manager.vehicleLicensePlate = ""
                                 }) {
                                     Text(tr("清空", "清空", "Clear"))
                                         .font(.system(size: 13, weight: .bold))
@@ -4996,6 +5027,7 @@ struct VehicleAndPlateSettingsSheetView: View {
                                         .foregroundColor(httCream)
                                         .cornerRadius(10)
                                 }
+                                .buttonStyle(PlainButtonStyle())
                             }
                             
                             Text(tr("快捷省份/字头点选：", "快捷省份/字頭點選：", "Quick Province Prefix:"))
@@ -5012,7 +5044,6 @@ struct VehicleAndPlateSettingsSheetView: View {
                                                 let rest = String(plateInput.dropFirst())
                                                 plateInput = pfx + rest
                                             }
-                                            manager.vehicleLicensePlate = plateInput.uppercased()
                                         }) {
                                             Text(pfx)
                                                 .font(.system(size: 13, weight: .black))
@@ -5021,6 +5052,7 @@ struct VehicleAndPlateSettingsSheetView: View {
                                                 .foregroundColor(plateInput.hasPrefix(pfx) ? .black : .white)
                                                 .cornerRadius(8)
                                         }
+                                        .buttonStyle(PlainButtonStyle())
                                     }
                                 }
                             }
@@ -5028,7 +5060,7 @@ struct VehicleAndPlateSettingsSheetView: View {
                             HStack(spacing: 8) {
                                 Button(action: {
                                     plateInput = "粤AF17987"
-                                    manager.vehicleLicensePlate = "粤AF17987"
+                                    selectedEnergy = .fuelBlue
                                 }) {
                                     Text("粤AF17987 (广州蓝牌)")
                                         .font(.system(size: 11, weight: .bold))
@@ -5038,10 +5070,11 @@ struct VehicleAndPlateSettingsSheetView: View {
                                         .foregroundColor(.white)
                                         .cornerRadius(6)
                                 }
+                                .buttonStyle(PlainButtonStyle())
+                                
                                 Button(action: {
                                     plateInput = "粤BD88888"
-                                    manager.vehicleLicensePlate = "粤BD88888"
-                                    manager.vehicleEnergyType = .pureEVGreen
+                                    selectedEnergy = .pureEVGreen
                                 }) {
                                     Text("粤BD88888 (深圳绿牌)")
                                         .font(.system(size: 11, weight: .bold))
@@ -5051,10 +5084,11 @@ struct VehicleAndPlateSettingsSheetView: View {
                                         .foregroundColor(.white)
                                         .cornerRadius(6)
                                 }
+                                .buttonStyle(PlainButtonStyle())
+                                
                                 Button(action: {
                                     plateInput = "粤Z8888港"
-                                    manager.vehicleLicensePlate = "粤Z8888港"
-                                    manager.vehicleEnergyType = .hkMacauDual
+                                    selectedEnergy = .hkMacauDual
                                 }) {
                                     Text("粤Z8888港 (两地牌)")
                                         .font(.system(size: 11, weight: .bold))
@@ -5064,6 +5098,7 @@ struct VehicleAndPlateSettingsSheetView: View {
                                         .foregroundColor(.white)
                                         .cornerRadius(6)
                                 }
+                                .buttonStyle(PlainButtonStyle())
                             }
                         }
                         .padding(12)
@@ -5077,12 +5112,12 @@ struct VehicleAndPlateSettingsSheetView: View {
                                 .foregroundColor(httGold)
                             
                             ForEach(VehicleEnergyType.allCases) { eType in
-                                let isSel = (manager.vehicleEnergyType == eType)
+                                let isSel = (selectedEnergy == eType)
                                 Button(action: {
-                                    manager.vehicleEnergyType = eType
+                                    selectedEnergy = eType
                                 }) {
                                     HStack {
-                                        Text(eType.title(manager.language))
+                                        Text(eType.title(lang))
                                             .font(.system(size: 13, weight: .bold))
                                             .foregroundColor(.white)
                                         Spacer()
@@ -5093,6 +5128,7 @@ struct VehicleAndPlateSettingsSheetView: View {
                                     .background(isSel ? httCrimson.opacity(0.45) : Color.white.opacity(0.08))
                                     .cornerRadius(8)
                                 }
+                                .buttonStyle(PlainButtonStyle())
                             }
                         }
                         .padding(12)
@@ -5106,12 +5142,12 @@ struct VehicleAndPlateSettingsSheetView: View {
                                 .foregroundColor(httGold)
                             
                             ForEach(VehicleBodyType.allCases) { bType in
-                                let isSel = (manager.vehicleBodyType == bType)
+                                let isSel = (selectedBody == bType)
                                 Button(action: {
-                                    manager.vehicleBodyType = bType
+                                    selectedBody = bType
                                 }) {
                                     HStack {
-                                        Text(bType.title(manager.language))
+                                        Text(bType.title(lang))
                                             .font(.system(size: 13, weight: .bold))
                                             .foregroundColor(.white)
                                         Spacer()
@@ -5122,6 +5158,7 @@ struct VehicleAndPlateSettingsSheetView: View {
                                     .background(isSel ? httCrimson.opacity(0.45) : Color.white.opacity(0.08))
                                     .cornerRadius(8)
                                 }
+                                .buttonStyle(PlainButtonStyle())
                             }
                         }
                         .padding(12)
@@ -5135,14 +5172,18 @@ struct VehicleAndPlateSettingsSheetView: View {
                                 .foregroundColor(httGold)
                             
                             ForEach(DrivingAvoidanceOption.allCases) { opt in
-                                let isOn = manager.drivingAvoidOptions.contains(opt)
+                                let isOn = selectedAvoids.contains(opt)
                                 Button(action: {
-                                    manager.toggleDrivingAvoidance(opt)
+                                    if selectedAvoids.contains(opt) {
+                                        selectedAvoids.remove(opt)
+                                    } else {
+                                        selectedAvoids.insert(opt)
+                                    }
                                 }) {
                                     HStack {
                                         Image(systemName: opt.icon)
                                             .foregroundColor(httGold)
-                                        Text(opt.title(manager.language))
+                                        Text(opt.title(lang))
                                             .font(.system(size: 13, weight: .bold))
                                             .foregroundColor(.white)
                                         Spacer()
@@ -5153,6 +5194,7 @@ struct VehicleAndPlateSettingsSheetView: View {
                                     .background(isOn ? Color.blue.opacity(0.35) : Color.white.opacity(0.08))
                                     .cornerRadius(8)
                                 }
+                                .buttonStyle(PlainButtonStyle())
                             }
                         }
                         .padding(12)
@@ -5160,7 +5202,7 @@ struct VehicleAndPlateSettingsSheetView: View {
                         .cornerRadius(12)
                         
                         Button(action: {
-                            manager.recalculateOrResortDrivingRoutes()
+                            commitIfNeeded()
                             dismiss()
                         }) {
                             Text(tr("保存车辆设置并更新路线", "保存車輛設置並更新路線", "Save & Update Routes"))
@@ -5171,6 +5213,7 @@ struct VehicleAndPlateSettingsSheetView: View {
                                 .cornerRadius(12)
                                 .overlay(RoundedRectangle(cornerRadius: 12).stroke(httGold, lineWidth: 1.5))
                         }
+                        .buttonStyle(PlainButtonStyle())
                     }
                     .padding(16)
                 }
@@ -5180,31 +5223,47 @@ struct VehicleAndPlateSettingsSheetView: View {
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button(tr("完成", "完成", "Done")) {
-                        manager.recalculateOrResortDrivingRoutes()
+                        commitIfNeeded()
                         dismiss()
                     }
                     .foregroundColor(httGold)
                 }
             }
-            .onAppear {
-                plateInput = manager.vehicleLicensePlate
+            .onDisappear {
+                commitIfNeeded()
             }
         }
+        .navigationViewStyle(.stack)
     }
 }
 
-// MARK: - Custom Departure Time Picker Sheet (地图自定义出发时间选择器)
+// MARK: - Custom Departure Time Picker Sheet (地图自定义出发时间选择器 - 独立静态时间范围，彻底消除滚轮自动滑动！)
 struct RouteDepartureTimePickerSheetView: View {
-    @ObservedObject var manager: AudioPlayerManager
+    let manager: AudioPlayerManager
     @Environment(\.dismiss) private var dismiss
-    @State private var tempDate: Date = Date()
+    @State private var tempDate: Date
+    @State private var minSelectableDate: Date
+    @State private var maxSelectableDate: Date
+    private let lang: AppLanguage
     
     private let httGold = Color(red: 0.88, green: 0.68, blue: 0.24)
     private let httCrimson = Color(red: 0.78, green: 0.18, blue: 0.22)
     private let httCream = Color(red: 0.99, green: 0.96, blue: 0.90)
     
+    init(manager: AudioPlayerManager) {
+        self.manager = manager
+        self.lang = manager.language
+        let now = Date()
+        let minD = now.addingTimeInterval(-60)
+        let maxD = now.addingTimeInterval(30 * 24 * 3600)
+        let initialD = manager.isCustomDepartureTime ? max(minD, min(maxD, manager.routeDepartureDate)) : now
+        _tempDate = State(initialValue: initialD)
+        _minSelectableDate = State(initialValue: minD)
+        _maxSelectableDate = State(initialValue: maxD)
+    }
+    
     private func tr(_ hans: String, _ hant: String, _ en: String) -> String {
-        switch manager.language {
+        switch lang {
         case .zhHans: return hans
         case .zhHant: return hant
         case .en: return en
@@ -5232,12 +5291,13 @@ struct RouteDepartureTimePickerSheetView: View {
                     DatePicker(
                         tr("出发时间", "出發時間", "Departure"),
                         selection: $tempDate,
-                        in: Date()...Date().addingTimeInterval(7 * 24 * 3600),
+                        in: minSelectableDate...maxSelectableDate,
                         displayedComponents: [.date, .hourAndMinute]
                     )
                     .datePickerStyle(.wheel)
                     .labelsHidden()
                     .colorScheme(.dark)
+                    .environment(\.locale, Locale(identifier: lang == .en ? "en_US" : (lang == .zhHant ? "zh_HK" : "zh_CN")))
                     .padding()
                     .background(Color.white.opacity(0.08))
                     .cornerRadius(14)
@@ -5246,9 +5306,11 @@ struct RouteDepartureTimePickerSheetView: View {
                     
                     HStack(spacing: 12) {
                         Button(action: {
-                            manager.isCustomDepartureTime = false
-                            manager.routeDepartureDate = Date()
+                            let mgr = manager
                             dismiss()
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+                                mgr.applyDepartureTimeSelection(customDate: nil)
+                            }
                         }) {
                             Text(tr("恢复默认 (显示“出发”)", "恢復預設 (顯示「出發」)", "Reset to Default ('Depart')"))
                                 .font(.system(size: 14, weight: .bold))
@@ -5257,12 +5319,15 @@ struct RouteDepartureTimePickerSheetView: View {
                                 .foregroundColor(httCream)
                                 .cornerRadius(10)
                         }
+                        .buttonStyle(PlainButtonStyle())
                         
                         Button(action: {
-                            manager.routeDepartureDate = tempDate
-                            manager.isCustomDepartureTime = true
-                            manager.recalculateOrResortDrivingRoutes()
+                            let chosenDate = tempDate
+                            let mgr = manager
                             dismiss()
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+                                mgr.applyDepartureTimeSelection(customDate: chosenDate)
+                            }
                         }) {
                             Text(tr("确认出发时间", "確認出發時間", "Confirm Time"))
                                 .font(.system(size: 14, weight: .black))
@@ -5272,6 +5337,7 @@ struct RouteDepartureTimePickerSheetView: View {
                                 .cornerRadius(10)
                                 .overlay(RoundedRectangle(cornerRadius: 10).stroke(httGold, lineWidth: 1.5))
                         }
+                        .buttonStyle(PlainButtonStyle())
                     }
                     .padding(.horizontal, 16)
                     
@@ -5288,10 +5354,8 @@ struct RouteDepartureTimePickerSheetView: View {
                     .foregroundColor(httGold)
                 }
             }
-            .onAppear {
-                tempDate = manager.routeDepartureDate
-            }
         }
+        .navigationViewStyle(.stack)
     }
 }
 

@@ -1083,16 +1083,24 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     @Published var unseatedTeaMemberIds: Set<Int> = []
     
     // Departure Time & Transit Sort / Vehicle Mode Preferences (Default: all 4 vehicle modes checked!)
+    private var isBatchUpdatingRouteFilters: Bool = false
+    private var activeDirectionsRequest: MKDirections? = nil
+    private var drivingRecalcDebounceWorkItem: DispatchWorkItem? = nil
+
     @Published var routeDepartureDate: Date = Date() {
         didSet {
-            if isCustomDepartureTime {
+            guard !isBatchUpdatingRouteFilters else { return }
+            if isCustomDepartureTime && travelMode == .transit {
                 applyTransitFiltersAndSort(shouldUpdateMapRoute: true)
             }
         }
     }
     @Published var isCustomDepartureTime: Bool = false {
         didSet {
-            applyTransitFiltersAndSort(shouldUpdateMapRoute: true)
+            guard !isBatchUpdatingRouteFilters else { return }
+            if travelMode == .transit {
+                applyTransitFiltersAndSort(shouldUpdateMapRoute: true)
+            }
         }
     }
     @Published var showDepartureTimePickerSheet: Bool = false
@@ -1101,6 +1109,52 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     @Published var routeSelectionRenderTrigger: Int = 0
     @Published var drivingAvoidOptions: Set<DrivingAvoidanceOption> = [] {
         didSet {
+            guard !isBatchUpdatingRouteFilters, oldValue != drivingAvoidOptions else { return }
+            recalculateOrResortDrivingRoutes()
+        }
+    }
+
+    func applyDepartureTimeSelection(customDate: Date?) {
+        isBatchUpdatingRouteFilters = true
+        if let customDate = customDate {
+            routeDepartureDate = customDate
+            isCustomDepartureTime = true
+        } else {
+            routeDepartureDate = Date()
+            isCustomDepartureTime = false
+        }
+        isBatchUpdatingRouteFilters = false
+        if travelMode == .transit {
+            applyTransitFiltersAndSort(shouldUpdateMapRoute: true)
+        } else if travelMode == .driving {
+            recalculateOrResortDrivingRoutes()
+        } else {
+            routeSelectionRenderTrigger += 1
+        }
+    }
+
+    func commitVehicleAndAvoidanceSettings(
+        plate: String,
+        energy: VehicleEnergyType,
+        body: VehicleBodyType,
+        avoidOptions: Set<DrivingAvoidanceOption>
+    ) {
+        isBatchUpdatingRouteFilters = true
+        let cleanPlate = plate.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        if vehicleLicensePlate != cleanPlate {
+            vehicleLicensePlate = cleanPlate
+        }
+        if vehicleEnergyType != energy {
+            vehicleEnergyType = energy
+        }
+        if vehicleBodyType != body {
+            vehicleBodyType = body
+        }
+        if drivingAvoidOptions != avoidOptions {
+            drivingAvoidOptions = avoidOptions
+        }
+        isBatchUpdatingRouteFilters = false
+        if travelMode == .driving {
             recalculateOrResortDrivingRoutes()
         }
     }
@@ -1182,8 +1236,15 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     }
     
     /// Evaluates license plate + vehicle type + departure date/time + current/destination city for traffic restriction zones!
-    func evaluateTrafficRestrictionStatus() -> (isRestricted: Bool, badgeTitle: String, detailMessage: String) {
-        let plate = vehicleLicensePlate.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+    func evaluateTrafficRestrictionStatus(
+        overridePlate: String? = nil,
+        overrideEnergy: VehicleEnergyType? = nil,
+        overrideBody: VehicleBodyType? = nil
+    ) -> (isRestricted: Bool, badgeTitle: String, detailMessage: String) {
+        let rawPlate = overridePlate ?? vehicleLicensePlate
+        let effEnergy = overrideEnergy ?? vehicleEnergyType
+        let effBody = overrideBody ?? vehicleBodyType
+        let plate = rawPlate.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
         let evalDate = isCustomDepartureTime ? routeDepartureDate : Date()
         let cal = Calendar.current
         let weekday = cal.component(.weekday, from: evalDate) // 1=Sun, 7=Sat
@@ -1202,7 +1263,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         let inHK = CoordinateConverter.isInHongKong(refCoord)
         
         // 1. Motorcycle restriction in Shenzhen/Urban Core
-        if vehicleBodyType == .motorcycle && inShenzhen {
+        if effBody == .motorcycle && inShenzhen {
             return (
                 true,
                 language == .zhHant ? "⚠️ 電單車禁行區域識別" : "⚠️ 摩托车禁行区域识别",
@@ -1213,7 +1274,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         }
         
         // 2. Light Truck peak/core restriction
-        if vehicleBodyType == .lightTruck && inShenzhen && (isPeakHour || (hour >= 7 && hour < 22)) {
+        if effBody == .lightTruck && inShenzhen && (isPeakHour || (hour >= 7 && hour < 22)) {
             return (
                 true,
                 language == .zhHant ? "⚠️ 貨車限行區域識別" : "⚠️ 货车限行区域识别",
@@ -1224,7 +1285,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         }
         
         // 3. Cross-border HK permit check
-        if inHK && !plate.hasPrefix("粵Z") && !plate.hasPrefix("粤Z") && !plate.hasPrefix("FV") && vehicleEnergyType != .hkMacauDual {
+        if inHK && !plate.hasPrefix("粵Z") && !plate.hasPrefix("粤Z") && !plate.hasPrefix("FV") && effEnergy != .hkMacauDual {
             return (
                 true,
                 language == .zhHant ? "⚠️ 跨境禁行識別 (需兩地牌)" : "⚠️ 跨境禁行识别 (需两地牌)",
@@ -1235,7 +1296,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         }
         
         // 4. Green Plate EV exemption
-        if vehicleEnergyType.isGreenExempt || plate.count >= 8 {
+        if effEnergy.isGreenExempt || plate.count >= 8 {
             return (
                 false,
                 language == .zhHant ? "✅ 新能源綠牌 · 免限行" : "✅ 新能源绿牌 · 免限行",
@@ -1278,11 +1339,29 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     
     func recalculateOrResortDrivingRoutes() {
         guard travelMode == .driving else { return }
-        if let dest = destinationCoord {
-            calculateAndStartRoute(to: dest, title: destinationName, isReroute: false)
-        } else if !candidateRoutes.isEmpty {
-            applyRoutePreferenceSort()
+        // 1. Immediately resort existing candidate routes in-memory so badges & list update with zero lag or crash
+        if !candidateRoutes.isEmpty {
+            let sorted = sortRoutes(candidateRoutes, by: routePreference)
+            candidateRoutes = sorted
+            selectedRouteIndex = 0
+            if let first = sorted.first {
+                activeRoute = first
+                remainingRouteDistanceKm = first.distance / 1000.0
+                remainingRouteMinutes = max(1, Int(first.expectedTravelTime / 60.0))
+            }
+            routeSelectionRenderTrigger += 1
         }
+        // 2. Debounce the MKDirections network request so rapid taps on [现在] / [避开] / [车辆] never flood MapKit or AVAudioPlayer
+        drivingRecalcDebounceWorkItem?.cancel()
+        activeDirectionsRequest?.cancel()
+        guard let dest = destinationCoord else { return }
+        let destTitle = destinationName
+        let work = DispatchWorkItem { [weak self] in
+            guard let self = self, self.travelMode == .driving else { return }
+            self.calculateAndStartRoute(to: dest, title: destTitle, isReroute: false, silentFilterUpdate: true)
+        }
+        drivingRecalcDebounceWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.38, execute: work)
     }
 
     @Published var transitSortStrategy: TransitSortStrategy = .suggested {
@@ -7596,7 +7675,9 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         calculateAndStartRoute(to: destCoord, title: destTitle)
     }
     
-    func calculateAndStartRoute(to destCoord: CLLocationCoordinate2D, title: String, isReroute: Bool = false) {
+    func calculateAndStartRoute(to destCoord: CLLocationCoordinate2D, title: String, isReroute: Bool = false, silentFilterUpdate: Bool = false) {
+        drivingRecalcDebounceWorkItem?.cancel()
+        activeDirectionsRequest?.cancel()
         tappedMapCoord = nil
         destinationCoord = destCoord
         destinationName = title
@@ -7648,12 +7729,14 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         reqWalk.requestsAlternateRoutes = true
         
         if travelMode == .ebike {
-            // E-BIKE NAVIGATION: Ride on non-motorized lanes along real asphalt road network (地面道路/辅道)!
-            // Request automobile routes and strictly filter out expressways/highways/overpasses.
-            // Never uses pedestrian staircases or footbridges, completely fixing e-bike route offset!
-            MKDirections(request: reqAuto).calculate { [weak self] resp, _ in
+            let dir = MKDirections(request: reqAuto)
+            self.activeDirectionsRequest = dir
+            dir.calculate { [weak self] resp, err in
                 DispatchQueue.main.async {
                     guard let self = self else { return }
+                    if let nsErr = err as NSError?, nsErr.code == MKError.Code.loadingThrottled.rawValue || nsErr.domain == NSURLErrorDomain && nsErr.code == NSURLErrorCancelled {
+                        return
+                    }
                     self.isRecalculatingRoute = false
                     if let autoRoutes = resp?.routes, !autoRoutes.isEmpty {
                         let surfaceRoutes = autoRoutes.filter { !self.routeContainsHighway($0) }
@@ -7661,17 +7744,21 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                         let sorted = candidates.sorted { $0.distance < $1.distance }
                         self.candidateRoutes = sorted
                         self.selectedRouteIndex = 0
-                        self.applyCalculatedRoute(sorted[0], title: title, isReroute: isReroute)
-                    } else {
-                        // Fallback to surface walking route if no automobile route
+                        self.applyCalculatedRoute(sorted[0], title: title, isReroute: isReroute, silentFilterUpdate: silentFilterUpdate)
+                    } else if !silentFilterUpdate {
                         self.fallbackCoordRoute(to: destCoord, title: title, isReroute: isReroute)
                     }
                 }
             }
         } else if travelMode == .walking || travelMode == .transit {
-            MKDirections(request: reqWalk).calculate { [weak self] resp, _ in
+            let dir = MKDirections(request: reqWalk)
+            self.activeDirectionsRequest = dir
+            dir.calculate { [weak self] resp, err in
                 DispatchQueue.main.async {
                     guard let self = self else { return }
+                    if let nsErr = err as NSError?, nsErr.domain == NSURLErrorDomain && nsErr.code == NSURLErrorCancelled {
+                        return
+                    }
                     self.isRecalculatingRoute = false
                     if let walkRoutes = resp?.routes, !walkRoutes.isEmpty {
                         let safeSurfaceRoutes = walkRoutes.sorted { a, b in
@@ -7682,23 +7769,28 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                         }
                         self.candidateRoutes = safeSurfaceRoutes
                         self.selectedRouteIndex = 0
-                        self.applyCalculatedRoute(safeSurfaceRoutes[0], title: title, isReroute: isReroute)
-                    } else {
+                        self.applyCalculatedRoute(safeSurfaceRoutes[0], title: title, isReroute: isReroute, silentFilterUpdate: silentFilterUpdate)
+                    } else if !silentFilterUpdate {
                         self.fallbackCoordRoute(to: destCoord, title: title, isReroute: isReroute)
                     }
                 }
             }
         } else {
-            MKDirections(request: reqAuto).calculate { [weak self] resp, _ in
+            let dir = MKDirections(request: reqAuto)
+            self.activeDirectionsRequest = dir
+            dir.calculate { [weak self] resp, err in
                 DispatchQueue.main.async {
                     guard let self = self else { return }
+                    if let nsErr = err as NSError?, nsErr.domain == NSURLErrorDomain && nsErr.code == NSURLErrorCancelled {
+                        return
+                    }
                     self.isRecalculatingRoute = false
                     if let autoRoutes = resp?.routes, !autoRoutes.isEmpty {
                         let sorted = self.sortRoutes(autoRoutes, by: self.routePreference)
                         self.candidateRoutes = sorted
                         self.selectedRouteIndex = 0
-                        self.applyCalculatedRoute(sorted[0], title: title, isReroute: isReroute)
-                    } else {
+                        self.applyCalculatedRoute(sorted[0], title: title, isReroute: isReroute, silentFilterUpdate: silentFilterUpdate)
+                    } else if !silentFilterUpdate {
                         self.fallbackCoordRoute(to: destCoord, title: title, isReroute: isReroute)
                     }
                 }
@@ -7797,7 +7889,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         selectedRouteIndex = index
         let chosen = candidateRoutes[index]
         // Keep isNavigatingFocused = false so tapping a route on map or card only previews it until [开始] is pressed!
-        applyCalculatedRoute(chosen, title: destinationName, isReroute: false)
+        applyCalculatedRoute(chosen, title: destinationName, isReroute: false, silentFilterUpdate: true)
         routeSelectionRenderTrigger += 1
     }
     
@@ -7953,7 +8045,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         }
     }
 
-    private func applyCalculatedRoute(_ route: MKRoute, title: String, isReroute: Bool) {
+    private func applyCalculatedRoute(_ route: MKRoute, title: String, isReroute: Bool, silentFilterUpdate: Bool = false) {
         self.activeRoute = route
         self.isMapEnlarged = true
         self.userZoomDistance = (self.travelMode == .walking) ? 350.0 : 480.0
@@ -7963,7 +8055,9 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         if !isReroute {
             self.isNavigatingFocused = false // Show route overview & [开始] button first!
             self.mapTrackingUser = false     // Zoom out to full route overview instead of locking to car!
-            self.routeOverviewFitTrigger += 1
+            if !silentFilterUpdate {
+                self.routeOverviewFitTrigger += 1
+            }
             self.routeSelectionRenderTrigger += 1
         }
         let steps = route.steps
@@ -7973,7 +8067,9 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             self.currentStepInstruction = step.instructions.isEmpty ? title : step.instructions
             self.distanceToNextStepMeters = step.distance
             self.updateRoadLanes(for: self.currentStepInstruction)
-            self.evaluateRoadSpeedLimitAndNotify(for: self.currentStepInstruction.isEmpty ? route.name : self.currentStepInstruction)
+            if !silentFilterUpdate {
+                self.evaluateRoadSpeedLimitAndNotify(for: self.currentStepInstruction.isEmpty ? route.name : self.currentStepInstruction)
+            }
         }
         self.remainingRouteDistanceKm = route.distance / 1000.0
         
@@ -7995,7 +8091,9 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         
         // Analyze Route for Traffic Lights, Electronic Speed Cameras, Toll Stations, Highway Service Areas & Traffic Congestion!
         self.generateRouteHazardsAndTelemetry(for: route)
-        self.triggerDepartureGreeting(title: title, isReroute: isReroute)
+        if !silentFilterUpdate {
+            self.triggerDepartureGreeting(title: title, isReroute: isReroute)
+        }
     }
     
     private func generateRouteHazardsAndTelemetry(for route: MKRoute) {
