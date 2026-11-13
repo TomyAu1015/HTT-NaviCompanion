@@ -17,6 +17,7 @@ import com.tomy.httnavicompanion.audio.RM500ArrowOutfit
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.concurrent.ConcurrentHashMap
+import java.util.zip.ZipInputStream
 import javax.crypto.Cipher
 import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.SecretKeySpec
@@ -53,6 +54,7 @@ class AssetDecryptor(private val context: Context) {
         if (isInitialized) return
         loadVoicePackageIndex()
         loadMascotPackageIndex()
+        loadVehicleSpritesArchive()
 
         // Preload desk sprite frame
         getSpriteBitmap("desk00")?.let { deskSheet ->
@@ -115,7 +117,8 @@ class AssetDecryptor(private val context: Context) {
         }
     }
 
-    private fun loadMascotPackageIndex() {
+    private fun loadMascotPackageIndex()
+        loadVehicleSpritesArchive() {
         try {
             context.assets.open("mascot_assets.dat").use { stream ->
                 val magic = ByteArray(8)
@@ -153,6 +156,32 @@ class AssetDecryptor(private val context: Context) {
             }
         } catch (e: Exception) {
             Log.e(TAG, "Failed loading mascot_assets.dat", e)
+        }
+    }
+
+    private fun loadVehicleSpritesArchive() {
+        try {
+            context.assets.open("vehicle_sprites.zip").use { rawStream ->
+                ZipInputStream(rawStream).use { zis ->
+                    val opts = BitmapFactory.Options().apply { inScaled = false }
+                    var entry = zis.nextEntry
+                    while (entry != null) {
+                        if (!entry.isDirectory && entry.name.endsWith(".png")) {
+                            val key = entry.name.removeSuffix(".png")
+                            val bytes = zis.readBytes()
+                            val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
+                            if (bmp != null) {
+                                bitmapCache[key] = bmp
+                            }
+                        }
+                        zis.closeEntry()
+                        entry = zis.nextEntry
+                    }
+                }
+            }
+            Log.d(TAG, "Loaded vehicle sprites archive into cache")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed loading vehicle_sprites.zip", e)
         }
     }
 
