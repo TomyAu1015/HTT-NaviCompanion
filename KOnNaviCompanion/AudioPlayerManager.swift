@@ -1393,8 +1393,74 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         }
     }
     
-    func estimatedArrivalTimeString(durationMinutes: Int) -> String {
+    /// Evaluates whether the selected departure time falls into late-night subway/daytime-bus suspension hours (00:00 - 06:00)
+    func evaluateTransitOperatingStatus() -> (isSuspendedWindow: Bool, depTimeStr: String, firstTrainTimeStr: String, waitMins: Int, statusBanner: String) {
+        let evalDate = isCustomDepartureTime ? routeDepartureDate : Date()
+        let cal = Calendar.current
+        let hour = cal.component(.hour, from: evalDate)
+        let minute = cal.component(.minute, from: evalDate)
+        let totalMins = hour * 60 + minute
+        let fmt = DateFormatter()
+        fmt.dateFormat = "HH:mm"
+        let depStr = fmt.string(from: evalDate)
+        
+        // Subway & regular daytime routes suspend between 00:00 and 06:00 (First train at 06:15)
+        if totalMins < 6 * 60 {
+            let waitM = max(1, (6 * 60 + 15) - totalMins)
+            let wHours = waitM / 60
+            let wRem = waitM % 60
+            let waitText = wHours > 0 ? "\(wHours)小时\(wRem)分" : "\(wRem)分钟"
+            let banner: String
+            switch language {
+            case .zhHans:
+                banner = "🌙 夜间停运提醒：所选出发时间 (\(depStr)) 地铁及常规日间线路已停运 (00:00-06:00)，已为您置顶【24h夜间未停运专线】并标注【最快 06:15 首班车】（距首班发车还有 \(waitText)）。"
+            case .zhHant:
+                banner = "🌙 夜間停運提醒：所選出發時間 (\(depStr)) 地鐵及常規日間線路已停運 (00:00-06:00)，已為您置頂【24h夜間未停運專線】並標註【最快 06:15 首班車】（距首班發車還有 \(waitText)）。"
+            case .en:
+                banner = "🌙 Night Notice: Subway is closed at \(depStr) (00:00-06:00). Showing active 24h Night Buses & 06:15 First Train options."
+            }
+            return (true, depStr, "06:15", waitM, banner)
+        } else if totalMins >= 23 * 60 + 35 {
+            let waitM = (24 * 60 - totalMins) + (6 * 60 + 15)
+            let banner: String
+            switch language {
+            case .zhHans:
+                banner = "🌙 末班车预警：所选出发时间 (\(depStr)) 临近 00:00 地铁停运，部分换乘段可能赶不上末班车，已为您补充【夜间未停运N线巴士】及【次日 06:15 首班车】方案。"
+            case .zhHant:
+                banner = "🌙 末班車預警：所選出發時間 (\(depStr)) 臨近 00:00 地鐵停運，部分換乘段可能趕不上末班車，已為您補充【夜間未停運N線巴士】及【次日 06:15 首班車】方案。"
+            case .en:
+                banner = "🌙 Late Night Notice (\(depStr)): Approaching 00:00 subway closure. Added 24h Night Bus & 06:15 First Train options."
+            }
+            return (true, depStr, "06:15", waitM, banner)
+        }
+        return (false, depStr, "06:15", 0, "")
+    }
+
+    func estimatedArrivalTimeString(durationMinutes: Int, plan: TransitPlanOption? = nil) -> String {
         let baseDate = isCustomDepartureTime ? routeDepartureDate : Date()
+        let opStatus = evaluateTransitOperatingStatus()
+        if let p = plan, opStatus.isSuspendedWindow && p.badge.contains("06:15") {
+            let cal = Calendar.current
+            var comps = cal.dateComponents([.year, .month, .day], from: baseDate)
+            let hour = cal.component(.hour, from: baseDate)
+            if hour >= 23 {
+                if let nextDay = cal.date(byAdding: .day, value: 1, to: baseDate) {
+                    comps = cal.dateComponents([.year, .month, .day], from: nextDay)
+                }
+            }
+            comps.hour = 6
+            comps.minute = 15
+            let firstTrainDate = cal.date(from: comps) ?? baseDate
+            let arrDate = firstTrainDate.addingTimeInterval(TimeInterval(max(1, durationMinutes) * 60))
+            let fmt = DateFormatter()
+            fmt.dateFormat = "HH:mm"
+            let tStr = fmt.string(from: arrDate)
+            switch language {
+            case .zhHans: return "06:15首班 ➔ 预计 \(tStr) 到达"
+            case .zhHant: return "06:15首班 ➔ 預計 \(tStr) 到達"
+            case .en: return "06:15 First ➔ ETA \(tStr)"
+            }
+        }
         let arrDate = baseDate.addingTimeInterval(TimeInterval(max(1, durationMinutes) * 60))
         let fmt = DateFormatter()
         fmt.dateFormat = "HH:mm"
@@ -1756,6 +1822,103 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         
         if candidateList.isEmpty {
             candidateList = sourcePlans
+        }
+        
+        // 5B. Late-Night Transit Suspension & First-Train Schedule Adaptation (00:00 - 06:00 停运识别与通宵线/首班车重排)
+        let opWindow = evaluateTransitOperatingStatus()
+        if opWindow.isSuspendedWindow {
+            var nightAdjustedList: [TransitPlanOption] = []
+            // If Bus is allowed, synthesize active 24h Night Bus (夜间N线未停运) plans at the top so user has immediate non-suspended routes!
+            if allowBus {
+                let nightMins = max(36, (sourcePlans.first?.totalMinutes ?? 48) + 6)
+                let isHKDest = CoordinateConverter.isInHongKong(destinationCoord ?? userCoordinate) || destClean.contains("香港") || destClean.contains("九龍") || destClean.contains("九龙") || destClean.contains("旺角") || destClean.contains("中環")
+                let nightLineName = isHKDest ? "N85路 換乘 皇崗24h穿梭巴 + N268通宵巴" : "N85路 / N21路 24小時夜間通宵專線"
+                let nightSteps: [TransitStepItem] = [
+                    TransitStepItem(
+                        kind: .walk,
+                        lineName: "步行前往夜間公交站",
+                        directionDesc: "前往 沙灣天橋 / 幹線夜間站台",
+                        fromStation: "我的位置",
+                        toStation: "夜間幹線公交站",
+                        passStations: [],
+                        durationMins: 6,
+                        walkMeters: 380,
+                        doorSideDesc: "",
+                        acNotice: "🌙 24小時通宵運營站點",
+                        exitDesc: "夜間站台候車",
+                        colorHex: "#888888",
+                        intervalDesc: "步行 380 米 (6分鐘)"
+                    ),
+                    TransitStepItem(
+                        kind: .bus,
+                        lineName: nightLineName,
+                        directionDesc: "往 \(destClean) 方向 (通宵未停運)",
+                        fromStation: "夜間幹線公交站",
+                        toStation: "\(destClean)夜間總站",
+                        passStations: isHKDest ? ["東門夜間站", "皇崗口岸(24小時通關)", "落馬洲", "\(destClean)夜間總站"] : ["東湖公園", "留醫部", "東門老街", "國貿", "\(destClean)夜間總站"],
+                        durationMins: nightMins - 11,
+                        walkMeters: 0,
+                        doorSideDesc: "夜間通宵大巴",
+                        acNotice: "🌙 夜間正常運營 (00:00-06:00不停運) · 約15分鐘一班 · CN¥4",
+                        exitDesc: "在 \(destClean)夜間總站 下車",
+                        colorHex: "#00ACC1",
+                        intervalDesc: "夜間通宵專線 · 正常運營中"
+                    ),
+                    TransitStepItem(
+                        kind: .walk,
+                        lineName: "步行到達終點",
+                        directionDesc: "前往 \(destClean)",
+                        fromStation: "\(destClean)夜間總站",
+                        toStation: destClean,
+                        passStations: [],
+                        durationMins: 5,
+                        walkMeters: 290,
+                        doorSideDesc: "",
+                        acNotice: "",
+                        exitDesc: "順利抵達 \(destClean)",
+                        colorHex: "#888888",
+                        intervalDesc: "步行 290 米 (5分鐘)"
+                    )
+                ]
+                let nightBusPlan = TransitPlanOption(
+                    title: "\(nightMins)分鐘 · \(nightLineName)",
+                    badge: "🌙 夜間未停運 · \(opWindow.depTimeStr) 可乘",
+                    totalMinutes: nightMins,
+                    totalStations: 5,
+                    transferCount: isHKDest ? 1 : 0,
+                    walkMeters: 670,
+                    priceYuan: isHKDest ? "35" : "4",
+                    startExitDesc: "夜間公交站上車 (通宵運營)",
+                    warningNotice: opWindow.statusBanner,
+                    realtimeArrivalText: "✅ 當前時段 (\(opWindow.depTimeStr)) 正常運營 · 下一班 8 分鐘後開出 📡",
+                    steps: nightSteps
+                )
+                nightAdjustedList.append(nightBusPlan)
+            }
+            
+            // Mark daytime subway/rail/bus plans with exact 00:00 suspension status and 06:15 earliest first-train time!
+            for plan in candidateList {
+                let usesSubwayOrRail = plan.steps.contains { $0.kind == .subway || $0.kind == .intercity || $0.kind == .train || $0.kind == .ferry }
+                let waitHours = opWindow.waitMins / 60
+                let waitRem = opWindow.waitMins % 60
+                let waitStr = waitHours > 0 ? "\(waitHours)小時\(waitRem)分" : "\(waitRem)分鐘"
+                let suspendedPlan = TransitPlanOption(
+                    title: "\(plan.title) [首班 06:15]",
+                    badge: usesSubwayOrRail ? "⏸️ 00:00已停運 · 最快 06:15 首班車" : "⏸️ 日間線路停運 · 最快 06:00 首班車",
+                    totalMinutes: plan.totalMinutes,
+                    totalStations: plan.totalStations,
+                    transferCount: plan.transferCount,
+                    walkMeters: plan.walkMeters,
+                    priceYuan: plan.priceYuan,
+                    startExitDesc: "\(plan.startExitDesc) (06:15首班開閘)",
+                    warningNotice: opWindow.statusBanner,
+                    realtimeArrivalText: "⏰ 所選 \(opWindow.depTimeStr) 已停運 · 最快 06:15 首班車運營 (需等 \(waitStr))",
+                    intercityBanner: plan.intercityBanner,
+                    steps: plan.steps
+                )
+                nightAdjustedList.append(suspendedPlan)
+            }
+            candidateList = nightAdjustedList
         }
         
         // 6. Sort by transitSortStrategy (建议路线 / 较快路程 / 较少转乘 / 较少步行)
@@ -6196,8 +6359,10 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     }
     
     func startTransitWalkingNavigation() {
-        guard selectedTransitPlanIndex < transitPlans.count else { return }
-        let plan = transitPlans[selectedTransitPlanIndex]
+        guard !transitPlans.isEmpty else { return }
+        let safeIdx = min(max(0, selectedTransitPlanIndex), transitPlans.count - 1)
+        selectedTransitPlanIndex = safeIdx
+        let plan = transitPlans[safeIdx]
         showTransitPlanSheet = false
         isNavigatingFocused = true
         isMapEnlarged = true
@@ -9722,6 +9887,7 @@ struct DoudizhuNetPacket: Codable {
         case playCardsAction
         case passAction
         case chatVoiceAction
+        case roomClosed
     }
     var kind: PacketKind
     var roomCode: String
@@ -9740,6 +9906,14 @@ struct DoudizhuNetPacket: Codable {
     var lastPlaySeat: Int?
     var winnerSeat: Int?
     var statusBanner: String?
+    var closeReason: String?
+    var totalTargetRounds: Int?
+    var currentRoundNumber: Int?
+    var baseScore: Int?
+    var maxMultiplierCap: Int?
+    var turnTimeoutSeconds: Int?
+    var allowCardCounter: Bool?
+    var aiDifficulty: Int?
 }
 
 // Abstract Transport Protocol: Supports Face-to-Face P2P Now & Online WebSocket Server Later!
@@ -9857,6 +10031,8 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
             UserDefaults.standard.set(customServerURL, forKey: "kon_ddz_server_url")
         }
     }
+    @Published var isConnectingOnlineServer: Bool = false
+    @Published var isOnlineServerConnected: Bool = false
     
     // Room & Lobby State
     @Published var roomCode: String = "8888"
@@ -9872,6 +10048,19 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
     @Published var discoveredRooms: [DoudizhuDiscoveredRoom] = []
     @Published var mySeatIndex: Int = 0
     @Published var statusBanner: String = "欢迎来到放课后茶会斗地主！可面对面建房联机或与轻音少女AI对局"
+    @Published var roomClosedNotice: String? = nil
+    
+    // Host Configurable Room Rules (房主可设定局数、底分、封顶倍数、出牌倒计时、记牌器权限、AI难度)
+    @Published var totalTargetRounds: Int = 3          // 3局 / 5局 / 10局 / 0(无限局)
+    @Published var currentRoundNumber: Int = 1
+    @Published var baseScore: Int = 100                // 50 / 100 / 200 / 500
+    @Published var maxMultiplierCap: Int = 32          // 16 / 32 / 64 / 999(不封顶)
+    @Published var turnTimeoutSeconds: Int = 25        // 15s / 25s / 30s / 0(不限时)
+    @Published var remainingTurnSeconds: Int = 25
+    @Published var allowCardCounter: Bool = true
+    @Published var aiDifficulty: Int = 2               // 1=休闲下午茶, 2=标准部活, 3=武道馆大师
+    @Published var isSeriesMatchFinished: Bool = false
+    @Published var consecutivePassesInTrick: Int = 0
     
     // Game Table State
     @Published var phase: DoudizhuGamePhase = .lobby
@@ -9899,16 +10088,27 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
     private var mcSession: MCSession?
     private var advertiser: MCNearbyServiceAdvertiser?
     private var browser: MCNearbyServiceBrowser?
+    private var webSocketSession: URLSession?
     private var webSocketTask: URLSessionWebSocketTask?
     private var aiTurnWorkItem: DispatchWorkItem?
+    private var turnCountdownTimer: Timer?
+    private var isIntentionallyStopping: Bool = false
+    
+    /// Creates a guaranteed valid MCPeerID (non-empty, <= 36 UTF-8 bytes) so MultipeerConnectivity NEVER throws NSInvalidArgumentException
+    private static func makeSafePeerID(_ rawName: String, fallback: String = "轻音玩家") -> MCPeerID {
+        let trimmed = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let base = trimmed.isEmpty ? fallback : trimmed
+        let safePrefix = String(base.prefix(12))
+        return MCPeerID(displayName: safePrefix.isEmpty ? fallback : safePrefix)
+    }
     
     override init() {
         super.init()
-        let devName = UIDevice.current.name
-        self.myPeerID = MCPeerID(displayName: "\(myNickname)-\(Int.random(in: 100...999))")
+        let devName = UIDevice.current.name.trimmingCharacters(in: .whitespacesAndNewlines)
         if myNickname == "轻音车友" && !devName.isEmpty {
-            self.myNickname = devName
+            self.myNickname = String(devName.prefix(12))
         }
+        self.myPeerID = Self.makeSafePeerID("\(myNickname)-\(Int.random(in: 10...99))")
     }
     
     func characterFilter(for charId: Int) -> AudioPlayerManager.CharacterFilter {
@@ -9922,40 +10122,56 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
         }
     }
     
+    var roundProgressBadgeText: String {
+        if totalTargetRounds <= 0 {
+            return "第 \(currentRoundNumber) 局 (自由畅玩)"
+        }
+        return "第 \(currentRoundNumber) / \(totalTargetRounds) 局"
+    }
+    
     // MARK: - Face-to-Face P2P Room Creation & Discovery
     func startHostingFaceToFaceRoom() {
-        stopNetworking()
+        stopNetworking(sendCloseBroadcast: false)
         isHostingRoom = true
         isBrowsingRooms = false
         mySeatIndex = 0
+        currentRoundNumber = 1
+        isSeriesMatchFinished = false
+        roomClosedNotice = nil
         
-        myPeerID = MCPeerID(displayName: myNickname.isEmpty ? "房主" : myNickname)
+        myPeerID = Self.makeSafePeerID(myNickname, fallback: "房主")
         let session = MCSession(peer: myPeerID, securityIdentity: nil, encryptionPreference: .optional)
         session.delegate = self
         self.mcSession = session
         
+        let cleanCode = String(roomCode.trimmingCharacters(in: .whitespacesAndNewlines).prefix(8))
+        let safeHost = String(myNickname.trimmingCharacters(in: .whitespacesAndNewlines).prefix(12))
         let info: [String: String] = [
-            "code": roomCode,
-            "host": myNickname,
-            "char": "\(myCharacter.charId)"
+            "code": cleanCode.isEmpty ? "8888" : cleanCode,
+            "host": safeHost.isEmpty ? "房主" : safeHost,
+            "char": "\(myCharacter.charId)",
+            "rounds": "\(totalTargetRounds)",
+            "base": "\(baseScore)"
         ]
         let adv = MCNearbyServiceAdvertiser(peer: myPeerID, discoveryInfo: info, serviceType: serviceType)
         adv.delegate = self
         adv.startAdvertisingPeer()
         self.advertiser = adv
         
-        rebuildLobbySeats()
-        statusBanner = "📡 房间 [\(roomCode)] 已创建！附近好友点击「加入房间」即可面对面秒连（不足3人自动由轻音AI补位）"
+        rebuildLobbySeats(resetScores: true)
+        let roundsDesc = totalTargetRounds > 0 ? "\(totalTargetRounds)局制" : "无限局"
+        statusBanner = "📡 房间 [\(roomCode)] 已创建（\(roundsDesc) · 底分\(baseScore)）！附近好友点击「扫描并加入」即可秒连"
         AudioPlayerManager.shared.playMascotVoice(for: myCharacter)
     }
     
     func startScanningFaceToFaceRooms() {
-        stopNetworking()
+        stopNetworking(sendCloseBroadcast: false)
         isHostingRoom = false
         isBrowsingRooms = true
+        roomClosedNotice = nil
         discoveredRooms.removeAll()
         
-        myPeerID = MCPeerID(displayName: myNickname.isEmpty ? "玩家" : myNickname)
+        myPeerID = Self.makeSafePeerID(myNickname, fallback: "玩家")
         let session = MCSession(peer: myPeerID, securityIdentity: nil, encryptionPreference: .optional)
         session.delegate = self
         self.mcSession = session
@@ -9970,67 +10186,203 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
     
     func joinDiscoveredRoom(_ room: DoudizhuDiscoveredRoom) {
         guard let brw = browser, let session = mcSession else { return }
+        roomClosedNotice = nil
         statusBanner = "🔗 正在加入 [\(room.hostName)] 的房间 (\(room.roomCode))..."
         let contextData = try? JSONEncoder().encode([
-            "name": myNickname,
+            "name": String(myNickname.prefix(12)),
             "char": "\(myCharacter.charId)",
             "code": room.roomCode
         ])
         brw.invitePeer(room.peerID, to: session, withContext: contextData, timeout: 15)
     }
     
+    // MARK: - Safe Non-Crashing Online WebSocket Server Connection
     func connectOnlineServerRoom() {
-        guard let url = URL(string: customServerURL) else {
-            statusBanner = "⚠️ 服务器地址格式无效，请检查 ws:// 或 wss:// 地址"
+        let raw = customServerURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !raw.isEmpty else {
+            statusBanner = "⚠️ 请输入有效的服务器地址（如 wss://psp.azusa.online/ddz）"
             return
         }
-        stopNetworking()
-        let task = URLSession.shared.webSocketTask(with: url)
+        
+        // Normalize URL scheme: URLSession.webSocketTask THROWS Objective-C NSInvalidArgumentException if scheme is not ws or wss!
+        var normalized = raw
+        if normalized.lowercased().hasPrefix("http://") {
+            normalized = "ws://" + String(normalized.dropFirst(7))
+        } else if normalized.lowercased().hasPrefix("https://") {
+            normalized = "wss://" + String(normalized.dropFirst(8))
+        } else if !normalized.contains("://") {
+            normalized = "wss://" + normalized
+        }
+        
+        guard let comps = URLComponents(string: normalized),
+              let scheme = comps.scheme?.lowercased(),
+              (scheme == "ws" || scheme == "wss"),
+              let host = comps.host, !host.isEmpty,
+              let validURL = comps.url else {
+            statusBanner = "⚠️ 服务器地址格式无效，请使用 ws:// 或 wss:// 开头（例如 wss://psp.azusa.online/ddz）"
+            return
+        }
+        
+        customServerURL = normalized
+        stopNetworking(sendCloseBroadcast: false)
+        isConnectingOnlineServer = true
+        isOnlineServerConnected = false
+        roomClosedNotice = nil
+        
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = 10
+        config.timeoutIntervalForResource = 30
+        let session = URLSession(configuration: config)
+        self.webSocketSession = session
+        let task = session.webSocketTask(with: validURL)
         self.webSocketTask = task
         task.resume()
+        
+        statusBanner = "🌐 正在连接在线斗地主服务器 (\(host))，房间号：\(roomCode)..."
+        
+        // Send initial room join handshake packet
+        let joinPkt = DoudizhuNetPacket(
+            kind: .joinRequest,
+            roomCode: roomCode,
+            senderPeerName: myNickname,
+            senderCharId: myCharacter.charId,
+            totalTargetRounds: totalTargetRounds,
+            baseScore: baseScore,
+            maxMultiplierCap: maxMultiplierCap,
+            turnTimeoutSeconds: turnTimeoutSeconds,
+            allowCardCounter: allowCardCounter,
+            aiDifficulty: aiDifficulty
+        )
+        if let data = try? JSONEncoder().encode(joinPkt) {
+            task.send(.data(data)) { [weak self] sendErr in
+                DispatchQueue.main.async {
+                    guard let self = self else { return }
+                    self.isConnectingOnlineServer = false
+                    if sendErr != nil {
+                        self.isOnlineServerConnected = false
+                        self.statusBanner = "ℹ️ 在线服务器 (\(host)) 当前暂未开启斗地主后端服务，已为您安全就绪；当前可直接点击下方开始单机AI或切换面对面联机！"
+                    } else {
+                        self.isOnlineServerConnected = true
+                        self.statusBanner = "✅ 已成功连接在线斗地主服务器 (\(host)) · 房间号：\(self.roomCode)"
+                    }
+                }
+            }
+        }
         receiveNextWebSocketMessage()
-        statusBanner = "🌐 已发起在线服务器连接 (\(customServerURL))，房间号：\(roomCode)"
     }
     
     private func receiveNextWebSocketMessage() {
-        webSocketTask?.receive { [weak self] result in
+        guard let task = webSocketTask else { return }
+        task.receive { [weak self] result in
             guard let self = self else { return }
             switch result {
             case .success(let msg):
-                if case .data(let data) = msg, let pkt = try? JSONDecoder().decode(DoudizhuNetPacket.self, from: data) {
-                    DispatchQueue.main.async {
+                DispatchQueue.main.async {
+                    self.isConnectingOnlineServer = false
+                    self.isOnlineServerConnected = true
+                    if case .data(let data) = msg, let pkt = try? JSONDecoder().decode(DoudizhuNetPacket.self, from: data) {
+                        self.handleIncomingPacket(pkt)
+                    } else if case .string(let str) = msg, let data = str.data(using: .utf8),
+                              let pkt = try? JSONDecoder().decode(DoudizhuNetPacket.self, from: data) {
                         self.handleIncomingPacket(pkt)
                     }
-                } else if case .string(let str) = msg, let data = str.data(using: .utf8),
-                          let pkt = try? JSONDecoder().decode(DoudizhuNetPacket.self, from: data) {
-                    DispatchQueue.main.async {
-                        self.handleIncomingPacket(pkt)
+                    self.receiveNextWebSocketMessage()
+                }
+            case .failure:
+                DispatchQueue.main.async {
+                    self.isConnectingOnlineServer = false
+                    if self.isOnlineServerConnected {
+                        self.isOnlineServerConnected = false
+                        self.handlePeerLeftAndCloseRoom(leaverName: "在线服务器房间")
                     }
                 }
-                self.receiveNextWebSocketMessage()
-            case .failure:
-                break
             }
         }
     }
     
-    func stopNetworking() {
+    /// Called when local user explicitly leaves/closes the room or exits an active multiplayer game
+    func leaveOrCloseRoom() {
+        let hadConnectedPeers = !connectedPeerNames.isEmpty || isOnlineServerConnected || isHostingRoom || isBrowsingRooms
+        stopNetworking(sendCloseBroadcast: true)
+        phase = .lobby
+        currentRoundNumber = 1
+        isSeriesMatchFinished = false
+        rebuildLobbySeats(resetScores: true)
+        if hadConnectedPeers {
+            statusBanner = "🏠 您已离开并关闭当前房间，返回房间大厅"
+        } else {
+            statusBanner = "🏠 已返回房间大厅，可重新设置房间规则或发起面对面联机"
+        }
+    }
+    
+    private func handlePeerLeftAndCloseRoom(leaverName: String) {
         aiTurnWorkItem?.cancel()
+        turnCountdownTimer?.invalidate()
+        turnCountdownTimer = nil
+        isIntentionallyStopping = true
         advertiser?.stopAdvertisingPeer()
         browser?.stopBrowsingForPeers()
         mcSession?.disconnect()
-        webSocketTask?.cancel(with: .goingAway, reason: nil)
+        webSocketTask?.cancel()
+        webSocketSession?.invalidateAndCancel()
         advertiser = nil
         browser = nil
         mcSession = nil
         webSocketTask = nil
+        webSocketSession = nil
         isHostingRoom = false
         isBrowsingRooms = false
+        isConnectingOnlineServer = false
+        isOnlineServerConnected = false
         connectedPeerNames.removeAll()
         discoveredRooms.removeAll()
+        isIntentionallyStopping = false
+        
+        phase = .lobby
+        currentRoundNumber = 1
+        isSeriesMatchFinished = false
+        rebuildLobbySeats(resetScores: true)
+        let msg = "⚠️ 玩家 [\(leaverName)] 已离开房间，当前房间已关闭！"
+        statusBanner = msg
+        roomClosedNotice = msg
     }
     
-    func rebuildLobbySeats() {
+    func stopNetworking(sendCloseBroadcast: Bool = false) {
+        if sendCloseBroadcast && (!connectedPeerNames.isEmpty || isOnlineServerConnected) {
+            let closePkt = DoudizhuNetPacket(
+                kind: .roomClosed,
+                roomCode: roomCode,
+                senderPeerName: myNickname,
+                senderCharId: myCharacter.charId,
+                closeReason: "⚠️ 玩家 [\(myNickname)] 已离开房间，当前房间已关闭！"
+            )
+            sendPacketToPeers(closePkt)
+        }
+        isIntentionallyStopping = true
+        aiTurnWorkItem?.cancel()
+        turnCountdownTimer?.invalidate()
+        turnCountdownTimer = nil
+        advertiser?.stopAdvertisingPeer()
+        browser?.stopBrowsingForPeers()
+        mcSession?.disconnect()
+        // Use URLSessionTask.cancel() instead of cancel(with:reason:) so unestablished sockets NEVER crash!
+        webSocketTask?.cancel()
+        webSocketSession?.invalidateAndCancel()
+        advertiser = nil
+        browser = nil
+        mcSession = nil
+        webSocketTask = nil
+        webSocketSession = nil
+        isHostingRoom = false
+        isBrowsingRooms = false
+        isConnectingOnlineServer = false
+        isOnlineServerConnected = false
+        connectedPeerNames.removeAll()
+        discoveredRooms.removeAll()
+        isIntentionallyStopping = false
+    }
+    
+    func rebuildLobbySeats(resetScores: Bool = false) {
         let aiCandidates: [AudioPlayerManager.CharacterFilter] = [.mio, .ritsu, .mugi, .azusa, .yui].filter { $0 != myCharacter }
         var newSeats: [DoudizhuPlayerSeat] = []
         
@@ -10040,12 +10392,12 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
             name: "\(myNickname) (\(myCharacter.displayName(AudioPlayerManager.shared.language)))",
             characterId: myCharacter.charId,
             isAI: false,
-            peerDisplayName: myPeerID.displayName,
+            peerDisplayName: myPeerID?.displayName ?? myNickname,
             hand: [],
             isLandlord: false,
             lastActionText: "已准备",
             lastPlayedCards: [],
-            score: seats.first?.score ?? 1000
+            score: resetScores ? 1000 : (seats.first?.score ?? 1000)
         ))
         
         // Seat 1 & Seat 2: Connected real peers first, otherwise K-ON! AI members!
@@ -10064,7 +10416,7 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
                     isLandlord: false,
                     lastActionText: "已联机",
                     lastPlayedCards: [],
-                    score: seats.count > slot ? seats[slot].score : 1000
+                    score: resetScores ? 1000 : (seats.count > slot ? seats[slot].score : 1000)
                 ))
             } else {
                 let aiChar = aiCandidates[(slot - 1) % aiCandidates.count]
@@ -10078,7 +10430,7 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
                     isLandlord: false,
                     lastActionText: "AI陪打",
                     lastPlayedCards: [],
-                    score: seats.count > slot ? seats[slot].score : 1000
+                    score: resetScores ? 1000 : (seats.count > slot ? seats[slot].score : 1000)
                 ))
             }
         }
@@ -10086,10 +10438,21 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
     }
     
     // MARK: - Start New Doudizhu Game (Host Deals 54 Cards & Syncs to Connected Peers)
-    func startNewRound() {
+    func startNewRound(resetSeries: Bool = false) {
         aiTurnWorkItem?.cancel()
-        if phase == .lobby {
-            rebuildLobbySeats()
+        turnCountdownTimer?.invalidate()
+        roomClosedNotice = nil
+        
+        if phase == .lobby || resetSeries || isSeriesMatchFinished {
+            currentRoundNumber = 1
+            isSeriesMatchFinished = false
+            rebuildLobbySeats(resetScores: resetSeries || phase == .lobby)
+        } else if phase == .roundOver {
+            currentRoundNumber += 1
+        }
+        
+        if !allowCardCounter {
+            showCardCounter = false
         }
         
         // Build 54-card deck
@@ -10130,21 +10493,58 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
         lastPlaySeat = -1
         winnerSeat = nil
         hintIndex = 0
+        consecutivePassesInTrick = 0
         
-        statusBanner = "🃏 发牌完成！轮到 [\(seats[currentTurnSeat].name)] 叫地主"
+        statusBanner = "🃏 [\(roundProgressBadgeText)] 发牌完成！轮到 [\(seats[currentTurnSeat].name)] 叫地主"
         AudioPlayerManager.shared.playMascotVoice(for: characterFilter(for: seats[currentTurnSeat].characterId))
         
         broadcastFullState()
+        restartTurnCountdownTimer()
         scheduleAITurnIfNeeded()
+    }
+    
+    private func restartTurnCountdownTimer() {
+        turnCountdownTimer?.invalidate()
+        turnCountdownTimer = nil
+        guard turnTimeoutSeconds > 0, (phase == .bidding || phase == .playing) else {
+            remainingTurnSeconds = 0
+            return
+        }
+        remainingTurnSeconds = turnTimeoutSeconds
+        turnCountdownTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] t in
+            guard let self = self else { t.invalidate(); return }
+            guard self.phase == .bidding || self.phase == .playing else {
+                t.invalidate()
+                return
+            }
+            if self.remainingTurnSeconds > 0 {
+                self.remainingTurnSeconds -= 1
+            } else {
+                t.invalidate()
+                // Auto-act if local player's turn timed out
+                if self.currentTurnSeat == self.mySeatIndex && (self.isHostingRoom || self.connectedPeerNames.isEmpty) {
+                    if self.phase == .bidding {
+                        self.submitBid(0)
+                    } else if self.phase == .playing {
+                        let canPass = (self.lastPlaySeat != self.mySeatIndex && self.lastPlaySeat != -1)
+                        if canPass {
+                            self.passTurn()
+                        } else if let smallest = self.seats[self.mySeatIndex].hand.last {
+                            self.selectedCardIds = [smallest.id]
+                            self.playSelectedCards()
+                        }
+                    }
+                }
+            }
+        }
     }
     
     // MARK: - Bidding Phase (叫地主: 0=不叫, 1=1分, 2=2分, 3=3分)
     func submitBid(_ score: Int, fromSeat seatIdx: Int? = nil) {
         let actor = seatIdx ?? mySeatIndex
-        guard phase == .bidding, currentTurnSeat == actor else { return }
+        guard phase == .bidding, currentTurnSeat == actor, actor >= 0 && actor < seats.count else { return }
         
         if !isHostingRoom && connectedPeerNames.count > 0 && actor == mySeatIndex {
-            // Client sends bid action to Host
             let pkt = DoudizhuNetPacket(
                 kind: .bidAction,
                 roomCode: roomCode,
@@ -10161,7 +10561,7 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
         if score > highestBid {
             highestBid = score
             highestBidderSeat = actor
-            multiplier = max(1, score)
+            multiplier = min(maxMultiplierCap, max(1, score))
         }
         bidsCount += 1
         
@@ -10174,14 +10574,17 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
             currentTurnSeat = (currentTurnSeat + 1) % 3
             statusBanner = "轮到 [\(seats[currentTurnSeat].name)] 叫分 (当前最高: \(highestBid)分)"
             broadcastFullState()
+            restartTurnCountdownTimer()
             scheduleAITurnIfNeeded()
         }
     }
     
     private func finalizeLandlord(seatIdx: Int) {
+        guard seatIdx >= 0 && seatIdx < seats.count else { return }
         for i in 0..<3 {
             seats[i].isLandlord = (i == seatIdx)
-            seats[i].lastActionText = (i == seatIdx) ? "🎩 地主" : "🌾 农民"
+            seats[i].lastActionText = (i == seatIdx) ? "🎩 抢到地主" : "🌾 农民准备"
+            seats[i].lastPlayedCards = []
         }
         seats[seatIdx].hand.append(contentsOf: holeCards)
         seats[seatIdx].hand.sort { $0.rank > $1.rank }
@@ -10190,9 +10593,11 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
         currentTurnSeat = seatIdx
         lastValidHand = nil
         lastPlaySeat = seatIdx
+        consecutivePassesInTrick = 0
         statusBanner = "🎩 [\(seats[seatIdx].name)] 成为地主！获得三张底牌并优先出牌"
         
         broadcastFullState()
+        restartTurnCountdownTimer()
         scheduleAITurnIfNeeded()
     }
     
@@ -10210,12 +10615,12 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
     }
     
     func triggerSmartHint() {
-        guard mySeatIndex < seats.count else { return }
+        guard mySeatIndex >= 0 && mySeatIndex < seats.count else { return }
         let myHand = seats[mySeatIndex].hand
         let effectiveTarget = (lastPlaySeat == mySeatIndex || lastPlaySeat == -1) ? nil : lastValidHand
         let candidates = DoudizhuHandEvaluator.findHints(in: myHand, beating: effectiveTarget)
         guard !candidates.isEmpty else {
-            statusBanner = "💡 没有大过上家的牌，建议点击「不出」"
+            statusBanner = "💡 没有大过场上的牌，建议点击「不出」"
             return
         }
         let chosen = candidates[hintIndex % candidates.count]
@@ -10224,7 +10629,7 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
     }
     
     func playSelectedCards() {
-        guard phase == .playing, currentTurnSeat == mySeatIndex else { return }
+        guard phase == .playing, currentTurnSeat == mySeatIndex, mySeatIndex >= 0 && mySeatIndex < seats.count else { return }
         let myHand = seats[mySeatIndex].hand
         let chosen = myHand.filter { selectedCardIds.contains($0.id) }
         guard !chosen.isEmpty else {
@@ -10240,7 +10645,7 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
         
         let effectiveTarget = (lastPlaySeat == mySeatIndex || lastPlaySeat == -1) ? nil : lastValidHand
         guard evaluated.canBeat(effectiveTarget) else {
-            statusBanner = "⚠️ 所选牌型无法大过上家的 [\(effectiveTarget?.category.localizedName(AudioPlayerManager.shared.language) ?? "")]！"
+            statusBanner = "⚠️ 所选牌型无法大过场上的 [\(effectiveTarget?.category.localizedName(AudioPlayerManager.shared.language) ?? "")]！"
             return
         }
         
@@ -10263,9 +10668,9 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
     
     func passTurn(fromSeat seatIdx: Int? = nil) {
         let actor = seatIdx ?? mySeatIndex
-        guard phase == .playing, currentTurnSeat == actor else { return }
+        guard phase == .playing, currentTurnSeat == actor, actor >= 0 && actor < seats.count else { return }
         if lastPlaySeat == actor || lastPlaySeat == -1 {
-            statusBanner = "⚠️ 当前由您自由领出，不能选择「不出」！"
+            statusBanner = "⚠️ 当前由您自由领出新一轮牌，不能选择「不出」！"
             return
         }
         
@@ -10280,26 +10685,41 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
             return
         }
         
+        // Keep only actor's status updated to "不出" so the other seat's played cards in this round stay visible!
         seats[actor].lastActionText = "不出"
         seats[actor].lastPlayedCards = []
+        consecutivePassesInTrick += 1
         currentTurnSeat = (currentTurnSeat + 1) % 3
-        if currentTurnSeat == lastPlaySeat {
-            // Everyone else passed -> new free lead!
+        if currentTurnSeat == lastPlaySeat || consecutivePassesInTrick >= 2 {
+            // Everyone else passed -> trick winner leads a fresh round!
             lastValidHand = nil
         }
-        statusBanner = "[\(seats[actor].name)] 选择不出，轮到 [\(seats[currentTurnSeat].name)] 出牌"
+        statusBanner = "[\(seats[actor].name)] 不出，轮到 [\(seats[currentTurnSeat].name)] 出牌"
         broadcastFullState()
+        restartTurnCountdownTimer()
         scheduleAITurnIfNeeded()
     }
     
     private func executePlayCards(_ cards: [DoudizhuCard], Evaluated eval: EvaluatedDoudizhuHand, fromSeat actor: Int) {
+        guard actor >= 0 && actor < seats.count else { return }
+        // If actor is starting a brand-new trick (after everyone else passed), clear previous trick's table cards so the new round is clean
+        if lastValidHand == nil {
+            for i in 0..<seats.count {
+                seats[i].lastPlayedCards = []
+                if seats[i].lastActionText == "不出" {
+                    seats[i].lastActionText = ""
+                }
+            }
+        }
+        
         let playedIds = Set(cards.map { $0.id })
         seats[actor].hand.removeAll { playedIds.contains($0.id) }
         seats[actor].lastPlayedCards = cards.sorted { $0.rank > $1.rank }
         seats[actor].lastActionText = eval.category.localizedName(AudioPlayerManager.shared.language)
+        consecutivePassesInTrick = 0
         
         if eval.category == .bomb || eval.category == .rocket {
-            multiplier *= 2
+            multiplier = min(maxMultiplierCap, multiplier * 2)
         }
         
         lastValidHand = eval
@@ -10310,10 +10730,11 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
         
         // Check win condition
         if seats[actor].hand.isEmpty {
+            turnCountdownTimer?.invalidate()
             winnerSeat = actor
             phase = .roundOver
             let landlordWon = seats[actor].isLandlord
-            let delta = 100 * multiplier
+            let delta = baseScore * multiplier
             for i in 0..<3 {
                 if seats[i].isLandlord {
                     seats[i].score += landlordWon ? (delta * 2) : (-delta * 2)
@@ -10321,8 +10742,12 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
                     seats[i].score += landlordWon ? (-delta) : delta
                 }
             }
+            if totalTargetRounds > 0 && currentRoundNumber >= totalTargetRounds {
+                isSeriesMatchFinished = true
+            }
             let roleTitle = landlordWon ? "🎩 地主获胜！" : "🌾 农民联手获胜！"
-            statusBanner = "🎉 牌局结束：[\(seats[actor].name)] 出完手牌，\(roleTitle) (倍数 x\(multiplier))"
+            let seriesSuffix = isSeriesMatchFinished ? " · 🏆 已完成全部 \(totalTargetRounds) 局系列赛！" : " (\(roundProgressBadgeText))"
+            statusBanner = "🎉 本局结束：[\(seats[actor].name)] 出完手牌，\(roleTitle) (底分\(baseScore) × \(multiplier)倍)\(seriesSuffix)"
             broadcastFullState()
             return
         }
@@ -10330,6 +10755,7 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
         currentTurnSeat = (currentTurnSeat + 1) % 3
         statusBanner = "[\(seats[actor].name)] 打出 \(eval.category.localizedName(AudioPlayerManager.shared.language))，轮到 [\(seats[currentTurnSeat].name)]"
         broadcastFullState()
+        restartTurnCountdownTimer()
         scheduleAITurnIfNeeded()
     }
     
@@ -10343,9 +10769,10 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
         
         let seatToAct = currentTurnSeat
         let work = DispatchWorkItem { [weak self] in
-            guard let self = self, self.currentTurnSeat == seatToAct else { return }
+            guard let self = self, self.currentTurnSeat == seatToAct, seatToAct < self.seats.count else { return }
+            let currentActor = self.seats[seatToAct]
             if self.phase == .bidding {
-                let highCards = activePlayer.hand.filter { $0.rank >= 15 }.count
+                let highCards = currentActor.hand.filter { $0.rank >= 15 }.count
                 let desiredBid: Int
                 if highCards >= 4 && self.highestBid < 3 {
                     desiredBid = 3
@@ -10359,15 +10786,16 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
                 self.submitBid(desiredBid, fromSeat: seatToAct)
             } else if self.phase == .playing {
                 let effectiveTarget = (self.lastPlaySeat == seatToAct || self.lastPlaySeat == -1) ? nil : self.lastValidHand
-                let hints = DoudizhuHandEvaluator.findHints(in: activePlayer.hand, beating: effectiveTarget)
+                let hints = DoudizhuHandEvaluator.findHints(in: currentActor.hand, beating: effectiveTarget)
                 if let chosen = hints.first {
-                    // Teammate cooperation: if another Farmer played a big hand (>= Q) and AI is also a Farmer, don't waste a bomb on teammate!
                     if effectiveTarget != nil,
                        self.lastPlaySeat >= 0,
-                       !activePlayer.isLandlord,
+                       self.lastPlaySeat < self.seats.count,
+                       !currentActor.isLandlord,
                        !self.seats[self.lastPlaySeat].isLandlord {
                         let ev = DoudizhuHandEvaluator.evaluate(chosen)
-                        if ev.category == .bomb || ev.category == .rocket || (effectiveTarget?.primaryRank ?? 0) >= 13 {
+                        let passThreshold = (self.aiDifficulty >= 2) ? 12 : 14
+                        if ev.category == .bomb || ev.category == .rocket || (effectiveTarget?.primaryRank ?? 0) >= passThreshold {
                             self.passTurn(fromSeat: seatToAct)
                             return
                         }
@@ -10380,13 +10808,12 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
             }
         }
         self.aiTurnWorkItem = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.05, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.95, execute: work)
     }
     
     // MARK: - Remaining Card Counter (记牌器)
     func remainingCount(forRank rank: Int) -> Int {
-        guard mySeatIndex < seats.count else { return 0 }
-        // Count cards still unseen (in other players' hands + unrevealed hole cards)
+        guard mySeatIndex >= 0 && mySeatIndex < seats.count else { return 0 }
         var total = 0
         for (idx, s) in seats.enumerated() {
             if idx != mySeatIndex {
@@ -10400,11 +10827,11 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
     }
     
     // MARK: - Network Packet Sync
-    private func broadcastFullState() {
+    func broadcastFullState() {
         let pkt = DoudizhuNetPacket(
             kind: .stateSync,
             roomCode: roomCode,
-            senderPeerName: myPeerID.displayName,
+            senderPeerName: myPeerID?.displayName ?? myNickname,
             senderCharId: myCharacter.charId,
             seats: seats,
             holeCards: holeCards,
@@ -10416,7 +10843,14 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
             lastValidHand: lastValidHand,
             lastPlaySeat: lastPlaySeat,
             winnerSeat: winnerSeat,
-            statusBanner: statusBanner
+            statusBanner: statusBanner,
+            totalTargetRounds: totalTargetRounds,
+            currentRoundNumber: currentRoundNumber,
+            baseScore: baseScore,
+            maxMultiplierCap: maxMultiplierCap,
+            turnTimeoutSeconds: turnTimeoutSeconds,
+            allowCardCounter: allowCardCounter,
+            aiDifficulty: aiDifficulty
         )
         sendPacketToPeers(pkt)
     }
@@ -10426,17 +10860,33 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
         if let session = mcSession, !session.connectedPeers.isEmpty {
             try? session.send(data, toPeers: session.connectedPeers, with: .reliable)
         }
-        if let ws = webSocketTask {
+        if let ws = webSocketTask, isOnlineServerConnected {
             ws.send(.data(data)) { _ in }
         }
     }
     
     private func handleIncomingPacket(_ pkt: DoudizhuNetPacket) {
         switch pkt.kind {
+        case .roomClosed:
+            let reason = pkt.closeReason ?? "⚠️ 玩家 [\(pkt.senderPeerName)] 已离开房间，当前房间已关闭！"
+            handlePeerLeftAndCloseRoom(leaverName: pkt.senderPeerName)
+            self.statusBanner = reason
+            self.roomClosedNotice = reason
+            
         case .stateSync:
-            if let s = pkt.seats {
+            if let tr = pkt.totalTargetRounds { self.totalTargetRounds = tr }
+            if let cr = pkt.currentRoundNumber { self.currentRoundNumber = cr }
+            if let bs = pkt.baseScore { self.baseScore = bs }
+            if let mc = pkt.maxMultiplierCap { self.maxMultiplierCap = mc }
+            if let tt = pkt.turnTimeoutSeconds { self.turnTimeoutSeconds = tt }
+            if let ac = pkt.allowCardCounter {
+                self.allowCardCounter = ac
+                if !ac { self.showCardCounter = false }
+            }
+            if let aid = pkt.aiDifficulty { self.aiDifficulty = aid }
+            if let s = pkt.seats, s.count == 3 {
                 self.seats = s
-                if let myIdx = s.firstIndex(where: { $0.peerDisplayName == self.myPeerID.displayName }) {
+                if let myIdx = s.firstIndex(where: { $0.peerDisplayName == self.myPeerID?.displayName || $0.peerDisplayName == self.myNickname }) {
                     self.mySeatIndex = myIdx
                 }
             }
@@ -10450,6 +10900,12 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
             if let lp = pkt.lastPlaySeat { self.lastPlaySeat = lp }
             self.winnerSeat = pkt.winnerSeat
             if let sb = pkt.statusBanner { self.statusBanner = sb }
+            if self.totalTargetRounds > 0 && self.currentRoundNumber >= self.totalTargetRounds && self.phase == .roundOver {
+                self.isSeriesMatchFinished = true
+            } else if self.phase != .roundOver {
+                self.isSeriesMatchFinished = false
+            }
+            restartTurnCountdownTimer()
             
         case .bidAction:
             if isHostingRoom, let score = pkt.bidScore,
@@ -10480,15 +10936,30 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
     // MARK: - MCSessionDelegate & MCNearbyService Delegates
     func session(_ session: MCSession, peer peerID: MCPeerID, didChange state: MCSessionState) {
         DispatchQueue.main.async {
+            if self.isIntentionallyStopping { return }
             self.connectedPeerNames = session.connectedPeers.map { $0.displayName }
-            if self.isHostingRoom {
-                self.rebuildLobbySeats()
-                self.statusBanner = "✅ 玩家 [\(peerID.displayName)] 已连接！(当前真机玩家: \(self.connectedPeerNames.count + 1) 人)"
-                self.broadcastFullState()
-            } else if state == .connected {
-                self.statusBanner = "✅ 已成功连入房主 [\(peerID.displayName)] 的面对面牌桌！等待房主发牌..."
+            if state == .connected {
+                self.roomClosedNotice = nil
+                if self.isHostingRoom {
+                    self.rebuildLobbySeats(resetScores: false)
+                    self.statusBanner = "✅ 玩家 [\(peerID.displayName)] 已连接！(当前真机玩家: \(self.connectedPeerNames.count + 1) 人)"
+                    self.broadcastFullState()
+                } else {
+                    self.statusBanner = "✅ 已成功连入房主 [\(peerID.displayName)] 的面对面牌桌！等待房主发牌..."
+                }
             } else if state == .notConnected {
-                self.statusBanner = "ℹ️ 与 [\(peerID.displayName)] 的连接已断开"
+                // Any player leaving the room immediately closes the room for everyone else and notifies them!
+                if self.isHostingRoom && !session.connectedPeers.isEmpty {
+                    let closePkt = DoudizhuNetPacket(
+                        kind: .roomClosed,
+                        roomCode: self.roomCode,
+                        senderPeerName: peerID.displayName,
+                        senderCharId: 1,
+                        closeReason: "⚠️ 玩家 [\(peerID.displayName)] 已离开房间，当前房间已关闭！"
+                    )
+                    self.sendPacketToPeers(closePkt)
+                }
+                self.handlePeerLeftAndCloseRoom(leaverName: peerID.displayName)
             }
         }
     }
@@ -10505,7 +10976,6 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
     func session(_ session: MCSession, didFinishReceivingResourceWithName resourceName: String, fromPeer peerID: MCPeerID, at localURL: URL?, withError error: Error?) {}
     
     func advertiser(_ advertiser: MCNearbyServiceAdvertiser, didReceiveInvitationFromPeer peerID: MCPeerID, withContext context: Data?, invitationHandler: @escaping (Bool, MCSession?) -> Void) {
-        // Automatically accept nearby friends into the room if < 2 peers connected
         let canAccept = (mcSession?.connectedPeers.count ?? 0) < 2
         invitationHandler(canAccept, mcSession)
     }
