@@ -126,8 +126,8 @@ enum class MascotActionState {
             AppLanguage.EN -> "Overspeed!"
         }
         TEA_CAKE -> when (lang) {
-            AppLanguage.ZH_HANS -> "顶蛋糕下午茶"
-            AppLanguage.ZH_HANT -> "頂蛋糕下午茶"
+            AppLanguage.ZH_HANS -> "喝下午茶"
+            AppLanguage.ZH_HANT -> "喝下午茶"
             AppLanguage.EN -> "Tea & Cake"
         }
     }
@@ -295,7 +295,7 @@ class AudioPlayerManager(
     private val _activeAllMemberChar = MutableStateFlow(CharacterFilter.YUI)
     val activeAllMemberChar: StateFlow<CharacterFilter> = _activeAllMemberChar
 
-    private val _mascotAction = MutableStateFlow(MascotActionState.IDLE)
+    private val _mascotAction = MutableStateFlow(MascotActionState.TEA_CAKE)
     val mascotAction: StateFlow<MascotActionState> = _mascotAction
 
     private val _mascotOffsetX = MutableStateFlow(0f)
@@ -316,6 +316,9 @@ class AudioPlayerManager(
 
     private val _currentSpriteFrame = MutableStateFlow<Bitmap?>(null)
     val currentSpriteFrame: StateFlow<Bitmap?> = _currentSpriteFrame
+
+    private val _teaPartyCompositedFrame = MutableStateFlow<Bitmap?>(null)
+    val teaPartyCompositedFrame: StateFlow<Bitmap?> = _teaPartyCompositedFrame
 
     private val _currentNavArrowBitmap = MutableStateFlow<Bitmap?>(null)
     val currentNavArrowBitmap: StateFlow<Bitmap?> = _currentNavArrowBitmap
@@ -544,7 +547,7 @@ class AudioPlayerManager(
         _isReverseGeocoding.value = true
 
         Thread {
-            val res = MapAndRouteEngine.reverseGeocode(coord)
+            val res = MapAndRouteEngine.reverseGeocode(context, coord)
             mainHandler.post {
                 _isReverseGeocoding.value = false
                 _tappedTitle.value = res.title
@@ -566,7 +569,7 @@ class AudioPlayerManager(
         _isSearchingPlaces.value = true
         val origin = _userCoordinate.value
         Thread {
-            val items = MapAndRouteEngine.searchPlacesOnline(query, origin)
+            val items = MapAndRouteEngine.searchPlacesOnline(context, query, origin)
             mainHandler.post {
                 _isSearchingPlaces.value = false
                 _onlineSearchResults.value = items
@@ -737,15 +740,26 @@ class AudioPlayerManager(
             _currentSpriteFrame.value = newFrames[_activeAllMemberChar.value.charId] ?: newFrames[1]
         }
 
+        // Update Tea Party composited frame
+        val seatedIds = if (_selectedCharacter.value == CharacterFilter.ALL) {
+            setOf(1, 2, 3, 4, 5)
+        } else {
+            setOf(_selectedCharacter.value.charId)
+        }
+        _teaPartyCompositedFrame.value = assetDecryptor.renderTeaPartySceneFrame(seatedIds, animTick / 2)
+
         walkStepFrame = (animTick / 2) % 2
         val camHeading = if (_cameraMode.value == NavigationCameraMode.HEADING_UP) _headingDegrees.value else 0.0
+        val isMoving = (_currentSpeedKmh.value > 2 || _isDemoSimulating.value)
         _currentNavArrowBitmap.value = assetDecryptor.getRM500NavigationArrowFrame(
             selectedChar = _selectedCharacter.value,
             activeAllChar = _activeAllMemberChar.value,
             outfit = _arrowOutfit.value,
+            travelMode = _travelMode.value,
             walkStep = walkStepFrame,
             headingDeg = _headingDegrees.value,
-            cameraHeadingDeg = camHeading
+            cameraHeadingDeg = camHeading,
+            isMoving = isMoving
         )
     }
 
@@ -767,9 +781,14 @@ class AudioPlayerManager(
     fun toggleHUDMirror() { _isHUDMirrored.value = !_isHUDMirrored.value }
 
     fun setMascotPose(pose: MascotActionState) {
+        _mascotOffsetX.value = 0f
         _mascotAction.value = pose
-        if (pose == MascotActionState.TEA_CAKE) triggerTeaTimeReminder()
-        else triggerCharacterTap(null)
+        updateAllSpriteFrames()
+        if (pose == MascotActionState.TEA_CAKE) {
+            triggerTeaTimeReminder()
+        } else {
+            playMascotVoice(null)
+        }
     }
 
     fun resetPositions() {
@@ -779,9 +798,13 @@ class AudioPlayerManager(
 
     fun selectCharacter(char: CharacterFilter) {
         _selectedCharacter.value = char
+        if (char == CharacterFilter.ALL) {
+            _mascotAction.value = MascotActionState.TEA_CAKE
+        }
         _mascotOffsetX.value = 0f
         refreshThemeBackground()
-        triggerCharacterTap(char)
+        updateAllSpriteFrames()
+        playMascotVoice(char)
     }
 
     fun setSpeedLimit(limit: Int) {

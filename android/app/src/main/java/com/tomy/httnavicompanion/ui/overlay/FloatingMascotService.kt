@@ -3,6 +3,7 @@ package com.tomy.httnavicompanion.ui.overlay
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.graphics.Color
 import android.graphics.PixelFormat
 import android.os.Build
 import android.os.Handler
@@ -14,8 +15,10 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
 import android.widget.ImageView
+import android.widget.TextView
 import com.tomy.httnavicompanion.HTTNaviApp
 import com.tomy.httnavicompanion.R
+import com.tomy.httnavicompanion.audio.MascotActionState
 
 class FloatingMascotService : Service() {
     private var windowManager: WindowManager? = null
@@ -53,20 +56,56 @@ class FloatingMascotService : Service() {
 
         floatView = LayoutInflater.from(this).inflate(R.layout.layout_floating_mascot, null)
         val ivMascot = floatView?.findViewById<ImageView>(R.id.iv_floating_mascot)
+        val btnIdle = floatView?.findViewById<TextView>(R.id.btn_float_idle)
+        val btnWalk = floatView?.findViewById<TextView>(R.id.btn_float_walk)
+        val btnDance = floatView?.findViewById<TextView>(R.id.btn_float_dance)
+        val btnTea = floatView?.findViewById<TextView>(R.id.btn_float_tea)
+        val btnClose = floatView?.findViewById<TextView>(R.id.btn_float_close)
+
+        val mgr = HTTNaviApp.instance.audioPlayerManager
+
+        btnIdle?.setOnClickListener {
+            mgr.setMascotPose(MascotActionState.IDLE)
+        }
+        btnWalk?.setOnClickListener {
+            mgr.setMascotPose(MascotActionState.WALK_RIGHT)
+        }
+        btnDance?.setOnClickListener {
+            mgr.setMascotPose(MascotActionState.SPECIAL)
+        }
+        btnTea?.setOnClickListener {
+            mgr.setMascotPose(MascotActionState.TEA_CAKE)
+        }
+        btnClose?.setOnClickListener {
+            stopSelf()
+        }
 
         val runnable = object : Runnable {
             override fun run() {
-                val bmp = HTTNaviApp.instance.audioPlayerManager.currentSpriteFrame.value
+                val bmp = mgr.currentSpriteFrame.value
                 if (bmp != null && ivMascot != null) {
                     ivMascot.setImageBitmap(bmp)
                 }
-                handler.postDelayed(this, 160L)
+                val curAct = mgr.mascotAction.value
+                val gold = Color.parseColor("#FFE0B861")
+                val cream = Color.parseColor("#FFFAF2E0")
+                btnIdle?.setTextColor(if (curAct == MascotActionState.IDLE) gold else cream)
+                btnWalk?.setTextColor(if (curAct == MascotActionState.WALK_LEFT || curAct == MascotActionState.WALK_RIGHT) gold else cream)
+                btnDance?.setTextColor(if (curAct == MascotActionState.SPECIAL) gold else cream)
+                btnTea?.setTextColor(if (curAct == MascotActionState.TEA_CAKE) gold else cream)
+
+                if (curAct == MascotActionState.WALK_LEFT || curAct == MascotActionState.WALK_RIGHT) {
+                    params.x = (params.x + if (curAct == MascotActionState.WALK_RIGHT) 3 else -3).coerceIn(20, 700)
+                    try { windowManager?.updateViewLayout(floatView, params) } catch (_: Exception) {}
+                }
+
+                handler.postDelayed(this, 180L)
             }
         }
         updateRunnable = runnable
         handler.post(runnable)
 
-        floatView?.setOnTouchListener(object : View.OnTouchListener {
+        ivMascot?.setOnTouchListener(object : View.OnTouchListener {
             private var initialX = 0
             private var initialY = 0
             private var initialTouchX = 0f
@@ -96,7 +135,7 @@ class FloatingMascotService : Service() {
                     }
                     MotionEvent.ACTION_UP -> {
                         if (!isMoved) {
-                            HTTNaviApp.instance.audioPlayerManager.triggerCharacterTap(null)
+                            mgr.triggerCharacterTap(null)
                         }
                         return true
                     }

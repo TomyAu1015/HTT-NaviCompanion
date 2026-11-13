@@ -164,7 +164,7 @@ fun CockpitScreen(
                     ) {
                         MainStageOrMapSection(
                             manager = manager,
-                            stageHeight = 165.dp,
+                            stageHeight = 205.dp,
                             onOpenSearch = { showSearchDialog = true }
                         )
                         CharacterSelectorStrip(manager = manager)
@@ -201,7 +201,7 @@ fun CockpitScreen(
                 SpeedometerCockpit(manager = manager, isCompact = false)
                 MainStageOrMapSection(
                     manager = manager,
-                    stageHeight = 225.dp,
+                    stageHeight = 250.dp,
                     onOpenSearch = { showSearchDialog = true }
                 )
                 CharacterSelectorStrip(manager = manager)
@@ -621,11 +621,15 @@ fun ClubroomStageView(
     val mascotAction by manager.mascotAction.collectAsState()
     val allMemberFrames by manager.allMemberFrames.collectAsState()
     val currentSprite by manager.currentSpriteFrame.collectAsState()
+    val teaPartyBmp by manager.teaPartyCompositedFrame.collectAsState()
     val offsetX by manager.mascotOffsetX.collectAsState()
     val lang by manager.language.collectAsState()
 
     val themeColor = characterThemeColor(selectedChar)
-    val deskBmp = app.assetDecryptor.deskSpriteFrame
+    val isCompactStage = stageHeight < 215.dp
+    val spriteSize = if (isCompactStage) 104.dp else 124.dp
+    val singleSpriteSize = if (isCompactStage) 122.dp else 144.dp
+    val teaSceneHeight = if (isCompactStage) 138.dp else 166.dp
 
     Box(
         modifier = Modifier
@@ -639,26 +643,134 @@ fun ClubroomStageView(
             )
             .border(2.dp, HTTGold, RoundedCornerShape(16.dp))
     ) {
-        // Desk & Tea Set Sprite at bottom center
-        if (deskBmp != null) {
-            Image(
-                bitmap = deskBmp.asImageBitmap(),
-                contentDescription = null,
-                filterQuality = FilterQuality.None,
-                contentScale = ContentScale.Fit,
-                alpha = if (selectedChar == CharacterFilter.ALL) 0.85f else 0.5f,
+        // 1. Characters / Tea Party Scene Layer (drawn first so top PosePill bar is ALWAYS on top and 100% clickable!)
+        if (mascotAction == MascotActionState.TEA_CAKE && teaPartyBmp != null) {
+            // Authentic 5-Member / Single-Member Afternoon Tea Table Scene matching iOS v1.6.3!
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = if (isCompactStage) 6.dp else 10.dp),
+                contentAlignment = Alignment.BottomCenter
+            ) {
+                Image(
+                    bitmap = teaPartyBmp!!.asImageBitmap(),
+                    contentDescription = "放课后茶会下午茶",
+                    filterQuality = FilterQuality.None,
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier
+                        .height(teaSceneHeight)
+                        .fillMaxWidth(0.96f)
+                        .clickable {
+                            manager.triggerCharacterTap(null)
+                        }
+                )
+            }
+        } else if (selectedChar == CharacterFilter.ALL) {
+            // 5-Member Standing / Walking / Dance Stage Mode
+            val deskBmp = app.assetDecryptor.deskSpriteFrame
+            if (deskBmp != null) {
+                Image(
+                    bitmap = deskBmp.asImageBitmap(),
+                    contentDescription = null,
+                    filterQuality = FilterQuality.None,
+                    contentScale = ContentScale.Fit,
+                    alpha = 0.55f,
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .height(if (isCompactStage) 96.dp else 112.dp)
+                        .padding(bottom = 10.dp)
+                )
+            }
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .align(Alignment.BottomCenter)
+                    .padding(horizontal = 4.dp)
+                    .padding(bottom = if (isCompactStage) 8.dp else 14.dp),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+                verticalAlignment = Alignment.Bottom
+            ) {
+                CharacterFilter.fiveIndividuals.forEach { member ->
+                    val frame = allMemberFrames[member.charId]
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier
+                            .weight(1f)
+                            .offset(x = (offsetX * 0.42f).dp)
+                            .clickable { manager.triggerCharacterTap(member) }
+                    ) {
+                        if (frame != null) {
+                            Image(
+                                bitmap = frame.asImageBitmap(),
+                                contentDescription = member.displayName(lang),
+                                filterQuality = FilterQuality.None,
+                                contentScale = ContentScale.Fit,
+                                modifier = Modifier.size(spriteSize)
+                            )
+                        }
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(4.dp))
+                                .background(characterThemeColor(member).copy(alpha = 0.90f))
+                                .padding(horizontal = 5.dp, vertical = 1.dp)
+                        ) {
+                            Text(member.displayName(lang), color = Color.White, fontSize = 9.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+                        }
+                    }
+                }
+            }
+        } else {
+            // Single Character Mode (Yui, Mio, Ritsu, Mugi, or Azusa)
+            val deskBmp = app.assetDecryptor.deskSpriteFrame
+            if (deskBmp != null) {
+                Image(
+                    bitmap = deskBmp.asImageBitmap(),
+                    contentDescription = null,
+                    filterQuality = FilterQuality.None,
+                    contentScale = ContentScale.Fit,
+                    alpha = 0.45f,
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .height(if (isCompactStage) 90.dp else 106.dp)
+                        .padding(bottom = 10.dp)
+                )
+            }
+
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    .height(if (selectedChar == CharacterFilter.ALL) 88.dp else 78.dp)
-                    .padding(bottom = 8.dp)
-            )
+                    .offset(x = offsetX.dp)
+                    .padding(bottom = if (isCompactStage) 8.dp else 14.dp)
+                    .clickable { manager.triggerCharacterTap(selectedChar) }
+            ) {
+                if (currentSprite != null) {
+                    Image(
+                        bitmap = currentSprite!!.asImageBitmap(),
+                        contentDescription = selectedChar.displayName(lang),
+                        filterQuality = FilterQuality.None,
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier.size(singleSpriteSize)
+                    )
+                }
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(5.dp))
+                        .background(themeColor.copy(alpha = 0.92f))
+                        .padding(horizontal = 8.dp, vertical = 2.dp)
+                ) {
+                    Text(selectedChar.displayName(lang), color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                }
+            }
         }
 
-        // Top Pose Pill Bar: 待机 / 散步 / 招牌动作 / 顶蛋糕 + Status Tag
+        // 2. Top Pose Pill Control Bar (Drawn LAST inside Box so it sits on top of all sprites and responds to 100% of taps!)
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 10.dp, vertical = 7.dp)
+                .padding(horizontal = 8.dp, vertical = 7.dp)
                 .align(Alignment.TopCenter),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(5.dp)
@@ -675,7 +787,7 @@ fun ClubroomStageView(
             PosePill(title = "招牌动作", isActive = mascotAction == MascotActionState.SPECIAL) {
                 manager.setMascotPose(MascotActionState.SPECIAL)
             }
-            PosePill(title = "顶蛋糕", isActive = mascotAction == MascotActionState.TEA_CAKE) {
+            PosePill(title = "喝下午茶", isActive = mascotAction == MascotActionState.TEA_CAKE) {
                 manager.setMascotPose(MascotActionState.TEA_CAKE)
             }
 
@@ -687,75 +799,7 @@ fun ClubroomStageView(
                     .background(HTTCrimson)
                     .padding(horizontal = 7.dp, vertical = 3.dp)
             ) {
-                Text(mascotAction.localizedTitle(lang), color = HTTCream, fontSize = 10.sp, fontWeight = FontWeight.Bold)
-            }
-        }
-
-        // Characters Standing on Clubroom Stage!
-        if (selectedChar == CharacterFilter.ALL) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .align(Alignment.BottomCenter)
-                    .padding(horizontal = 4.dp).padding(bottom = 6.dp),
-                horizontalArrangement = Arrangement.SpaceEvenly,
-                verticalAlignment = Alignment.Bottom
-            ) {
-                CharacterFilter.fiveIndividuals.forEach { member ->
-                    val frame = allMemberFrames[member.charId]
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        modifier = Modifier
-                            .offset(x = (offsetX * 0.35f).dp)
-                            .clickable { manager.triggerCharacterTap(member) }
-                    ) {
-                        if (frame != null) {
-                            Image(
-                                bitmap = frame.asImageBitmap(),
-                                contentDescription = member.displayName(lang),
-                                filterQuality = FilterQuality.None,
-                                contentScale = ContentScale.Fit,
-                                modifier = Modifier.height(84.dp)
-                            )
-                        }
-                        Box(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(4.dp))
-                                .background(characterThemeColor(member).copy(alpha = 0.88f))
-                                .padding(horizontal = 5.dp, vertical = 1.dp)
-                        ) {
-                            Text(member.displayName(lang), color = Color.White, fontSize = 9.sp, fontWeight = FontWeight.Bold)
-                        }
-                    }
-                }
-            }
-        } else {
-            // Single Character Mode
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .offset(x = offsetX.dp)
-                    .padding(bottom = 8.dp)
-                    .clickable { manager.triggerCharacterTap(selectedChar) }
-            ) {
-                if (currentSprite != null) {
-                    Image(
-                        bitmap = currentSprite!!.asImageBitmap(),
-                        contentDescription = selectedChar.displayName(lang),
-                        filterQuality = FilterQuality.None,
-                        contentScale = ContentScale.Fit,
-                        modifier = Modifier.height(106.dp)
-                    )
-                }
-                Box(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(5.dp))
-                        .background(themeColor.copy(alpha = 0.9f))
-                        .padding(horizontal = 8.dp, vertical = 2.dp)
-                ) {
-                    Text(selectedChar.displayName(lang), color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                }
+                Text(mascotAction.localizedTitle(lang), color = HTTCream, fontSize = 10.sp, fontWeight = FontWeight.Bold, maxLines = 1)
             }
         }
     }
@@ -763,18 +807,18 @@ fun ClubroomStageView(
 
 @Composable
 fun PosePill(title: String, isActive: Boolean, onClick: () -> Unit) {
-    Box(
-        modifier = Modifier
-            .clip(RoundedCornerShape(6.dp))
-            .background(if (isActive) HTTGold else Color.White.copy(alpha = 0.14f))
-            .clickable { onClick() }
-            .padding(horizontal = 7.dp, vertical = 3.dp)
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(6.dp),
+        color = if (isActive) HTTGold else Color.Black.copy(alpha = 0.65f),
+        border = androidx.compose.foundation.BorderStroke(1.dp, if (isActive) Color.White else HTTGold.copy(alpha = 0.45f))
     ) {
         Text(
             text = title,
-            color = if (isActive) Color.Black else Color.White,
-            fontSize = 10.sp,
-            fontWeight = FontWeight.Bold
+            color = if (isActive) Color.Black else HTTCream,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Black,
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
         )
     }
 }
@@ -932,7 +976,7 @@ fun InteractiveMapBoxView(
                 contentDescription = null,
                 filterQuality = FilterQuality.None,
                 modifier = Modifier
-                    .height(70.dp)
+                    .size(88.dp)
                     .align(Alignment.BottomStart)
                     .padding(start = 8.dp, bottom = 6.dp)
                     .clickable { manager.triggerCharacterTap(null) }
@@ -1122,7 +1166,7 @@ fun UtilityControlGrid(
                 onClick = { manager.triggerBanter() }
             )
             TacticalButton(
-                title = "顶蛋糕下午茶",
+                title = "喝下午茶",
                 subtitle = "桌宠蛋糕休息",
                 icon = Icons.Default.Cake,
                 bgColor = Color(0xFFD18F2E),
@@ -1651,7 +1695,7 @@ fun EnlargedNavigationHUDView(
                         contentDescription = null,
                         filterQuality = FilterQuality.None,
                         modifier = Modifier
-                            .size(54.dp)
+                            .size(68.dp)
                             .clickable { manager.triggerCharacterTap(null) }
                     )
                 }

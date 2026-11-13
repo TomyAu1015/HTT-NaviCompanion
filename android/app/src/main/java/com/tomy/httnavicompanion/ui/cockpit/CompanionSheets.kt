@@ -640,9 +640,10 @@ fun AboutAndFeedbackContent(manager: AudioPlayerManager) {
     }
 }
 
-// 4. Destination Search & Route Sheet Dialog (Real Nominatim Online Search + OSRM Route)
+// 4. Destination Search & Route Sheet Dialog (Domestic Amap POI + 60+ Built-in Landmarks + Clipboard Smart Parse)
 @Composable
 fun DestinationSearchSheetDialog(onDismiss: () -> Unit) {
+    val context = LocalContext.current
     val app = HTTNaviApp.instance
     val manager = app.audioPlayerManager
     val lang by manager.language.collectAsState()
@@ -652,24 +653,31 @@ fun DestinationSearchSheetDialog(onDismiss: () -> Unit) {
     val userCoord by manager.userCoordinate.collectAsState()
     var queryText by remember { mutableStateOf("") }
 
-    val presetPlaces = remember {
-        listOf(
-            PlaceSearchItem("樱丘女子高等学校 (轻音部部室)", "日本滋贺县犬上郡丰乡町 (圣地巡礼)", 1.2, com.tomy.httnavicompanion.data.LatLng(35.2036, 136.2336), "动漫圣地"),
-            PlaceSearchItem("深圳湾万象城", "广东省深圳市南山区科苑南路2888号", 3.5, com.tomy.httnavicompanion.data.LatLng(22.5186, 113.9462), "购物餐饮"),
-            PlaceSearchItem("香港旺角信和中心 (动漫周边)", "香港九龙旺角弥敦道582-592号", 2.1, com.tomy.httnavicompanion.data.LatLng(22.3162, 114.1703), "动漫周边"),
-            PlaceSearchItem("深圳宝安国际机场 T3航站楼", "广东省深圳市宝安区领航高架桥", 18.4, com.tomy.httnavicompanion.data.LatLng(22.6393, 113.8107), "交通枢纽"),
-            PlaceSearchItem("香港尖沙咀海港城", "香港九龙尖沙咀广东道3-27号", 2.8, com.tomy.httnavicompanion.data.LatLng(22.2950, 114.1688), "购物地标"),
-            PlaceSearchItem("广州塔 (小蛮腰)", "广东省广州市海珠区阅江西路222号", 95.0, com.tomy.httnavicompanion.data.LatLng(23.1065, 113.3245), "地标景区")
-        )
+    val builtInLandmarks = remember(userCoord) {
+        com.tomy.httnavicompanion.data.MapAndRouteEngine.domesticLandmarksDatabase.map { item ->
+            val dKm = com.tomy.httnavicompanion.data.CoordinateConverter.distanceMeters(userCoord, item.coordinate) / 1000.0
+            item.copy(distanceKm = dKm)
+        }.sortedBy { it.distanceKm }
     }
 
-    val displayList = remember(queryText, onlineResults) {
-        if (queryText.isBlank()) {
-            presetPlaces
-        } else if (onlineResults.isNotEmpty()) {
-            onlineResults
+    val displayList = remember(queryText, onlineResults, builtInLandmarks) {
+        val q = queryText.trim()
+        if (q.isEmpty()) {
+            builtInLandmarks
         } else {
-            presetPlaces.filter { it.name.contains(queryText, ignoreCase = true) || it.address.contains(queryText, ignoreCase = true) }
+            val localMatches = builtInLandmarks.filter {
+                it.name.contains(q, ignoreCase = true) ||
+                    it.address.contains(q, ignoreCase = true) ||
+                    it.category.contains(q, ignoreCase = true)
+            }
+            val merged = ArrayList<PlaceSearchItem>()
+            val seen = HashSet<String>()
+            (localMatches + onlineResults).forEach { item ->
+                if (seen.add(item.name.lowercase())) {
+                    merged.add(item)
+                }
+            }
+            merged
         }
     }
 
@@ -680,7 +688,7 @@ fun DestinationSearchSheetDialog(onDismiss: () -> Unit) {
         Surface(
             modifier = Modifier
                 .fillMaxWidth(0.95f)
-                .fillMaxHeight(0.88f)
+                .fillMaxHeight(0.90f)
                 .clip(RoundedCornerShape(18.dp))
                 .border(2.dp, SheetGold, RoundedCornerShape(18.dp)),
             color = SheetDarkBg
@@ -691,7 +699,7 @@ fun DestinationSearchSheetDialog(onDismiss: () -> Unit) {
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("目的地搜索与真实路口导航", color = SheetCream, fontSize = 16.sp, fontWeight = FontWeight.Black)
+                    Text("目的地搜索与真实路口导航 (适配国内高德)", color = SheetCream, fontSize = 15.sp, fontWeight = FontWeight.Black)
                     IconButton(onClick = onDismiss) {
                         Icon(Icons.Default.Close, contentDescription = null, tint = Color.White)
                     }
@@ -716,37 +724,92 @@ fun DestinationSearchSheetDialog(onDismiss: () -> Unit) {
                     }
                 }
 
-                Spacer(Modifier.height(8.dp))
+                Spacer(Modifier.height(6.dp))
+
+                // One-Click Clipboard Smart Address Recognition Bar (matches iOS v1.6.3!)
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(Color(0xFF1976D2).copy(alpha = 0.22f))
+                        .border(1.dp, Color(0xFF64B5F6).copy(alpha = 0.5f), RoundedCornerShape(8.dp))
+                        .clickable {
+                            val cb = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                            val clipText = cb.primaryClip?.getItemAt(0)?.text?.toString()?.trim() ?: ""
+                            if (clipText.isNotEmpty()) {
+                                queryText = clipText
+                                manager.performOnlineSearch(clipText)
+                                Toast.makeText(context, "已粘贴剪贴板地址: $clipText", Toast.LENGTH_SHORT).show()
+                            } else {
+                                Toast.makeText(context, "剪贴板为空，请先复制地址或地点名称", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                        .padding(horizontal = 10.dp, vertical = 7.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text("📋 一键识别剪贴板复制的地址 / 分享地名并搜索", color = Color(0xFF64B5F6), fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    Text("点按粘贴 >", color = SheetGold, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                }
+
+                Spacer(Modifier.height(6.dp))
 
                 OutlinedTextField(
                     value = queryText,
                     onValueChange = {
                         queryText = it
-                        if (it.length >= 2) {
+                        if (it.trim().isNotEmpty()) {
                             manager.performOnlineSearch(it)
                         }
                     },
-                    placeholder = { Text("输入全球任意城市/商场/景点，实时联网搜索...", color = Color.Gray, fontSize = 12.sp) },
+                    placeholder = { Text("输入目的地 (如：广州南站、罗湖口岸、万象城、华强北)...", color = Color.Gray, fontSize = 12.sp) },
                     singleLine = true,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = Color.White,
+                        unfocusedTextColor = Color.White,
+                        focusedBorderColor = SheetGold,
+                        unfocusedBorderColor = Color.Gray,
+                        cursorColor = SheetGold
+                    ),
                     trailingIcon = {
                         if (isSearching) {
                             CircularProgressIndicator(modifier = Modifier.size(18.dp), color = SheetGold, strokeWidth = 2.dp)
                         } else if (queryText.isNotEmpty()) {
-                            TextButton(
-                                onClick = { manager.performOnlineSearch(queryText) }
-                            ) {
-                                Text("搜索", color = SheetGold, fontWeight = FontWeight.Bold)
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                TextButton(onClick = { manager.performOnlineSearch(queryText) }) {
+                                    Text("搜索", color = SheetGold, fontWeight = FontWeight.Bold)
+                                }
                             }
                         }
                     },
                     modifier = Modifier.fillMaxWidth()
                 )
 
+                Spacer(Modifier.height(6.dp))
+
+                // Quick City/Hot Tag Chips for 1-Tap Search
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+                    items(listOf("罗湖口岸", "福田口岸", "深圳北站", "万象城", "华强北", "广州南站", "松山湖", "旺角信和", "西九龙", "轻音部圣地")) { tag ->
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(Color.White.copy(alpha = 0.1f))
+                                .clickable {
+                                    queryText = tag
+                                    manager.performOnlineSearch(tag)
+                                }
+                                .padding(horizontal = 8.dp, vertical = 4.dp)
+                        ) {
+                            Text(tag, color = SheetGold, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+
                 Spacer(Modifier.height(8.dp))
 
                 LazyColumn(
                     modifier = Modifier.weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                    verticalArrangement = Arrangement.spacedBy(7.dp)
                 ) {
                     items(displayList) { item ->
                         Card(
@@ -761,13 +824,30 @@ fun DestinationSearchSheetDialog(onDismiss: () -> Unit) {
                                 }
                         ) {
                             Row(
-                                modifier = Modifier.fillMaxWidth().padding(12.dp),
+                                modifier = Modifier.fillMaxWidth().padding(11.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.SpaceBetween
                             ) {
                                 Column(modifier = Modifier.weight(1f)) {
-                                    Text(item.name, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                                    Text(item.address, color = Color.LightGray, fontSize = 11.sp, maxLines = 2)
+                                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        Text(item.name, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                        Box(
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(4.dp))
+                                                .background(SheetCrimson.copy(alpha = 0.5f))
+                                                .padding(horizontal = 5.dp, vertical = 1.dp)
+                                        ) {
+                                            Text(item.category, color = SheetGold, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                                        }
+                                    }
+                                    Spacer(Modifier.height(2.dp))
+                                    Text(
+                                        "${String.format("%.1f km", item.distanceKm)} · ${item.address}",
+                                        color = Color.LightGray,
+                                        fontSize = 11.sp,
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
                                 }
                                 Spacer(Modifier.width(8.dp))
                                 Button(
@@ -776,9 +856,10 @@ fun DestinationSearchSheetDialog(onDismiss: () -> Unit) {
                                         onDismiss()
                                     },
                                     colors = ButtonDefaults.buttonColors(containerColor = SheetCrimson),
-                                    shape = RoundedCornerShape(8.dp)
+                                    shape = RoundedCornerShape(8.dp),
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
                                 ) {
-                                    Text("导航", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                    Text("去这里", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                                 }
                             }
                         }
