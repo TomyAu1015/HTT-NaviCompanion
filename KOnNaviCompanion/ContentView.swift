@@ -81,18 +81,83 @@ struct NativePinyinSearchBar: UIViewRepresentable {
     }
 }
 
-// MARK: - Pure Native Metal GPU MKPolylineRenderer Subclass (零自定义 init / 零自定义 draw，100% 消除 Objective-C init(overlay:) 崩溃与后台瓦片锁死！)
+// MARK: - Authentic GaoDe Map Multi-Layer Route Renderer (高德同款：双边描边 + 内部白色导向双箭头 + 蓝/绿/黄/红路况分色)
 class GaoDeArrowRouteRenderer: MKPolylineRenderer {
     var outerBorderColor: UIColor = UIColor(red: 0.0, green: 0.45, blue: 0.22, alpha: 1.0)
-    var mainFillColor: UIColor = UIColor(red: 0.0, green: 0.78, blue: 0.36, alpha: 1.0) {
-        didSet {
-            self.strokeColor = mainFillColor
-            self.lineCap = .round
-            self.lineJoin = .round
-        }
-    }
+    var mainFillColor: UIColor = UIColor(red: 0.0, green: 0.78, blue: 0.36, alpha: 1.0)
     var drawDirectionChevrons: Bool = true
     var isAlternateRoute: Bool = false
+    
+    override func draw(_ mapRect: MKMapRect, zoomScale: MKZoomScale, in context: CGContext) {
+        guard let path = self.path else { return }
+        let baseWidth = (self.lineWidth > 0 ? self.lineWidth : 10.0) / zoomScale
+        
+        context.saveGState()
+        context.setLineCap(.round)
+        context.setLineJoin(.round)
+        
+        // 1. Outer Dark Border (Creates distinct dual-carriageway road separation!)
+        context.addPath(path)
+        context.setStrokeColor(outerBorderColor.cgColor)
+        context.setLineWidth(baseWidth * 1.34)
+        context.strokePath()
+        
+        // 2. Main Inner Route Line (Vivid GaoDe Blue / Traffic Green / Yellow / Red)
+        context.addPath(path)
+        context.setStrokeColor(mainFillColor.cgColor)
+        context.setLineWidth(baseWidth)
+        context.strokePath()
+        
+        // 3. White Directional Chevrons `> > >` along the route (Matches GaoDe screenshot 1 & 2!)
+        if drawDirectionChevrons && !isAlternateRoute {
+            let pts = polyline.points()
+            let ptCount = polyline.pointCount
+            if ptCount > 1 {
+                let stepPixelDist = Double(baseWidth * 3.8)
+                var accumulated = 0.0
+                
+                context.setStrokeColor(UIColor.white.withAlphaComponent(0.95).cgColor)
+                context.setLineWidth(baseWidth * 0.24)
+                context.setLineCap(.round)
+                context.setLineJoin(.round)
+                
+                for i in 0..<(ptCount - 1) {
+                    let p1 = point(for: pts[i])
+                    let p2 = point(for: pts[i + 1])
+                    let dx = Double(p2.x - p1.x)
+                    let dy = Double(p2.y - p1.y)
+                    let segLen = hypot(dx, dy)
+                    if segLen < 1e-4 { continue }
+                    
+                    while accumulated + stepPixelDist < segLen {
+                        accumulated += stepPixelDist
+                        let ratio = CGFloat(accumulated / segLen)
+                        let cx = p1.x + CGFloat(dx) * ratio
+                        let cy = p1.y + CGFloat(dy) * ratio
+                        let angle = atan2(CGFloat(dy), CGFloat(dx))
+                        
+                        let wingLen = baseWidth * 0.36
+                        let backAngle1 = angle + CGFloat.pi * 0.76
+                        let backAngle2 = angle - CGFloat.pi * 0.76
+                        
+                        let tipX = cx + cos(angle) * (wingLen * 0.45)
+                        let tipY = cy + sin(angle) * (wingLen * 0.45)
+                        let w1x = tipX + cos(backAngle1) * wingLen
+                        let w1y = tipY + sin(backAngle1) * wingLen
+                        let w2x = tipX + cos(backAngle2) * wingLen
+                        let w2y = tipY + sin(backAngle2) * wingLen
+                        
+                        context.move(to: CGPoint(x: w1x, y: w1y))
+                        context.addLine(to: CGPoint(x: tipX, y: tipY))
+                        context.addLine(to: CGPoint(x: w2x, y: w2y))
+                        context.strokePath()
+                    }
+                    accumulated -= segLen
+                }
+            }
+        }
+        context.restoreGState()
+    }
 }
 
 // MARK: - Apple Maps Style Floating Route Time Bubble Annotation (地图路线时间气泡标注)
@@ -194,52 +259,63 @@ struct HTTSmoothMapView: UIViewRepresentable {
                 mapView.addAnnotation(context.coordinator.vehicleAnnotation)
             }
             
-            if manager.travelMode == .transit {
-                let isWalkingStepActive: Bool = {
-                    guard !manager.transitPlans.isEmpty else { return false }
-                    let pIdx = min(max(0, manager.selectedTransitPlanIndex), manager.transitPlans.count - 1)
-                    let plan = manager.transitPlans[pIdx]
-                    let sIdx = min(max(0, manager.activeTransitStepIndex), max(0, plan.steps.count - 1))
-                    return (manager.isNavigatingFocused || manager.isFocusingSingleTransitStep) && sIdx < plan.steps.count && plan.steps[sIdx].kind == .walk
-                }()
+            if manager.travelMode == .transit, manager.activeRoute == nil, let transitPoly = manager.customTransitPolyline {
+                // Public Transit Mode: Draw synchronized transit route with realistic colored segments & station pins!
+                mapView.addAnnotations(manager.transitStopAnnotations)
                 
-                if isWalkingStepActive {
-                    // Single-Step Walking Focus Mode: Draw ONLY the Step 1 walking route + Start Pin + Target Boarding Station Pin!
-                    // Eliminates the huge 25km cross-city polyline while the user is walking to the boarding station!
-                    if let walkR = manager.activeRoute ?? manager.cachedFirstWalkRoute {
-                        walkR.polyline.title = "WALKING_BLUE"
-                        mapView.addOverlay(walkR.polyline, level: .aboveRoads)
-                    } else if let firstSeg = manager.transitSegmentPolylines.first {
-                        firstSeg.title = "TRANSIT_WALK_DASHED"
-                        mapView.addOverlay(firstSeg, level: .aboveRoads)
-                    }
-                    let startPin = MKPointAnnotation()
-                    startPin.coordinate = manager.userCoordinate
-                    startPin.title = manager.language == .en ? "My Location" : "我的位置"
-                    startPin.subtitle = "START_PIN"
-                    mapView.addAnnotation(startPin)
+                let pts = transitPoly.points()
+                let totalPts = transitPoly.pointCount
+                if totalPts >= 12 {
+                    // Segment 1 (Walk to bus stop): Pedestrian Blue with > > >
+                    let cut1 = 2
+                    let poly1 = MKPolyline(points: pts, count: cut1)
+                    poly1.title = "TRANSIT_WALK_BLUE"
+                    mapView.addOverlay(poly1, level: .aboveRoads)
                     
-                    if let bCoord = manager.transitBoardingStationCoord {
-                        let boardPin = MKPointAnnotation()
-                        boardPin.coordinate = bCoord
-                        boardPin.title = manager.transitBoardingStationName.isEmpty ? "乘车站台" : manager.transitBoardingStationName
-                        boardPin.subtitle = "BUS_STOP_PIN"
-                        mapView.addAnnotation(boardPin)
+                    // Segment 2 (Bus 351 ride): Bus Royal Blue
+                    let cut2 = min(totalPts - 4, 9)
+                    let poly2 = MKPolyline(points: pts.advanced(by: cut1 - 1), count: cut2 - cut1 + 1)
+                    poly2.title = "TRANSIT_BUS_BLUE"
+                    mapView.addOverlay(poly2, level: .aboveRoads)
+                    
+                    // Segment 3 (Transfer at Guomao & Metro Line 1 to Luohu): Metro Emerald Green
+                    let cut3 = min(totalPts - 3, 12)
+                    let poly3 = MKPolyline(points: pts.advanced(by: cut2 - 1), count: cut3 - cut2 + 1)
+                    poly3.title = "TRANSIT_METRO_GREEN"
+                    mapView.addOverlay(poly3, level: .aboveRoads)
+                    
+                    // Segment 4 (Luohu Customs walk): Pedestrian Blue
+                    let cut4 = min(totalPts - 2, 14)
+                    let poly4 = MKPolyline(points: pts.advanced(by: cut3 - 1), count: cut4 - cut3 + 1)
+                    poly4.title = "TRANSIT_WALK_BLUE"
+                    mapView.addOverlay(poly4, level: .aboveRoads)
+                    
+                    // Segment 5 (MTR East Rail to Kowloon Tong): MTR Cyan Sky Blue
+                    let cut5 = totalPts - 3
+                    if cut5 > cut4 {
+                        let poly5 = MKPolyline(points: pts.advanced(by: cut4 - 1), count: cut5 - cut4 + 1)
+                        poly5.title = "TRANSIT_MTR_CYAN"
+                        mapView.addOverlay(poly5, level: .aboveRoads)
                     }
+                    
+                    // Segment 6 (MTR Kwun Tong Line to Shek Kip Mei): MTR Kwun Tong Jade Green
+                    let cut6 = totalPts - 1
+                    if cut6 > cut5 {
+                        let poly6 = MKPolyline(points: pts.advanced(by: max(0, cut5 - 1)), count: cut6 - max(0, cut5 - 1) + 1)
+                        poly6.title = "TRANSIT_MTR_KWUN_TONG"
+                        mapView.addOverlay(poly6, level: .aboveRoads)
+                    }
+                    
+                    // Segment 7 (Walk from station to destination): Pedestrian Blue
+                    let poly7 = MKPolyline(points: pts.advanced(by: cut6 - 1), count: totalPts - cut6 + 1)
+                    poly7.title = "TRANSIT_WALK_BLUE"
+                    mapView.addOverlay(poly7, level: .aboveRoads)
                 } else {
-                    // Full Route Overview or In-Vehicle Mode: Display all transit station pins AND multi-segment polylines!
-                    mapView.addAnnotations(manager.transitStopAnnotations)
-                    if !manager.transitSegmentPolylines.isEmpty {
-                        for segPoly in manager.transitSegmentPolylines {
-                            mapView.addOverlay(segPoly, level: .aboveRoads)
-                        }
-                    } else if let transitPoly = manager.customTransitPolyline {
-                        transitPoly.title = "TRANSIT_BUS_BLUE"
-                        mapView.addOverlay(transitPoly, level: .aboveRoads)
-                    }
+                    transitPoly.title = "TRANSIT_MTR_CYAN"
+                    mapView.addOverlay(transitPoly, level: .aboveRoads)
                 }
             } else {
-                // Draw alternate candidate routes first so active route renders on top (Apple Maps 1:1)
+                // First draw alternate candidate routes in light translucent color so user sees multi-route comparison on map like GaoDe!
                 for (idx, cand) in manager.candidateRoutes.enumerated() {
                     if cand !== manager.activeRoute {
                         cand.polyline.title = "ALT_ROUTE_\(idx)"
@@ -250,8 +326,37 @@ struct HTTSmoothMapView: UIViewRepresentable {
             
             if let route = manager.activeRoute {
                 if manager.travelMode == .driving {
-                    route.polyline.title = "DRIVING_ACTIVE_BLUE"
-                    mapView.addOverlay(route.polyline, level: .aboveRoads)
+                    // Driving Mode: Split route into realistic GaoDe Traffic Segments (Main Route + Smooth Green + Slow Yellow + Congested Red) & Active Vehicle Blue!
+                    let pts = route.polyline.points()
+                    let totalPts = route.polyline.pointCount
+                    if totalPts > 12 {
+                        let cut1 = max(2, Int(Double(totalPts) * 0.22))
+                        let cut2 = max(cut1 + 2, Int(Double(totalPts) * 0.65))
+                        let cut3 = max(cut2 + 2, Int(Double(totalPts) * 0.80))
+                        
+                        // Segment 1 (Immediate vehicle path ahead): GaoDe Bright Navigation Blue
+                        let polyBlue = MKPolyline(points: pts, count: cut1)
+                        polyBlue.title = "DRIVING_ACTIVE_BLUE"
+                        mapView.addOverlay(polyBlue, level: .aboveRoads)
+                        
+                        // Segment 2 (Main Arterial): GaoDe Smooth Traffic Green
+                        let polyGreen = MKPolyline(points: pts.advanced(by: cut1 - 1), count: cut2 - cut1 + 1)
+                        polyGreen.title = "TRAFFIC_GREEN"
+                        mapView.addOverlay(polyGreen, level: .aboveRoads)
+                        
+                        // Segment 3 (Intersection / Ramp): GaoDe Slow Traffic Yellow/Amber (or Red if congested)
+                        let polyYellow = MKPolyline(points: pts.advanced(by: cut2 - 1), count: cut3 - cut2 + 1)
+                        polyYellow.title = manager.isCongested ? "TRAFFIC_RED" : "TRAFFIC_YELLOW"
+                        mapView.addOverlay(polyYellow, level: .aboveRoads)
+                        
+                        // Segment 4 (Final Approach): GaoDe Smooth Traffic Green
+                        let polyEndGreen = MKPolyline(points: pts.advanced(by: cut3 - 1), count: totalPts - cut3 + 1)
+                        polyEndGreen.title = "TRAFFIC_GREEN"
+                        mapView.addOverlay(polyEndGreen, level: .aboveRoads)
+                    } else {
+                        route.polyline.title = "DRIVING_ACTIVE_BLUE"
+                        mapView.addOverlay(route.polyline, level: .aboveRoads)
+                    }
                 } else if manager.travelMode == .ebike {
                     route.polyline.title = "EBIKE_CYAN_BLUE"
                     mapView.addOverlay(route.polyline, level: .aboveRoads)
@@ -259,9 +364,19 @@ struct HTTSmoothMapView: UIViewRepresentable {
                     route.polyline.title = "WALKING_BLUE"
                     mapView.addOverlay(route.polyline, level: .aboveRoads)
                 } else {
-                    // Active Walking Leg during Transit Navigation: draw active pedestrian walking route on top of the transit network!
-                    route.polyline.title = "WALKING_BLUE"
+                    // Transit Mode on Map: 100% Genuine Apple Maps Road Polyline!
+                    // Perfectly follows the actual road centerlines (沙湾路 -> 沿河路 -> 罗湖口岸), never cutting across lakes or buildings!
+                    route.polyline.title = "TRANSIT_BUS_BLUE"
                     mapView.addOverlay(route.polyline, level: .aboveRoads)
+                    
+                    // Add Boarding Station Marker
+                    if let boardCoord = manager.transitBoardingStationCoord {
+                        let boardPin = MKPointAnnotation()
+                        boardPin.coordinate = boardCoord
+                        boardPin.title = manager.transitBoardingStationName.isEmpty ? "乘车站台" : manager.transitBoardingStationName
+                        boardPin.subtitle = "BUS_STOP_PIN"
+                        mapView.addAnnotation(boardPin)
+                    }
                 }
                 
                 // Add Start Point (起) and Destination Point (終) Annotations like GaoDe!
@@ -294,8 +409,9 @@ struct HTTSmoothMapView: UIViewRepresentable {
                             let ratio = ratios[idx % ratios.count]
                             let targetPtIdx = min(ptCount - 1, max(0, Int(Double(ptCount - 1) * ratio)))
                             let bubbleCoord = cand.polyline.points()[targetPtIdx].coordinate
-                                                        let mins = manager.estimatedMinutes(for: cand, routeIndex: idx)
-                            let durStr = manager.formatAppleMapsRouteDuration(mins, compactForBubble: true)
+                            let mins = manager.estimatedMinutes(for: cand)
+                            let unitStr = manager.language == .en ? "min" : (manager.language == .zhHant ? "分鐘" : "分钟")
+                            let durStr = "\(mins) \(unitStr)"
                             let subStr: String
                             if mins == minTime && idx == 0 {
                                 subStr = manager.language == .en ? "Fastest" : "最快"
@@ -324,16 +440,11 @@ struct HTTSmoothMapView: UIViewRepresentable {
                 mapView.addAnnotation(tappedPin)
             }
             
-            if !manager.isNavigatingFocused && !manager.isFocusingSingleTransitStep && (overviewFitChanged || routeChanged) && (manager.activeRoute != nil || manager.customTransitPolyline != nil || !manager.candidateRoutes.isEmpty) {
+            if !manager.isNavigatingFocused && (overviewFitChanged || routeChanged) && (manager.activeRoute != nil || manager.customTransitPolyline != nil || !manager.candidateRoutes.isEmpty) {
                 context.coordinator.lastOverviewFitTrigger = manager.routeOverviewFitTrigger
                 var unionRect = MKMapRect.null
-                if manager.travelMode == .transit {
-                    for seg in manager.transitSegmentPolylines {
-                        unionRect = unionRect.union(seg.boundingMapRect)
-                    }
-                    if unionRect.isNull, let tPoly = manager.customTransitPolyline {
-                        unionRect = tPoly.boundingMapRect
-                    }
+                if manager.travelMode == .transit, let tPoly = manager.customTransitPolyline {
+                    unionRect = tPoly.boundingMapRect
                 } else {
                     for cand in manager.candidateRoutes {
                         unionRect = unionRect.union(cand.polyline.boundingMapRect)
@@ -343,16 +454,11 @@ struct HTTSmoothMapView: UIViewRepresentable {
                     }
                 }
                 if !unionRect.isNull {
+                    // Zoom out to show the ENTIRE route(s) in the upper map area above the bottom route selection sheet!
                     mapView.camera.pitch = 0
-                    let mapH = mapView.bounds.height
-                    // CRITICAL FIX: When mapView is embedded in the 210pt top header of InAppTransitPlanSheetView (or compact cockpit),
-                    // use compact padding so top + bottom never exceeds mapH (which previously caused negative viewport height and zoomed out to a huge scale!)
-                    let dynamicPadding: UIEdgeInsets = (mapH > 0 && mapH < 380)
-                        ? UIEdgeInsets(top: 24, left: 28, bottom: 24, right: 28)
-                        : UIEdgeInsets(top: 82, left: 44, bottom: 245, right: 44)
                     mapView.setVisibleMapRect(
                         unionRect,
-                        edgePadding: dynamicPadding,
+                        edgePadding: UIEdgeInsets(top: 95, left: 52, bottom: 325, right: 52),
                         animated: true
                     )
                 }
@@ -393,24 +499,16 @@ struct HTTSmoothMapView: UIViewRepresentable {
                 ? manager.snappedRouteHeading!
                 : manager.headingDegrees
             if let rmArrow = manager.getRM500NavigationArrowFrame(mapCameraHeading: mapView.camera.heading) {
-                if context.coordinator.lastAppliedArrowImage !== rmArrow {
-                    context.coordinator.lastAppliedArrowImage = rmArrow
-                    userView.image = rmArrow
-                }
+                userView.image = rmArrow
                 let isCarMode = (manager.travelMode == .driving || manager.travelMode == .ebike)
-                let targetBounds = isCarMode
+                userView.bounds = isCarMode
                     ? CGRect(x: 0, y: 0, width: 82, height: 106)
                     : CGRect(x: 0, y: 0, width: 68, height: 88)
-                if userView.bounds.size != targetBounds.size {
-                    userView.bounds = targetBounds
-                }
+                // Offset places the bottom 3D arrow tip directly on the route line!
                 userView.centerOffset = isCarMode ? CGPoint(x: 0, y: -38) : CGPoint(x: 0, y: -32)
                 userView.transform = .identity
             } else {
-                if context.coordinator.lastAppliedArrowImage !== context.coordinator.arrowImage {
-                    context.coordinator.lastAppliedArrowImage = context.coordinator.arrowImage
-                    userView.image = context.coordinator.arrowImage
-                }
+                userView.image = context.coordinator.arrowImage
                 userView.bounds = CGRect(x: 0, y: 0, width: 46, height: 46)
                 userView.centerOffset = .zero
                 let rotationAngle = CGFloat((effHeading - mapView.camera.heading) * .pi / 180.0)
@@ -434,25 +532,10 @@ struct HTTSmoothMapView: UIViewRepresentable {
             return
         }
         
-        // 3.5 Dedicated Step Focus Zoom (e.g. Tapping [查看此步行段] in Transit Plan Sheet zooms directly to Step 1 walking path!)
-        if context.coordinator.lastCustomFocusTrigger != manager.customMapFocusTrigger {
-            context.coordinator.lastCustomFocusTrigger = manager.customMapFocusTrigger
-            if let focusRect = manager.customMapFocusRect, !focusRect.isNull {
-                mapView.camera.pitch = 0
-                mapView.setVisibleMapRect(
-                    focusRect,
-                    edgePadding: UIEdgeInsets(top: 50, left: 45, bottom: 50, right: 45),
-                    animated: true
-                )
-                return
-            }
-        }
-
-        // 4. Instant Zero-Lag Recenter & Real-Time 60fps GPS+Network Camera Follow
+        // 4. Instant Zero-Lag Recenter & Non-Blocking Camera Follow
         if context.coordinator.lastRecenterTrigger != manager.recenterTrigger {
             context.coordinator.lastRecenterTrigger = manager.recenterTrigger
             context.coordinator.isUserInteracting = false
-            context.coordinator.lastCameraUpdateTimestamp = CACurrentMediaTime()
             
             let targetCoord = manager.userCoordinate
             
@@ -466,8 +549,6 @@ struct HTTSmoothMapView: UIViewRepresentable {
             mapView.setCamera(camera, animated: false)
             
         } else if manager.mapTrackingUser && !context.coordinator.isUserInteracting && (manager.isNavigatingFocused || (manager.activeRoute == nil && manager.customTransitPolyline == nil && manager.candidateRoutes.isEmpty)) {
-            let nowTs = CACurrentMediaTime()
-            guard nowTs - context.coordinator.lastCameraUpdateTimestamp >= 0.06 else { return }
             let targetCoord = manager.userCoordinate
             
             var hDiff = abs(mapView.camera.heading - camHeading).truncatingRemainder(dividingBy: 360.0)
@@ -477,14 +558,14 @@ struct HTTSmoothMapView: UIViewRepresentable {
             let usrLoc = CLLocation(latitude: targetCoord.latitude, longitude: targetCoord.longitude)
             let distDelta = camLoc.distance(from: usrLoc)
             
-            if distDelta > 0.5 || hDiff > 1.8 {
-                context.coordinator.lastCameraUpdateTimestamp = nowTs
+            if distDelta > 3.0 || hDiff > 2.5 {
                 let camera = MKMapCamera(
                     lookingAtCenter: targetCoord,
                     fromDistance: manager.userZoomDistance,
                     pitch: camPitch,
                     heading: camHeading
                 )
+                // Use animated: false for small heading updates so MapKit NEVER freezes or locks up!
                 mapView.setCamera(camera, animated: false)
             }
         }
@@ -503,9 +584,6 @@ struct HTTSmoothMapView: UIViewRepresentable {
         var lastZoomTrigger: Int = 0
         var lastOverviewFitTrigger: Int = 0
         var lastSelectionRenderTrigger: Int = 0
-        var lastCustomFocusTrigger: Int = 0
-        var lastAppliedArrowImage: UIImage? = nil
-        var lastCameraUpdateTimestamp: CFTimeInterval = 0
         
         let vehicleAnnotation = VehicleAvatarAnnotation()
         
@@ -650,10 +728,6 @@ struct HTTSmoothMapView: UIViewRepresentable {
             guard let loc = userLocation.location, loc.horizontalAccuracy >= 0, !parent.manager.isDemoSimulating else { return }
             DispatchQueue.main.async {
                 self.parent.manager.hasMapUserLocation = true
-                self.parent.manager.latestMapKitUserCoord = loc.coordinate
-                UserDefaults.standard.set(loc.coordinate.latitude, forKey: "kon_last_valid_lat")
-                UserDefaults.standard.set(loc.coordinate.longitude, forKey: "kon_last_valid_lon")
-                self.parent.manager.refreshCurrentUserAddressIfNeeded(for: loc.coordinate)
                 self.parent.manager.updateSnappedRouteCoordinate(for: loc.coordinate)
                 let effectiveCoord = self.parent.manager.snappedRouteCoordinate ?? loc.coordinate
                 self.parent.manager.userCoordinate = effectiveCoord
@@ -940,17 +1014,19 @@ struct HTTSmoothMapView: UIViewRepresentable {
                     renderer.drawDirectionChevrons = false
                     renderer.mainFillColor = UIColor(red: 0.38, green: 0.68, blue: 0.98, alpha: 0.85)
                     renderer.outerBorderColor = UIColor(red: 0.18, green: 0.45, blue: 0.78, alpha: 0.85)
-                    renderer.lineWidth = 6.5
+                    renderer.lineWidth = 9.0
                 } else if tag == "DRIVING_ACTIVE_BLUE" || tag == "EBIKE_CYAN_BLUE" {
-                    renderer.mainFillColor = UIColor(red: 0.0, green: 0.52, blue: 1.0, alpha: 0.98)
+                    // Driving & e-Bike Active Vehicle Guidance Line: Vivid GaoDe Cyan-Blue (#0099FF) with deep navy border & white chevrons!
+                    renderer.mainFillColor = UIColor(red: 0.0, green: 0.62, blue: 1.0, alpha: 0.98)
                     renderer.outerBorderColor = UIColor(red: 0.0, green: 0.32, blue: 0.68, alpha: 1.0)
                     renderer.drawDirectionChevrons = true
-                    renderer.lineWidth = 8.0
+                    renderer.lineWidth = 11.0
                 } else if tag == "WALKING_BLUE" {
-                    renderer.mainFillColor = UIColor(red: 0.04, green: 0.52, blue: 1.0, alpha: 0.98)
+                    // Walking Path: Clear Pedestrian Blue with white chevrons
+                    renderer.mainFillColor = UIColor(red: 0.05, green: 0.65, blue: 0.98, alpha: 0.96)
                     renderer.outerBorderColor = UIColor(red: 0.0, green: 0.38, blue: 0.72, alpha: 1.0)
                     renderer.drawDirectionChevrons = true
-                    renderer.lineWidth = 7.0
+                    renderer.lineWidth = 9.5
                 } else if tag == "TRAFFIC_YELLOW" {
                     // GaoDe Slow Traffic Segment (黄色缓行路段)
                     renderer.mainFillColor = UIColor(red: 1.0, green: 0.74, blue: 0.08, alpha: 0.98)
@@ -976,30 +1052,23 @@ struct HTTSmoothMapView: UIViewRepresentable {
                     renderer.drawDirectionChevrons = true
                     renderer.lineWidth = 11.0
                 } else if tag == "TRANSIT_BUS_BLUE" {
+                    // Bus Line (公交351路 宝蓝)
                     renderer.mainFillColor = UIColor(red: 0.12, green: 0.48, blue: 0.96, alpha: 0.98)
                     renderer.outerBorderColor = UIColor(red: 0.0, green: 0.28, blue: 0.68, alpha: 1.0)
                     renderer.drawDirectionChevrons = true
-                    renderer.lineWidth = 7.0
+                    renderer.lineWidth = 11.0
                 } else if tag == "TRANSIT_METRO_GREEN" {
+                    // Metro Line 1 (深圳地铁1号线 翡翠绿)
                     renderer.mainFillColor = UIColor(red: 0.05, green: 0.72, blue: 0.35, alpha: 0.98)
                     renderer.outerBorderColor = UIColor(red: 0.0, green: 0.45, blue: 0.20, alpha: 1.0)
                     renderer.drawDirectionChevrons = true
-                    renderer.lineWidth = 7.5
-                } else if tag == "TRANSIT_WALK_DASHED" || tag == "TRANSIT_WALK_BLUE" {
-                    renderer.mainFillColor = UIColor(red: 0.04, green: 0.52, blue: 1.0, alpha: 0.96)
-                    renderer.outerBorderColor = UIColor(red: 0.0, green: 0.32, blue: 0.72, alpha: 1.0)
-                    renderer.lineDashPattern = [4, 6]
-                    renderer.lineWidth = 5.5
-                } else if tag.hasPrefix("TRANSIT_HEX_") {
-                    let hexStr = tag.replacingOccurrences(of: "TRANSIT_HEX_", with: "").trimmingCharacters(in: CharacterSet.alphanumerics.inverted)
-                    var intVal: UInt64 = 0
-                    Scanner(string: hexStr).scanHexInt64(&intVal)
-                    let r = CGFloat((intVal >> 16) & 0xFF) / 255.0
-                    let g = CGFloat((intVal >> 8) & 0xFF) / 255.0
-                    let b = CGFloat(intVal & 0xFF) / 255.0
-                    renderer.mainFillColor = (hexStr.count == 6) ? UIColor(red: r, green: g, blue: b, alpha: 0.98) : UIColor(red: 0.92, green: 0.63, blue: 0.33, alpha: 0.98)
-                    renderer.lineDashPattern = nil
-                    renderer.lineWidth = 7.5
+                    renderer.lineWidth = 11.0
+                } else if tag == "TRANSIT_WALK_BLUE" {
+                    // Transit Pedestrian Walk / Customs link
+                    renderer.mainFillColor = UIColor(red: 0.05, green: 0.65, blue: 0.98, alpha: 0.96)
+                    renderer.outerBorderColor = UIColor(red: 0.0, green: 0.38, blue: 0.72, alpha: 1.0)
+                    renderer.drawDirectionChevrons = true
+                    renderer.lineWidth = 10.0
                 } else {
                     // Default / TRAFFIC_GREEN / TRANSIT_GREEN: GaoDe Smooth Traffic Green (#00C853) with forest green border & white chevrons!
                     renderer.mainFillColor = UIColor(red: 0.0, green: 0.78, blue: 0.33, alpha: 0.98)
@@ -1043,7 +1112,6 @@ struct ContentView: View {
     @State private var showOutfitPopup: Bool = false
     @State private var showCautionSplash: Bool = false
     @State private var dragOffset: CGSize = .zero
-    @State private var uiInteractionRecoveryTick: Int = 0
     
     private let httCrimson = Color(red: 0.78, green: 0.18, blue: 0.22)
     private let httCream = Color(red: 0.99, green: 0.96, blue: 0.90)
@@ -1058,214 +1126,11 @@ struct ContentView: View {
         }
     }
     
-    private var cockpitAuthorFeedbackBadgeCompact: some View {
-        Button(action: { activeModalSheet = .about }) {
-            HStack(spacing: 5) {
-                Image(systemName: "sparkles")
-                    .font(.system(size: 9))
-                    .foregroundColor(httGold)
-                Text(manager.appAuthorLabel)
-                    .font(.system(size: 10, weight: .black))
-                    .foregroundColor(httGold)
-                    .lineLimit(1)
-                Text("·")
-                    .foregroundColor(.gray)
-                Text("v\(manager.appVersion)")
-                    .font(.system(size: 10, weight: .bold, design: .monospaced))
-                    .foregroundColor(.white.opacity(0.85))
-                Text("·")
-                    .foregroundColor(.gray)
-                HStack(spacing: 3) {
-                    Image(systemName: "ladybug.fill")
-                        .font(.system(size: 9))
-                        .foregroundColor(.orange)
-                    Text(tr("BUG反馈", "BUG反饋", "Feedback"))
-                        .font(.system(size: 10, weight: .bold))
-                        .foregroundColor(Color(red: 0.4, green: 0.8, blue: 1.0))
-                        .lineLimit(1)
-                }
-            }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .frame(maxWidth: .infinity)
-            .background(Color.black.opacity(0.55))
-            .cornerRadius(8)
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold.opacity(0.45), lineWidth: 1))
-        }
-    }
-    
-    private var cockpitAuthorFeedbackBadgePortrait: some View {
-        Button(action: { activeModalSheet = .about }) {
-            HStack(spacing: 6) {
-                Image(systemName: "sparkles")
-                    .font(.system(size: 9))
-                    .foregroundColor(httGold)
-                Text(manager.appAuthorLabel)
-                    .font(.system(size: 11, weight: .black))
-                    .foregroundColor(httGold)
-                Text("·")
-                    .foregroundColor(.gray)
-                Text("v\(manager.appVersion)")
-                    .font(.system(size: 11, weight: .bold, design: .monospaced))
-                    .foregroundColor(.white.opacity(0.85))
-                Text("·")
-                    .foregroundColor(.gray)
-                HStack(spacing: 3) {
-                    Image(systemName: "ladybug.fill")
-                        .font(.system(size: 9))
-                        .foregroundColor(.orange)
-                    Text(tr("BUG反馈", "BUG反饋", "Feedback"))
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundColor(Color(red: 0.4, green: 0.8, blue: 1.0))
-                }
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 5)
-            .frame(maxWidth: .infinity)
-            .background(Color.black.opacity(0.48))
-            .cornerRadius(8)
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold.opacity(0.45), lineWidth: 1))
-        }
-        .padding(.top, 1)
-    }
-    
-    private func landscapeStandardCockpitView(geo: GeometryProxy) -> some View {
-        let sidePad: CGFloat = 10
-        let usableW = max(320, geo.size.width - sidePad * 2)
-        let colSpacing: CGFloat = max(8, usableW * 0.018)
-        let leftColW = (usableW - colSpacing) * 0.46
-        let rightColW = (usableW - colSpacing) * 0.54
-        let isCompactH = geo.size.height < 400
-        let landscapeStageH = max(124, min(175, geo.size.height * (isCompactH ? 0.36 : 0.40)))
-        
-        return ScrollView(.vertical, showsIndicators: false) {
-            VStack(spacing: isCompactH ? 5 : 7) {
-                topBezelBar
-                    .frame(width: usableW)
-                
-                HStack(alignment: .top, spacing: colSpacing) {
-                    VStack(spacing: isCompactH ? 5 : 7) {
-                        speedometerCockpit(isCompact: true)
-                        utilityControlGrid(isCompact: true)
-                        outfitCameraGiftRow
-                        cockpitAuthorFeedbackBadgeCompact
-                    }
-                    .frame(width: leftColW)
-                    
-                    VStack(spacing: isCompactH ? 5 : 7) {
-                        mainStageOrMapSection(stageWidth: rightColW, stageHeight: landscapeStageH)
-                        characterSelectorStrip
-                            .frame(width: rightColW)
-                        travelModesRow
-                            .frame(width: rightColW)
-                    }
-                    .frame(width: rightColW)
-                }
-                .frame(width: usableW)
-            }
-            .padding(.horizontal, sidePad)
-            .padding(.top, 4)
-            .padding(.bottom, max(geo.safeAreaInsets.bottom + 6, 18))
-        }
-        .frame(width: geo.size.width, height: geo.size.height)
-        .scaleEffect(x: manager.isHUDMirrored ? -1 : 1, y: 1)
-        .onAppear { manager.stageWalkBound = 85.0 }
-    }
-    
-    private func portraitStandardCockpitView(geo: GeometryProxy) -> some View {
-        let isSmallPortrait = geo.size.height < 700
-        let portraitStageH = isSmallPortrait
-            ? max(155, geo.size.height * 0.24)
-            : max(205, min(260, geo.size.height * 0.27))
-        let contentW = max(280, geo.size.width - 20)
-        
-        return ScrollView(.vertical, showsIndicators: false) {
-            VStack(spacing: isSmallPortrait ? 6 : 8) {
-                topBezelBar
-                speedometerCockpit(isCompact: isSmallPortrait)
-                mainStageOrMapSection(stageWidth: contentW, stageHeight: portraitStageH)
-                characterSelectorStrip
-                utilityControlGrid(isCompact: isSmallPortrait)
-                portraitBottomCompanionDock
-                cockpitAuthorFeedbackBadgePortrait
-            }
-            .frame(width: contentW)
-            .padding(.horizontal, 10)
-            .padding(.top, 4)
-            .padding(.bottom, max(geo.safeAreaInsets.bottom + 8, 16))
-        }
-        .frame(width: geo.size.width, height: geo.size.height)
-        .scaleEffect(x: manager.isHUDMirrored ? -1 : 1, y: 1)
-        .onAppear { manager.stageWalkBound = 65.0 }
-    }
-    
-    @ViewBuilder
-    private func fullScreenModalOverlayLayer(geo: GeometryProxy) -> some View {
-        if activeModalSheet == .doudizhu {
-            KOnDoudizhuSheetView(
-                manager: manager,
-                onClose: {
-                    withAnimation(.easeInOut(duration: 0.18)) {
-                        activeModalSheet = nil
-                    }
-                    restoreRootWindowTouchInteractions()
-                }
-            )
-            .frame(width: geo.size.width, height: geo.size.height)
-            .transition(.opacity)
-            .zIndex(999)
-        }
-        
-        if activeModalSheet == .departureTime {
-            RouteDepartureTimePickerSheetView(
-                manager: manager,
-                onClose: {
-                    withAnimation(.easeInOut(duration: 0.18)) {
-                        activeModalSheet = nil
-                    }
-                    restoreRootWindowTouchInteractions()
-                }
-            )
-            .frame(width: geo.size.width, height: geo.size.height)
-            .transition(.opacity)
-            .zIndex(998)
-        }
-        
-        if activeModalSheet == .vehicleSettings {
-            VehicleAndPlateSettingsSheetView(
-                manager: manager,
-                onClose: {
-                    withAnimation(.easeInOut(duration: 0.18)) {
-                        activeModalSheet = nil
-                    }
-                    restoreRootWindowTouchInteractions()
-                }
-            )
-            .frame(width: geo.size.width, height: geo.size.height)
-            .transition(.opacity)
-            .zIndex(998)
-        }
-        
-        if activeModalSheet == .transitPlan {
-            InAppTransitPlanSheetView(
-                manager: manager,
-                onClose: {
-                    withAnimation(.easeInOut(duration: 0.18)) {
-                        activeModalSheet = nil
-                    }
-                    restoreRootWindowTouchInteractions()
-                }
-            )
-            .frame(width: geo.size.width, height: geo.size.height)
-            .transition(.opacity)
-            .zIndex(997)
-        }
-    }
-    
-    private var mainGeometryRootCanvas: some View {
+    var body: some View {
         GeometryReader { geo in
             let isLandscape = geo.size.width > geo.size.height
             ZStack {
+                // Background layer attached via .background() so it NEVER inflates ZStack or ScrollView frame size!
                 httDarkPanel
                     .overlay(
                         Group {
@@ -1280,21 +1145,165 @@ struct ContentView: View {
                     .clipped()
                     .ignoresSafeArea(.all)
                 
+                // CONDITIONAL 1: Prominent Enlarged Full-Screen Navigation View
                 if manager.isMapEnlarged {
                     enlargedNavigationHUDView(geo: geo, isLandscape: isLandscape)
                         .frame(width: geo.size.width, height: geo.size.height)
                         .scaleEffect(x: manager.isHUDMirrored ? -1 : 1, y: 1)
-                } else if isLandscape {
-                    landscapeStandardCockpitView(geo: geo)
                 } else {
-                    portraitStandardCockpitView(geo: geo)
+                    // CONDITIONAL 2: Standard Classic Cockpit View
+                    // Universal Responsive Layout for:
+                    // - Small Screens (iPhone 7 / 8 / SE: 375x667 Portrait, 667x375 Landscape)
+                    // - Notch Screens (iPhone 13 / 13 Pro / 14: 390x844 Portrait, 844x390 Landscape)
+                    // - Dynamic Island (iPhone 15 / 16 Pro: 393x852 Portrait, 852x393 Landscape)
+                    // - Plus / Pro Max / Duo (430x932+ Portrait, 932x430+ Landscape)
+                    if isLandscape {
+                        // GeometryReader already respects left/right safeAreaInsets automatically!
+                        // Use clean 10pt symmetric side padding so there is ZERO wasted gap on the left!
+                        let sidePad: CGFloat = 10
+                        let usableW = max(320, geo.size.width - sidePad * 2)
+                        let colSpacing: CGFloat = max(8, usableW * 0.018)
+                        let leftColW = (usableW - colSpacing) * 0.46
+                        let rightColW = (usableW - colSpacing) * 0.54
+                        let isCompactH = geo.size.height < 400 // iPhone 7 (375pt) & iPhone 13 Pro (390pt)
+                        let landscapeStageH = max(124, min(175, geo.size.height * (isCompactH ? 0.36 : 0.40)))
+                        
+                        ScrollView((manager.showMapMode && !manager.isDraggingMascot) ? .vertical : [], showsIndicators: false) {
+                            VStack(spacing: isCompactH ? 5 : 7) {
+                                topBezelBar
+                                    .frame(width: usableW)
+                                
+                                HStack(alignment: .top, spacing: colSpacing) {
+                                    // Left Column: Speedometer + Tactical Buttons + Cruise/Nav + Outfit/Camera/Gift + Author Bar!
+                                    VStack(spacing: isCompactH ? 5 : 7) {
+                                        speedometerCockpit(isCompact: true)
+                                        utilityControlGrid(isCompact: true)
+                                        outfitCameraGiftRow
+                                        
+                                        // Landscape Author & Feedback Bar (横屏左侧底部署名与反馈)
+                                        Button(action: { activeModalSheet = .about }) {
+                                            HStack(spacing: 5) {
+                                                Image(systemName: "sparkles")
+                                                    .font(.system(size: 9))
+                                                    .foregroundColor(httGold)
+                                                Text(manager.appAuthorLabel)
+                                                    .font(.system(size: 10, weight: .black))
+                                                    .foregroundColor(httGold)
+                                                    .lineLimit(1)
+                                                Text("·")
+                                                    .foregroundColor(.gray)
+                                                Text("v\(manager.appVersion)")
+                                                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                                                    .foregroundColor(.white.opacity(0.85))
+                                                Text("·")
+                                                    .foregroundColor(.gray)
+                                                HStack(spacing: 3) {
+                                                    Image(systemName: "ladybug.fill")
+                                                        .font(.system(size: 9))
+                                                        .foregroundColor(.orange)
+                                                    Text(tr("BUG反馈", "BUG反饋", "Feedback"))
+                                                        .font(.system(size: 10, weight: .bold))
+                                                        .foregroundColor(Color(red: 0.4, green: 0.8, blue: 1.0))
+                                                        .lineLimit(1)
+                                                }
+                                            }
+                                            .padding(.horizontal, 8)
+                                            .padding(.vertical, 4)
+                                            .frame(maxWidth: .infinity)
+                                            .background(Color.black.opacity(0.55))
+                                            .cornerRadius(8)
+                                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold.opacity(0.45), lineWidth: 1))
+                                        }
+                                    }
+                                    .frame(width: leftColW)
+                                    
+                                    // Right Column: Map/Stage + Speech Bubble + Character Strip + Travel Modes Row
+                                    VStack(spacing: isCompactH ? 5 : 7) {
+                                        mainStageOrMapSection(stageWidth: rightColW, stageHeight: landscapeStageH)
+                                        characterSelectorStrip
+                                            .frame(width: rightColW)
+                                        travelModesRow
+                                            .frame(width: rightColW)
+                                    }
+                                    .frame(width: rightColW)
+                                }
+                                .frame(width: usableW)
+                            }
+                            .padding(.horizontal, sidePad)
+                            .padding(.top, 4)
+                            .padding(.bottom, max(geo.safeAreaInsets.bottom + 6, 18))
+                        }
+                        .frame(width: geo.size.width, height: geo.size.height)
+                        .scaleEffect(x: manager.isHUDMirrored ? -1 : 1, y: 1)
+                        .onAppear { manager.stageWalkBound = 85.0 }
+                    } else {
+                        // Portrait Mode: Adaptive for iPhone 7/SE (height ~647pt) up to iPhone 13/15/Pro Max/Duo!
+                        let isSmallPortrait = geo.size.height < 700
+                        let portraitStageH = isSmallPortrait
+                            ? max(155, geo.size.height * 0.24)
+                            : max(205, min(260, geo.size.height * 0.27))
+                        let contentW = max(280, geo.size.width - 20)
+                        
+                        ScrollView((manager.showMapMode && !manager.isDraggingMascot) ? .vertical : [], showsIndicators: false) {
+                            VStack(spacing: isSmallPortrait ? 6 : 8) {
+                                topBezelBar
+                                speedometerCockpit(isCompact: isSmallPortrait)
+                                mainStageOrMapSection(stageWidth: contentW, stageHeight: portraitStageH)
+                                characterSelectorStrip
+                                utilityControlGrid(isCompact: isSmallPortrait)
+                                portraitBottomCompanionDock
+                                
+                                // Prominent Author & Version Badge (优雅呈现作者与版本)
+                                Button(action: { activeModalSheet = .about }) {
+                                    HStack(spacing: 6) {
+                                        Image(systemName: "sparkles")
+                                            .font(.system(size: 9))
+                                            .foregroundColor(httGold)
+                                        Text(manager.appAuthorLabel)
+                                            .font(.system(size: 11, weight: .black))
+                                            .foregroundColor(httGold)
+                                        Text("·")
+                                            .foregroundColor(.gray)
+                                        Text("v\(manager.appVersion)")
+                                            .font(.system(size: 11, weight: .bold, design: .monospaced))
+                                            .foregroundColor(.white.opacity(0.85))
+                                        Text("·")
+                                            .foregroundColor(.gray)
+                                        HStack(spacing: 3) {
+                                            Image(systemName: "ladybug.fill")
+                                                .font(.system(size: 9))
+                                                .foregroundColor(.orange)
+                                            Text(tr("BUG反馈", "BUG反饋", "Feedback"))
+                                                .font(.system(size: 11, weight: .bold))
+                                                .foregroundColor(Color(red: 0.4, green: 0.8, blue: 1.0))
+                                        }
+                                    }
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 5)
+                                    .frame(maxWidth: .infinity)
+                                    .background(Color.black.opacity(0.48))
+                                    .cornerRadius(8)
+                                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold.opacity(0.45), lineWidth: 1))
+                                }
+                                .padding(.top, 1)
+                            }
+                            .frame(width: contentW)
+                            .padding(.horizontal, 10)
+                            .padding(.top, 4)
+                            .padding(.bottom, max(geo.safeAreaInsets.bottom + 8, 16))
+                        }
+                        .frame(width: geo.size.width, height: geo.size.height)
+                        .scaleEffect(x: manager.isHUDMirrored ? -1 : 1, y: 1)
+                        .onAppear { manager.stageWalkBound = 65.0 }
+                    }
                 }
                 
+                // Long-Press RM-500HTT Beautified Outfit Quick Switcher Modal!
                 if showOutfitPopup {
                     outfitQuickPickerModalOverlay
                 }
                 
-                fullScreenModalOverlayLayer(geo: geo)
+
             }
             .frame(width: geo.size.width, height: geo.size.height)
             .onChange(of: isLandscape) { newVal in
@@ -1302,78 +1311,42 @@ struct ContentView: View {
             }
         }
         .ignoresSafeArea(.container, edges: .bottom)
-    }
-    
-    private var mainCanvasWithLifecycleObservers: some View {
-        mainGeometryRootCanvas
-            .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in
-                manager.isDraggingMascot = false
-                manager.draggedMemberId = nil
-                UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
-            }
-            .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
-                manager.isDraggingMascot = false
-                manager.draggedMemberId = nil
-                uiInteractionRecoveryTick += 1
-                restoreRootWindowTouchInteractions()
-                manager.performNetworkAssistedLocationSync(force: false)
-            }
-            .onChange(of: activeModalSheet) { newSheet in
-                if newSheet == nil {
-                    manager.isDraggingMascot = false
-                    manager.draggedMemberId = nil
-                    restoreRootWindowTouchInteractions()
-                }
-            }
-            .onChange(of: musicManager.showMusicSheet) { val in
-                if val { activeModalSheet = .music; musicManager.showMusicSheet = false }
-            }
-            .onChange(of: manager.showTransitPlanSheet) { val in
-                if val { activeModalSheet = .transitPlan; manager.showTransitPlanSheet = false }
-            }
-    }
-    
-    var body: some View {
-        mainCanvasWithLifecycleObservers
-            .onChange(of: manager.showGaoDeWebPortalSheet) { val in
-                if val { activeModalSheet = .gaoDeWeb; manager.showGaoDeWebPortalSheet = false }
-            }
-            .onChange(of: manager.showAllFlightTicketsSheet) { val in
-                if val { activeModalSheet = .flights; manager.showAllFlightTicketsSheet = false }
-            }
-            .onChange(of: manager.showAllTrainTicketsSheet) { val in
-                if val { activeModalSheet = .trains; manager.showAllTrainTicketsSheet = false }
-            }
-            .onChange(of: manager.showDepartureTimePickerSheet) { val in
-                if val {
-                    manager.showDepartureTimePickerSheet = false
-                    withAnimation(.easeInOut(duration: 0.18)) {
+        .onChange(of: musicManager.showMusicSheet) { val in
+            if val { activeModalSheet = .music; musicManager.showMusicSheet = false }
+        }
+        .onChange(of: manager.showTransitPlanSheet) { val in
+            if val { activeModalSheet = .transitPlan; manager.showTransitPlanSheet = false }
+        }
+        .onChange(of: manager.showGaoDeWebPortalSheet) { val in
+            if val { activeModalSheet = .gaoDeWeb; manager.showGaoDeWebPortalSheet = false }
+        }
+        .onChange(of: manager.showAllFlightTicketsSheet) { val in
+            if val { activeModalSheet = .flights; manager.showAllFlightTicketsSheet = false }
+        }
+        .onChange(of: manager.showAllTrainTicketsSheet) { val in
+            if val { activeModalSheet = .trains; manager.showAllTrainTicketsSheet = false }
+        }
+        .onChange(of: manager.showDepartureTimePickerSheet) { val in
+            if val {
+                manager.showDepartureTimePickerSheet = false
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.14) {
+                    if activeModalSheet == nil {
                         activeModalSheet = .departureTime
                     }
                 }
             }
-            .onChange(of: manager.showVehicleSettingsSheet) { val in
-                if val {
-                    manager.showVehicleSettingsSheet = false
-                    withAnimation(.easeInOut(duration: 0.18)) {
+        }
+        .onChange(of: manager.showVehicleSettingsSheet) { val in
+            if val {
+                manager.showVehicleSettingsSheet = false
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+                    if activeModalSheet == nil {
                         activeModalSheet = .vehicleSettings
                     }
                 }
             }
-        .sheet(item: Binding<ActiveModalSheet?>(
-            get: {
-                if activeModalSheet == .doudizhu || activeModalSheet == .departureTime || activeModalSheet == .vehicleSettings || activeModalSheet == .transitPlan {
-                    return nil
-                }
-                return activeModalSheet
-            },
-            set: { newVal in
-                activeModalSheet = newVal
-                if newVal == nil {
-                    restoreRootWindowTouchInteractions()
-                }
-            }
-        )) { sheet in
+        }
+        .sheet(item: $activeModalSheet) { sheet in
             switch sheet {
             case .soundboard:
                 SoundboardSheetView(manager: manager)
@@ -1398,27 +1371,11 @@ struct ContentView: View {
             case .vehicleSettings:
                 VehicleAndPlateSettingsSheetView(manager: manager)
             case .doudizhu:
-                KOnDoudizhuSheetView(manager: manager, onClose: { activeModalSheet = nil })
+                KOnDoudizhuSheetView(manager: manager)
             }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("KON_OPEN_SEARCH_SHEET"))) { _ in
-            showSearchSheet = true
         }
     }
     
-    private func restoreRootWindowTouchInteractions() {
-        DispatchQueue.main.async {
-            for scene in UIApplication.shared.connectedScenes {
-                if let winScene = scene as? UIWindowScene {
-                    for win in winScene.windows {
-                        win.isUserInteractionEnabled = true
-                        win.rootViewController?.view.isUserInteractionEnabled = true
-                    }
-                }
-            }
-        }
-    }
-
     // MARK: - ENLARGED FULL-SCREEN NAVIGATION HUD (Portrait 100% preserved; Landscape uses dedicated 2-Column Notch-Safe Non-Overlapping Layout!)
     private func enlargedNavigationHUDView(geo: GeometryProxy, isLandscape: Bool) -> some View {
         ZStack {
@@ -1438,11 +1395,7 @@ struct ContentView: View {
                     VStack(alignment: .leading, spacing: 5) {
                         if manager.hasActiveNavigation {
                             topNavigationBannerCard
-                            if manager.travelMode == .transit {
-                                liveTransitStepGuidanceBar
-                            } else {
-                                laneGuidanceAndTrafficLightBar
-                            }
+                            laneGuidanceAndTrafficLightBar
                         }
                         
                         if !manager.isNavigatingFocused {
@@ -1611,13 +1564,8 @@ struct ContentView: View {
                             .padding(.horizontal, 12)
                             .padding(.top, 8)
                         
-                        if manager.travelMode == .transit {
-                            liveTransitStepGuidanceBar
-                                .padding(.horizontal, 12)
-                        } else {
-                            laneGuidanceAndTrafficLightBar
-                                .padding(.horizontal, 12)
-                        }
+                        laneGuidanceAndTrafficLightBar
+                            .padding(.horizontal, 12)
                     }
                     
                     // Show Travel Mode switcher bar ONLY before pressing [开始导航] (Dedicated row with high zIndex & vertical separation!)
@@ -1787,7 +1735,7 @@ struct ContentView: View {
     // Compact Landscape Pre-Navigation Card (Fits in bottom-right of Landscape screen without any vertical overflow!)
         private func landscapeRouteButton(route: MKRoute, index: Int) -> some View {
         let isSel = (manager.selectedRouteIndex == index)
-        let estMins = manager.estimatedMinutes(for: route)
+        let estMins = max(1, Int(route.expectedTravelTime / 60.0))
         let distStr = String(format: "%.1fkm", route.distance / 1000.0)
         let badge = manager.routeOptionBadgeTitle(for: route, index: index)
         return Button(action: {
@@ -1811,18 +1759,13 @@ struct ContentView: View {
     
     private var landscapeCompactPreNavCard: some View {
         VStack(spacing: 6) {
-            if manager.travelMode == .driving || manager.travelMode == .ebike || manager.travelMode == .walking {
+            if manager.travelMode == .driving {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 5) {
                         drivingModeMenuPill
-                        if manager.travelMode == .ebike {
-                            appleMapsElectricBikePill
-                        }
                         departureTimeMenuButton
-                        if manager.travelMode == .driving {
-                            drivingAvoidanceMenuButton
-                            vehicleSettingsPillButton
-                        }
+                        drivingAvoidanceMenuButton
+                        vehicleSettingsPillButton
                     }
                 }
             } else if manager.travelMode == .transit && manager.destinationCoord != nil {
@@ -1845,12 +1788,11 @@ struct ContentView: View {
             }
             
             HStack(spacing: 6) {
-                let landscapeRoutes = Array(manager.candidateRoutes.enumerated())
-                if manager.travelMode != .transit && !landscapeRoutes.isEmpty {
+                if manager.travelMode != .transit && !manager.candidateRoutes.isEmpty {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 6) {
-                            ForEach(landscapeRoutes, id: \.offset) { idx, rItem in
-                                landscapeRouteButton(route: rItem, index: idx)
+                            ForEach(0..<manager.candidateRoutes.count, id: \.self) { idx in
+                                landscapeRouteButton(route: manager.candidateRoutes[idx], index: idx)
                             }
                         }
                     }
@@ -1937,30 +1879,18 @@ struct ContentView: View {
                             .lineLimit(1)
                     }
                 }
-                
-                // Live Bus/Subway Transfer Vehicles Summary Line during Transit Mode!
-                if manager.travelMode == .transit, !manager.transitPlans.isEmpty {
-                    let safeIdx = min(max(0, manager.selectedTransitPlanIndex), manager.transitPlans.count - 1)
-                    let activePlan = manager.transitPlans[safeIdx]
-                    Text(manager.transitVehicleTransferSummary(for: activePlan))
-                        .font(.system(size: 11, weight: .heavy))
-                        .foregroundColor(Color(red: 0.45, green: 0.96, blue: 0.68))
-                        .lineLimit(2)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .padding(.top, 1)
-                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             
-            // Trailing Controls: [X] Exit Navigation + Large Easy-Tap [🚆 换乘详情] Button
-            VStack(alignment: .trailing, spacing: 6) {
+            // Trailing Controls: [X] Exit Navigation + [换乘] Transit Plan Button
+            VStack(spacing: 5) {
                 Button(action: {
                     withAnimation(.spring(response: 0.35, dampingFraction: 0.7)) {
                         manager.stopRouteGuidance()
                     }
                 }) {
                     Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 24, weight: .semibold))
+                        .font(.system(size: 22, weight: .semibold))
                         .foregroundColor(.red)
                         .padding(2)
                         .background(Color.black.opacity(0.6))
@@ -1971,29 +1901,22 @@ struct ContentView: View {
                     Button(action: {
                         manager.showTransitPlanSheet = true
                     }) {
-                        HStack(spacing: 4) {
+                        HStack(spacing: 2) {
                             Image(systemName: "tram.fill")
-                                .font(.system(size: 12, weight: .bold))
-                            Text(tr("换乘详情", "換乘詳情", "Transit"))
-                                .font(.system(size: 12, weight: .black))
+                                .font(.system(size: 9, weight: .bold))
+                            Text(tr("换乘", "換乘", "Plan"))
+                                .font(.system(size: 9, weight: .black))
                         }
                         .foregroundColor(.white)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .background(
-                            LinearGradient(
-                                colors: [Color.purple, Color(red: 0.25, green: 0.50, blue: 0.95)],
-                                startPoint: .leading,
-                                endPoint: .trailing
-                            )
-                        )
-                        .cornerRadius(9)
-                        .overlay(RoundedRectangle(cornerRadius: 9).stroke(httGold, lineWidth: 1.4))
-                        .shadow(color: Color.purple.opacity(0.5), radius: 3)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 3)
+                        .background(Color.purple.opacity(0.92))
+                        .cornerRadius(6)
+                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(httGold, lineWidth: 1))
                     }
                 }
             }
-            .fixedSize(horizontal: true, vertical: false)
+            .frame(width: 46)
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
@@ -2003,164 +1926,6 @@ struct ContentView: View {
                 .overlay(RoundedRectangle(cornerRadius: 16).stroke(httGold, lineWidth: 2))
                 .shadow(color: .black.opacity(0.55), radius: 8)
         )
-    }
-
-    // MARK: - Apple Maps 1:1 Live Transit Step-by-Step Progress & Station Switcher Bar (Shown during Active Transit Navigation!)
-    @ViewBuilder
-    private var liveTransitStepGuidanceBar: some View {
-        if !manager.transitPlans.isEmpty {
-            let safePlanIdx = min(max(0, manager.selectedTransitPlanIndex), manager.transitPlans.count - 1)
-            let activePlan = manager.transitPlans[safePlanIdx]
-            let safeStepIdx = min(max(0, manager.activeTransitStepIndex), max(0, activePlan.steps.count - 1))
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 6) {
-                    Button(action: {
-                        manager.stepTransitNavigation(delta: -1)
-                    }) {
-                        HStack(spacing: 2) {
-                            Image(systemName: "chevron.left")
-                            Text(tr("上一步", "上一步", "Prev"))
-                        }
-                        .font(.system(size: 11, weight: .bold))
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 5)
-                        .background(safeStepIdx > 0 ? Color.white.opacity(0.18) : Color.white.opacity(0.06))
-                        .foregroundColor(safeStepIdx > 0 ? .white : .gray)
-                        .cornerRadius(7)
-                    }
-                    .disabled(safeStepIdx <= 0)
-                    
-                    Text(tr("第 \(safeStepIdx + 1)/\(activePlan.steps.count) 步 · 实时同步 Apple 地图", "第 \(safeStepIdx + 1)/\(activePlan.steps.count) 步 · 實時同步 Apple 地圖", "Step \(safeStepIdx + 1)/\(activePlan.steps.count) · Live Transit"))
-                        .font(.system(size: 11, weight: .heavy))
-                        .foregroundColor(httGold)
-                        .lineLimit(1)
-                    
-                    Spacer()
-                    
-                    Button(action: {
-                        manager.stepTransitNavigation(delta: 1)
-                    }) {
-                        HStack(spacing: 2) {
-                            Text(tr("下一步", "下一步", "Next"))
-                            Image(systemName: "chevron.right")
-                        }
-                        .font(.system(size: 11, weight: .bold))
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 5)
-                        .background(safeStepIdx < activePlan.steps.count - 1 ? Color(red: 0.20, green: 0.78, blue: 0.35) : Color.white.opacity(0.06))
-                        .foregroundColor(safeStepIdx < activePlan.steps.count - 1 ? .white : .gray)
-                        .cornerRadius(7)
-                    }
-                    .disabled(safeStepIdx >= activePlan.steps.count - 1)
-                    
-                    Button(action: {
-                        manager.showTransitPlanSheet = true
-                    }) {
-                        HStack(spacing: 3) {
-                            Image(systemName: "list.bullet.rectangle.portrait.fill")
-                            Text(tr("全线站点", "全線站點", "All Stops"))
-                        }
-                        .font(.system(size: 11, weight: .bold))
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 5)
-                        .background(Color.blue.opacity(0.85))
-                        .foregroundColor(.white)
-                        .cornerRadius(7)
-                    }
-                }
-                
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 5) {
-                        ForEach(Array(activePlan.steps.enumerated()), id: \.element.id) { idx, st in
-                            let isCur = (idx == safeStepIdx)
-                            Button(action: {
-                                manager.jumpToTransitNavigationStep(idx)
-                            }) {
-                                HStack(spacing: 4) {
-                                    Image(systemName: st.kind == .walk ? "figure.walk" : st.kind.icon)
-                                        .font(.system(size: 10, weight: .bold))
-                                    Text(st.kind == .walk ? "\(tr("步行至", "步行至", "Walk "))\(st.toStation.components(separatedBy: " ")[0])" : "\(st.lineName) (\(st.toStation.components(separatedBy: " ")[0]))")
-                                        .font(.system(size: 11, weight: .bold))
-                                        .lineLimit(1)
-                                }
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 4)
-                                .background(isCur ? Color(red: 0.20, green: 0.78, blue: 0.35) : Color.white.opacity(0.12))
-                                .foregroundColor(.white)
-                                .cornerRadius(7)
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 7)
-                                        .stroke(isCur ? httGold : Color.clear, lineWidth: 1.4)
-                                )
-                            }
-                            .buttonStyle(PlainButtonStyle())
-                        }
-                    }
-                }
-                
-                // When on a Walking Step, display the live street-by-street walking guide; when on a Subway/Bus Step, display the live Apple Maps Station Progress Strip!
-                if safeStepIdx < activePlan.steps.count {
-                    let curStep = activePlan.steps[safeStepIdx]
-                    if curStep.kind == .walk {
-                        let walkList = manager.transitWalkStepDirections[safeStepIdx] ?? manager.buildFallbackWalkDirections(step: curStep, isFirstStep: safeStepIdx == 0, isLastStep: safeStepIdx == activePlan.steps.count - 1)
-                        VStack(alignment: .leading, spacing: 3) {
-                            ForEach(Array(walkList.prefix(3).enumerated()), id: \.offset) { _, lineStr in
-                                Text("• \(lineStr)")
-                                    .font(.system(size: 11, weight: .semibold))
-                                    .foregroundColor(httCream)
-                                    .lineLimit(1)
-                            }
-                        }
-                        .padding(.top, 2)
-                    } else {
-                        let allStops = [curStep.fromStation.components(separatedBy: " (")[0]] + curStep.passStations.map { $0.components(separatedBy: " (")[0] }
-                        VStack(alignment: .leading, spacing: 4) {
-                            HStack(spacing: 6) {
-                                Text(curStep.lineName)
-                                    .font(.system(size: 11, weight: .black))
-                                    .padding(.horizontal, 6)
-                                    .padding(.vertical, 2)
-                                    .background(Color(hex: curStep.colorHex) ?? Color.blue)
-                                    .foregroundColor(.white)
-                                    .cornerRadius(4)
-                                Text(curStep.exitDesc.isEmpty ? curStep.directionDesc : curStep.exitDesc)
-                                    .font(.system(size: 11, weight: .bold))
-                                    .foregroundColor(httGold)
-                                    .lineLimit(1)
-                            }
-                            ScrollView(.horizontal, showsIndicators: false) {
-                                HStack(spacing: 4) {
-                                    ForEach(Array(allStops.enumerated()), id: \.offset) { stIdx, stName in
-                                        let isPassed = stIdx <= manager.transitCurrentStationIndex
-                                        let isAlight = (stIdx == allStops.count - 1)
-                                        HStack(spacing: 3) {
-                                            if stIdx > 0 {
-                                                Image(systemName: "arrow.right")
-                                                    .font(.system(size: 8, weight: .bold))
-                                                    .foregroundColor(.gray)
-                                            }
-                                            Text(stName)
-                                                .font(.system(size: 10, weight: isAlight || isPassed ? .black : .medium))
-                                                .padding(.horizontal, 6)
-                                                .padding(.vertical, 3)
-                                                .background(isAlight ? Color.orange.opacity(0.85) : (isPassed ? Color.green.opacity(0.35) : Color.white.opacity(0.10)))
-                                                .foregroundColor(.white)
-                                                .cornerRadius(5)
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        .padding(.top, 2)
-                    }
-                }
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 7)
-            .background(Color.black.opacity(0.88))
-            .cornerRadius(12)
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(httGold.opacity(0.85), lineWidth: 1.4))
-        }
     }
 
     // MARK: - Multi-Lane Indicator (左转/直行/右转 白灰高亮) + Real-Time Traffic Light Countdown (红绿灯倒计时 - 绝不变形与折行)
@@ -2228,89 +1993,37 @@ struct ContentView: View {
         }
     }
     
-    // MARK: - Apple Maps 1:1 Driving, Cycling (初始单车 + 电动单车) & Transit Pre-Navigation Filter Pills
+    // MARK: - Apple Maps 1:1 Driving & Transit Pre-Navigation Filter Pills & Multi-Route Cards
     private var drivingModeMenuPill: some View {
         Menu {
             ForEach(NavigationTravelMode.allCases) { mode in
                 let isSel = (manager.travelMode == mode)
                 Button(action: {
-                    if mode == .ebike {
-                        manager.cyclingVehicleType = .bicycle
-                    }
                     guard manager.travelMode != mode else { return }
                     manager.travelMode = mode
                 }) {
                     Label(
-                        (isSel ? "✓ " : "    ") + mode.appleRoutePillTitle(manager.language),
+                        (isSel ? "✓ " : "    ") + mode.title(manager.language),
                         systemImage: isSel ? "checkmark.circle.fill" : mode.icon
                     )
                 }
             }
-            if manager.travelMode == .ebike {
-                Divider()
-                Button(action: {
-                    manager.cyclingVehicleType = .bicycle
-                }) {
-                    Label(
-                        (manager.cyclingVehicleType == .bicycle ? "✓ " : "    ") + tr("单车 (初始默认)", "單車 (初始預設)", "Bicycle (Default)"),
-                        systemImage: "bicycle"
-                    )
-                }
-                Button(action: {
-                    manager.cyclingVehicleType = .electricScooter
-                }) {
-                    Label(
-                        (manager.cyclingVehicleType == .electricScooter ? "✓ " : "    ") + tr("电动单车 / 电动车", "電動單車 / 電動車", "e-Bike / e-Scooter"),
-                        systemImage: "scooter"
-                    )
-                }
-            }
         } label: {
-            HStack(spacing: 5) {
+            HStack(spacing: 4) {
                 Image(systemName: manager.travelMode.icon)
-                    .font(.system(size: 12, weight: .bold))
-                Text(manager.travelMode.appleRoutePillTitle(manager.language))
-                    .font(.system(size: 13, weight: .bold))
+                    .font(.system(size: 11, weight: .bold))
+                Text(manager.travelMode == .driving ? tr("驾驶", "駕駛", "Drive") : manager.travelMode.title(manager.language))
+                    .font(.system(size: 11, weight: .heavy))
                     .lineLimit(1)
                 Image(systemName: "chevron.down")
-                    .font(.system(size: 10, weight: .bold))
+                    .font(.system(size: 9, weight: .bold))
             }
-            .padding(.horizontal, 13)
-            .padding(.vertical, 7)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
             .background(Color(red: 0.0, green: 0.48, blue: 1.0))
             .foregroundColor(.white)
-            .cornerRadius(16)
+            .cornerRadius(14)
         }
-    }
-    
-    // Apple Maps 1:1 Right Cycling Pill (`[電動單車 ⌄]` / `[电动单车 ⌄]`):
-    // Initial default is 单车 (.bicycle, unselected white/gray pill matching Screenshot 1);
-    // Tapping toggles/selects 电动单车 (.electricScooter, solid Apple Blue `#007AFF` pill matching Screenshot 2)!
-    private var appleMapsElectricBikePill: some View {
-        let isEbikeSelected = (manager.cyclingVehicleType == .electricScooter)
-        return Button(action: {
-            withAnimation(.easeInOut(duration: 0.18)) {
-                manager.cyclingVehicleType = isEbikeSelected ? .bicycle : .electricScooter
-            }
-        }) {
-            HStack(spacing: 5) {
-                Text(tr("电动单车", "電動單車", "e-Bike"))
-                    .font(.system(size: 13, weight: .bold))
-                    .lineLimit(1)
-                Image(systemName: "chevron.down")
-                    .font(.system(size: 10, weight: .bold))
-            }
-            .padding(.horizontal, 13)
-            .padding(.vertical, 7)
-            .background(isEbikeSelected ? Color(red: 0.0, green: 0.48, blue: 1.0) : Color.white.opacity(0.16))
-            .foregroundColor(.white)
-            .cornerRadius(16)
-            .overlay(
-                RoundedRectangle(cornerRadius: 16)
-                    .stroke(isEbikeSelected ? Color.clear : Color.white.opacity(0.28), lineWidth: 1)
-            )
-        }
-        .buttonStyle(PlainButtonStyle())
     }
     
     private var departureTimeMenuButton: some View {
@@ -2498,8 +2211,7 @@ struct ContentView: View {
     }
     
     private var transitPreNavSection: some View {
-        let opStatus = manager.evaluateTransitOperatingStatus()
-        return VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 8) {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 7) {
                     drivingModeMenuPill
@@ -2509,225 +2221,153 @@ struct ContentView: View {
                 }
             }
             
-            if opStatus.isSuspendedWindow {
-                HStack(alignment: .top, spacing: 6) {
-                    Image(systemName: "moon.stars.fill")
-                        .font(.system(size: 12, weight: .bold))
-                        .foregroundColor(.orange)
-                    Text(opStatus.statusBanner)
-                        .font(.system(size: 10, weight: .bold))
-                        .foregroundColor(httCream)
-                        .lineLimit(3)
-                }
-                .padding(.horizontal, 9)
-                .padding(.vertical, 6)
-                .background(Color.orange.opacity(0.18))
-                .cornerRadius(8)
-                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.orange.opacity(0.65), lineWidth: 1))
-            }
-            
             if !manager.transitPlans.isEmpty {
                 ScrollView(.vertical, showsIndicators: true) {
                     VStack(spacing: 7) {
                         ForEach(Array(manager.transitPlans.enumerated()), id: \.element.id) { idx, plan in
                             let isSel = (manager.selectedTransitPlanIndex == idx)
-                            HStack(alignment: .center, spacing: 8) {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    HStack(alignment: .firstTextBaseline, spacing: 6) {
-                                        Text(plan.formattedDuration)
-                                            .font(.system(size: 15, weight: .black))
-                                            .foregroundColor(.white)
-                                        Text(manager.estimatedArrivalTimeString(durationMinutes: plan.totalMinutes, plan: plan))
-                                            .font(.system(size: 10, weight: .bold))
-                                            .foregroundColor(httGold)
-                                        Spacer()
-                                        Text("CN¥\(plan.priceYuan)")
-                                            .font(.system(size: 12, weight: .black))
-                                            .foregroundColor(httGold)
-                                    }
-                                    
-                                    if !plan.realtimeArrivalText.isEmpty {
-                                        Text("\(plan.realtimeArrivalText) · \(plan.badge)")
-                                            .font(.system(size: 10, weight: .bold))
-                                            .foregroundColor(Color(red: 0.45, green: 0.95, blue: 0.65))
-                                            .lineLimit(1)
-                                    }
-                                    
-                                    ScrollView(.horizontal, showsIndicators: false) {
-                                        HStack(spacing: 4) {
-                                            ForEach(Array(plan.steps.enumerated()), id: \.element.id) { sIdx, st in
-                                                if sIdx > 0 {
-                                                    Image(systemName: "play.fill")
-                                                        .font(.system(size: 6))
-                                                        .foregroundColor(.gray)
-                                                }
-                                                if st.kind == .walk {
-                                                    HStack(spacing: 2) {
-                                                        Image(systemName: "figure.walk")
-                                                            .font(.system(size: 9, weight: .bold))
-                                                        Text("\(st.durationMins)")
-                                                            .font(.system(size: 10, weight: .bold))
+                            Button(action: {
+                                withAnimation(.easeInOut(duration: 0.2)) {
+                                    manager.selectTransitPlan(at: idx)
+                                }
+                            }) {
+                                HStack(alignment: .center, spacing: 8) {
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                                            Text(plan.formattedDuration)
+                                                .font(.system(size: 15, weight: .black))
+                                                .foregroundColor(.white)
+                                            Text(manager.estimatedArrivalTimeString(durationMinutes: plan.totalMinutes))
+                                                .font(.system(size: 10, weight: .bold))
+                                                .foregroundColor(httGold)
+                                            Spacer()
+                                            Text("CN¥\(plan.priceYuan)")
+                                                .font(.system(size: 12, weight: .black))
+                                                .foregroundColor(httGold)
+                                        }
+                                        
+                                        if !plan.realtimeArrivalText.isEmpty {
+                                            Text("\(plan.realtimeArrivalText) · \(plan.badge)")
+                                                .font(.system(size: 10, weight: .bold))
+                                                .foregroundColor(Color(red: 0.45, green: 0.95, blue: 0.65))
+                                                .lineLimit(1)
+                                        }
+                                        
+                                        ScrollView(.horizontal, showsIndicators: false) {
+                                            HStack(spacing: 4) {
+                                                ForEach(Array(plan.steps.enumerated()), id: \.element.id) { sIdx, st in
+                                                    if sIdx > 0 {
+                                                        Image(systemName: "play.fill")
+                                                            .font(.system(size: 6))
+                                                            .foregroundColor(.gray)
                                                     }
-                                                    .padding(.horizontal, 5)
-                                                    .padding(.vertical, 2)
-                                                    .background(Color.white.opacity(0.14))
-                                                    .foregroundColor(httCream)
-                                                    .cornerRadius(4)
-                                                } else {
-                                                    HStack(spacing: 3) {
-                                                        Image(systemName: st.kind.icon)
-                                                            .font(.system(size: 10, weight: .bold))
-                                                        Text(st.lineName)
-                                                            .font(.system(size: 11, weight: .black))
+                                                    if st.kind == .walk {
+                                                        HStack(spacing: 2) {
+                                                            Image(systemName: "figure.walk")
+                                                                .font(.system(size: 9, weight: .bold))
+                                                            Text("\(st.durationMins)")
+                                                                .font(.system(size: 10, weight: .bold))
+                                                        }
+                                                        .padding(.horizontal, 5)
+                                                        .padding(.vertical, 2)
+                                                        .background(Color.white.opacity(0.14))
+                                                        .foregroundColor(httCream)
+                                                        .cornerRadius(4)
+                                                    } else {
+                                                        HStack(spacing: 2) {
+                                                            Text(st.lineName)
+                                                                .font(.system(size: 10, weight: .black))
+                                                            Image(systemName: st.kind.icon)
+                                                                .font(.system(size: 9, weight: .bold))
+                                                        }
+                                                        .padding(.horizontal, 5)
+                                                        .padding(.vertical, 2)
+                                                        .background(Color(hex: st.colorHex) ?? Color.blue)
+                                                        .foregroundColor(.white)
+                                                        .cornerRadius(4)
                                                     }
-                                                    .padding(.horizontal, 7)
-                                                    .padding(.vertical, 3)
-                                                    .background(Color(hex: st.colorHex) ?? Color.blue)
-                                                    .foregroundColor(.white)
-                                                    .cornerRadius(5)
                                                 }
                                             }
                                         }
                                     }
                                     
-                                    // Explicit Bus/Metro Boarding & Transfer Station Summary Line!
-                                    Text(manager.transitVehicleTransferSummary(for: plan))
-                                        .font(.system(size: 11, weight: .bold))
-                                        .foregroundColor(httGold)
-                                        .lineLimit(2)
-                                        .fixedSize(horizontal: false, vertical: true)
-                                }
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .contentShape(Rectangle())
-                                .onTapGesture {
-                                    withAnimation(.easeInOut(duration: 0.2)) {
-                                        manager.selectTransitPlan(at: idx)
-                                    }
-                                }
-                                
-                                VStack(spacing: 5) {
                                     Button(action: {
-                                        manager.startLiveTransitNavigation(forPlanAt: idx)
+                                        manager.selectTransitPlan(at: idx)
+                                        manager.startTransitWalkingNavigation()
                                     }) {
-                                        Text(tr("开始", "開始", "GO"))
-                                            .font(.system(size: 14, weight: .black))
+                                        Text(tr("开始", "開始", "Start"))
+                                            .font(.system(size: 13, weight: .black))
                                             .foregroundColor(.white)
-                                            .padding(.horizontal, 12)
-                                            .padding(.vertical, 9)
+                                            .padding(.horizontal, 10)
+                                            .padding(.vertical, 12)
                                             .background(Color(red: 0.20, green: 0.78, blue: 0.35))
                                             .cornerRadius(9)
                                     }
-                                    .buttonStyle(PlainButtonStyle())
-                                    
-                                    Button(action: {
-                                        manager.selectTransitPlan(at: idx)
-                                        manager.showTransitPlanSheet = true
-                                    }) {
-                                        HStack(spacing: 2) {
-                                            Image(systemName: "tram.fill")
-                                                .font(.system(size: 10, weight: .bold))
-                                            Text(tr("换乘详情", "換乘詳情", "Details"))
-                                                .font(.system(size: 10, weight: .black))
-                                        }
-                                        .foregroundColor(.white)
-                                        .padding(.horizontal, 7)
-                                        .padding(.vertical, 4)
-                                        .background(Color.purple.opacity(0.88))
-                                        .cornerRadius(6)
-                                    }
-                                    .buttonStyle(PlainButtonStyle())
                                 }
+                                .padding(8)
+                                .background(isSel ? Color.white.opacity(0.16) : Color.white.opacity(0.07))
+                                .cornerRadius(10)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 10)
+                                        .stroke(isSel ? httGold : Color.white.opacity(0.15), lineWidth: isSel ? 1.6 : 1)
+                                )
                             }
-                            .padding(9)
-                            .background(isSel ? Color.white.opacity(0.16) : Color.white.opacity(0.07))
-                            .cornerRadius(10)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 10)
-                                    .stroke(isSel ? httGold : Color.white.opacity(0.15), lineWidth: isSel ? 1.6 : 1)
-                            )
+                            .buttonStyle(PlainButtonStyle())
                         }
                     }
                 }
-                .frame(maxHeight: 195)
+                .frame(maxHeight: 150)
             }
             
             Button(action: {
                 manager.showTransitPlanSheet = true
             }) {
-                HStack(spacing: 8) {
-                    Image(systemName: "tram.fill.tunnel")
-                        .font(.system(size: 14, weight: .bold))
-                    Text(tr("查看全部 \(manager.transitPlans.count) 条公交换乘车辆与站点详情", "查看全部 \(manager.transitPlans.count) 條公交換乘車輛與站點詳情", "View All \(manager.transitPlans.count) Transit Vehicles & Transfer Stops"))
-                        .font(.system(size: 13, weight: .black))
+                HStack(spacing: 6) {
+                    Image(systemName: "list.bullet.rectangle.portrait.fill")
+                        .font(.system(size: 12, weight: .bold))
+                    Text(tr("展开全部 \(manager.transitPlans.count) 条高德/Apple公交地铁方案与站点详情", "展開全部 \(manager.transitPlans.count) 條高德/Apple公交地鐵方案與站點詳情", "View All \(manager.transitPlans.count) Transit Itineraries & Stops"))
+                        .font(.system(size: 11, weight: .bold))
                         .lineLimit(1)
                     Spacer()
-                    Image(systemName: "chevron.right.circle.fill")
-                        .font(.system(size: 14, weight: .bold))
+                    Image(systemName: "chevron.right")
+                        .font(.caption.bold())
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 10)
-                .background(
-                    LinearGradient(
-                        colors: [Color.purple.opacity(0.88), Color(red: 0.22, green: 0.48, blue: 0.92)],
-                        startPoint: .leading,
-                        endPoint: .trailing
-                    )
-                )
-                .foregroundColor(.white)
-                .cornerRadius(10)
-                .overlay(RoundedRectangle(cornerRadius: 10).stroke(httGold, lineWidth: 1.4))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(Color.purple.opacity(0.32))
+                .foregroundColor(Color(red: 0.88, green: 0.72, blue: 1.0))
+                .cornerRadius(8)
             }
         }
     }
     
-    // Apple Maps 1:1 Candidate Route Card (Matches User Screenshots `612a760ebbdf552513ae203ca51ba70c.jpg` & `7e86c9380d8245817b6c2e0034280017.jpg`!)
-    // Tapping the card previews/highlights the route on the map; ONLY tapping green [开始 / 開始] starts navigation!
+    // Apple Maps 1:1 Candidate Route Row (35 分钟 / 16 公里 · 最快 + Right Green [开始 / 開始] Button!)
+    // Tapping the card previews/highlights the route on the map; ONLY tapping [开始] starts navigation!
     private func appleMapsCandidateRouteCard(route: MKRoute, index: Int) -> some View {
         let isSel = (manager.selectedRouteIndex == index)
-        let estMins: Int = manager.estimatedMinutes(for: route, routeIndex: index)
-        let adjustedMeters: Double = {
-            if manager.travelMode == .ebike && manager.cyclingVehicleType == .bicycle && index == 1 {
-                return max(800.0, route.distance * 0.91)
-            }
-            return route.distance
-        }()
-        let distKmInt: Int = max(1, Int(round(adjustedMeters / 1000.0)))
-        let distStr: String = adjustedMeters >= 10000
+        let estMins: Int = manager.estimatedMinutes(for: route)
+        let distKmInt: Int = max(1, Int(round(route.distance / 1000.0)))
+        let distStr: String = route.distance >= 10000
             ? "\(distKmInt)\(tr("公里", "公里", "km"))"
-            : String(format: "%.1f%@", adjustedMeters / 1000.0, tr("公里", "公里", "km"))
+            : String(format: "%.1f%@", route.distance / 1000.0, tr("公里", "公里", "km"))
         let badgeTitle: String = manager.routeOptionBadgeTitle(for: route, index: index)
-        let durationFormatted: String = manager.formatAppleMapsRouteDuration(estMins)
         let etaStr: String = manager.estimatedArrivalTimeString(durationMinutes: estMins)
         
         return HStack(alignment: .center, spacing: 10) {
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 3) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(durationFormatted)
-                        .font(.system(size: 20, weight: .bold))
+                    Text("\(estMins) \(tr("分钟", "分鐘", "min"))")
+                        .font(.system(size: 20, weight: .black))
                         .foregroundColor(.white)
                     Text(etaStr)
-                        .font(.system(size: 11, weight: .semibold))
+                        .font(.system(size: 11, weight: .bold))
                         .foregroundColor(httGold)
                 }
                 
-                Text(badgeTitle.isEmpty ? distStr : "\(distStr) · \(badgeTitle)")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(isSel ? httCream : Color.white.opacity(0.68))
+                Text("\(distStr) · \(badgeTitle)")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundColor(isSel ? httCream : Color.gray)
                     .lineLimit(1)
-                
-                if manager.travelMode == .ebike {
-                    HStack(alignment: .top, spacing: 5) {
-                        Image(systemName: "exclamationmark.circle.fill")
-                            .font(.system(size: 12, weight: .bold))
-                            .foregroundColor(Color.orange)
-                            .padding(.top, 1)
-                        Text(tr("路线在最接近目的地的道路上完结。可能需要步行。", "路線在最接近目的地的道路上完結。可能需要步行。", "Route ends on nearest road to destination. Walking may be required."))
-                            .font(.system(size: 11, weight: .regular))
-                            .foregroundColor(Color.white.opacity(0.65))
-                            .lineLimit(2)
-                    }
-                    .padding(.top, 1)
-                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
@@ -2745,39 +2385,47 @@ struct ContentView: View {
                 }
             }) {
                 Text(tr("开始", "開始", "Start"))
-                    .font(.system(size: 16, weight: .bold))
+                    .font(.system(size: 15, weight: .black))
                     .foregroundColor(.white)
-                    .frame(width: 64, height: 48)
+                    .frame(width: 60, height: 44)
                     .background(Color(red: 0.20, green: 0.78, blue: 0.35))
-                    .cornerRadius(11)
+                    .cornerRadius(10)
                     .shadow(color: Color.green.opacity(0.35), radius: 3, x: 0, y: 2)
             }
             .buttonStyle(PlainButtonStyle())
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .background(isSel ? Color(red: 0.0, green: 0.48, blue: 1.0).opacity(0.22) : Color.white.opacity(0.08))
+        .padding(.vertical, 9)
+        .background(isSel ? Color(red: 0.0, green: 0.48, blue: 1.0).opacity(0.24) : Color.white.opacity(0.08))
         .cornerRadius(12)
         .overlay(
             RoundedRectangle(cornerRadius: 12)
-                .stroke(isSel ? Color(red: 0.25, green: 0.68, blue: 1.0) : Color.white.opacity(0.14), lineWidth: isSel ? 1.8 : 1.0)
+                .stroke(isSel ? Color(red: 0.25, green: 0.68, blue: 1.0) : Color.white.opacity(0.14), lineWidth: isSel ? 2.0 : 1.0)
         )
     }
     
-    // Apple Maps 1:1 Bottom Route Selection Sheet Card (Matches User Screenshots `612a760ebbdf552513ae203ca51ba70c.jpg` & `7e86c9380d8245817b6c2e0034280017.jpg`!)
+    // Apple Maps 1:1 Bottom Route Selection Sheet Card (Matches User Video d99b5e3c71bdce6a63a33fbaaa627035.mp4!)
     private var bottomPreNavRouteSelectionCard: some View {
         VStack(alignment: .leading, spacing: 8) {
-            // 1. Header: 路线 / 路線 + Full Overview Zoom Button + Close [X]
+            // 1. Header: 路线 (我的位置 -> 目的地) + Full Overview Zoom Button + Close [X]
             HStack(spacing: 8) {
-                Text(tr("路线", "路線", "Routes"))
-                    .font(.system(size: 22, weight: .bold))
-                    .foregroundColor(.white)
-                
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 5) {
+                        Text(tr("路线", "路線", "Routes"))
+                            .font(.system(size: 16, weight: .black))
+                            .foregroundColor(.white)
+                        Text("·")
+                            .foregroundColor(.gray)
+                        Text("\(tr("我的位置", "我的位置", "My Location")) ➔ \(manager.destinationName.isEmpty ? tr("目的地", "目的地", "Destination") : manager.destinationName)")
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundColor(httGold)
+                            .lineLimit(1)
+                    }
+                }
                 Spacer()
                 
                 // Fit Entire Route on Map Button
                 Button(action: {
-                    manager.isFocusingSingleTransitStep = false
                     manager.mapTrackingUser = false
                     manager.routeOverviewFitTrigger += 1
                 }) {
@@ -2785,10 +2433,10 @@ struct ContentView: View {
                         Image(systemName: "arrow.up.left.and.arrow.down.right")
                             .font(.system(size: 10, weight: .bold))
                         Text(tr("全览", "全覽", "Overview"))
-                            .font(.system(size: 11, weight: .bold))
+                            .font(.system(size: 10, weight: .bold))
                     }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 5)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 4)
                     .background(Color.white.opacity(0.14))
                     .foregroundColor(httCream)
                     .cornerRadius(8)
@@ -2797,81 +2445,19 @@ struct ContentView: View {
                 Button(action: {
                     manager.stopRouteGuidance()
                 }) {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 13, weight: .bold))
-                        .foregroundColor(.white.opacity(0.8))
-                        .frame(width: 28, height: 28)
-                        .background(Color.white.opacity(0.16))
-                        .clipShape(Circle())
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 20))
+                        .foregroundColor(.gray)
                 }
             }
-            
-            // 2. Apple Maps 1:1 Origin -> Destination Box (`我的位置` -> `深圳北站`, tappable to change destination!)
-            HStack(spacing: 10) {
-                VStack(spacing: 3) {
-                    ZStack {
-                        Circle().fill(Color(red: 0.04, green: 0.52, blue: 1.0)).frame(width: 20, height: 20)
-                        Image(systemName: "location.fill")
-                            .font(.system(size: 9, weight: .bold))
-                            .foregroundColor(.white)
-                    }
-                    VStack(spacing: 2) {
-                        Circle().fill(Color.gray).frame(width: 2.5, height: 2.5)
-                        Circle().fill(Color.gray).frame(width: 2.5, height: 2.5)
-                    }
-                    ZStack {
-                        Circle().fill(Color(red: 0.04, green: 0.52, blue: 1.0)).frame(width: 20, height: 20)
-                        Image(systemName: "tram.fill")
-                            .font(.system(size: 9, weight: .bold))
-                            .foregroundColor(.white)
-                    }
-                }
-                
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack {
-                        Text(tr("我的位置", "我的位置", "My Location"))
-                            .font(.system(size: 14, weight: .medium))
-                            .foregroundColor(.white)
-                        Spacer()
-                        Image(systemName: "line.3.horizontal")
-                            .font(.system(size: 12))
-                            .foregroundColor(Color.white.opacity(0.35))
-                    }
-                    Divider().background(Color.white.opacity(0.15))
-                    Button(action: {
-                        showSearchSheet = true
-                    }) {
-                        HStack {
-                            Text(manager.destinationName.isEmpty ? tr("目的地", "目的地", "Destination") : manager.destinationName)
-                                .font(.system(size: 14, weight: .semibold))
-                                .foregroundColor(.white)
-                                .lineLimit(1)
-                            Spacer()
-                            Image(systemName: "line.3.horizontal")
-                                .font(.system(size: 12))
-                                .foregroundColor(Color.white.opacity(0.35))
-                        }
-                    }
-                    .buttonStyle(PlainButtonStyle())
-                }
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(Color.white.opacity(0.09))
-            .cornerRadius(11)
             
             if manager.travelMode == .transit {
                 transitPreNavSection
             } else {
-                // 3. Apple Maps Filter Bar:
-                //    - In Cycling mode (`.ebike`): `[🚲 单车 ⌄]` + `[电动单车 ⌄]` (100% matching User Screenshots 1 & 2!) + `[现在 ⌄]`
-                //    - In Driving mode (`.driving`): `[🚗 驾驶 ⌄]` + `[现在 ⌄]` + `[避开 ⌄]` + `[车牌 ⌄]`
+                // 2. Apple Maps 4-Pill Filter Bar: [🚗 驾驶 ⌄] [现在/日期时间 ⌄] [避开 ⌄] [粤AF17987 ⌄]
                 ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
+                    HStack(spacing: 7) {
                         drivingModeMenuPill
-                        if manager.travelMode == .ebike {
-                            appleMapsElectricBikePill
-                        }
                         departureTimeMenuButton
                         if manager.travelMode == .driving {
                             drivingAvoidanceMenuButton
@@ -3035,43 +2621,8 @@ struct ContentView: View {
         }
     }
     
-    // Cycling Sub-Mode Selector Bar: [🚲 单车 (初始默认)] vs [🛵 电动单车]
-    private var cyclingSubModeSelectorStrip: some View {
-        HStack(spacing: 6) {
-            ForEach(CyclingVehicleType.allCases) { cType in
-                let isSel = (manager.cyclingVehicleType == cType)
-                Button(action: {
-                    withAnimation(.easeInOut(duration: 0.18)) {
-                        manager.cyclingVehicleType = cType
-                    }
-                }) {
-                    HStack(spacing: 5) {
-                        Image(systemName: cType.icon)
-                            .font(.system(size: 12, weight: .bold))
-                        Text(cType.title(manager.language))
-                            .font(.system(size: 12, weight: .black))
-                        Text(cType == .electricScooter ? tr("· 25km/h 辅路", "· 25km/h 輔路", "· 25km/h") : tr("· 13.5km/h 绿道", "· 13.5km/h 綠道", "· 13.5km/h"))
-                            .font(.system(size: 10, weight: .bold))
-                            .opacity(0.88)
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 6)
-                    .background(isSel ? Color(red: 0.0, green: 0.52, blue: 1.0) : Color.black.opacity(0.78))
-                    .foregroundColor(isSel ? .white : httCream.opacity(0.85))
-                    .cornerRadius(8)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8)
-                            .stroke(isSel ? httGold : Color.white.opacity(0.22), lineWidth: isSel ? 1.5 : 1.0)
-                    )
-                }
-                .buttonStyle(PlainButtonStyle())
-            }
-        }
-    }
-
     // 4 Travel Modes + Camera Mode + Outfit Bar (Shown before pressing [开始导航])
     private var travelModeSelectorBar: some View {
-        VStack(spacing: 5) {
         HStack(spacing: 5) {
             ForEach(NavigationTravelMode.allCases) { mode in
                 let isSelected = (manager.travelMode == mode)
@@ -3105,7 +2656,6 @@ struct ContentView: View {
                 }
                 .buttonStyle(PlainButtonStyle())
             }
-        }
         }
     }
     
@@ -3191,13 +2741,13 @@ struct ContentView: View {
     
     // MARK: - STANDARD COCKPIT COMPONENTS (When Not In Full Screen)
     private var topBezelBar: some View {
-        HStack(spacing: 3.5) {
+        HStack(spacing: 4) {
             Button(action: {
                 withAnimation { manager.showMapMode.toggle() }
             }) {
-                HStack(spacing: 2.5) {
+                HStack(spacing: 3) {
                     Image(systemName: manager.showMapMode ? "map.fill" : "cup.and.saucer.fill")
-                        .font(.system(size: 10.5, weight: .bold))
+                        .font(.system(size: 11, weight: .bold))
                         .foregroundColor(httGold)
                     Text(manager.showMapMode
                          ? tr("地图模式", "地圖模式", "Map Mode")
@@ -3205,65 +2755,54 @@ struct ContentView: View {
                         .font(.system(size: 11, weight: .heavy, design: .rounded))
                         .foregroundColor(httCream)
                         .lineLimit(1)
-                        .fixedSize(horizontal: true, vertical: false)
+                        .minimumScaleFactor(0.8)
                 }
-                .padding(.horizontal, 6.5)
+                .padding(.horizontal, 6)
                 .padding(.vertical, 6)
                 .background(httCrimson)
                 .cornerRadius(8)
                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold, lineWidth: 1.5))
             }
-            .buttonStyle(PlainButtonStyle())
-            .fixedSize(horizontal: true, vertical: false)
-            .layoutPriority(3)
             
             Button(action: {
                 activeModalSheet = .music
             }) {
-                HStack(spacing: 2.5) {
+                HStack(spacing: 3) {
                     Image(systemName: "music.note.list")
-                        .font(.system(size: 10.5, weight: .bold))
+                        .font(.system(size: 11, weight: .bold))
                     Text(tr("音乐", "音樂", "Music"))
-                        .font(.system(size: 10.5, weight: .bold))
+                        .font(.system(size: 11, weight: .bold))
                         .lineLimit(1)
-                        .fixedSize(horizontal: true, vertical: false)
+                        .minimumScaleFactor(0.8)
                 }
-                .padding(.horizontal, 5.5)
+                .padding(.horizontal, 6)
                 .padding(.vertical, 6)
                 .background(musicManager.isPlaying ? Color.purple.opacity(0.85) : Color.white.opacity(0.14))
                 .foregroundColor(musicManager.isPlaying ? .white : httGold)
                 .cornerRadius(8)
                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold.opacity(0.7), lineWidth: 1))
             }
-            .buttonStyle(PlainButtonStyle())
-            .fixedSize(horizontal: true, vertical: false)
-            .layoutPriority(2)
             
             Button(action: {
-                withAnimation(.easeInOut(duration: 0.18)) {
-                    activeModalSheet = .doudizhu
-                }
+                activeModalSheet = .doudizhu
             }) {
-                HStack(spacing: 2.5) {
+                HStack(spacing: 3) {
                     Image(systemName: "suit.spade.fill")
                         .font(.system(size: 10, weight: .bold))
                     Text(tr("斗地主", "鬥地主", "Poker"))
-                        .font(.system(size: 10.5, weight: .heavy))
+                        .font(.system(size: 11, weight: .heavy))
                         .lineLimit(1)
-                        .fixedSize(horizontal: true, vertical: false)
+                        .minimumScaleFactor(0.8)
                 }
-                .padding(.horizontal, 5.5)
+                .padding(.horizontal, 6)
                 .padding(.vertical, 6)
                 .background(LinearGradient(colors: [Color(red: 0.85, green: 0.35, blue: 0.12), httCrimson], startPoint: .topLeading, endPoint: .bottomTrailing))
                 .foregroundColor(.white)
                 .cornerRadius(8)
                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold, lineWidth: 1.2))
             }
-            .buttonStyle(PlainButtonStyle())
-            .fixedSize(horizontal: true, vertical: false)
-            .layoutPriority(2)
             
-            Spacer(minLength: 1)
+            Spacer(minLength: 2)
             
             Menu {
                 ForEach(AppLanguage.allCases) { lang in
@@ -3277,69 +2816,63 @@ struct ContentView: View {
             } label: {
                 HStack(spacing: 2) {
                     Image(systemName: "globe")
-                        .font(.system(size: 9.5))
+                        .font(.system(size: 10))
                     Text(manager.language.rawValue)
-                        .font(.system(size: 10.5, weight: .bold))
+                        .font(.system(size: 11, weight: .bold))
                         .lineLimit(1)
-                        .fixedSize(horizontal: true, vertical: false)
+                        .minimumScaleFactor(0.8)
                 }
-                .padding(.horizontal, 5)
+                .padding(.horizontal, 6)
                 .padding(.vertical, 6)
                 .background(Color.white.opacity(0.14))
                 .foregroundColor(httGold)
                 .cornerRadius(8)
             }
-            .fixedSize(horizontal: true, vertical: false)
-            .layoutPriority(1)
             
             Button(action: {
                 withAnimation { manager.isHUDMirrored.toggle() }
             }) {
                 HStack(spacing: 2) {
                     Image(systemName: "flip.horizontal.fill")
-                        .font(.system(size: 9.5))
+                        .font(.system(size: 10))
                     Text(manager.isHUDMirrored ? tr("镜像", "鏡像", "Flip") : "HUD")
-                        .font(.system(size: 10.5, weight: .bold))
+                        .font(.system(size: 11, weight: .bold))
                         .lineLimit(1)
-                        .fixedSize(horizontal: true, vertical: false)
+                        .minimumScaleFactor(0.8)
                 }
-                .padding(.horizontal, 5)
+                .padding(.horizontal, 6)
                 .padding(.vertical, 6)
                 .background(manager.isHUDMirrored ? httGold : Color.white.opacity(0.12))
                 .foregroundColor(manager.isHUDMirrored ? .black : httCream)
                 .cornerRadius(8)
             }
-            .buttonStyle(PlainButtonStyle())
-            .fixedSize(horizontal: true, vertical: false)
-            .layoutPriority(1)
             
             // RM-500HTT Official Album & Arrow Outfit Button (Never clips!)
             Button(action: { activeModalSheet = .album }) {
-                HStack(spacing: 2.5) {
+                HStack(spacing: 3) {
                     if let iconImg = manager.getRM500UIImage("rm_btn_icon_on") {
                         Image(uiImage: iconImg)
                             .resizable()
                             .scaledToFit()
-                            .frame(width: 13, height: 13)
+                            .frame(width: 14, height: 14)
                     } else {
                         Image(systemName: "photo.on.rectangle.angled")
-                            .font(.system(size: 9.5))
+                            .font(.system(size: 10))
                     }
                     Text(tr("相册/车标", "相冊/車標", "Album"))
-                        .font(.system(size: 10.5, weight: .heavy))
+                        .font(.system(size: 11, weight: .heavy))
                         .lineLimit(1)
-                        .minimumScaleFactor(0.85)
+                        .minimumScaleFactor(0.8)
                 }
-                .padding(.horizontal, 5.5)
+                .padding(.horizontal, 6)
                 .padding(.vertical, 6)
                 .background(Color.pink.opacity(0.88))
                 .foregroundColor(.white)
                 .cornerRadius(8)
                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold, lineWidth: 1))
             }
-            .buttonStyle(PlainButtonStyle())
-            .fixedSize(horizontal: true, vertical: false)
-            .layoutPriority(2)
+            
+
         }
         .frame(maxWidth: .infinity)
     }
@@ -4396,32 +3929,7 @@ struct ContentView: View {
             
             Divider().background(Color.white.opacity(0.15))
             
-            // Row 5.5: Direct 5-Mode Selector on Tapped Map Point Card (🚗 开车 · 🛵 电动车 · 🚲 单车 · 🚶 步行 · 🚌 公交/地铁)
-            HStack(spacing: 4) {
-                ForEach(NavigationTravelMode.allCases) { mode in
-                    let isSel = (manager.travelMode == mode)
-                    Button(action: {
-                        manager.travelMode = mode
-                    }) {
-                        HStack(spacing: 3) {
-                            Image(systemName: mode.icon)
-                                .font(.system(size: 10, weight: .bold))
-                            Text(mode.title(manager.language))
-                                .font(.system(size: 10, weight: .heavy))
-                                .lineLimit(1)
-                                .minimumScaleFactor(0.75)
-                        }
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 6)
-                        .background(isSel ? Color(red: 0.0, green: 0.48, blue: 1.0) : Color.white.opacity(0.10))
-                        .foregroundColor(isSel ? .white : httCream.opacity(0.85))
-                        .cornerRadius(7)
-                    }
-                    .buttonStyle(PlainButtonStyle())
-                }
-            }
-            
-            // Row 6: Bottom Action Bar (路线 · 导航)
+            // Row 6: Bottom Action Bar matching GaoDe Screenshot 5 (搜周边 · 顺风车 · 打车[红包] · 导航 · 路线)
             HStack(spacing: 10) {
                 // 1. 路线 (View Multi-Mode Route & Transit Sheet)
                 Button(action: {
@@ -4445,6 +3953,7 @@ struct ContentView: View {
                 // 2. 导航 (Start Immediate Turn-by-Turn Navigation)
                 Button(action: {
                     manager.startNavigationToTappedPoint()
+                    manager.startFocusedNavigation()
                 }) {
                     HStack(spacing: 5) {
                         Image(systemName: "location.north.fill")
@@ -4607,7 +4116,6 @@ struct ContentView: View {
     // MARK: - Portrait & Landscape Bottom RM-500HTT Quick Feature Dock
         // Row 1: 4 Travel Modes Direct Switcher (Car / e-Bike / Walk / Transit)
     private var travelModesRow: some View {
-        VStack(spacing: 5) {
         HStack(spacing: 5) {
             ForEach(NavigationTravelMode.allCases) { mode in
                 let isSelected = (manager.travelMode == mode)
@@ -4640,7 +4148,6 @@ struct ContentView: View {
                 }
                 .buttonStyle(PlainButtonStyle())
             }
-        }
         }
     }
 
@@ -4800,22 +4307,19 @@ struct DestinationSearchSheetView: View {
     var body: some View {
         NavigationView {
             VStack(spacing: 8) {
-                // 5 Travel Modes Switcher at Top of Search Sheet (开车 / 电动车 / 单车 / 步行 / 公交)
-                HStack(spacing: 5) {
+                // 4 Travel Modes Switcher at Top of Search Sheet
+                HStack(spacing: 8) {
                     ForEach(NavigationTravelMode.allCases) { mode in
                         Button(action: {
                             selectedMode = mode
                             manager.travelMode = mode
                         }) {
-                            HStack(spacing: 3) {
+                            HStack(spacing: 4) {
                                 Image(systemName: mode.icon)
-                                    .font(.system(size: 11, weight: .bold))
                                 Text(mode.title(manager.language))
-                                    .font(.system(size: 11, weight: .bold))
-                                    .lineLimit(1)
-                                    .minimumScaleFactor(0.75)
                             }
-                            .frame(maxWidth: .infinity)
+                            .font(.system(size: 12, weight: .bold))
+                            .padding(.horizontal, 10)
                             .padding(.vertical, 7)
                             .background(selectedMode == mode ? Color.red : Color(UIColor.tertiarySystemFill))
                             .foregroundColor(selectedMode == mode ? .white : .primary)
@@ -4934,13 +4438,15 @@ struct DestinationSearchSheetView: View {
                             ForEach(Array(searchEngine.mapItems.enumerated()), id: \.offset) { _, item in
                                 Button(action: {
                                     UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
-                                    let chosenMode = selectedMode
+                                    manager.travelMode = selectedMode
+                                    manager.isMapEnlarged = true
+                                    manager.showMapMode = true
+                                    manager.startRouteGuidance(to: item)
                                     dismiss()
-                                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
-                                        manager.setTravelModeWithoutAutoReroute(chosenMode)
-                                        manager.isMapEnlarged = true
-                                        manager.showMapMode = true
-                                        manager.startRouteGuidance(to: item)
+                                    if selectedMode == .transit {
+                                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                                            manager.showTransitPlanSheet = true
+                                        }
                                     }
                                 }) {
                                     HStack(spacing: 10) {
@@ -4992,9 +4498,16 @@ struct DestinationSearchSheetView: View {
                             ForEach(Array(searchEngine.completions.enumerated()), id: \.offset) { _, comp in
                                 Button(action: {
                                     UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
-                                    let chosenMode = selectedMode
-                                    searchEngine.resolveAndStartNavigation(for: comp, chosenMode: chosenMode, manager: manager) {
+                                    manager.travelMode = selectedMode
+                                    manager.isMapEnlarged = true
+                                    manager.showMapMode = true
+                                    searchEngine.resolveAndStartNavigation(for: comp, manager: manager) {
                                         dismiss()
+                                        if selectedMode == .transit {
+                                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                                                manager.showTransitPlanSheet = true
+                                            }
+                                        }
                                     }
                                 }) {
                                     HStack(spacing: 10) {
@@ -5406,16 +4919,7 @@ struct RM500AlbumAndOutfitSheetView: View {
 // MARK: - Vehicle & License Plate Settings + Traffic Restriction Recognition Sheet (车牌号输入、车辆类型选择与禁行区域智能识别面板)
 struct VehicleAndPlateSettingsSheetView: View {
     let manager: AudioPlayerManager
-    var onClose: (() -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
-    
-    private func closeSheet() {
-        if let onClose = onClose {
-            onClose()
-        } else {
-            dismiss()
-        }
-    }
     @State private var plateInput: String
     @State private var selectedEnergy: VehicleEnergyType
     @State private var selectedBody: VehicleBodyType
@@ -5428,9 +4932,8 @@ struct VehicleAndPlateSettingsSheetView: View {
     private let httCream = Color(red: 0.99, green: 0.96, blue: 0.90)
     private let provincePrefixes = ["粤", "港", "澳", "京", "沪", "浙", "苏", "川", "鄂", "湘", "桂", "闽"]
     
-    init(manager: AudioPlayerManager, onClose: (() -> Void)? = nil) {
+    init(manager: AudioPlayerManager) {
         self.manager = manager
-        self.onClose = onClose
         self.lang = manager.language
         _plateInput = State(initialValue: manager.vehicleLicensePlate)
         _selectedEnergy = State(initialValue: manager.vehicleEnergyType)
@@ -5700,7 +5203,7 @@ struct VehicleAndPlateSettingsSheetView: View {
                         
                         Button(action: {
                             commitIfNeeded()
-                            closeSheet()
+                            dismiss()
                         }) {
                             Text(tr("保存车辆设置并更新路线", "保存車輛設置並更新路線", "Save & Update Routes"))
                                 .font(.system(size: 15, weight: .black))
@@ -5721,7 +5224,7 @@ struct VehicleAndPlateSettingsSheetView: View {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button(tr("完成", "完成", "Done")) {
                         commitIfNeeded()
-                        closeSheet()
+                        dismiss()
                     }
                     .foregroundColor(httGold)
                 }
@@ -5734,90 +5237,29 @@ struct VehicleAndPlateSettingsSheetView: View {
     }
 }
 
-// MARK: - Native UIKit Smooth Wheel DatePicker (彻底解决 SwiftUI DatePicker 边界钳制自动回弹与无法滚动 Bug！)
-struct NativeSmoothWheelDatePicker: UIViewRepresentable {
-    @Binding var selection: Date
-    var externalResetToken: Int
-    var localeIdentifier: String
-    
-    func makeCoordinator() -> Coordinator {
-        Coordinator(self)
-    }
-    
-    func makeUIView(context: Context) -> UIDatePicker {
-        let picker = UIDatePicker()
-        picker.datePickerMode = .dateAndTime
-        if #available(iOS 13.4, *) {
-            picker.preferredDatePickerStyle = .wheels
-        }
-        picker.overrideUserInterfaceStyle = .dark
-        picker.locale = Locale(identifier: localeIdentifier)
-        picker.minuteInterval = 1
-        // CRITICAL: Leave minimumDate & maximumDate as nil so UIKit NEVER clamps or auto-scrolls the wheel while the user is dragging!
-        picker.minimumDate = nil
-        picker.maximumDate = nil
-        picker.date = selection
-        picker.addTarget(context.coordinator, action: #selector(Coordinator.dateChanged(_:)), for: .valueChanged)
-        return picker
-    }
-    
-    func updateUIView(_ uiView: UIDatePicker, context: Context) {
-        if context.coordinator.lastLocaleId != localeIdentifier {
-            context.coordinator.lastLocaleId = localeIdentifier
-            uiView.locale = Locale(identifier: localeIdentifier)
-        }
-        // Only programmatically set uiView.date when user taps a preset pill (externalResetToken changes), NEVER while scrolling the wheel!
-        if context.coordinator.lastResetToken != externalResetToken {
-            context.coordinator.lastResetToken = externalResetToken
-            uiView.setDate(selection, animated: true)
-        }
-    }
-    
-    class Coordinator: NSObject {
-        var parent: NativeSmoothWheelDatePicker
-        var lastResetToken: Int
-        var lastLocaleId: String
-        
-        init(_ parent: NativeSmoothWheelDatePicker) {
-            self.parent = parent
-            self.lastResetToken = parent.externalResetToken
-            self.lastLocaleId = parent.localeIdentifier
-        }
-        
-        @objc func dateChanged(_ sender: UIDatePicker) {
-            parent.selection = sender.date
-        }
-    }
-}
-
-// MARK: - Custom Departure Time Picker Sheet (原生顺滑滚轮 + 快捷预设时间胶囊 + 深夜停运/首班车智能提示)
+// MARK: - Custom Departure Time Picker Sheet (地图自定义出发时间选择器 - 独立静态时间范围，彻底消除滚轮自动滑动！)
 struct RouteDepartureTimePickerSheetView: View {
     let manager: AudioPlayerManager
-    var onClose: (() -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
     @State private var tempDate: Date
-    @State private var wheelResetToken: Int = 0
+    @State private var minSelectableDate: Date
+    @State private var maxSelectableDate: Date
     private let lang: AppLanguage
     
     private let httGold = Color(red: 0.88, green: 0.68, blue: 0.24)
     private let httCrimson = Color(red: 0.78, green: 0.18, blue: 0.22)
     private let httCream = Color(red: 0.99, green: 0.96, blue: 0.90)
     
-    init(manager: AudioPlayerManager, onClose: (() -> Void)? = nil) {
+    init(manager: AudioPlayerManager) {
         self.manager = manager
-        self.onClose = onClose
         self.lang = manager.language
         let now = Date()
-        let initialD = manager.isCustomDepartureTime ? manager.routeDepartureDate : now
+        let minD = now.addingTimeInterval(-60)
+        let maxD = now.addingTimeInterval(30 * 24 * 3600)
+        let initialD = manager.isCustomDepartureTime ? max(minD, min(maxD, manager.routeDepartureDate)) : now
         _tempDate = State(initialValue: initialD)
-    }
-    
-    private func closeSheet() {
-        if let onClose = onClose {
-            onClose()
-        } else {
-            dismiss()
-        }
+        _minSelectableDate = State(initialValue: minD)
+        _maxSelectableDate = State(initialValue: maxD)
     }
     
     private func tr(_ hans: String, _ hant: String, _ en: String) -> String {
@@ -5828,152 +5270,51 @@ struct RouteDepartureTimePickerSheetView: View {
         }
     }
     
-    private func setQuickPreset(_ date: Date) {
-        tempDate = date
-        wheelResetToken += 1
-    }
-    
-    private func makeTodayOrTomorrowTime(hour: Int, minute: Int) -> Date {
-        let cal = Calendar.current
-        let now = Date()
-        var comps = cal.dateComponents([.year, .month, .day], from: now)
-        comps.hour = hour
-        comps.minute = minute
-        comps.second = 0
-        if let candidate = cal.date(from: comps) {
-            if candidate <= now {
-                return cal.date(byAdding: .day, value: 1, to: candidate) ?? candidate
-            }
-            return candidate
-        }
-        return now.addingTimeInterval(3600)
-    }
-    
     var body: some View {
         NavigationView {
             ZStack {
                 Color(red: 0.11, green: 0.10, blue: 0.12).ignoresSafeArea()
                 
-                VStack(spacing: 14) {
-                    VStack(spacing: 5) {
-                        Text(tr("设置计划出发日期与时间", "設定計劃出發日期與時間", "Set Planned Departure Date & Time"))
+                VStack(spacing: 18) {
+                    VStack(spacing: 6) {
+                        Text(tr("设置计划出发时间", "設定計劃出發時間", "Set Planned Departure Time"))
                             .font(.system(size: 18, weight: .black))
                             .foregroundColor(.white)
-                        Text(tr("自由滚动选择任意日期与时间，自动匹配地铁末班车/夜间公交与车牌限行时段", "自由滾動選擇任意日期與時間，自動匹配地鐵末班車/夜間巴士與車牌限行時段", "Freely scroll any date & time; syncs last train, night bus & plate restrictions"))
-                            .font(.system(size: 11, weight: .medium))
+                        Text(tr("默认状态显示“出发”，选择具体时间后将自动计算预计到达时间与班次", "預設狀態顯示「出發」，選擇具體時間後將自動計算預計到達時間與班次", "Defaults to 'Depart'; selecting a time updates ETA and transit schedules"))
+                            .font(.system(size: 12, weight: .medium))
                             .foregroundColor(.gray)
                             .multilineTextAlignment(.center)
-                            .padding(.horizontal, 16)
+                            .padding(.horizontal, 20)
                     }
-                    .padding(.top, 10)
+                    .padding(.top, 12)
                     
-                    // Quick 1-Tap Preset Time Pills
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 8) {
-                            Button(action: { setQuickPreset(Date()) }) {
-                                Text(tr("现在", "現在", "Now"))
-                                    .font(.system(size: 12, weight: .bold))
-                                    .padding(.horizontal, 10)
-                                    .padding(.vertical, 6)
-                                    .background(Color.blue.opacity(0.35))
-                                    .foregroundColor(.white)
-                                    .cornerRadius(8)
-                            }
-                            Button(action: { setQuickPreset(Date().addingTimeInterval(15 * 60)) }) {
-                                Text(tr("+15分钟", "+15分鐘", "+15m"))
-                                    .font(.system(size: 12, weight: .bold))
-                                    .padding(.horizontal, 10)
-                                    .padding(.vertical, 6)
-                                    .background(Color.white.opacity(0.12))
-                                    .foregroundColor(httCream)
-                                    .cornerRadius(8)
-                            }
-                            Button(action: { setQuickPreset(Date().addingTimeInterval(30 * 60)) }) {
-                                Text(tr("+30分钟", "+30分鐘", "+30m"))
-                                    .font(.system(size: 12, weight: .bold))
-                                    .padding(.horizontal, 10)
-                                    .padding(.vertical, 6)
-                                    .background(Color.white.opacity(0.12))
-                                    .foregroundColor(httCream)
-                                    .cornerRadius(8)
-                            }
-                            Button(action: { setQuickPreset(Date().addingTimeInterval(60 * 60)) }) {
-                                Text(tr("+1小时", "+1小時", "+1h"))
-                                    .font(.system(size: 12, weight: .bold))
-                                    .padding(.horizontal, 10)
-                                    .padding(.vertical, 6)
-                                    .background(Color.white.opacity(0.12))
-                                    .foregroundColor(httCream)
-                                    .cornerRadius(8)
-                            }
-                            Button(action: { setQuickPreset(makeTodayOrTomorrowTime(hour: 0, minute: 30)) }) {
-                                Text(tr("凌晨 00:30 (夜间N线)", "凌晨 00:30 (夜間N線)", "00:30 AM (Night Bus)"))
-                                    .font(.system(size: 12, weight: .bold))
-                                    .padding(.horizontal, 10)
-                                    .padding(.vertical, 6)
-                                    .background(Color.orange.opacity(0.32))
-                                    .foregroundColor(.orange)
-                                    .cornerRadius(8)
-                            }
-                            Button(action: { setQuickPreset(makeTodayOrTomorrowTime(hour: 6, minute: 15)) }) {
-                                Text(tr("明早 06:15 (首班地铁)", "明早 06:15 (首班地鐵)", "06:15 AM (First Train)"))
-                                    .font(.system(size: 12, weight: .bold))
-                                    .padding(.horizontal, 10)
-                                    .padding(.vertical, 6)
-                                    .background(Color.green.opacity(0.28))
-                                    .foregroundColor(.green)
-                                    .cornerRadius(8)
-                            }
-                            Button(action: { setQuickPreset(makeTodayOrTomorrowTime(hour: 8, minute: 0)) }) {
-                                Text(tr("明早 08:00 (早高峰)", "明早 08:00 (早高峰)", "08:00 AM (Peak)"))
-                                    .font(.system(size: 12, weight: .bold))
-                                    .padding(.horizontal, 10)
-                                    .padding(.vertical, 6)
-                                    .background(Color.purple.opacity(0.32))
-                                    .foregroundColor(.white)
-                                    .cornerRadius(8)
-                            }
-                        }
-                        .padding(.horizontal, 16)
-                    }
-                    
-                    // Native UIKit Smooth Wheel Picker (Never bounces or fights user scrolling!)
-                    NativeSmoothWheelDatePicker(
+                    DatePicker(
+                        tr("出发时间", "出發時間", "Departure"),
                         selection: $tempDate,
-                        externalResetToken: wheelResetToken,
-                        localeIdentifier: lang == .en ? "en_US" : (lang == .zhHant ? "zh_HK" : "zh_CN")
+                        in: minSelectableDate...maxSelectableDate,
+                        displayedComponents: [.date, .hourAndMinute]
                     )
-                    .frame(height: 215)
-                    .padding(.horizontal, 8)
+                    .datePickerStyle(.wheel)
+                    .labelsHidden()
+                    .colorScheme(.dark)
+                    .environment(\.locale, Locale(identifier: lang == .en ? "en_US" : (lang == .zhHant ? "zh_HK" : "zh_CN")))
+                    .padding()
                     .background(Color.white.opacity(0.08))
                     .cornerRadius(14)
-                    .overlay(RoundedRectangle(cornerRadius: 14).stroke(httGold.opacity(0.55), lineWidth: 1.2))
+                    .overlay(RoundedRectangle(cornerRadius: 14).stroke(httGold.opacity(0.5), lineWidth: 1))
                     .padding(.horizontal, 16)
-                    
-                    // Live Operating Status Preview for Selected Time
-                    let selHour = Calendar.current.component(.hour, from: tempDate)
-                    if selHour >= 0 && selHour < 6 {
-                        HStack(spacing: 6) {
-                            Image(systemName: "moon.stars.fill")
-                                .foregroundColor(.orange)
-                            Text(tr("当前所选为凌晨 00:00–06:00 地铁停运时段：确认后将自动为您优先规划【24小时夜间N线公交】并标注【06:15首班地铁】时间", "當前所選為凌晨 00:00–06:00 地鐵停運時段：確認後將自動為您優先規劃【24小時夜間N線巴士】並標註【06:15首班地鐵】時間", "00:00–06:00 Metro suspended: prioritizes active 24h Night Buses and shows 06:15 First Train"))
-                                .font(.system(size: 11, weight: .bold))
-                                .foregroundColor(httCream)
-                        }
-                        .padding(10)
-                        .background(Color.orange.opacity(0.2))
-                        .cornerRadius(10)
-                        .padding(.horizontal, 16)
-                    }
                     
                     HStack(spacing: 12) {
                         Button(action: {
-                            manager.applyDepartureTimeSelection(customDate: nil)
-                            closeSheet()
+                            let mgr = manager
+                            dismiss()
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+                                mgr.applyDepartureTimeSelection(customDate: nil)
+                            }
                         }) {
-                            Text(tr("恢复“现在出发”", "恢復「現在出發」", "Leave Now"))
+                            Text(tr("恢复默认 (显示“出发”)", "恢復預設 (顯示「出發」)", "Reset to Default ('Depart')"))
                                 .font(.system(size: 14, weight: .bold))
-                                .frame(maxWidth: .infinity, minHeight: 46)
+                                .frame(maxWidth: .infinity, minHeight: 44)
                                 .background(Color.white.opacity(0.14))
                                 .foregroundColor(httCream)
                                 .cornerRadius(10)
@@ -5982,12 +5323,15 @@ struct RouteDepartureTimePickerSheetView: View {
                         
                         Button(action: {
                             let chosenDate = tempDate
-                            manager.applyDepartureTimeSelection(customDate: chosenDate)
-                            closeSheet()
+                            let mgr = manager
+                            dismiss()
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+                                mgr.applyDepartureTimeSelection(customDate: chosenDate)
+                            }
                         }) {
                             Text(tr("确认出发时间", "確認出發時間", "Confirm Time"))
                                 .font(.system(size: 14, weight: .black))
-                                .frame(maxWidth: .infinity, minHeight: 46)
+                                .frame(maxWidth: .infinity, minHeight: 44)
                                 .background(httCrimson)
                                 .foregroundColor(.white)
                                 .cornerRadius(10)
@@ -6005,7 +5349,7 @@ struct RouteDepartureTimePickerSheetView: View {
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button(tr("关闭", "關閉", "Close")) {
-                        closeSheet()
+                        dismiss()
                     }
                     .foregroundColor(httGold)
                 }
@@ -6015,34 +5359,17 @@ struct RouteDepartureTimePickerSheetView: View {
     }
 }
 
-// MARK: - 1:1 Apple Maps Public Transit Route & Step-by-Step Station Detail Sheet (100% 还原 Apple Maps 公共交通界面、交互与站点时间线)
+// MARK: - Native Built-In GaoDe + Apple Maps Dual-Aligned Transit Modal Sheet (支持高德+Apple地图多行程列表、出发时间、路线排序、交通工具偏好设置)
 struct InAppTransitPlanSheetView: View {
     @ObservedObject var manager: AudioPlayerManager
-    var onClose: (() -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
-    @State private var detailPlanIndex: Int? = nil
-    @State private var collapsedStepIds: Set<UUID> = []
+    @State private var expandedPlanIds: Set<UUID> = []
+    @State private var expandedStepIds: Set<UUID> = []
     @State private var showSheetDeparturePicker: Bool = false
     
-    private let appleDarkSheetBG = Color(red: 0.11, green: 0.11, blue: 0.12)
-    private let appleCardBG = Color(red: 0.17, green: 0.17, blue: 0.18)
-    private let applePillBG = Color(red: 0.22, green: 0.22, blue: 0.24)
-    private let appleBlue = Color(red: 0.04, green: 0.52, blue: 1.0)
-    private let appleGreen = Color(red: 0.28, green: 0.82, blue: 0.38)
     private let httGold = Color(red: 0.88, green: 0.68, blue: 0.24)
-    
-    init(manager: AudioPlayerManager, onClose: (() -> Void)? = nil) {
-        self.manager = manager
-        self.onClose = onClose
-    }
-    
-    private func closeSheet() {
-        if let onClose = onClose {
-            onClose()
-        } else {
-            dismiss()
-        }
-    }
+    private let httCrimson = Color(red: 0.78, green: 0.18, blue: 0.22)
+    private let httCream = Color(red: 0.99, green: 0.96, blue: 0.90)
     
     private func tr(_ hans: String, _ hant: String, _ en: String) -> String {
         switch manager.language {
@@ -6052,158 +5379,61 @@ struct InAppTransitPlanSheetView: View {
         }
     }
     
-    // Compact badge text for Apple Maps step pills: "番16路" -> "番16", "3号线" -> "3", "1号线" -> "1"
-    private func compactLineBadgeText(for step: TransitStepItem) -> String {
-        let raw = step.lineName
-        if step.kind == .subway {
-            let digits = raw.components(separatedBy: CharacterSet.decimalDigits.inverted).joined()
-            if !digits.isEmpty && digits.count <= 2 {
-                return digits
-            }
-            return raw.replacingOccurrences(of: "广州地铁", with: "").replacingOccurrences(of: "地铁", with: "").replacingOccurrences(of: "地鐵", with: "").replacingOccurrences(of: "号线", with: "").replacingOccurrences(of: "號線", with: "")
-        } else if step.kind == .bus {
-            let firstPart = raw.components(separatedBy: " ").first ?? raw
-            return firstPart.replacingOccurrences(of: "路", with: "")
-        }
-        return raw
-    }
-    
-    private func isYellowMetroLine(_ step: TransitStepItem) -> Bool {
-        let code = compactLineBadgeText(for: step)
-        return step.kind == .subway && (code == "1" || step.colorHex.uppercased() == "#F3D03E")
-    }
-    
-    // Extracts official Shenzhen / Guangzhou / MTR station code like ("3", "02"), ("5", "14"), or ("1", "16") for the Apple Maps dual-pill badge
-    private func extractStationCodeBadge(for step: TransitStepItem, isBoarding: Bool) -> (lineNum: String, stNum: String)? {
-        guard step.kind == .subway else { return nil }
-        let lineCode = compactLineBadgeText(for: step)
-        let rawStationName = isBoarding ? step.fromStation : step.toStation
-        let stationName = rawStationName.components(separatedBy: " (")[0].components(separatedBy: "(")[0]
-        if stationName.contains("市桥") { return ("3", "02") }
-        if stationName.contains("番禺广场") { return ("3", "01") }
-        if stationName.contains("汉溪长隆") { return (lineCode == "7" ? "7" : "3", lineCode == "7" ? "05" : "03") }
-        if stationName.contains("体育西路") { return (lineCode == "1" ? "1" : "3", lineCode == "1" ? "14" : "11") }
-        if stationName.contains("广州东站") { return (lineCode == "3" ? "3" : "1", lineCode == "3" ? "18" : "16") }
-        if stationName.contains("广州南站") { return (lineCode == "2" ? "2" : "7", "01") }
-        // Lookup exact station number in Shenzhen & Guangzhou ordered lines!
-        let allLines = AudioPlayerManager.szMetroOrderedLines + AudioPlayerManager.gzMetroOrderedLines
-        for l in allLines {
-            let lNum = l.name.components(separatedBy: CharacterSet.decimalDigits.inverted).joined()
-            if lNum == lineCode || l.name == step.lineName {
-                if let idx = l.stations.firstIndex(where: { $0.contains(stationName) || stationName.contains($0) }) {
-                    return (lineCode, String(format: "%02d", idx + 1))
-                }
-            }
-        }
-        return (lineCode, isBoarding ? "01" : String(format: "%02d", max(2, step.passStations.count + 1)))
-    }
-    
-    // Apple Maps Dual-Pill Metro Station Code Badge: e.g. `( 3 | 02 )`, `( 3 | 11 )`, `( 1 | 14 )`, `( 1 | 16 )`
-    private func appleMapsMetroCodePill(lineNum: String, stNum: String, color: Color) -> some View {
-        HStack(spacing: 0) {
-            Text(lineNum)
-                .font(.system(size: 12, weight: .bold))
-                .foregroundColor(.black)
-                .frame(minWidth: 18, minHeight: 22)
-                .padding(.horizontal, 3)
-            Rectangle()
-                .fill(color)
-                .frame(width: 2, height: 22)
-            Text(stNum)
-                .font(.system(size: 12, weight: .bold))
-                .foregroundColor(.black)
-                .frame(minWidth: 22, minHeight: 22)
-                .padding(.horizontal, 3)
-        }
-        .background(Color.white)
-        .clipShape(Capsule())
-        .overlay(Capsule().stroke(color, lineWidth: 2.2))
-    }
-    
-    // Filter Pill 1: Mode Switcher [🚆 公共交通 ⌄]
-    private var appleModeMenuPill: some View {
-        Menu {
-            ForEach(NavigationTravelMode.allCases) { mode in
-                let isSel = (manager.travelMode == mode)
-                Button(action: {
-                    guard manager.travelMode != mode else { return }
-                    manager.travelMode = mode
-                    if mode != .transit {
-                        closeSheet()
-                    }
-                }) {
-                    Label(
-                        (isSel ? "✓ " : "    ") + mode.title(manager.language),
-                        systemImage: isSel ? "checkmark.circle.fill" : mode.icon
-                    )
-                }
-            }
-        } label: {
-            HStack(spacing: 5) {
-                Image(systemName: "tram.fill")
-                    .font(.system(size: 13, weight: .bold))
-                Text(tr("公共交通", "公共交通", "Transit"))
-                    .font(.system(size: 14, weight: .bold))
-                Image(systemName: "chevron.down")
-                    .font(.system(size: 11, weight: .bold))
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 8)
-            .background(appleBlue)
-            .foregroundColor(.white)
-            .cornerRadius(18)
-        }
-    }
-    
-    // Filter Pill 2: Departure Time [現在 ⌄]
+    // Consolidated Filter Pill 1: Departure Time [出发 ⌄]
     private var sheetDepartureMenuPill: some View {
         Menu {
             Button(action: {
-                manager.applyDepartureTimeSelection(customDate: nil)
+                manager.isCustomDepartureTime = false
+                manager.routeDepartureDate = Date()
             }) {
-                Label(
-                    (!manager.isCustomDepartureTime ? "✓ " : "    ") + tr("现在出发", "現在出發", "Leave Now"),
-                    systemImage: !manager.isCustomDepartureTime ? "checkmark" : "clock"
-                )
+                HStack {
+                    Text(tr("现在出发 (默认显示“出发”)", "現在出發 (預設顯示「出發」)", "Leave Now (Default 'Depart')"))
+                    if !manager.isCustomDepartureTime { Image(systemName: "checkmark") }
+                }
             }
             Button(action: {
-                manager.applyDepartureTimeSelection(customDate: Date().addingTimeInterval(15 * 60))
+                manager.routeDepartureDate = Date().addingTimeInterval(15 * 60)
+                manager.isCustomDepartureTime = true
             }) {
-                Text(tr("15 分钟后出发", "15 分鐘後出發", "In 15 min"))
+                Text(tr("15 分钟后出发", "15 分鐘後出發", "Leave in 15 min"))
             }
             Button(action: {
-                manager.applyDepartureTimeSelection(customDate: Date().addingTimeInterval(30 * 60))
+                manager.routeDepartureDate = Date().addingTimeInterval(30 * 60)
+                manager.isCustomDepartureTime = true
             }) {
-                Text(tr("30 分钟后出发", "30 分鐘後出發", "In 30 min"))
+                Text(tr("30 分钟后出发", "30 分鐘後出發", "Leave in 30 min"))
             }
             Button(action: {
-                manager.applyDepartureTimeSelection(customDate: Date().addingTimeInterval(60 * 60))
+                manager.routeDepartureDate = Date().addingTimeInterval(60 * 60)
+                manager.isCustomDepartureTime = true
             }) {
-                Text(tr("1 小时后出发", "1 小時後出發", "In 1 hour"))
+                Text(tr("1 小时后出发", "1 小時後出發", "Leave in 1 hour"))
             }
             Divider()
             Button(action: {
                 showSheetDeparturePicker = true
             }) {
-                Label(tr("选择出发日期与时间...", "選擇出發日期與時間...", "Custom Date & Time..."), systemImage: "calendar.badge.clock")
+                Label(tr("自定义出发时间...", "自訂出發時間...", "Custom Departure Time..."), systemImage: "calendar.badge.clock")
             }
         } label: {
-            HStack(spacing: 5) {
-                Text(manager.isCustomDepartureTime ? manager.departureButtonTitle(manager.language) : tr("现在", "現在", "Now"))
-                    .font(.system(size: 14, weight: .semibold))
-                Image(systemName: "chevron.down")
+            HStack(spacing: 4) {
+                Image(systemName: "clock")
                     .font(.system(size: 11, weight: .bold))
+                Text(manager.departureButtonTitle(manager.language))
+                    .font(.system(size: 13, weight: .bold))
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 10, weight: .bold))
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 8)
-            .background(applePillBG)
-            .foregroundColor(.white)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            .background(manager.isCustomDepartureTime ? httGold : Color.white.opacity(0.14))
+            .foregroundColor(manager.isCustomDepartureTime ? .black : .white)
             .cornerRadius(18)
-            .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.white.opacity(0.15), lineWidth: 1))
+            .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.white.opacity(0.25), lineWidth: 1))
         }
     }
     
-    // Filter Pill 3: Vehicle Preferences [偏好 ⌄]
+    // Consolidated Filter Pill 2: Transit Vehicle Preferences [偏好设置 ⌄] (巴士 / 地铁与轻轨 / 通勤铁路 / 渡轮)
     private var sheetVehiclePreferencesMenuPill: some View {
         Menu {
             ForEach(TransitVehicleMode.allCases) { vMode in
@@ -6221,27 +5451,27 @@ struct InAppTransitPlanSheetView: View {
             Button(action: {
                 manager.resetAllTransitVehiclePreferences()
             }) {
-                Label(tr("全部勾选 (默认)", "全部勾選 (預設)", "Select All"), systemImage: "checkmark.seal.fill")
+                Label(tr("全部勾选 (默认)", "全部勾選 (預設)", "Select All (Default)"), systemImage: "checkmark.seal.fill")
             }
         } label: {
-            HStack(spacing: 5) {
-                Text(manager.preferredTransitVehicles.count < TransitVehicleMode.allCases.count
-                     ? manager.transitPreferencesSummaryTitle(manager.language)
-                     : tr("偏好", "偏好", "Prefer"))
-                    .font(.system(size: 14, weight: .semibold))
-                Image(systemName: "chevron.down")
+            HStack(spacing: 4) {
+                Image(systemName: "slider.horizontal.3")
                     .font(.system(size: 11, weight: .bold))
+                Text(manager.transitPreferencesSummaryTitle(manager.language))
+                    .font(.system(size: 13, weight: .bold))
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 10, weight: .bold))
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 8)
-            .background(applePillBG)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            .background(manager.preferredTransitVehicles.count < TransitVehicleMode.allCases.count ? Color.blue : Color.white.opacity(0.14))
             .foregroundColor(.white)
             .cornerRadius(18)
-            .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.white.opacity(0.15), lineWidth: 1))
+            .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.white.opacity(0.25), lineWidth: 1))
         }
     }
     
-    // Filter Pill 4: Route Sort Strategy [建議路線 ⌄]
+    // Consolidated Filter Pill 3: Route Sort Strategy [建议路线 ⌄] (建议路线 / 较快路程 / 较少转乘 / 较少步行)
     private var sheetSortStrategyMenuPill: some View {
         Menu {
             ForEach(TransitSortStrategy.allCases) { strat in
@@ -6256,882 +5486,508 @@ struct InAppTransitPlanSheetView: View {
                 }
             }
         } label: {
-            HStack(spacing: 5) {
-                Text(manager.transitSortStrategy.title(manager.language))
-                    .font(.system(size: 14, weight: .semibold))
-                Image(systemName: "chevron.down")
+            HStack(spacing: 4) {
+                Image(systemName: manager.transitSortStrategy.icon)
                     .font(.system(size: 11, weight: .bold))
+                Text(manager.transitSortStrategy.title(manager.language))
+                    .font(.system(size: 13, weight: .bold))
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 10, weight: .bold))
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 8)
-            .background(applePillBG)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            .background(manager.transitSortStrategy != .suggested ? Color.purple : Color.white.opacity(0.14))
             .foregroundColor(.white)
             .cornerRadius(18)
-            .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.white.opacity(0.15), lineWidth: 1))
-        }
-    }
-    
-    // Apple Maps Step Flow Badges Row on Route Card (`[🚶 12分鐘] ▸ [番16] 🚌 ▸ [🚶 9分鐘] ▸ [3] 🚇 ▸ [🚶 3分鐘] ▸ [1] 🚇`)
-    private func appleMapsRouteStepBadgesView(for plan: TransitPlanOption) -> some View {
-        let steps = plan.steps
-        let row1Steps = Array(steps.prefix(3))
-        let row2Steps = steps.count > 3 ? Array(steps.dropFirst(3)) : []
-        
-        return VStack(alignment: .leading, spacing: 7) {
-            HStack(spacing: 6) {
-                ForEach(Array(row1Steps.enumerated()), id: \.element.id) { sIdx, st in
-                    if sIdx > 0 {
-                        Image(systemName: "play.fill")
-                            .font(.system(size: 8, weight: .bold))
-                            .foregroundColor(Color.white.opacity(0.55))
-                    }
-                    singleAppleStepBadge(for: st)
-                }
-            }
-            if !row2Steps.isEmpty {
-                HStack(spacing: 6) {
-                    ForEach(Array(row2Steps.enumerated()), id: \.element.id) { sIdx, st in
-                        if sIdx > 0 {
-                            Image(systemName: "play.fill")
-                                .font(.system(size: 8, weight: .bold))
-                                .foregroundColor(Color.white.opacity(0.55))
-                        }
-                        singleAppleStepBadge(for: st)
-                    }
-                }
-            }
-        }
-    }
-    
-    @ViewBuilder
-    private func singleAppleStepBadge(for st: TransitStepItem) -> some View {
-        if st.kind == .walk {
-            HStack(spacing: 3) {
-                Image(systemName: "figure.walk")
-                    .font(.system(size: 12, weight: .semibold))
-                Text("\(st.durationMins)\(tr("分钟", "分鐘", "m"))")
-                    .font(.system(size: 13, weight: .semibold))
-            }
-            .padding(.horizontal, 9)
-            .padding(.vertical, 5)
-            .background(applePillBG)
-            .foregroundColor(Color.white.opacity(0.88))
-            .cornerRadius(12)
-        } else if st.kind == .bus {
-            HStack(spacing: 5) {
-                Text(compactLineBadgeText(for: st))
-                    .font(.system(size: 13, weight: .bold))
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 3)
-                    .background(stepColor(for: st))
-                    .foregroundColor(.white)
-                    .cornerRadius(5)
-                Image(systemName: "bus.fill")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundColor(Color.white.opacity(0.65))
-            }
-        } else {
-            let isYellow = isYellowMetroLine(st)
-            HStack(spacing: 5) {
-                Text(compactLineBadgeText(for: st))
-                    .font(.system(size: 13, weight: .bold))
-                    .frame(minWidth: 22, minHeight: 22)
-                    .padding(.horizontal, 4)
-                    .background(stepColor(for: st))
-                    .foregroundColor(isYellow ? .black : .white)
-                    .cornerRadius(5)
-                Image(systemName: "tram.fill")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundColor(Color.white.opacity(0.65))
-            }
+            .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.white.opacity(0.25), lineWidth: 1))
         }
     }
     
     var body: some View {
-        GeometryReader { geo in
-            let mapHeaderH = detailPlanIndex != nil ? max(110, geo.size.height * 0.16) : max(210, geo.size.height * 0.34)
+        NavigationView {
             ZStack {
-                appleDarkSheetBG.ignoresSafeArea()
+                Color(red: 0.11, green: 0.10, blue: 0.12).ignoresSafeArea()
                 
                 VStack(spacing: 0) {
-                    // TOP INTERACTIVE MAP PREVIEW (Matches Apple Maps screenshots `515599c4a42ff309d272a427298ad3b5.jpg` & `e8210b3a9800195ea454c5e7edf58cfd.jpg`!)
-                    ZStack(alignment: .topTrailing) {
-                        HTTSmoothMapView(manager: manager)
-                            .frame(width: geo.size.width, height: mapHeaderH)
-                            .clipped()
-                        
-                        // Right Floating Map Controls ([🚆] + [↗️]) matching Apple Maps
-                        VStack(spacing: 0) {
-                            Button(action: {
-                                manager.isFocusingSingleTransitStep = false
-                                manager.routeOverviewFitTrigger += 1
-                            }) {
-                                Image(systemName: "tram.fill")
-                                    .font(.system(size: 16, weight: .semibold))
-                                    .foregroundColor(.white.opacity(0.9))
-                                    .frame(width: 42, height: 42)
+                    // 1. Apple Maps / GaoDe Style Origin -> Destination Box + Consolidated Filter Bar (Replaces old top purple tabs!)
+                    VStack(spacing: 10) {
+                        HStack(spacing: 10) {
+                            VStack(spacing: 3) {
+                                Image(systemName: "location.circle.fill")
+                                    .font(.system(size: 14))
+                                    .foregroundColor(.blue)
+                                Circle()
+                                    .fill(Color.gray.opacity(0.6))
+                                    .frame(width: 3, height: 3)
+                                Image(systemName: "mappin.circle.fill")
+                                    .font(.system(size: 14))
+                                    .foregroundColor(.red)
                             }
-                            Divider().background(Color.white.opacity(0.2)).frame(width: 32)
-                            Button(action: {
-                                manager.triggerFastRecenter()
-                            }) {
-                                Image(systemName: "location")
-                                    .font(.system(size: 16, weight: .semibold))
+                            
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text(tr("我的位置", "我的位置", "My Location"))
+                                    .font(.system(size: 13, weight: .bold))
                                     .foregroundColor(.white.opacity(0.9))
-                                    .frame(width: 42, height: 42)
+                                Divider().background(Color.white.opacity(0.15))
+                                Text(manager.destinationName.isEmpty ? tr("目的地", "目的地", "Destination") : manager.destinationName)
+                                    .font(.system(size: 14, weight: .black))
+                                    .foregroundColor(httGold)
+                                    .lineLimit(1)
+                            }
+                            Spacer()
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(Color.white.opacity(0.08))
+                        .cornerRadius(12)
+                        
+                        // Unified Filter Pills: [🚆 公共交通] [出发 ⌄] [偏好设置 ⌄] [建议路线 ⌄]
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 8) {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "tram.fill")
+                                        .font(.system(size: 11, weight: .bold))
+                                    Text(tr("公共交通", "公共交通", "Transit"))
+                                        .font(.system(size: 13, weight: .bold))
+                                }
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 7)
+                                .background(Color.blue)
+                                .foregroundColor(.white)
+                                .cornerRadius(18)
+                                
+                                sheetDepartureMenuPill
+                                sheetVehiclePreferencesMenuPill
+                                sheetSortStrategyMenuPill
                             }
                         }
-                        .background(Color(red: 0.16, green: 0.16, blue: 0.18).opacity(0.92))
-                        .cornerRadius(10)
-                        .padding(.trailing, 12)
-                        .padding(.top, max(geo.safeAreaInsets.top + 8, 16))
                     }
-                    .frame(height: mapHeaderH)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .background(Color.black.opacity(0.65))
                     
-                    // BOTTOM APPLE MAPS SHEET (Switches seamlessly between Route Cards List `路線` and Step-by-Step Station Timeline `終點：...`)
-                    VStack(spacing: 0) {
-                        // Top Grabber Handle
-                        Capsule()
-                            .fill(Color.white.opacity(0.32))
-                            .frame(width: 38, height: 5)
-                            .padding(.top, 8)
-                            .padding(.bottom, 6)
-                        
-                        if let dIdx = detailPlanIndex, dIdx >= 0, dIdx < manager.transitPlans.count {
-                            // =========================================================================
-                            // MODE 2: APPLE MAPS STEP-BY-STEP STATION TIMELINE (`終點：广州东站` + `完成`)
-                            // Matches `44e227f3ed3f6b43af89521c15ebdf5b.jpg`, `69661e1112a6c1212e43711ed7523b5a.jpg`, `1e4c2a70d26bb937dc0177d5fe01ea50.jpg`, `532d1fc5d3289671e3ef4b75f12a9f47.jpg`
-                            // =========================================================================
-                            let plan = manager.transitPlans[dIdx]
-                            HStack(spacing: 12) {
-                                Text("\(tr("终点：", "終點：", "To: "))\(manager.destinationName.isEmpty ? tr("目的地", "目的地", "Destination") : manager.destinationName)")
-                                    .font(.system(size: 19, weight: .bold))
-                                    .foregroundColor(.white)
-                                    .lineLimit(1)
-                                Spacer()
-                                Button(action: {
-                                    closeSheet()
-                                    manager.startLiveTransitNavigation(forPlanAt: dIdx)
-                                }) {
-                                    HStack(spacing: 4) {
-                                        Image(systemName: "location.north.fill")
-                                            .font(.system(size: 12, weight: .bold))
-                                        Text(tr("开始导航", "開始導航", "GO"))
-                                            .font(.system(size: 15, weight: .bold))
-                                    }
-                                    .foregroundColor(.white)
-                                    .padding(.horizontal, 14)
-                                    .padding(.vertical, 7)
-                                    .background(appleGreen)
-                                    .cornerRadius(10)
-                                }
-                                .buttonStyle(PlainButtonStyle())
-                                
-                                Button(action: {
-                                    withAnimation(.easeInOut(duration: 0.22)) {
-                                        detailPlanIndex = nil
-                                    }
-                                }) {
-                                    Text(tr("完成", "完成", "Done"))
-                                        .font(.system(size: 17, weight: .semibold))
-                                        .foregroundColor(appleBlue)
-                                }
+                    Divider().background(Color.white.opacity(0.15))
+                    
+                    // 2. Multi-Route Vertical Itinerary List (Simultaneously displays GaoDe & Apple Maps synchronized routes!)
+                    if manager.transitPlans.isEmpty || manager.destinationCoord == nil {
+                        VStack(spacing: 14) {
+                            Spacer()
+                            Image(systemName: "tram.fill")
+                                .font(.system(size: 44))
+                                .foregroundColor(httGold)
+                            Text(tr("暂无有效导航目的地", "暫無有效導航目的地", "No Active Destination"))
+                                .font(.system(size: 17, weight: .black))
+                                .foregroundColor(.white)
+                            Text(tr("请先在地图上点击选择目的地，或输入搜索终点并点击【路线/导航】，即可自动规划推荐公交地铁换乘方案。", "請先在地圖上點擊選擇目的地，或輸入搜尋終點並點擊【路線/導航】，即可自動規劃推薦公交地鐵換乘方案。", "Select a destination on the map or search to generate transit itineraries."))
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundColor(.gray)
+                                .multilineTextAlignment(.center)
+                                .padding(.horizontal, 28)
+                            Button(action: { dismiss() }) {
+                                Text(tr("返回地图选点", "返回地圖選點", "Back to Map"))
+                                    .font(.system(size: 14, weight: .bold))
+                                    .foregroundColor(.black)
+                                    .padding(.horizontal, 20)
+                                    .padding(.vertical, 8)
+                                    .background(httGold)
+                                    .cornerRadius(18)
                             }
-                            .padding(.horizontal, 18)
-                            .padding(.bottom, 12)
-                            
-                            Divider().background(Color.white.opacity(0.15))
-                            
-                            ScrollView(.vertical, showsIndicators: true) {
-                                appleMapsStepByStepTimelineView(plan: plan, planIndex: dIdx)
-                                    .padding(.horizontal, 18)
-                                    .padding(.vertical, 14)
-                            }
-                        } else {
-                            // =========================================================================
-                            // MODE 1: APPLE MAPS ROUTE SELECTION LIST (`路線` + `(X)` + 4 Filter Pills + Route Cards)
-                            // Matches `515599c4a42ff309d272a427298ad3b5.jpg`, `0558721ad5927194a3e2e8ea2bb991b3.jpg`, `5177a43643c99ab3f3f2806c7edef2b3.jpg`
-                            // =========================================================================
-                            HStack {
-                                Text(tr("路线", "路線", "Routes"))
-                                    .font(.system(size: 28, weight: .bold))
-                                    .foregroundColor(.white)
-                                Spacer()
-                                Button(action: {
-                                    closeSheet()
-                                }) {
-                                    Image(systemName: "xmark")
-                                        .font(.system(size: 14, weight: .bold))
-                                        .foregroundColor(Color.white.opacity(0.75))
-                                        .frame(width: 32, height: 32)
-                                        .background(applePillBG)
-                                        .clipShape(Circle())
-                                }
-                            }
-                            .padding(.horizontal, 16)
-                            .padding(.bottom, 10)
-                            
-                            // Origin -> Destination Box (`我的位置` -> `广州东站`)
-                            HStack(spacing: 12) {
-                                VStack(spacing: 4) {
-                                    ZStack {
-                                        Circle().fill(appleBlue).frame(width: 24, height: 24)
-                                        Image(systemName: "location.fill")
-                                            .font(.system(size: 11, weight: .bold))
-                                            .foregroundColor(.white)
-                                    }
-                                    VStack(spacing: 3) {
-                                        Circle().fill(Color.gray).frame(width: 3, height: 3)
-                                        Circle().fill(Color.gray).frame(width: 3, height: 3)
-                                        Circle().fill(Color.gray).frame(width: 3, height: 3)
-                                    }
-                                    ZStack {
-                                        Circle().fill(appleBlue).frame(width: 24, height: 24)
-                                        Image(systemName: "tram.fill")
-                                            .font(.system(size: 11, weight: .bold))
-                                            .foregroundColor(.white)
-                                    }
+                            Spacer()
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else {
+                        ScrollView(.vertical, showsIndicators: true) {
+                            VStack(alignment: .leading, spacing: 12) {
+                                // Show Cross-City Flight / High-Speed Rail / Train overview banner if applicable
+                                if let firstPlan = manager.transitPlans.first, let ic = firstPlan.intercityBanner {
+                                    intercityOverviewSection(ic: ic)
                                 }
                                 
-                                VStack(alignment: .leading, spacing: 10) {
-                                    HStack {
-                                        Text(tr("我的位置", "我的位置", "My Location"))
-                                            .font(.system(size: 17, weight: .medium))
-                                            .foregroundColor(.white)
-                                        Spacer()
-                                        Image(systemName: "line.3.horizontal")
-                                            .foregroundColor(Color.white.opacity(0.35))
-                                    }
-                                    Divider().background(Color.white.opacity(0.15))
-                                    Button(action: {
-                                        closeSheet()
-                                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                                            NotificationCenter.default.post(name: NSNotification.Name("KON_OPEN_SEARCH_SHEET"), object: nil)
-                                        }
-                                    }) {
-                                        HStack {
-                                            Text(manager.destinationName.isEmpty ? tr("目的地", "目的地", "Destination") : manager.destinationName)
-                                                .font(.system(size: 17, weight: .medium))
-                                                .foregroundColor(.white)
-                                                .lineLimit(1)
-                                            Spacer()
-                                            Image(systemName: "line.3.horizontal")
-                                                .foregroundColor(Color.white.opacity(0.35))
-                                        }
-                                    }
-                                    .buttonStyle(PlainButtonStyle())
-                                }
-                            }
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 12)
-                            .background(appleCardBG)
-                            .cornerRadius(12)
-                            .padding(.horizontal, 16)
-                            .padding(.bottom, 12)
-                            
-                            // 4 Apple Maps Filter Pills: `[🚆 公共交通 ⌄]` `[現在 ⌄]` `[偏好 ⌄]` `[建議路線 ⌄]`
-                            ScrollView(.horizontal, showsIndicators: false) {
-                                HStack(spacing: 8) {
-                                    appleModeMenuPill
-                                    sheetDepartureMenuPill
-                                    sheetVehiclePreferencesMenuPill
-                                    sheetSortStrategyMenuPill
-                                }
-                                .padding(.horizontal, 16)
-                            }
-                            .padding(.bottom, 12)
-                            
-                            Divider().background(Color.white.opacity(0.14))
-                            
-                            // Route Cards List
-                            ScrollView(.vertical, showsIndicators: true) {
-                                VStack(spacing: 0) {
-                                    if let firstPlan = manager.transitPlans.first, let ic = firstPlan.intercityBanner {
-                                        intercityOverviewSection(ic: ic)
-                                            .padding(14)
-                                    }
+                                // Render ALL matching transit route options in a clean Apple Maps + GaoDe Maps vertical card list!
+                                ForEach(Array(manager.transitPlans.enumerated()), id: \.element.id) { idx, plan in
+                                    let isSelectedPlan = (manager.selectedTransitPlanIndex == idx)
+                                    let isExpanded = expandedPlanIds.contains(plan.id) || (expandedPlanIds.isEmpty && idx == manager.selectedTransitPlanIndex)
                                     
-                                    ForEach(Array(manager.transitPlans.enumerated()), id: \.element.id) { idx, plan in
-                                        let isSelectedPlan = (manager.selectedTransitPlanIndex == idx)
-                                        VStack(alignment: .leading, spacing: 10) {
-                                            HStack(alignment: .center, spacing: 12) {
-                                                VStack(alignment: .leading, spacing: 6) {
-                                                    // 1. Large Bold Duration (`1小時18分鐘`)
+                                    VStack(alignment: .leading, spacing: 10) {
+                                        // Top Summary Area (Apple Maps + GaoDe Dual Style)
+                                        HStack(alignment: .top, spacing: 10) {
+                                            VStack(alignment: .leading, spacing: 6) {
+                                                // Duration + Source Badge + Arrival ETA
+                                                HStack(alignment: .firstTextBaseline, spacing: 8) {
                                                     Text(plan.formattedDuration)
-                                                        .font(.system(size: 24, weight: .bold))
+                                                        .font(.system(size: 22, weight: .black))
                                                         .foregroundColor(.white)
                                                     
-                                                    // 2. Subtitle: Frequency + Price (`預定每 5 分鐘開出一班 · CN¥7` or `CN¥9`)
-                                                    Text(plan.realtimeArrivalText.isEmpty
-                                                         ? "CN¥\(plan.priceYuan)"
-                                                         : "\(plan.realtimeArrivalText) · CN¥\(plan.priceYuan)")
-                                                        .font(.system(size: 15, weight: .medium))
-                                                        .foregroundColor(Color.white.opacity(0.65))
+                                                    Text(plan.badge)
+                                                        .font(.system(size: 10, weight: .bold))
+                                                        .padding(.horizontal, 6)
+                                                        .padding(.vertical, 2)
+                                                        .background(isSelectedPlan ? Color.purple.opacity(0.85) : Color.white.opacity(0.14))
+                                                        .foregroundColor(isSelectedPlan ? .white : httGold)
+                                                        .cornerRadius(5)
                                                     
-                                                    // 3. Step Flow Badges (`[🚶 12分鐘] ▸ [番16] 🚌 ▸ [🚶 9分鐘] ▸ [3] 🚇 ▸ [🚶 3分鐘] ▸ [1] 🚇`)
-                                                    appleMapsRouteStepBadgesView(for: plan)
-                                                        .padding(.top, 2)
+                                                    Text(manager.estimatedArrivalTimeString(durationMinutes: plan.totalMinutes))
+                                                        .font(.system(size: 11, weight: .bold))
+                                                        .foregroundColor(httGold)
                                                 }
-                                                .frame(maxWidth: .infinity, alignment: .leading)
-                                                .contentShape(Rectangle())
-                                                .onTapGesture {
-                                                    manager.selectTransitPlan(at: idx)
-                                                    withAnimation(.easeInOut(duration: 0.22)) {
-                                                        detailPlanIndex = idx
+                                                
+                                                // Real-time Departure Frequency + Fare (e.g. "巴士即將開出，9分鐘 📡 · CN¥3")
+                                                HStack(spacing: 5) {
+                                                    if !plan.realtimeArrivalText.isEmpty {
+                                                        Text(plan.realtimeArrivalText)
+                                                            .font(.system(size: 12, weight: .bold))
+                                                            .foregroundColor(Color(red: 0.45, green: 0.96, blue: 0.65))
+                                                        Image(systemName: "dot.radiowaves.up.forward")
+                                                            .font(.system(size: 11, weight: .bold))
+                                                            .foregroundColor(.green)
+                                                        Text("·")
+                                                            .foregroundColor(.gray)
+                                                    }
+                                                    Text("CN¥\(plan.priceYuan)")
+                                                        .font(.system(size: 13, weight: .black))
+                                                        .foregroundColor(httCream)
+                                                    Text("·")
+                                                        .foregroundColor(.gray)
+                                                    Text("\(plan.formattedWalk) · \(plan.totalStations)站")
+                                                        .font(.system(size: 11, weight: .semibold))
+                                                        .foregroundColor(.gray)
+                                                }
+                                                
+                                                // Step Flow Pills with `▸` arrows (Matching Apple Maps & GaoDe!)
+                                                ScrollView(.horizontal, showsIndicators: false) {
+                                                    HStack(spacing: 5) {
+                                                        ForEach(Array(plan.steps.enumerated()), id: \.element.id) { sIdx, st in
+                                                            if sIdx > 0 {
+                                                                Image(systemName: "play.fill")
+                                                                    .font(.system(size: 7, weight: .bold))
+                                                                    .foregroundColor(.gray)
+                                                            }
+                                                            if st.kind == .walk {
+                                                                HStack(spacing: 2) {
+                                                                    Image(systemName: "figure.walk")
+                                                                        .font(.system(size: 11, weight: .bold))
+                                                                    Text("\(st.durationMins)\(tr("分钟", "分鐘", "m"))")
+                                                                        .font(.system(size: 11, weight: .bold))
+                                                                }
+                                                                .padding(.horizontal, 7)
+                                                                .padding(.vertical, 4)
+                                                                .background(Color.white.opacity(0.14))
+                                                                .foregroundColor(httCream)
+                                                                .cornerRadius(6)
+                                                            } else {
+                                                                HStack(spacing: 4) {
+                                                                    Text(st.lineName)
+                                                                        .font(.system(size: 11, weight: .black))
+                                                                        .padding(.horizontal, 7)
+                                                                        .padding(.vertical, 3)
+                                                                        .background(stepColor(for: st))
+                                                                        .foregroundColor(.white)
+                                                                        .cornerRadius(5)
+                                                                    Image(systemName: st.kind.icon)
+                                                                        .font(.system(size: 12, weight: .bold))
+                                                                        .foregroundColor(.white.opacity(0.85))
+                                                                }
+                                                            }
+                                                        }
                                                     }
                                                 }
                                                 
-                                                // Right Green `[開始]` Button (Apple Maps 1:1 - Dedicated Tap Zone, Never Swallowed by Row Gesture!)
-                                                VStack(spacing: 6) {
-                                                    Button(action: {
-                                                        closeSheet()
-                                                        manager.startLiveTransitNavigation(forPlanAt: idx)
-                                                    }) {
-                                                        Text(tr("开始", "開始", "GO"))
-                                                            .font(.system(size: 19, weight: .bold))
-                                                            .foregroundColor(.white)
-                                                            .frame(width: 76, height: 54)
-                                                            .background(appleGreen)
-                                                            .cornerRadius(12)
-                                                            .shadow(color: appleGreen.opacity(0.4), radius: 4, x: 0, y: 2)
+                                                // Warning / Fare adjustment / Recommendation notice
+                                                if !plan.warningNotice.isEmpty {
+                                                    HStack(spacing: 5) {
+                                                        Image(systemName: "exclamationmark.circle.fill")
+                                                            .font(.system(size: 12))
+                                                            .foregroundColor(.orange)
+                                                        Text(plan.warningNotice)
+                                                            .font(.system(size: 11, weight: .bold))
+                                                            .foregroundColor(Color(red: 1.0, green: 0.78, blue: 0.35))
+                                                            .lineLimit(2)
                                                     }
-                                                    .buttonStyle(PlainButtonStyle())
-                                                    
-                                                    Button(action: {
+                                                    .padding(.top, 2)
+                                                }
+                                            }
+                                            
+                                            Spacer(minLength: 4)
+                                            
+                                            // Right-aligned Green [开始 / 開始] Button (Apple Maps 1:1 style!)
+                                            VStack(spacing: 8) {
+                                                Button(action: {
+                                                    manager.selectTransitPlan(at: idx)
+                                                    dismiss()
+                                                    manager.startTransitWalkingNavigation()
+                                                }) {
+                                                    Text(tr("开始", "開始", "Start"))
+                                                        .font(.system(size: 15, weight: .black))
+                                                        .foregroundColor(.white)
+                                                        .frame(width: 62, height: 52)
+                                                        .background(Color(red: 0.20, green: 0.78, blue: 0.35))
+                                                        .cornerRadius(12)
+                                                        .shadow(color: Color.green.opacity(0.35), radius: 4, x: 0, y: 2)
+                                                }
+                                                
+                                                Button(action: {
+                                                    withAnimation(.spring(response: 0.3, dampingFraction: 0.78)) {
                                                         manager.selectTransitPlan(at: idx)
-                                                        withAnimation(.easeInOut(duration: 0.22)) {
-                                                            detailPlanIndex = idx
+                                                        if expandedPlanIds.contains(plan.id) {
+                                                            expandedPlanIds.remove(plan.id)
+                                                        } else {
+                                                            expandedPlanIds.insert(plan.id)
                                                         }
-                                                    }) {
-                                                        Text(tr("站点详情", "站點詳情", "Stops"))
-                                                            .font(.system(size: 12, weight: .semibold))
-                                                            .foregroundColor(appleBlue)
                                                     }
-                                                    .buttonStyle(PlainButtonStyle())
-                                                }
-                                            }
-                                            
-                                            // 4. Bottom Clock Notice (`🕒 服務於上午 6:30 開始` or transfer summary)
-                                            HStack(spacing: 6) {
-                                                Image(systemName: "clock.fill")
-                                                    .font(.system(size: 13))
-                                                    .foregroundColor(Color.white.opacity(0.5))
-                                                Text(plan.warningNotice.isEmpty ? manager.transitVehicleTransferSummary(for: plan) : plan.warningNotice)
-                                                    .font(.system(size: 14, weight: .medium))
-                                                    .foregroundColor(Color.white.opacity(0.62))
-                                                    .lineLimit(2)
-                                                Spacer()
-                                                Image(systemName: "chevron.right")
-                                                    .font(.system(size: 12, weight: .semibold))
-                                                    .foregroundColor(Color.white.opacity(0.35))
-                                            }
-                                            .padding(.top, 2)
-                                            .contentShape(Rectangle())
-                                            .onTapGesture {
-                                                manager.selectTransitPlan(at: idx)
-                                                withAnimation(.easeInOut(duration: 0.22)) {
-                                                    detailPlanIndex = idx
-                                                }
-                                            }
-                                            
-                                            // 5. Direct Step 1 Walking Action Bar (`🚶 第一步：步行至[乘车站] · [查看步行图] [步行导航]`)
-                                            if let firstStep = plan.steps.first, firstStep.kind == .walk {
-                                                HStack(spacing: 8) {
-                                                    Image(systemName: "figure.walk.circle.fill")
-                                                        .font(.system(size: 15, weight: .bold))
-                                                        .foregroundColor(appleBlue)
-                                                    Text(tr("第一步：步行 \(firstStep.walkMeters)米 至【\(firstStep.toStation.components(separatedBy: " (")[0])】", "第一步：步行 \(firstStep.walkMeters)米 至【\(firstStep.toStation.components(separatedBy: " (")[0])】", "Step 1: Walk \(firstStep.walkMeters)m to \(firstStep.toStation)"))
-                                                        .font(.system(size: 13, weight: .semibold))
-                                                        .foregroundColor(.white.opacity(0.92))
-                                                        .lineLimit(1)
-                                                    Spacer()
-                                                    Button(action: {
-                                                        manager.selectTransitPlan(at: idx)
-                                                        manager.focusMapOnTransitStep(0, in: plan)
-                                                    }) {
-                                                        Text(tr("看步行线", "看步行線", "Map"))
-                                                            .font(.system(size: 12, weight: .bold))
-                                                            .foregroundColor(.white)
-                                                            .padding(.horizontal, 8)
-                                                            .padding(.vertical, 5)
-                                                            .background(appleBlue.opacity(0.85))
-                                                            .cornerRadius(7)
+                                                }) {
+                                                    HStack(spacing: 2) {
+                                                        Text(isExpanded ? tr("收起站点", "收起站點", "Hide") : tr("站点详情", "站點詳情", "Stops"))
+                                                            .font(.system(size: 10, weight: .bold))
+                                                        Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                                                            .font(.system(size: 9, weight: .bold))
                                                     }
-                                                    .buttonStyle(PlainButtonStyle())
-                                                    
-                                                    Button(action: {
-                                                        closeSheet()
-                                                        manager.startLiveTransitNavigation(forPlanAt: idx, initialStepIndex: 0)
-                                                    }) {
-                                                        Text(tr("步行导航", "步行導航", "Walk GO"))
-                                                            .font(.system(size: 12, weight: .bold))
-                                                            .foregroundColor(.white)
-                                                            .padding(.horizontal, 8)
-                                                            .padding(.vertical, 5)
-                                                            .background(appleGreen)
-                                                            .cornerRadius(7)
-                                                    }
-                                                    .buttonStyle(PlainButtonStyle())
+                                                    .foregroundColor(httGold)
                                                 }
-                                                .padding(.horizontal, 10)
-                                                .padding(.vertical, 7)
-                                                .background(Color.white.opacity(0.08))
-                                                .cornerRadius(9)
-                                                .padding(.top, 2)
                                             }
                                         }
-                                        .padding(.horizontal, 16)
-                                        .padding(.vertical, 16)
-                                        .background(isSelectedPlan ? Color.white.opacity(0.06) : Color.clear)
+                                        .contentShape(Rectangle())
+                                        .onTapGesture {
+                                            withAnimation(.spring(response: 0.3, dampingFraction: 0.78)) {
+                                                manager.selectTransitPlan(at: idx)
+                                                if expandedPlanIds.contains(plan.id) {
+                                                    expandedPlanIds.remove(plan.id)
+                                                } else {
+                                                    expandedPlanIds.insert(plan.id)
+                                                }
+                                            }
+                                        }
                                         
-                                        Divider()
-                                            .background(Color.white.opacity(0.14))
-                                            .padding(.leading, 16)
+                                        // Expandable Station-by-Station Timeline for this Route Card
+                                        if isExpanded {
+                                            Divider().background(Color.white.opacity(0.15))
+                                            planStepTimelineView(plan: plan, planIndex: idx)
+                                        }
                                     }
+                                    .padding(14)
+                                    .background(isSelectedPlan ? Color.white.opacity(0.11) : Color.black.opacity(0.48))
+                                    .cornerRadius(14)
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 14)
+                                            .stroke(isSelectedPlan ? httGold : Color.white.opacity(0.14), lineWidth: isSelectedPlan ? 1.8 : 1)
+                                    )
                                 }
-                                .padding(.bottom, max(geo.safeAreaInsets.bottom + 16, 24))
                             }
+                            .padding(14)
                         }
                     }
-                    .background(appleDarkSheetBG)
-                }
-                
-                if showSheetDeparturePicker {
-                    RouteDepartureTimePickerSheetView(
-                        manager: manager,
-                        onClose: {
-                            showSheetDeparturePicker = false
+                    
+                    // 3. Bottom One-Click Start Guidance in App
+                    Button(action: {
+                        dismiss()
+                        manager.startTransitWalkingNavigation()
+                    }) {
+                        HStack(spacing: 8) {
+                            Image(systemName: "tram.circle.fill")
+                                .font(.title3)
+                            Text(tr("开始当前选中方案全流程乘车指引", "開始當前選中方案全流程乘車指引", "Start Selected Transit Guidance"))
+                                .font(.system(size: 15, weight: .black))
                         }
-                    )
-                    .frame(width: geo.size.width, height: geo.size.height)
-                    .zIndex(50)
+                        .frame(maxWidth: .infinity, minHeight: 46)
+                        .background(
+                            LinearGradient(
+                                colors: [Color.purple, Color(red: 0.65, green: 0.25, blue: 0.85)],
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
+                        )
+                        .foregroundColor(.white)
+                        .cornerRadius(12)
+                        .overlay(RoundedRectangle(cornerRadius: 12).stroke(httGold, lineWidth: 1.8))
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 10)
+                    }
+                }
+            }
+            .navigationTitle(tr("放课后茶会 · 公交地铁导航", "放課後茶會 · 公交地鐵導航", "HTT · Transit Navigation"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button(tr("关闭", "關閉", "Close")) {
+                        dismiss()
+                    }
+                    .foregroundColor(httGold)
+                }
+            }
+            .onAppear {
+                if manager.transitPlans.isEmpty {
+                    manager.refreshTransitPlansForCurrentLocation(force: true)
                 }
             }
         }
-        .onAppear {
-            if manager.transitPlans.isEmpty {
-                manager.refreshTransitPlansForCurrentLocation(force: true)
-            }
+        .sheet(isPresented: $showSheetDeparturePicker) {
+            RouteDepartureTimePickerSheetView(manager: manager)
+        }
+        .sheet(isPresented: $manager.showAllFlightTicketsSheet) {
+            InAppFlightTicketScheduleSheetView(manager: manager)
+        }
+        .sheet(isPresented: $manager.showAllTrainTicketsSheet) {
+            InAppTrainTicketScheduleSheetView(manager: manager)
         }
     }
     
-    // MARK: - Apple Maps 1:1 Step-by-Step Station Timeline (`44e227f3ed3f6b43af89521c15ebdf5b.jpg` & `1e4c2a70d26bb937dc0177d5fe01ea50.jpg`)
     @ViewBuilder
-    private func appleMapsStepByStepTimelineView(plan: TransitPlanOption, planIndex: Int) -> some View {
+    private func planStepTimelineView(plan: TransitPlanOption, planIndex: Int) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            // 1. ORIGIN ROW (`📍 開始 · 中国广东省广州市番禺区碧沙环村一巷`)
-            HStack(alignment: .center, spacing: 14) {
-                ZStack {
-                    Circle().fill(Color(red: 0.92, green: 0.30, blue: 0.28)).frame(width: 34, height: 34)
-                    Image(systemName: "mappin")
-                        .font(.system(size: 15, weight: .bold))
-                        .foregroundColor(.white)
-                }
-                .frame(width: 44)
-                
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(tr("开始", "開始", "Start"))
-                        .font(.system(size: 18, weight: .bold))
-                        .foregroundColor(.white)
-                    Text(manager.currentUserAddressText)
-                        .font(.system(size: 14, weight: .regular))
-                        .foregroundColor(Color.white.opacity(0.6))
-                }
-                Spacer()
-            }
-            .padding(.vertical, 14)
-            
-            Divider().background(Color.white.opacity(0.14)).padding(.leading, 58)
-            
-            // 2. ITERATE THROUGH ALL STEPS (Walk / Bus / Metro)
             ForEach(Array(plan.steps.enumerated()), id: \.element.id) { stepIdx, step in
-                if step.kind == .walk {
-                    // Skip middle transfer walk if it was already rendered inside the preceding metro alighting block!
-                    let prevStep: TransitStepItem? = stepIdx > 0 ? plan.steps[stepIdx - 1] : nil
-                    let nextStep: TransitStepItem? = (stepIdx + 1 < plan.steps.count) ? plan.steps[stepIdx + 1] : nil
-                    let isMetroTransferWalk = (prevStep?.kind == .subway && nextStep?.kind == .subway)
-                    
-                    if !isMetroTransferWalk {
-                        let isWalkCollapsed = collapsedStepIds.contains(step.id)
-                        let walkDirections = manager.transitWalkStepDirections[stepIdx] ?? manager.buildFallbackWalkDirections(step: step, isFirstStep: stepIdx == 0, isLastStep: stepIdx == plan.steps.count - 1)
-                        VStack(alignment: .leading, spacing: 10) {
-                            HStack(alignment: .center, spacing: 14) {
-                                ZStack {
-                                    Circle()
-                                        .fill(appleBlue.opacity(0.22))
-                                        .frame(width: 38, height: 38)
-                                    Image(systemName: "figure.walk")
-                                        .font(.system(size: 20, weight: .bold))
-                                        .foregroundColor(appleBlue)
-                                }
-                                .frame(width: 44)
-                                
-                                VStack(alignment: .leading, spacing: 3) {
-                                    Text(stepIdx == plan.steps.count - 1
-                                         ? tr("步行至目的地", "步行至目的地", "Walk to Destination")
-                                         : (step.lineName.hasPrefix("步行") ? step.lineName : "\(tr("步行至", "步行至", "Walk to "))\(step.toStation)"))
-                                        .font(.system(size: 18, weight: .bold))
-                                        .foregroundColor(.white)
-                                    Text(step.walkMeters <= 50
-                                         ? "\(step.walkMeters)\(tr("米，步行少于1分钟", "米，步行少於1分鐘", "m, less than 1 min walk"))"
-                                         : "\(step.walkMeters)\(tr("米，步行约", "米，步行約", "m, about "))\(step.durationMins)\(tr("分钟", "分鐘", " min"))")
-                                        .font(.system(size: 14, weight: .regular))
-                                        .foregroundColor(Color.white.opacity(0.65))
-                                }
-                                Spacer()
-                                
-                                // Action Buttons: [🗺️ 查看路线] + [🚶 步行导航]
-                                HStack(spacing: 6) {
-                                    Button(action: {
-                                        manager.focusMapOnTransitStep(stepIdx, in: plan)
-                                    }) {
-                                        HStack(spacing: 3) {
-                                            Image(systemName: "map.fill")
-                                                .font(.system(size: 11, weight: .bold))
-                                            Text(tr("查看路线", "查看路線", "Map"))
-                                                .font(.system(size: 12, weight: .bold))
-                                        }
-                                        .foregroundColor(.white)
-                                        .padding(.horizontal, 9)
-                                        .padding(.vertical, 7)
-                                        .background(appleBlue.opacity(0.85))
-                                        .cornerRadius(8)
-                                    }
-                                    .buttonStyle(PlainButtonStyle())
-                                    
-                                    Button(action: {
-                                        closeSheet()
-                                        manager.startLiveTransitNavigation(forPlanAt: planIndex, initialStepIndex: stepIdx)
-                                    }) {
-                                        HStack(spacing: 3) {
-                                            Image(systemName: "figure.walk.motion")
-                                                .font(.system(size: 12, weight: .bold))
-                                            Text(tr("步行导航", "步行導航", "Walk GO"))
-                                                .font(.system(size: 12, weight: .bold))
-                                        }
-                                        .foregroundColor(.white)
-                                        .padding(.horizontal, 10)
-                                        .padding(.vertical, 7)
-                                        .background(appleGreen)
-                                        .cornerRadius(8)
-                                    }
-                                    .buttonStyle(PlainButtonStyle())
-                                }
-                            }
-                            
-                            // Expandable Turn-by-Turn Pedestrian Street Directions (Expanded by default for Step 1!)
-                            VStack(alignment: .leading, spacing: 6) {
-                                Button(action: {
-                                    withAnimation(.easeInOut(duration: 0.2)) {
-                                        if collapsedStepIds.contains(step.id) {
-                                            collapsedStepIds.remove(step.id)
-                                        } else {
-                                            collapsedStepIds.insert(step.id)
-                                        }
-                                    }
-                                }) {
-                                    HStack(spacing: 5) {
-                                        Image(systemName: isWalkCollapsed ? "chevron.down.circle.fill" : "chevron.up.circle.fill")
-                                            .font(.system(size: 13, weight: .bold))
-                                        Text(isWalkCollapsed
-                                             ? tr("展开分步步行街道指引 (\(walkDirections.count)步)", "展開分步步行街道指引 (\(walkDirections.count)步)", "Show Walking Directions (\(walkDirections.count) steps)")
-                                             : tr("收起步行街道指引", "收起步行街道指引", "Hide Walking Directions"))
-                                            .font(.system(size: 13, weight: .semibold))
-                                    }
-                                    .foregroundColor(appleBlue)
-                                }
-                                .buttonStyle(PlainButtonStyle())
-                                
-                                if !isWalkCollapsed {
-                                    VStack(alignment: .leading, spacing: 6) {
-                                        ForEach(Array(walkDirections.enumerated()), id: \.offset) { wIdx, wLine in
-                                            HStack(alignment: .top, spacing: 8) {
-                                                Circle()
-                                                    .fill(appleBlue)
-                                                    .frame(width: 6, height: 6)
-                                                    .padding(.top, 6)
-                                                Text(wLine)
-                                                    .font(.system(size: 13, weight: .medium))
-                                                    .foregroundColor(Color.white.opacity(0.88))
-                                                    .fixedSize(horizontal: false, vertical: true)
-                                            }
-                                        }
-                                    }
-                                    .padding(10)
-                                    .background(Color.white.opacity(0.06))
-                                    .cornerRadius(8)
-                                }
-                            }
-                            .padding(.leading, 58)
-                        }
-                        .padding(.vertical, 14)
-                        
-                        Divider().background(Color.white.opacity(0.14)).padding(.leading, 58)
-                    }
-                } else {
-                    // BUS OR SUBWAY STEP: Render Boarding Section + Alighting & Collapsible Stops Section!
-                    let lineColor = stepColor(for: step)
-                    let boardCode = extractStationCodeBadge(for: step, isBoarding: true)
-                    let alightCode = extractStationCodeBadge(for: step, isBoarding: false)
-                    let isStepCollapsed = collapsedStepIds.contains(step.id)
-                    let nextStep: TransitStepItem? = (stepIdx + 1 < plan.steps.count) ? plan.steps[stepIdx + 1] : nil
-                    let stepAfterNext: TransitStepItem? = (stepIdx + 2 < plan.steps.count) ? plan.steps[stepIdx + 2] : nil
-                    let transferSubwayNext: TransitStepItem? = (nextStep?.kind == .walk && stepAfterNext?.kind == .subway) ? stepAfterNext : ((nextStep?.kind == .subway) ? nextStep : nil)
-                    let transferWalkMins: Int = (nextStep?.kind == .walk && stepAfterNext?.kind == .subway) ? (nextStep?.durationMins ?? 3) : 2
-                    
-                    // 2A. BOARDING SECTION (`乘搭番 16 路巴士` or `( 3 | 02 ) 乘搭 3 号线地鐵`)
-                    HStack(alignment: .top, spacing: 14) {
-                        VStack {
-                            if let bc = boardCode {
-                                appleMapsMetroCodePill(lineNum: bc.lineNum, stNum: bc.stNum, color: lineColor)
-                            } else {
-                                Text(compactLineBadgeText(for: step))
+                HStack(alignment: .top, spacing: 12) {
+                    VStack(spacing: 0) {
+                        Circle()
+                            .fill(stepColor(for: step))
+                            .frame(width: 26, height: 26)
+                            .overlay(
+                                Image(systemName: step.kind.icon)
                                     .font(.system(size: 12, weight: .bold))
-                                    .padding(.horizontal, 6)
-                                    .padding(.vertical, 4)
-                                    .background(lineColor)
                                     .foregroundColor(.white)
-                                    .cornerRadius(5)
-                            }
-                        }
-                        .frame(width: 44, alignment: .center)
-                        .padding(.top, 2)
+                            )
                         
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(step.kind == .bus
-                                 ? "\(tr("乘搭", "乘搭", "Board "))\(compactLineBadgeText(for: step))\(tr("路巴士", "路巴士", " Bus"))"
-                                 : "\(tr("乘搭 ", "乘搭 ", "Board "))\(step.lineName)\(tr(" 地铁", " 地鐵", " Metro"))")
-                                .font(.system(size: 18, weight: .bold))
+                        if stepIdx < plan.steps.count - 1 {
+                            Rectangle()
+                                .fill(stepColor(for: step).opacity(0.6))
+                                .frame(width: 3)
+                                .frame(minHeight: 46)
+                        }
+                    }
+                    
+                    VStack(alignment: .leading, spacing: 5) {
+                        HStack {
+                            Text(step.fromStation)
+                                .font(.system(size: 15, weight: .black))
                                 .foregroundColor(.white)
                             
-                            Text(step.directionDesc)
-                                .font(.system(size: 14, weight: .regular))
-                                .foregroundColor(Color.white.opacity(0.62))
+                            if !step.exitDesc.isEmpty && step.kind == .walk {
+                                Text(step.exitDesc)
+                                    .font(.system(size: 11, weight: .bold))
+                                    .foregroundColor(Color(red: 0.45, green: 0.85, blue: 1.0))
+                            }
+                        }
+                        
+                        if step.kind != .walk {
+                            HStack(spacing: 6) {
+                                Text(step.lineName)
+                                    .font(.system(size: 11, weight: .black))
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 3)
+                                    .background(stepColor(for: step))
+                                    .foregroundColor(.white)
+                                    .cornerRadius(5)
+                                
+                                Text(step.directionDesc)
+                                    .font(.system(size: 11, weight: .bold))
+                                    .foregroundColor(.gray)
+                            }
                             
                             if !step.acNotice.isEmpty {
                                 Text(step.acNotice)
-                                    .font(.system(size: 14, weight: .regular))
-                                    .foregroundColor(Color.white.opacity(0.62))
+                                    .font(.system(size: 10, weight: .medium))
+                                    .foregroundColor(Color(red: 0.4, green: 0.8, blue: 1.0))
+                            }
+                            
+                            if !step.passStations.isEmpty {
+                                VStack(alignment: .leading, spacing: 5) {
+                                    Button(action: {
+                                        withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) {
+                                            if expandedStepIds.contains(step.id) {
+                                                expandedStepIds.remove(step.id)
+                                            } else {
+                                                expandedStepIds.insert(step.id)
+                                            }
+                                        }
+                                    }) {
+                                        HStack(spacing: 5) {
+                                            Image(systemName: expandedStepIds.contains(step.id) ? "chevron.up" : "chevron.down")
+                                                .font(.system(size: 10, weight: .bold))
+                                            Text("\(step.passStations.count + 1) \(tr("站", "站", "stops")) (\(step.durationMins) \(tr("分钟", "分鐘", "min")))")
+                                                .font(.system(size: 11, weight: .heavy))
+                                            Text(expandedStepIds.contains(step.id) ? tr("点击收起站台", "點擊收起站台", "Hide stops") : tr("点击展开经停车站", "點擊展開經停車站", "Show stops"))
+                                                .font(.system(size: 10, weight: .medium))
+                                                .opacity(0.8)
+                                        }
+                                        .foregroundColor(Color.cyan)
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 4)
+                                        .background(Color.cyan.opacity(0.12))
+                                        .cornerRadius(6)
+                                    }
+                                    
+                                    if expandedStepIds.contains(step.id) {
+                                        VStack(alignment: .leading, spacing: 5) {
+                                            ForEach(step.passStations, id: \.self) { stName in
+                                                HStack(spacing: 8) {
+                                                    Circle()
+                                                        .fill(Color.gray.opacity(0.7))
+                                                        .frame(width: 5, height: 5)
+                                                    Text(stName)
+                                                        .font(.system(size: 11, weight: .medium))
+                                                        .foregroundColor(.white.opacity(0.9))
+                                                }
+                                                .padding(.leading, 8)
+                                            }
+                                        }
+                                        .padding(.vertical, 3)
+                                    }
+                                }
+                            }
+                            
+                            if !step.intervalDesc.isEmpty {
+                                Text(step.intervalDesc)
+                                    .font(.system(size: 10, weight: .medium))
+                                    .foregroundColor(.gray)
                             }
                             
                             HStack {
-                                Text(step.intervalDesc.isEmpty ? tr("地铁每 5 分钟开出一班", "地鐵每 5 分鐘開出一班", "Every 5 mins") : step.intervalDesc)
-                                    .font(.system(size: 15, weight: .medium))
+                                Text(step.toStation)
+                                    .font(.system(size: 14, weight: .black))
                                     .foregroundColor(.white)
-                                Spacer()
-                                Text(tr("更多", "更多", "More"))
-                                    .font(.system(size: 14, weight: .medium))
-                                    .foregroundColor(appleBlue)
-                            }
-                            .padding(.top, 4)
-                        }
-                    }
-                    .padding(.vertical, 14)
-                    
-                    Divider().background(Color.white.opacity(0.14)).padding(.leading, 58)
-                    
-                    // 2B. ALIGHTING & COLLAPSIBLE STATION TIMELINE SECTION (`在光明北路落車` / `( 3 | 11 ) 在体育西路落車`)
-                    HStack(alignment: .top, spacing: 14) {
-                        VStack {
-                            if let ac = alightCode {
-                                appleMapsMetroCodePill(lineNum: ac.lineNum, stNum: ac.stNum, color: lineColor)
-                            } else {
-                                Image(systemName: "rectangle.portrait.and.arrow.right")
-                                    .font(.system(size: 20, weight: .semibold))
-                                    .foregroundColor(.white)
-                            }
-                        }
-                        .frame(width: 44, alignment: .center)
-                        .padding(.top, 2)
-                        
-                        VStack(alignment: .leading, spacing: 10) {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("\(tr("在", "在", "Alight at "))\(step.toStation)\(tr("下车", "落車", ""))")
-                                    .font(.system(size: 18, weight: .bold))
-                                    .foregroundColor(.white)
+                                
                                 if !step.doorSideDesc.isEmpty {
                                     Text(step.doorSideDesc)
-                                        .font(.system(size: 14, weight: .regular))
-                                        .foregroundColor(Color.white.opacity(0.6))
+                                        .font(.system(size: 10, weight: .bold))
+                                        .foregroundColor(httGold)
+                                        .padding(.horizontal, 5)
+                                        .padding(.vertical, 2)
+                                        .background(Color.black.opacity(0.6))
+                                        .cornerRadius(4)
                                 }
                             }
+                            .padding(.top, 2)
+                        } else {
+                            Text(step.intervalDesc)
+                                .font(.system(size: 11, weight: .bold))
+                                .foregroundColor(httCream.opacity(0.85))
                             
-                            // Vertical Colored Line + Boarding Station + Collapsible Stops + Alighting Station
-                            HStack(alignment: .top, spacing: 12) {
-                                // Left Vertical Line & Dots
-                                VStack(spacing: 0) {
-                                    Circle()
-                                        .stroke(lineColor, lineWidth: 3)
-                                        .frame(width: 11, height: 11)
-                                    Rectangle()
-                                        .fill(lineColor)
-                                        .frame(width: 4)
-                                        .frame(minHeight: isStepCollapsed ? 38 : CGFloat(max(48, step.passStations.count * 28 + 32)))
-                                    Circle()
-                                        .fill(lineColor)
-                                        .frame(width: 12, height: 12)
-                                }
-                                .padding(.top, 4)
-                                
-                                // Right Station Names & Toggle Button
-                                VStack(alignment: .leading, spacing: 8) {
-                                    Text(step.fromStation.components(separatedBy: " (")[0])
-                                        .font(.system(size: 17, weight: .bold))
-                                        .foregroundColor(.white)
-                                    
-                                    if !step.passStations.isEmpty {
-                                        Button(action: {
-                                            withAnimation(.easeInOut(duration: 0.2)) {
-                                                if collapsedStepIds.contains(step.id) {
-                                                    collapsedStepIds.remove(step.id)
-                                                } else {
-                                                    collapsedStepIds.insert(step.id)
-                                                }
-                                            }
-                                        }) {
-                                            Text(isStepCollapsed
-                                                 ? "\(tr("搭乘 ", "搭乘 ", "Ride "))\(step.passStations.count)\(tr(" 个站，", " 個站，", " stops, "))\(step.durationMins)\(tr(" 分钟", " 分鐘", " min"))"
-                                                 : tr("隐藏车站", "隱藏車站", "Hide Stops"))
-                                                .font(.system(size: 15, weight: .medium))
-                                                .foregroundColor(appleBlue)
-                                        }
-                                        .buttonStyle(PlainButtonStyle())
-                                        
-                                        if !isStepCollapsed {
-                                            VStack(alignment: .leading, spacing: 6) {
-                                                ForEach(Array(step.passStations.enumerated()), id: \.offset) { pIdx, rawPass in
-                                                    // Skip repeating the final station inside the middle list if it matches toStation
-                                                    let cleanName = rawPass.components(separatedBy: " (")[0]
-                                                    if cleanName != step.toStation.components(separatedBy: " (")[0] {
-                                                        let estMin = max(1, Int(round(Double(step.durationMins) * Double(pIdx + 1) / Double(max(1, step.passStations.count)))))
-                                                        let timeSuffix: String = {
-                                                            if rawPass.contains("(") && rawPass.contains("分") {
-                                                                return rawPass.components(separatedBy: "(").last?.replacingOccurrences(of: ")", with: "") ?? "\(estMin)\(tr("分钟", "分鐘", "m"))"
-                                                            }
-                                                            return "\(estMin)\(tr("分钟", "分鐘", "m"))"
-                                                        }()
-                                                        HStack {
-                                                            Text(cleanName)
-                                                                .font(.system(size: 15, weight: .regular))
-                                                                .foregroundColor(Color.white.opacity(0.9))
-                                                            Spacer()
-                                                            Text(timeSuffix)
-                                                                .font(.system(size: 14, weight: .regular))
-                                                                .foregroundColor(Color.white.opacity(0.55))
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                            .padding(.vertical, 2)
-                                        }
+                            if stepIdx == 0 {
+                                Button(action: {
+                                    manager.selectTransitPlan(at: planIndex)
+                                    dismiss()
+                                    manager.startTransitWalkingNavigation()
+                                }) {
+                                    HStack(spacing: 5) {
+                                        Image(systemName: "figure.walk.circle.fill")
+                                            .font(.system(size: 12, weight: .bold))
+                                        Text(tr("开启第一段步行实景导航 (前往 \(step.toStation))", "開啟第一段步行實景導航 (前往 \(step.toStation))", "Start Walking Guidance to \(step.toStation)"))
+                                            .font(.system(size: 11, weight: .bold))
                                     }
-                                    
-                                    // Final Alight Station Row
-                                    HStack {
-                                        Text(step.toStation.components(separatedBy: " (")[0])
-                                            .font(.system(size: 17, weight: .bold))
-                                            .foregroundColor(.white)
-                                        Spacer()
-                                        Text("\(step.durationMins)\(tr("分钟", "分鐘", "m"))")
-                                            .font(.system(size: 14, weight: .regular))
-                                            .foregroundColor(Color.white.opacity(0.55))
-                                    }
-                                    
-                                    // Exit G / Transfer Badge if applicable (`按指示前往 [G]` or `轉乘 [1] 地鐵` + `[🚶 3分鐘]`)
-                                    if step.doorSideDesc.contains("前往 G") {
-                                        HStack(spacing: 5) {
-                                            Text(tr("按指示前往", "按指示前往", "Follow signs to"))
-                                                .font(.system(size: 14))
-                                                .foregroundColor(Color.white.opacity(0.6))
-                                            Text("G")
-                                                .font(.system(size: 12, weight: .black))
-                                                .foregroundColor(.black)
-                                                .padding(.horizontal, 5)
-                                                .padding(.vertical, 2)
-                                                .background(Color(red: 0.95, green: 0.82, blue: 0.24))
-                                                .cornerRadius(4)
-                                        }
-                                    }
-                                    
-                                    if let transSub = transferSubwayNext {
-                                        let nextCode = compactLineBadgeText(for: transSub)
-                                        let nextYellow = isYellowMetroLine(transSub)
-                                        VStack(alignment: .leading, spacing: 6) {
-                                            HStack(spacing: 5) {
-                                                Text(tr("转乘", "轉乘", "Transfer to"))
-                                                    .font(.system(size: 14))
-                                                    .foregroundColor(Color.white.opacity(0.65))
-                                                Text(nextCode)
-                                                    .font(.system(size: 12, weight: .bold))
-                                                    .padding(.horizontal, 5)
-                                                    .padding(.vertical, 2)
-                                                    .background(stepColor(for: transSub))
-                                                    .foregroundColor(nextYellow ? .black : .white)
-                                                    .cornerRadius(4)
-                                                Text(tr("地铁", "地鐵", "Metro"))
-                                                    .font(.system(size: 14))
-                                                    .foregroundColor(Color.white.opacity(0.65))
-                                            }
-                                            HStack(spacing: 3) {
-                                                Image(systemName: "figure.walk")
-                                                    .font(.system(size: 12, weight: .semibold))
-                                                Text("\(transferWalkMins)\(tr("分钟", "分鐘", "m"))")
-                                                    .font(.system(size: 13, weight: .semibold))
-                                            }
-                                            .padding(.horizontal, 9)
-                                            .padding(.vertical, 4)
-                                            .background(applePillBG)
-                                            .foregroundColor(Color.white.opacity(0.85))
-                                            .cornerRadius(10)
-                                        }
-                                        .padding(.top, 2)
-                                    }
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 5)
+                                    .background(Color.green.opacity(0.2))
+                                    .foregroundColor(Color.green)
+                                    .cornerRadius(6)
                                 }
                             }
                         }
                     }
-                    .padding(.vertical, 14)
+                    .padding(.bottom, 14)
                     
-                    Divider().background(Color.white.opacity(0.14)).padding(.leading, 58)
+                    Spacer()
                 }
             }
-            
-            // 3. FINAL ARRIVAL ROW (`🚆 抵達 · 中国广东省广州市天河区东站路1号`)
-            HStack(alignment: .center, spacing: 14) {
-                ZStack {
-                    Circle().fill(appleBlue).frame(width: 34, height: 34)
-                    Image(systemName: "tram.fill")
-                        .font(.system(size: 15, weight: .bold))
-                        .foregroundColor(.white)
-                }
-                .frame(width: 44)
-                
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(tr("抵达", "抵達", "Arrive"))
-                        .font(.system(size: 18, weight: .bold))
-                        .foregroundColor(.white)
-                    Text(manager.tappedMapAddress.isEmpty ? manager.destinationName : manager.tappedMapAddress)
-                        .font(.system(size: 14, weight: .regular))
-                        .foregroundColor(Color.white.opacity(0.6))
-                }
-                Spacer()
-                
-                Button(action: {
-                    closeSheet()
-                    manager.startLiveTransitNavigation(forPlanAt: planIndex)
-                }) {
-                    Text(tr("开始", "開始", "GO"))
-                        .font(.system(size: 16, weight: .bold))
-                        .foregroundColor(.white)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 10)
-                        .background(appleGreen)
-                        .cornerRadius(10)
-                }
-                .buttonStyle(PlainButtonStyle())
-            }
-            .padding(.vertical, 14)
         }
+        .padding(.top, 6)
     }
     
     @ViewBuilder
@@ -7164,6 +6020,7 @@ struct InAppTransitPlanSheetView: View {
                 .padding(10)
                 .background(Color.black.opacity(0.55))
                 .cornerRadius(10)
+                .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.cyan.opacity(0.4), lineWidth: 1))
             }
             
             HStack {
@@ -7192,6 +6049,7 @@ struct InAppTransitPlanSheetView: View {
             .padding(10)
             .background(Color.black.opacity(0.55))
             .cornerRadius(10)
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.blue.opacity(0.4), lineWidth: 1))
         }
     }
     
@@ -7200,9 +6058,9 @@ struct InAppTransitPlanSheetView: View {
         case .walk:
             return Color.gray
         case .subway:
-            return Color(hex: step.colorHex) ?? Color.orange
+            return Color(hex: step.colorHex) ?? Color.purple
         case .bus:
-            return Color(hex: step.colorHex) ?? Color(red: 0.17, green: 0.49, blue: 0.91)
+            return Color(hex: step.colorHex) ?? Color(red: 0.12, green: 0.47, blue: 0.94)
         case .intercity:
             return Color(hex: step.colorHex) ?? Color(red: 0.48, green: 0.70, blue: 0.02)
         case .train:
@@ -8198,7 +7056,7 @@ struct AboutAndFeedbackContentView: View {
                     
                     HStack(spacing: 8) {
                         // Version 1.0 Badge
-                        Text(manager.language == .en ? "Version 2.0 (v\(manager.appVersion))" : "版本 2.0 (v\(manager.appVersion))")
+                        Text(manager.language == .en ? "Version 1.0 (v\(manager.appVersion))" : "版本 1.0 (v\(manager.appVersion))")
                             .font(.system(size: 11, weight: .bold, design: .monospaced))
                             .padding(.horizontal, 8)
                             .padding(.vertical, 3)
@@ -9081,10 +7939,10 @@ struct AboutAndFeedbackContentView: View {
 // ============================================================================
 
 struct KOnDoudizhuSheetView: View {
-    let manager: AudioPlayerManager
+    @ObservedObject var manager: AudioPlayerManager
     @ObservedObject private var ddz = KOnDoudizhuManager.shared
     @Environment(\.dismiss) private var dismiss
-    var onClose: (() -> Void)? = nil
+    @State private var showServerConfig: Bool = false
     
     private let httGold = Color(red: 0.88, green: 0.68, blue: 0.24)
     private let httCrimson = Color(red: 0.78, green: 0.18, blue: 0.22)
@@ -9100,21 +7958,8 @@ struct KOnDoudizhuSheetView: View {
         }
     }
     
-    private func closeDoudizhuPage() {
-        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
-        if !ddz.connectedPeerNames.isEmpty || ddz.isOnlineServerConnected || ddz.isHostingRoom || ddz.isBrowsingRooms {
-            ddz.leaveOrCloseRoom()
-        }
-        if let onClose = onClose {
-            onClose()
-        } else {
-            dismiss()
-        }
-    }
-    
     var body: some View {
-        GeometryReader { geo in
-            let isLandscape = geo.size.width > geo.size.height
+        NavigationView {
             ZStack {
                 LinearGradient(
                     colors: [tableFeltDark, tableFeltLight, Color(red: 0.07, green: 0.20, blue: 0.14)],
@@ -9123,165 +7968,72 @@ struct KOnDoudizhuSheetView: View {
                 )
                 .ignoresSafeArea()
                 
-                VStack(spacing: isLandscape ? 4 : 6) {
-                    // Custom Top Header Bar (Ultra-compact in Landscape so 100% of table fits on screen!)
-                    HStack(spacing: 8) {
-                        if ddz.phase != .lobby {
-                            Button(action: {
-                                ddz.leaveOrCloseRoom()
-                            }) {
-                                HStack(spacing: 3) {
-                                    Image(systemName: "chevron.left")
-                                    Text(tr("退出房间", "退出房間", "Leave"))
-                                }
-                                .font(.system(size: isLandscape ? 12 : 13, weight: .bold))
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 5)
-                                .background(Color.black.opacity(0.45))
-                                .foregroundColor(httGold)
-                                .cornerRadius(8)
-                            }
-                            .buttonStyle(PlainButtonStyle())
-                        } else {
-                            HStack(spacing: 4) {
-                                Image(systemName: "suit.spade.fill")
-                                    .foregroundColor(httGold)
-                                Text(tr("房间大厅", "房間大廳", "Lobby"))
-                                    .font(.system(size: isLandscape ? 12 : 13, weight: .black))
-                                    .foregroundColor(httGold)
-                            }
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 5)
-                            .background(Color.black.opacity(0.35))
-                            .cornerRadius(8)
-                        }
-                        
-                        if isLandscape {
-                            // In Landscape, merge Title + Status Notice right into the top bar to save 42pt of vertical height!
-                            HStack(spacing: 6) {
-                                Image(systemName: "sparkles")
-                                    .foregroundColor(httGold)
-                                    .font(.system(size: 11, weight: .bold))
-                                Text(ddz.statusBanner)
-                                    .font(.system(size: 11, weight: .bold))
-                                    .foregroundColor(httCream)
-                                    .lineLimit(1)
-                                    .minimumScaleFactor(0.8)
-                            }
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 5)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(Color.black.opacity(0.48))
-                            .cornerRadius(8)
-                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold.opacity(0.5), lineWidth: 1))
-                        } else {
-                            Spacer()
-                            Text(tr("放课后茶会 · 面对面斗地主", "放課後茶會 · 面對面鬥地主", "HTT · Multiplayer Doudizhu"))
-                                .font(.system(size: 16, weight: .black))
-                                .foregroundColor(.white)
-                                .lineLimit(1)
-                            Spacer()
-                        }
-                        
-                        Button(action: {
-                            closeDoudizhuPage()
-                        }) {
-                            HStack(spacing: 3) {
-                                Image(systemName: "xmark.circle.fill")
-                                Text(tr("关闭", "關閉", "Close"))
-                            }
-                            .font(.system(size: isLandscape ? 12 : 13, weight: .bold))
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 5)
-                            .background(Color.black.opacity(0.48))
+                VStack(spacing: 8) {
+                    // Status Notice Bar
+                    HStack(spacing: 6) {
+                        Image(systemName: "sparkles")
                             .foregroundColor(httGold)
-                            .cornerRadius(8)
-                        }
-                        .buttonStyle(PlainButtonStyle())
+                            .font(.system(size: 12, weight: .bold))
+                        Text(ddz.statusBanner)
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundColor(httCream)
+                            .lineLimit(2)
+                        Spacer()
                     }
                     .padding(.horizontal, 12)
-                    .padding(.top, isLandscape ? 4 : 6)
-                    
-                    // Status Notice Bar (Portrait only; in Landscape it's already merged into the top bar)
-                    if !isLandscape {
-                        HStack(spacing: 6) {
-                            Image(systemName: "sparkles")
-                                .foregroundColor(httGold)
-                                .font(.system(size: 12, weight: .bold))
-                            Text(ddz.statusBanner)
-                                .font(.system(size: 12, weight: .bold))
-                                .foregroundColor(httCream)
-                                .lineLimit(2)
-                            Spacer()
-                        }
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 6)
-                        .background(Color.black.opacity(0.55))
-                        .cornerRadius(10)
-                        .overlay(RoundedRectangle(cornerRadius: 10).stroke(httGold.opacity(0.6), lineWidth: 1))
-                        .padding(.horizontal, 12)
-                    }
+                    .padding(.vertical, 7)
+                    .background(Color.black.opacity(0.55))
+                    .cornerRadius(10)
+                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(httGold.opacity(0.6), lineWidth: 1))
+                    .padding(.horizontal, 12)
+                    .padding(.top, 4)
                     
                     if ddz.phase == .lobby {
-                        lobbyContentView(isLandscape: isLandscape)
+                        lobbyContentView
                     } else {
-                        gameTableContentView(geo: geo, isLandscape: isLandscape)
+                        gameTableContentView
                     }
                 }
-                
-                // Prominent Modal Alert Overlay when a player leaves and the room closes!
-                if let closeMsg = ddz.roomClosedNotice {
-                    ZStack {
-                        Color.black.opacity(0.65).ignoresSafeArea()
-                        VStack(spacing: 14) {
-                            Image(systemName: "door.left.hand.open")
-                                .font(.system(size: 38, weight: .bold))
-                                .foregroundColor(.orange)
-                            Text(tr("房间已关闭", "房間已關閉", "Room Closed"))
-                                .font(.system(size: 18, weight: .black))
-                                .foregroundColor(.white)
-                            Text(closeMsg)
-                                .font(.system(size: 13, weight: .bold))
-                                .foregroundColor(httCream)
-                                .multilineTextAlignment(.center)
-                                .padding(.horizontal, 12)
-                            Button(action: {
-                                ddz.roomClosedNotice = nil
-                            }) {
-                                Text(tr("确定返回房间大厅", "確定返回房間大廳", "Return to Lobby"))
-                                    .font(.system(size: 14, weight: .black))
-                                    .foregroundColor(.white)
-                                    .padding(.horizontal, 28)
-                                    .padding(.vertical, 10)
-                                    .background(httCrimson)
-                                    .cornerRadius(10)
-                                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(httGold, lineWidth: 1.5))
+            }
+            .navigationTitle(tr("放课后茶会 · 面对面斗地主", "放課後茶會 · 面對面鬥地主", "HTT · Multiplayer Doudizhu"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    if ddz.phase != .lobby {
+                        Button(action: {
+                            ddz.phase = .lobby
+                        }) {
+                            HStack(spacing: 3) {
+                                Image(systemName: "chevron.left")
+                                Text(tr("房间大厅", "房間大廳", "Lobby"))
                             }
-                            .buttonStyle(PlainButtonStyle())
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundColor(httGold)
                         }
-                        .padding(20)
-                        .frame(maxWidth: 340)
-                        .background(Color(red: 0.14, green: 0.12, blue: 0.13))
-                        .cornerRadius(16)
-                        .overlay(RoundedRectangle(cornerRadius: 16).stroke(httGold, lineWidth: 2))
-                        .shadow(color: .black.opacity(0.6), radius: 12)
                     }
-                    .zIndex(50)
+                }
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button(tr("关闭", "關閉", "Close")) {
+                        dismiss()
+                    }
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundColor(httGold)
                 }
             }
             .onAppear {
                 if ddz.phase == .lobby {
-                    ddz.rebuildLobbySeats(resetScores: false)
+                    ddz.rebuildLobbySeats()
                 }
             }
         }
+        .navigationViewStyle(StackNavigationViewStyle())
     }
     
-    // MARK: - 1. Face-to-Face Room Creation, Host Room Rules & Joining Lobby View
-    private func lobbyContentView(isLandscape: Bool) -> some View {
+    // MARK: - 1. Face-to-Face Room Creation & Joining Lobby View
+    private var lobbyContentView: some View {
         ScrollView(.vertical, showsIndicators: true) {
-            VStack(alignment: .leading, spacing: 10) {
-                // Network Mode Selector: Face-to-Face P2P vs Online Server
+            VStack(alignment: .leading, spacing: 12) {
+                // Network Mode Selector: Face-to-Face P2P vs Online Server (Reserved)
                 HStack(spacing: 8) {
                     Button(action: {
                         ddz.networkMode = .faceToFaceP2P
@@ -9304,7 +8056,7 @@ struct KOnDoudizhuSheetView: View {
                     }) {
                         HStack(spacing: 5) {
                             Image(systemName: "icloud.and.arrow.up.fill")
-                            Text(tr("在线服务器联机", "在線伺服器聯機", "Online Server"))
+                            Text(tr("在线服务器联机 (预留)", "在線伺服器聯機 (預留)", "Online Server"))
                                 .font(.system(size: 12, weight: .black))
                         }
                         .frame(maxWidth: .infinity, minHeight: 36)
@@ -9341,7 +8093,7 @@ struct KOnDoudizhuSheetView: View {
                                 let isSel = (ddz.myCharacter == char)
                                 Button(action: {
                                     ddz.myCharacter = char
-                                    ddz.rebuildLobbySeats(resetScores: false)
+                                    ddz.rebuildLobbySeats()
                                     manager.playMascotVoice(for: char)
                                 }) {
                                     VStack(spacing: 3) {
@@ -9350,14 +8102,14 @@ struct KOnDoudizhuSheetView: View {
                                                 .interpolation(.none)
                                                 .resizable()
                                                 .scaledToFit()
-                                                .frame(width: 40, height: 46)
+                                                .frame(width: 42, height: 48)
                                         }
                                         Text(char.displayName(manager.language))
                                             .font(.system(size: 11, weight: .black))
                                             .foregroundColor(.white)
                                     }
                                     .padding(.horizontal, 10)
-                                    .padding(.vertical, 5)
+                                    .padding(.vertical, 6)
                                     .background(isSel ? httCrimson : Color.white.opacity(0.10))
                                     .cornerRadius(10)
                                     .overlay(RoundedRectangle(cornerRadius: 10).stroke(isSel ? httGold : Color.clear, lineWidth: 1.5))
@@ -9367,13 +8119,13 @@ struct KOnDoudizhuSheetView: View {
                         }
                     }
                 }
-                .padding(10)
+                .padding(12)
                 .background(Color.black.opacity(0.45))
                 .cornerRadius(12)
                 
-                // Section 2: Face-to-Face Room Code & Host / Join Buttons (OR Online Server Config)
+                // Face-to-Face Room Code & Host / Join Buttons (OR Online Server Config)
                 if ddz.networkMode == .faceToFaceP2P {
-                    VStack(alignment: .leading, spacing: 8) {
+                    VStack(alignment: .leading, spacing: 10) {
                         HStack {
                             Text(tr("2. 面对面开房联机 (蓝牙 + P2P Wi-Fi 直连)", "2. 面對面開房聯機 (藍牙 + P2P Wi-Fi 直連)", "2. Face-to-Face Room Setup"))
                                 .font(.system(size: 13, weight: .black))
@@ -9396,13 +8148,13 @@ struct KOnDoudizhuSheetView: View {
                                 ddz.startHostingFaceToFaceRoom()
                             }) {
                                 HStack(spacing: 5) {
-                                    Image(systemName: ddz.isHostingRoom ? "checkmark.circle.fill" : "house.fill")
+                                    Image(systemName: ddz.isHostingRoom ? "checkmark.R.circle.fill" : "house.fill")
                                     Text(ddz.isHostingRoom
                                          ? tr("已建房(\(ddz.roomCode)) · 等待加入", "已建房(\(ddz.roomCode)) · 等待加入", "Hosting (\(ddz.roomCode))")
                                          : tr("创建面对面房间 (当房主)", "創建面對面房間 (當房主)", "Create Room (Host)"))
                                         .font(.system(size: 12, weight: .black))
                                 }
-                                .frame(maxWidth: .infinity, minHeight: 38)
+                                .frame(maxWidth: .infinity, minHeight: 40)
                                 .background(ddz.isHostingRoom ? Color.green.opacity(0.85) : httCrimson)
                                 .foregroundColor(.white)
                                 .cornerRadius(10)
@@ -9420,7 +8172,7 @@ struct KOnDoudizhuSheetView: View {
                                          : tr("扫描并加入附近房间", "掃描並加入附近房間", "Join Nearby Room"))
                                         .font(.system(size: 12, weight: .black))
                                 }
-                                .frame(maxWidth: .infinity, minHeight: 38)
+                                .frame(maxWidth: .infinity, minHeight: 40)
                                 .background(ddz.isBrowsingRooms ? Color.blue : Color.white.opacity(0.16))
                                 .foregroundColor(.white)
                                 .cornerRadius(10)
@@ -9440,26 +8192,17 @@ struct KOnDoudizhuSheetView: View {
                                     Button(action: {
                                         ddz.joinDiscoveredRoom(rm)
                                     }) {
-                                        HStack(spacing: 8) {
-                                            Image(systemName: rm.transportTag == "BLE" ? "dot.radiowaves.left.and.right" : "person.2.wave.2.fill")
+                                        HStack {
+                                            Image(systemName: "person.2.wave.2.fill")
                                                 .foregroundColor(httGold)
-                                            VStack(alignment: .leading, spacing: 2) {
-                                                Text("房主: \(rm.hostName) · 房号: \(rm.roomCode)")
-                                                    .font(.system(size: 13, weight: .black))
-                                                    .foregroundColor(.white)
-                                                Text(rm.transportTag == "MCSession"
-                                                     ? tr("🍎 iOS 隔空点对点秒连", "🍎 iOS 隔空點對點秒連", "🍎 iOS P2P Direct")
-                                                     : (rm.transportTag == "BLE"
-                                                        ? tr("🦷 跨平台蓝牙 BLE 免流秒连 (iOS↔安卓)", "🦷 跨平台藍牙 BLE 免流秒連 (iOS↔安卓)", "🦷 Cross-Platform BLE")
-                                                        : tr("📡 跨平台局域网/热点免流秒连 (\(rm.hostIP ?? "直连"))", "📡 跨平台局域網/熱點免流秒連 (\(rm.hostIP ?? "直連"))", "📡 Cross-Platform LAN")))
-                                                    .font(.system(size: 10, weight: .bold))
-                                                    .foregroundColor(httGold)
-                                            }
+                                            Text("房主: \(rm.hostName) · 房号: \(rm.roomCode)")
+                                                .font(.system(size: 13, weight: .black))
+                                                .foregroundColor(.white)
                                             Spacer()
-                                            Text(tr("一键秒连", "一鍵秒連", "Join"))
+                                            Text(tr("点击加入", "點擊加入", "Join"))
                                                 .font(.system(size: 11, weight: .black))
                                                 .padding(.horizontal, 10)
-                                                .padding(.vertical, 6)
+                                                .padding(.vertical, 5)
                                                 .background(Color.green)
                                                 .foregroundColor(.white)
                                                 .cornerRadius(6)
@@ -9473,27 +8216,34 @@ struct KOnDoudizhuSheetView: View {
                             }
                         }
                     }
-                    .padding(10)
+                    .padding(12)
                     .background(Color.black.opacity(0.45))
                     .cornerRadius(12)
                 } else {
-                    // Online Server Configuration Card (Fixed: URL scheme validation + non-crashing WebSocket handshake)
+                    // Online Server Configuration Card (with Room Code input)
                     VStack(alignment: .leading, spacing: 8) {
                         HStack {
-                            Text(tr("2. 在线联机服务器配置 (支持 ws:// 或 wss://)", "2. 在線聯機伺服器配置 (支持 ws:// 或 wss://)", "2. Online Server Endpoint"))
+                            Text(tr("2. 在线服务器联机配置", "2. 在線伺服器聯機配置", "2. Online Server Endpoint"))
                                 .font(.system(size: 13, weight: .black))
                                 .foregroundColor(httGold)
                             Spacer()
-                            if ddz.isOnlineServerConnected {
-                                Text(tr("🟢 已连接", "🟢 已連接", "Connected"))
+                            HStack(spacing: 4) {
+                                Text(tr("房号:", "房號:", "Room:"))
                                     .font(.system(size: 11, weight: .bold))
-                                    .foregroundColor(.green)
-                            } else if ddz.isConnectingOnlineServer {
-                                Text(tr("⏳ 连接中...", "⏳ 連接中...", "Connecting..."))
-                                    .font(.system(size: 11, weight: .bold))
-                                    .foregroundColor(.yellow)
+                                    .foregroundColor(httCream)
+                                TextField("8888", text: $ddz.roomCode)
+                                    .font(.system(size: 13, weight: .black, design: .monospaced))
+                                    .foregroundColor(httGold)
+                                    .multilineTextAlignment(.center)
+                                    .frame(width: 68, height: 28)
+                                    .background(Color.white.opacity(0.15))
+                                    .cornerRadius(6)
                             }
                         }
+                        
+                        Text(tr("底层已封装统一 DoudizhuNetPacket 状态同步协议，后续部署 WebSocket 房间服务后填入地址即可直接在线跨网匹配：", "底層已封裝統一 DoudizhuNetPacket 狀態同步協議，後續部署 WebSocket 房間服務後填入地址即可直接在線跨網匹配：", "WebSocket room server URL:"))
+                            .font(.system(size: 11))
+                            .foregroundColor(.gray)
                         
                         HStack(spacing: 8) {
                             TextField("wss://psp.azusa.online/ddz", text: $ddz.customServerURL)
@@ -9503,222 +8253,41 @@ struct KOnDoudizhuSheetView: View {
                                 .frame(height: 36)
                                 .background(Color.white.opacity(0.14))
                                 .cornerRadius(8)
-                                .autocapitalization(.none)
-                                .disableAutocorrection(true)
                             
                             Button(action: {
-                                UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
                                 ddz.connectOnlineServerRoom()
                             }) {
-                                Text(ddz.isConnectingOnlineServer
-                                     ? tr("连接中...", "連接中...", "Connecting...")
-                                     : tr("连接服务器", "連接伺服器", "Connect"))
+                                Text(tr("连接服务器", "連接伺服器", "Connect"))
                                     .font(.system(size: 12, weight: .black))
                                     .padding(.horizontal, 12)
                                     .frame(height: 36)
-                                    .background(ddz.isOnlineServerConnected ? Color.green : Color.blue)
+                                    .background(Color.blue)
                                     .foregroundColor(.white)
                                     .cornerRadius(8)
                             }
                             .buttonStyle(PlainButtonStyle())
                         }
                     }
-                    .padding(10)
+                    .padding(12)
                     .background(Color.black.opacity(0.45))
                     .cornerRadius(12)
                 }
                 
-                // Section 3: Host Room Rules & Match Settings (房主设定玩几局、底分、倍数封顶、倒计时、记牌器与AI难度)
+                // Current 3-Seat Room Preview (Shows Real Connected Friends + HTT AI Auto-Fill)
                 VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        Text(tr("3. 房主房间规则设置 (局数 / 底分 / 封顶 / 倒计时 / AI难度)", "3. 房主房間規則設置 (局數 / 底分 / 封頂 / 倒計時 / AI難度)", "3. Host Room Rules & Match Settings"))
-                            .font(.system(size: 13, weight: .black))
-                            .foregroundColor(httGold)
-                        Spacer()
-                        Text(ddz.roundProgressBadgeText)
-                            .font(.system(size: 11, weight: .bold))
-                            .foregroundColor(.green)
-                    }
-                    
-                    // Row A: 局数设定 (3局 / 5局 / 10局 / 无限局)
-                    HStack(spacing: 6) {
-                        Text(tr("对局局数:", "對局局數:", "Rounds:"))
-                            .font(.system(size: 11, weight: .bold))
-                            .foregroundColor(httCream)
-                            .frame(width: 62, alignment: .leading)
-                        ForEach([(3, "3 局"), (5, "5 局"), (10, "10 局"), (0, "无限局")], id: \.0) { item in
-                            let isSel = (ddz.totalTargetRounds == item.0)
-                            Button(action: {
-                                ddz.totalTargetRounds = item.0
-                                ddz.currentRoundNumber = 1
-                                ddz.isSeriesMatchFinished = false
-                                if ddz.isHostingRoom { ddz.broadcastFullState() }
-                            }) {
-                                Text(item.1)
-                                    .font(.system(size: 11, weight: .black))
-                                    .frame(maxWidth: .infinity)
-                                    .padding(.vertical, 5)
-                                    .background(isSel ? httCrimson : Color.white.opacity(0.12))
-                                    .foregroundColor(isSel ? .white : httCream)
-                                    .cornerRadius(6)
-                                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(isSel ? httGold : Color.clear, lineWidth: 1))
-                            }
-                            .buttonStyle(PlainButtonStyle())
-                        }
-                    }
-                    
-                    // Row B: 每局底分 (50 / 100 / 200 / 500)
-                    HStack(spacing: 6) {
-                        Text(tr("每局底分:", "每局底分:", "Base:"))
-                            .font(.system(size: 11, weight: .bold))
-                            .foregroundColor(httCream)
-                            .frame(width: 62, alignment: .leading)
-                        ForEach([50, 100, 200, 500], id: \.self) { pt in
-                            let isSel = (ddz.baseScore == pt)
-                            Button(action: {
-                                ddz.baseScore = pt
-                                if ddz.isHostingRoom { ddz.broadcastFullState() }
-                            }) {
-                                Text("\(pt)分")
-                                    .font(.system(size: 11, weight: .black))
-                                    .frame(maxWidth: .infinity)
-                                    .padding(.vertical, 5)
-                                    .background(isSel ? Color.orange.opacity(0.85) : Color.white.opacity(0.12))
-                                    .foregroundColor(.white)
-                                    .cornerRadius(6)
-                                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(isSel ? httGold : Color.clear, lineWidth: 1))
-                            }
-                            .buttonStyle(PlainButtonStyle())
-                        }
-                    }
-                    
-                    // Row C: 倍数封顶 (16倍 / 32倍 / 64倍 / 不封顶)
-                    HStack(spacing: 6) {
-                        Text(tr("倍数封顶:", "倍數封頂:", "Max Mult:"))
-                            .font(.system(size: 11, weight: .bold))
-                            .foregroundColor(httCream)
-                            .frame(width: 62, alignment: .leading)
-                        ForEach([(16, "16倍"), (32, "32倍"), (64, "64倍"), (999, "不封顶")], id: \.0) { cap in
-                            let isSel = (ddz.maxMultiplierCap == cap.0)
-                            Button(action: {
-                                ddz.maxMultiplierCap = cap.0
-                                if ddz.isHostingRoom { ddz.broadcastFullState() }
-                            }) {
-                                Text(cap.1)
-                                    .font(.system(size: 11, weight: .black))
-                                    .frame(maxWidth: .infinity)
-                                    .padding(.vertical, 5)
-                                    .background(isSel ? Color.purple.opacity(0.85) : Color.white.opacity(0.12))
-                                    .foregroundColor(.white)
-                                    .cornerRadius(6)
-                                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(isSel ? httGold : Color.clear, lineWidth: 1))
-                            }
-                            .buttonStyle(PlainButtonStyle())
-                        }
-                    }
-                    
-                    // Row D: 出牌限时 & 记牌器权限 & AI难度
-                    HStack(spacing: 6) {
-                        Text(tr("出牌限时:", "出牌限時:", "Timer:"))
-                            .font(.system(size: 11, weight: .bold))
-                            .foregroundColor(httCream)
-                            .frame(width: 62, alignment: .leading)
-                        ForEach([(15, "15秒"), (25, "25秒"), (30, "30秒"), (0, "不限时")], id: \.0) { tm in
-                            let isSel = (ddz.turnTimeoutSeconds == tm.0)
-                            Button(action: {
-                                ddz.turnTimeoutSeconds = tm.0
-                                if ddz.isHostingRoom { ddz.broadcastFullState() }
-                            }) {
-                                Text(tm.1)
-                                    .font(.system(size: 11, weight: .black))
-                                    .frame(maxWidth: .infinity)
-                                    .padding(.vertical, 5)
-                                    .background(isSel ? Color.blue.opacity(0.85) : Color.white.opacity(0.12))
-                                    .foregroundColor(.white)
-                                    .cornerRadius(6)
-                            }
-                            .buttonStyle(PlainButtonStyle())
-                        }
-                    }
-                    
-                    HStack(spacing: 6) {
-                        Text(tr("辅助与AI:", "輔助與AI:", "AI & Aid:"))
-                            .font(.system(size: 11, weight: .bold))
-                            .foregroundColor(httCream)
-                            .frame(width: 62, alignment: .leading)
-                        
-                        Button(action: {
-                            ddz.allowCardCounter.toggle()
-                            if !ddz.allowCardCounter { ddz.showCardCounter = false }
-                            if ddz.isHostingRoom { ddz.broadcastFullState() }
-                        }) {
-                            HStack(spacing: 3) {
-                                Image(systemName: ddz.allowCardCounter ? "checkmark.square.fill" : "square")
-                                Text(ddz.allowCardCounter ? tr("允许记牌器", "允許記牌器", "Counter ON") : tr("禁用记牌器", "禁用記牌器", "Counter OFF"))
-                            }
-                            .font(.system(size: 11, weight: .black))
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 5)
-                            .background(ddz.allowCardCounter ? Color.green.opacity(0.75) : Color.gray.opacity(0.4))
-                            .foregroundColor(.white)
-                            .cornerRadius(6)
-                        }
-                        .buttonStyle(PlainButtonStyle())
-                        
-                        ForEach([(1, "休闲AI"), (2, "标准AI"), (3, "大师AI")], id: \.0) { lv in
-                            let isSel = (ddz.aiDifficulty == lv.0)
-                            Button(action: {
-                                ddz.aiDifficulty = lv.0
-                                if ddz.isHostingRoom { ddz.broadcastFullState() }
-                            }) {
-                                Text(lv.1)
-                                    .font(.system(size: 11, weight: .black))
-                                    .frame(maxWidth: .infinity)
-                                    .padding(.vertical, 5)
-                                    .background(isSel ? httGold : Color.white.opacity(0.12))
-                                    .foregroundColor(isSel ? .black : .white)
-                                    .cornerRadius(6)
-                            }
-                            .buttonStyle(PlainButtonStyle())
-                        }
-                    }
-                }
-                .padding(10)
-                .background(Color.black.opacity(0.45))
-                .cornerRadius(12)
-                
-                // Section 4: Current 3-Seat Room Preview (Shows Real Connected Friends + HTT AI Auto-Fill)
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        Text(tr("4. 当前牌桌座位预览 (不足3人将由轻音少女AI自动补位)", "4. 當前牌桌座位預覽 (不足3人將由輕音少女AI自動補位)", "4. Table Seats Preview"))
-                            .font(.system(size: 13, weight: .black))
-                            .foregroundColor(httGold)
-                        Spacer()
-                        if !ddz.connectedPeerNames.isEmpty || ddz.isHostingRoom {
-                            Button(action: {
-                                ddz.leaveOrCloseRoom()
-                            }) {
-                                Text(tr("解散/离开房间", "解散/離開房間", "Close Room"))
-                                    .font(.system(size: 10, weight: .bold))
-                                    .padding(.horizontal, 8)
-                                    .padding(.vertical, 3)
-                                    .background(Color.red.opacity(0.75))
-                                    .foregroundColor(.white)
-                                    .cornerRadius(5)
-                            }
-                            .buttonStyle(PlainButtonStyle())
-                        }
-                    }
+                    Text(tr("3. 当前牌桌座位预览 (不足3人将由轻音少女AI自动补位陪打)", "3. 當前牌桌座位預覽 (不足3人將由輕音少女AI自動補位陪打)", "3. Table Seats Preview (AI Auto-Fill)"))
+                        .font(.system(size: 13, weight: .black))
+                        .foregroundColor(httGold)
                     
                     HStack(spacing: 8) {
                         ForEach(ddz.seats) { seat in
-                            VStack(spacing: 3) {
+                            VStack(spacing: 4) {
                                 if let sprite = manager.allMemberFrames[seat.characterId] {
                                     Image(uiImage: sprite)
                                         .interpolation(.none)
                                         .resizable()
                                         .scaledToFit()
-                                        .frame(width: 42, height: 48)
+                                        .frame(width: 46, height: 54)
                                 }
                                 Text(seat.name)
                                     .font(.system(size: 11, weight: .black))
@@ -9732,30 +8301,73 @@ struct KOnDoudizhuSheetView: View {
                                     .foregroundColor(httCream.opacity(0.85))
                             }
                             .frame(maxWidth: .infinity)
-                            .padding(.vertical, 6)
+                            .padding(.vertical, 8)
                             .background(Color.white.opacity(0.10))
                             .cornerRadius(10)
                             .overlay(RoundedRectangle(cornerRadius: 10).stroke(seat.isAI ? Color.white.opacity(0.2) : Color.green, lineWidth: 1))
                         }
                     }
                 }
-                .padding(10)
+                .padding(12)
+                .background(Color.black.opacity(0.45))
+                .cornerRadius(12)
+                
+                // 4. Official K-ON! Poker Deck & Card Back Preview Strip (轻音少女专属扑克牌面与背板预览)
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(tr("4. 轻音少女专属扑克牌面与背板预览", "4. 輕音少女專屬撲克牌面與背板預覽", "4. K-ON! Custom Poker Deck Preview"))
+                        .font(.system(size: 13, weight: .black))
+                        .foregroundColor(httGold)
+                    
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            if let backImg = ddz.cardBackImage() {
+                                VStack(spacing: 3) {
+                                    Image(uiImage: backImg)
+                                        .resizable()
+                                        .scaledToFill()
+                                        .frame(width: 48, height: 68)
+                                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(httGold, lineWidth: 1.2))
+                                    Text(tr("专属背板", "專屬背板", "Back"))
+                                        .font(.system(size: 9, weight: .bold))
+                                        .foregroundColor(httGold)
+                                }
+                            }
+                            ForEach([("joker_17", "大王·澪"), ("joker_16", "小王·唯"), ("♥_14", "红桃A·唯"), ("♠_14", "黑桃A·梓"), ("♣_14", "梅花A·紬"), ("♦_14", "方块A·律")], id: \.0) { item in
+                                if let cImg = ddz.cardImage(for: item.0) {
+                                    VStack(spacing: 3) {
+                                        Image(uiImage: cImg)
+                                            .resizable()
+                                            .scaledToFill()
+                                            .frame(width: 48, height: 68)
+                                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                                            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.white.opacity(0.6), lineWidth: 1))
+                                        Text(item.1)
+                                            .font(.system(size: 9, weight: .bold))
+                                            .foregroundColor(httCream)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                .padding(12)
                 .background(Color.black.opacity(0.45))
                 .cornerRadius(12)
                 
                 // Prominent Start Game Button
                 Button(action: {
-                    ddz.startNewRound(resetSeries: true)
+                    ddz.startNewRound()
                 }) {
                     HStack(spacing: 8) {
                         Image(systemName: "play.fill")
                             .font(.headline)
                         Text(ddz.connectedPeerNames.isEmpty
-                             ? tr("立即开始牌局 (\(ddz.totalTargetRounds > 0 ? "\(ddz.totalTargetRounds)局制" : "无限局") · 底分\(ddz.baseScore))", "立即開始牌局 (\(ddz.totalTargetRounds > 0 ? "\(ddz.totalTargetRounds)局制" : "無限局") · 底分\(ddz.baseScore))", "Start Game Now")
-                             : tr("房主开始发牌 (当前已连 \(ddz.connectedPeerNames.count + 1) 人 · \(ddz.totalTargetRounds > 0 ? "\(ddz.totalTargetRounds)局制" : "无限局"))", "房主開始發牌 (當前已連 \(ddz.connectedPeerNames.count + 1) 人)", "Deal Cards Now"))
+                             ? tr("立即开始牌局 (与轻音少女AI练手 / 单机畅玩)", "立即開始牌局 (與輕音少女AI練手 / 單機暢玩)", "Start Game Now (With HTT AI)")
+                             : tr("房主开始发牌 (当前已连 \(ddz.connectedPeerNames.count + 1) 人)", "房主開始發牌 (當前已連 \(ddz.connectedPeerNames.count + 1) 人)", "Deal Cards Now"))
                             .font(.system(size: 15, weight: .black))
                     }
-                    .frame(maxWidth: .infinity, minHeight: 46)
+                    .frame(maxWidth: .infinity, minHeight: 48)
                     .background(
                         LinearGradient(
                             colors: [httCrimson, Color(red: 0.90, green: 0.30, blue: 0.18)],
@@ -9769,396 +8381,288 @@ struct KOnDoudizhuSheetView: View {
                 }
                 .buttonStyle(PlainButtonStyle())
             }
-            .padding(.horizontal, 12)
-            .padding(.bottom, 14)
+            .padding(12)
         }
     }
     
-    // MARK: - 2. Active Doudizhu Game Table View (Full Landscape & Portrait Adaptive + 3-Seat Simultaneous Played Cards!)
-    private func gameTableContentView(geo: GeometryProxy, isLandscape: Bool) -> some View {
-        let usableWidth = max(280, geo.size.width - 24)
-        let leftSeatIdx = (ddz.mySeatIndex + 2) % 3
-        let rightSeatIdx = (ddz.mySeatIndex + 1) % 3
-        
-        return VStack(spacing: isLandscape ? 3 : 6) {
-            // Top Row: 3 Landlord Hole Cards (三张底牌) + Multiplier + Round Counter + Turn Countdown + Card Counter Toggle
-            HStack(spacing: isLandscape ? 6 : 8) {
-                HStack(spacing: 3) {
-                    Text(tr("底牌:", "底牌:", "Hole:"))
-                        .font(.system(size: isLandscape ? 10 : 11, weight: .bold))
-                        .foregroundColor(httCream)
-                    ForEach(ddz.holeCards) { hc in
-                        if ddz.phase == .bidding {
-                            if let backImg = ddz.cardBackImage() {
-                                Image(uiImage: backImg)
-                                    .resizable()
-                                    .scaledToFill()
-                                    .frame(width: isLandscape ? 22 : 28, height: isLandscape ? 31 : 40)
-                                    .clipShape(RoundedRectangle(cornerRadius: 3))
-                                    .overlay(RoundedRectangle(cornerRadius: 3).stroke(httGold, lineWidth: 0.8))
+    // MARK: - 2. Active Doudizhu Game Table View
+    private var gameTableContentView: some View {
+        GeometryReader { geo in
+            let isLandscape = geo.size.width > geo.size.height
+            let isCompact = !isLandscape && geo.size.width < 395
+            let hPad: CGFloat = isCompact ? 8 : 12
+            let usableWidth = max(280, geo.size.width - hPad * 2)
+            let oppW: CGFloat = isCompact ? 68 : 86
+            let centerStageWidth = max(120, usableWidth - (oppW * 2 + 16))
+            VStack(spacing: isLandscape ? 6 : (isCompact ? 5 : 8)) {
+                // Top Row: 3 Landlord Hole Cards + Multiplier + Timer + Card Counter Toggle
+                HStack(spacing: isCompact ? 5 : 8) {
+                    HStack(spacing: 3) {
+                        if !isCompact {
+                            Text(tr("底牌:", "底牌:", "Hole:"))
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundColor(httCream)
+                        }
+                        ForEach(ddz.holeCards) { hc in
+                            if ddz.phase == .bidding {
+                                if let backImg = ddz.cardBackImage() {
+                                    Image(uiImage: backImg)
+                                        .resizable()
+                                        .scaledToFill()
+                                        .frame(width: isCompact ? 22 : 28, height: isCompact ? 32 : 40)
+                                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                                        .overlay(RoundedRectangle(cornerRadius: 4).stroke(httGold, lineWidth: 1))
+                                } else {
+                                    RoundedRectangle(cornerRadius: 4)
+                                        .fill(httCrimson)
+                                        .frame(width: isCompact ? 22 : 28, height: isCompact ? 32 : 40)
+                                }
                             } else {
-                                RoundedRectangle(cornerRadius: 3)
-                                    .fill(httCrimson)
-                                    .frame(width: isLandscape ? 22 : 28, height: isLandscape ? 31 : 40)
+                                miniPokerCardView(card: hc)
                             }
-                        } else {
-                            miniPokerCardView(card: hc, width: isLandscape ? 22 : 28, height: isLandscape ? 31 : 40)
                         }
                     }
-                }
-                .padding(.horizontal, 6)
-                .padding(.vertical, isLandscape ? 2.5 : 4)
-                .background(Color.black.opacity(0.45))
-                .cornerRadius(7)
-                
-                Text("倍数 x\(ddz.multiplier)")
-                    .font(.system(size: isLandscape ? 11 : 12, weight: .black, design: .monospaced))
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, isLandscape ? 4 : 6)
-                    .background(httCrimson)
-                    .foregroundColor(httGold)
-                    .cornerRadius(7)
-                
-                Text(ddz.roundProgressBadgeText)
-                    .font(.system(size: isLandscape ? 10 : 11, weight: .bold))
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, isLandscape ? 4 : 6)
+                    .padding(.horizontal, isCompact ? 5 : 8)
+                    .padding(.vertical, 3)
                     .background(Color.black.opacity(0.45))
-                    .foregroundColor(.green)
-                    .cornerRadius(7)
-                
-                if ddz.turnTimeoutSeconds > 0 && (ddz.phase == .bidding || ddz.phase == .playing) {
-                    HStack(spacing: 2) {
-                        Image(systemName: "timer")
-                            .font(.system(size: 10, weight: .bold))
-                        Text("\(ddz.remainingTurnSeconds)s")
-                            .font(.system(size: 11, weight: .black, design: .monospaced))
-                    }
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, isLandscape ? 4 : 6)
-                    .background(ddz.remainingTurnSeconds <= 5 ? Color.red.opacity(0.85) : Color.black.opacity(0.45))
-                    .foregroundColor(ddz.remainingTurnSeconds <= 5 ? .white : httGold)
-                    .cornerRadius(7)
-                }
-                
-                Spacer(minLength: 2)
-                
-                if ddz.allowCardCounter {
+                    .cornerRadius(8)
+                    
+                    Text("x\(ddz.multiplier)")
+                        .font(.system(size: isCompact ? 11 : 12, weight: .black, design: .monospaced))
+                        .padding(.horizontal, isCompact ? 6 : 8)
+                        .padding(.vertical, 5)
+                        .background(httCrimson)
+                        .foregroundColor(httGold)
+                        .cornerRadius(8)
+                    
+                    Text("⏱\(ddz.turnRemainingSeconds)s")
+                        .font(.system(size: isCompact ? 10 : 11, weight: .bold, design: .monospaced))
+                        .padding(.horizontal, isCompact ? 5 : 7)
+                        .padding(.vertical, 5)
+                        .background(Color.black.opacity(0.45))
+                        .foregroundColor(ddz.turnRemainingSeconds <= 5 ? .red : httGold)
+                        .cornerRadius(8)
+                    
+                    Spacer(minLength: 2)
+                    
                     Button(action: {
                         withAnimation { ddz.showCardCounter.toggle() }
                     }) {
-                        HStack(spacing: 3) {
+                        HStack(spacing: 2) {
                             Image(systemName: "number.square.fill")
                             Text(tr("记牌器", "記牌器", "Counter"))
                         }
-                        .font(.system(size: isLandscape ? 10 : 11, weight: .bold))
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, isLandscape ? 4 : 6)
+                        .font(.system(size: isCompact ? 10 : 11, weight: .bold))
+                        .padding(.horizontal, isCompact ? 6 : 8)
+                        .padding(.vertical, 5)
                         .background(ddz.showCardCounter ? httGold : Color.black.opacity(0.45))
                         .foregroundColor(ddz.showCardCounter ? .black : httCream)
-                        .cornerRadius(7)
+                        .cornerRadius(8)
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                    
+                    Button(action: {
+                        ddz.startNewRound()
+                    }) {
+                        Image(systemName: "arrow.clockwise.circle.fill")
+                            .font(.system(size: isCompact ? 18 : 20))
+                            .foregroundColor(httGold)
                     }
                     .buttonStyle(PlainButtonStyle())
                 }
+                .padding(.horizontal, hPad)
                 
-                Button(action: {
-                    ddz.startNewRound(resetSeries: false)
-                }) {
-                    Image(systemName: "arrow.clockwise.circle.fill")
-                        .font(.system(size: isLandscape ? 17 : 20))
-                        .foregroundColor(httGold)
-                }
-                .buttonStyle(PlainButtonStyle())
-            }
-            .padding(.horizontal, 12)
-            
-            // Optional Card Counter Bar (记牌器: 大王..3)
-            if ddz.allowCardCounter && ddz.showCardCounter {
-                let ranksDesc = [17, 16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3]
-                let rankLabels = ["大王", "小王", "2", "A", "K", "Q", "J", "10", "9", "8", "7", "6", "5", "4", "3"]
-                HStack(spacing: 2) {
-                    ForEach(0..<ranksDesc.count, id: \.self) { rIdx in
-                        let rem = ddz.remainingCount(forRank: ranksDesc[rIdx])
-                        VStack(spacing: isLandscape ? 0 : 1) {
-                            Text(rankLabels[rIdx])
-                                .font(.system(size: isLandscape ? 7.5 : 8, weight: .black))
-                                .foregroundColor(rIdx <= 2 ? httGold : .white)
-                            Text("\(rem)")
-                                .font(.system(size: isLandscape ? 9 : 10, weight: .heavy, design: .monospaced))
-                                .foregroundColor(rem == 0 ? .gray.opacity(0.4) : (rem == 4 ? .orange : httCream))
-                        }
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, isLandscape ? 1.5 : 3)
-                        .background(Color.black.opacity(0.45))
-                        .cornerRadius(4)
-                    }
-                }
-                .padding(.horizontal, 12)
-            }
-            
-            // Middle Arena: Left Opponent (上家) + THREE-SEAT ROUND PLAYED CARDS STAGE (上家出牌 + 下家出牌 + 本家出牌同时可见!) + Right Opponent (下家)
-            HStack(alignment: .center, spacing: isLandscape ? 6 : 8) {
-                if leftSeatIdx < ddz.seats.count {
-                    opponentSeatPanel(seat: ddz.seats[leftSeatIdx], isLeft: true, isLandscape: isLandscape)
-                }
-                
-                // Center Multi-Seat Played Cards Arena: Simultaneously shows BOTH Upper (上家) and Lower (下家) played cards in this round!
-                let opponentPanelW: CGFloat = isLandscape ? 82 : 84
-                let eachOpponentZoneW: CGFloat = max(72, (usableWidth - opponentPanelW * 2 - 24) * 0.48)
-                VStack(spacing: isLandscape ? 3 : 5) {
-                    HStack(alignment: .top, spacing: 6) {
-                        // Left Box: 上家 (leftSeatIdx) 本轮出牌区
-                        if leftSeatIdx < ddz.seats.count {
-                            seatRoundPlayedBox(
-                                seat: ddz.seats[leftSeatIdx],
-                                roleTitle: tr("⬅️ 上家", "⬅️ 上家", "⬅️ Left"),
-                                isLeadingTrick: (ddz.lastPlaySeat == leftSeatIdx && ddz.lastValidHand != nil),
-                                maxBoxWidth: eachOpponentZoneW,
-                                isLandscape: isLandscape
-                            )
-                        }
-                        
-                        Spacer(minLength: 2)
-                        
-                        // Right Box: 下家 (rightSeatIdx) 本轮出牌区
-                        if rightSeatIdx < ddz.seats.count {
-                            seatRoundPlayedBox(
-                                seat: ddz.seats[rightSeatIdx],
-                                roleTitle: tr("下家 ➡️", "下家 ➡️", "Right ➡️"),
-                                isLeadingTrick: (ddz.lastPlaySeat == rightSeatIdx && ddz.lastValidHand != nil),
-                                maxBoxWidth: eachOpponentZoneW,
-                                isLandscape: isLandscape
-                            )
-                        }
-                    }
-                    
-                    // Bottom-Center Box: 本家 (mySeatIndex) 本轮已出牌区 (或系列赛总结算面板)
-                    if ddz.isSeriesMatchFinished && ddz.phase == .roundOver {
-                        seriesMatchChampionshipBanner(isLandscape: isLandscape)
-                    } else if ddz.mySeatIndex < ddz.seats.count {
-                        let me = ddz.seats[ddz.mySeatIndex]
-                        if !me.lastPlayedCards.isEmpty || !me.lastActionText.isEmpty {
-                            seatRoundPlayedBox(
-                                seat: me,
-                                roleTitle: tr("⬆️ 我出的牌", "⬆️ 我出的牌", "⬆️ My Play"),
-                                isLeadingTrick: (ddz.lastPlaySeat == ddz.mySeatIndex && ddz.lastValidHand != nil),
-                                maxBoxWidth: eachOpponentZoneW * 1.6,
-                                isLandscape: isLandscape
-                            )
-                        }
-                    }
-                }
-                .frame(maxWidth: .infinity)
-                
-                if rightSeatIdx < ddz.seats.count {
-                    opponentSeatPanel(seat: ddz.seats[rightSeatIdx], isLeft: false, isLandscape: isLandscape)
-                }
-            }
-            .padding(.horizontal, 12)
-            
-            Spacer(minLength: 1)
-            
-            // Action Control Bar (Bidding / Playing / Round Over)
-            playerActionControlBar(isLandscape: isLandscape)
-                .padding(.horizontal, 12)
-            
-            // Bottom Player Hand & Info Bar (Landscape compact single-row + Portrait 2-row full visibility!)
-            if ddz.mySeatIndex < ddz.seats.count {
-                let me = ddz.seats[ddz.mySeatIndex]
-                VStack(spacing: isLandscape ? 3 : 5) {
-                    adaptivePlayerHandView(hand: me.hand, usableWidth: usableWidth, isLandscape: isLandscape)
-                        .padding(.horizontal, 12)
-                    
-                    // My Seat Footer Bar (Slim in Landscape so it is 100% visible on screen!)
-                    HStack(spacing: 8) {
-                        if let sprite = manager.allMemberFrames[me.characterId] {
-                            Image(uiImage: sprite)
-                                .interpolation(.none)
-                                .resizable()
-                                .scaledToFit()
-                                .frame(width: isLandscape ? 24 : 34, height: isLandscape ? 28 : 40)
-                        }
-                        HStack(spacing: 6) {
-                            Text(me.name)
-                                .font(.system(size: isLandscape ? 11 : 13, weight: .black))
-                                .foregroundColor(.white)
-                                .lineLimit(1)
-                            if ddz.phase != .bidding {
-                                Text(me.isLandlord ? "🎩 地主" : "🌾 农民")
-                                    .font(.system(size: isLandscape ? 9 : 10, weight: .black))
-                                    .padding(.horizontal, 5)
-                                    .padding(.vertical, 1.5)
-                                    .background(me.isLandlord ? httGold : Color.green.opacity(0.8))
-                                    .foregroundColor(me.isLandlord ? .black : .white)
-                                    .cornerRadius(4)
+                // Optional Card Counter Bar (记牌器: 大王..3)
+                if ddz.showCardCounter {
+                    let ranksDesc = [17, 16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3]
+                    let rankLabels = ["大王", "小王", "2", "A", "K", "Q", "J", "10", "9", "8", "7", "6", "5", "4", "3"]
+                    HStack(spacing: 2) {
+                        ForEach(0..<ranksDesc.count, id: \.self) { rIdx in
+                            let rem = ddz.remainingCount(forRank: ranksDesc[rIdx])
+                            VStack(spacing: 1) {
+                                Text(rankLabels[rIdx])
+                                    .font(.system(size: 8, weight: .black))
+                                    .foregroundColor(rIdx <= 2 ? httGold : .white)
+                                Text("\(rem)")
+                                    .font(.system(size: 10, weight: .heavy, design: .monospaced))
+                                    .foregroundColor(rem == 0 ? .gray.opacity(0.4) : (rem == 4 ? .orange : httCream))
                             }
-                            Text("手牌: \(me.hand.count)张 · 积分: \(me.score)")
-                                .font(.system(size: isLandscape ? 10 : 11, weight: .bold, design: .monospaced))
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 3)
+                            .background(Color.black.opacity(0.45))
+                            .cornerRadius(4)
+                        }
+                    }
+                    .padding(.horizontal, 12)
+                }
+                
+                // Middle Arena: Left Opponent (Seat 2) + Center Played Cards + Right Opponent (Seat 1)
+                let leftSeatIdx = (ddz.mySeatIndex + 2) % 3
+                let rightSeatIdx = (ddz.mySeatIndex + 1) % 3
+                
+                HStack(alignment: .top, spacing: 8) {
+                    if leftSeatIdx < ddz.seats.count {
+                        opponentSeatPanel(seat: ddz.seats[leftSeatIdx], isLeft: true, isCompact: isCompact)
+                    }
+                    
+                    Spacer(minLength: 4)
+                    
+                    // Center Table Last Played Hand Banner (auto-fits within centerStageWidth)
+                    VStack(spacing: 6) {
+                        if let lastHand = ddz.lastValidHand, ddz.lastPlaySeat >= 0, ddz.lastPlaySeat < ddz.seats.count {
+                            Text("[\(ddz.seats[ddz.lastPlaySeat].name)] 出牌：\(lastHand.category.localizedName(manager.language))")
+                                .font(.system(size: 11, weight: .black))
                                 .foregroundColor(httGold)
                                 .lineLimit(1)
-                        }
-                        Spacer()
-                        if ddz.currentTurnSeat == ddz.mySeatIndex && ddz.phase != .roundOver {
-                            Text(tr("👉 轮到你操作", "👉 輪到你操作", "👉 Your Turn"))
-                                .font(.system(size: isLandscape ? 10 : 11, weight: .black))
-                                .padding(.horizontal, 7)
-                                .padding(.vertical, isLandscape ? 2.5 : 4)
-                                .background(Color.green)
-                                .foregroundColor(.white)
-                                .cornerRadius(6)
+                                .minimumScaleFactor(0.8)
+                            
+                            let cCount = lastHand.cards.count
+                            let cardW: CGFloat = 46
+                            let cardH: CGFloat = 68
+                            let defaultStep: CGFloat = 26
+                            let fitStep: CGFloat = cCount > 1 ? min(defaultStep, max(12, (centerStageWidth - cardW) / CGFloat(cCount - 1))) : 0
+                            let rowW: CGFloat = cCount > 0 ? cardW + CGFloat(max(0, cCount - 1)) * fitStep : cardW
+                            ZStack(alignment: .leading) {
+                                ForEach(Array(lastHand.cards.enumerated()), id: \.element.id) { idx, c in
+                                    tablePokerCardView(card: c)
+                                        .offset(x: CGFloat(idx) * fitStep)
+                                        .zIndex(Double(idx))
+                                }
+                            }
+                            .frame(width: rowW, height: cardH, alignment: .leading)
+                            .frame(maxWidth: .infinity, alignment: .center)
+                        } else {
+                            Text(ddz.phase == .bidding
+                                 ? tr("正在叫地主阶段...", "正在叫地主階段...", "Bidding for Landlord...")
+                                 : tr("等待出牌...", "等待出牌...", "Waiting for play..."))
+                                .font(.system(size: 12, weight: .bold))
+                                .foregroundColor(httCream.opacity(0.75))
+                                .padding(.top, 24)
                         }
                     }
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, isLandscape ? 3.5 : 6)
-                    .background(Color.black.opacity(0.60))
-                    .cornerRadius(10)
-                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(ddz.currentTurnSeat == ddz.mySeatIndex ? httGold : Color.white.opacity(0.2), lineWidth: 1.4))
+                    .frame(maxWidth: .infinity)
+                    
+                    Spacer(minLength: 4)
+                    
+                    if rightSeatIdx < ddz.seats.count {
+                        opponentSeatPanel(seat: ddz.seats[rightSeatIdx], isLeft: false, isCompact: isCompact)
+                    }
+                }
+                .padding(.horizontal, 12)
+                
+                Spacer(minLength: 2)
+                
+                // My Last Played Cards or Action Status
+                if ddz.mySeatIndex < ddz.seats.count {
+                    let me = ddz.seats[ddz.mySeatIndex]
+                    if !me.lastActionText.isEmpty {
+                        Text("我的状态: \(me.lastActionText)")
+                            .font(.system(size: 11, weight: .black))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 3)
+                            .background(Color.black.opacity(0.5))
+                            .foregroundColor(httGold)
+                            .cornerRadius(6)
+                    }
+                }
+                
+                // Action Control Bar (Bidding / Playing / Round Over)
+                playerActionControlBar
                     .padding(.horizontal, 12)
-                    .padding(.bottom, isLandscape ? 4 : 6)
-                }
-            }
-        }
-    }
-    
-    // MARK: - Individual Seat Round Played Cards Box (同时展示上家、下家与本家在一轮中打出的扑克牌！)
-    @ViewBuilder
-    private func seatRoundPlayedBox(
-        seat: DoudizhuPlayerSeat,
-        roleTitle: String,
-        isLeadingTrick: Bool,
-        maxBoxWidth: CGFloat,
-        isLandscape: Bool
-    ) -> some View {
-        let cardW: CGFloat = isLandscape ? 34 : 40
-        let cardH: CGFloat = isLandscape ? 49 : 58
-        let cards = seat.lastPlayedCards
-        let cCount = cards.count
-        let defaultStep: CGFloat = isLandscape ? 17 : 20
-        let usableCardArea = max(cardW + 10, maxBoxWidth - 12)
-        let fitStep: CGFloat = cCount > 1 ? min(defaultStep, max(9, (usableCardArea - cardW) / CGFloat(cCount - 1))) : 0
-        let rowW: CGFloat = cCount > 0 ? cardW + CGFloat(max(0, cCount - 1)) * fitStep : cardW
-        
-        VStack(spacing: isLandscape ? 2 : 4) {
-            HStack(spacing: 3) {
-                Text(roleTitle)
-                    .font(.system(size: isLandscape ? 9 : 10, weight: .black))
-                    .foregroundColor(httCream.opacity(0.9))
-                if isLeadingTrick {
-                    Text(tr("🔥最大", "🔥最大", "🔥Lead"))
-                        .font(.system(size: 8, weight: .black))
-                        .padding(.horizontal, 4)
-                        .padding(.vertical, 1)
-                        .background(httGold)
-                        .foregroundColor(.black)
-                        .cornerRadius(3)
-                }
-            }
-            
-            if !cards.isEmpty {
-                if !seat.lastActionText.isEmpty {
-                    Text(seat.lastActionText)
-                        .font(.system(size: isLandscape ? 8.5 : 9.5, weight: .bold))
-                        .foregroundColor(httGold)
-                        .lineLimit(1)
-                }
-                ZStack(alignment: .leading) {
-                    ForEach(Array(cards.enumerated()), id: \.element.id) { idx, c in
-                        tablePokerCardView(card: c, width: cardW, height: cardH)
-                            .offset(x: CGFloat(idx) * fitStep)
-                            .zIndex(Double(idx))
+                
+                // Bottom Player Hand & Info Bar (竖屏自适应双排全显，绝不截断右侧手牌)
+                if ddz.mySeatIndex < ddz.seats.count {
+                    let me = ddz.seats[ddz.mySeatIndex]
+                    VStack(spacing: 6) {
+                        adaptivePlayerHandView(hand: me.hand, usableWidth: usableWidth, isLandscape: isLandscape, isCompact: isCompact)
+                            .padding(.horizontal, 12)
+                        
+                        // My Seat Footer Bar
+                        HStack(spacing: 10) {
+                            if let sprite = manager.allMemberFrames[me.characterId] {
+                                Image(uiImage: sprite)
+                                    .interpolation(.none)
+                                    .resizable()
+                                    .scaledToFit()
+                                    .frame(width: 36, height: 42)
+                            }
+                            VStack(alignment: .leading, spacing: 2) {
+                                HStack(spacing: 6) {
+                                    Text(me.name)
+                                        .font(.system(size: 13, weight: .black))
+                                        .foregroundColor(.white)
+                                    if ddz.phase != .bidding {
+                                        Text(me.isLandlord ? "🎩 地主" : "🌾 农民")
+                                            .font(.system(size: 10, weight: .black))
+                                            .padding(.horizontal, 6)
+                                            .padding(.vertical, 2)
+                                            .background(me.isLandlord ? httGold : Color.green.opacity(0.8))
+                                            .foregroundColor(me.isLandlord ? .black : .white)
+                                            .cornerRadius(4)
+                                    }
+                                }
+                                Text("手牌: \(me.hand.count) 张 · 积分: \(me.score)")
+                                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                                    .foregroundColor(httGold)
+                            }
+                            Spacer()
+                            if ddz.currentTurnSeat == ddz.mySeatIndex && ddz.phase != .roundOver {
+                                Text(tr("👉 轮到你操作", "👉 輪到你操作", "👉 Your Turn"))
+                                    .font(.system(size: 11, weight: .black))
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 4)
+                                    .background(Color.green)
+                                    .foregroundColor(.white)
+                                    .cornerRadius(6)
+                            }
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(Color.black.opacity(0.60))
+                        .cornerRadius(12)
+                        .overlay(RoundedRectangle(cornerRadius: 12).stroke(ddz.currentTurnSeat == ddz.mySeatIndex ? httGold : Color.white.opacity(0.2), lineWidth: 1.5))
+                        .padding(.horizontal, 12)
+                        .padding(.bottom, 8)
                     }
                 }
-                .frame(width: rowW, height: cardH, alignment: .leading)
-            } else if !seat.lastActionText.isEmpty {
-                Text(seat.lastActionText)
-                    .font(.system(size: isLandscape ? 10 : 11, weight: .black))
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, isLandscape ? 3 : 5)
-                    .background(seat.lastActionText == "不出" ? Color.gray.opacity(0.55) : Color.black.opacity(0.5))
-                    .foregroundColor(seat.lastActionText == "不出" ? .white : httGold)
-                    .cornerRadius(6)
-            } else {
-                Text(ddz.phase == .bidding ? tr("待叫分", "待叫分", "Wait") : tr("待出牌", "待出牌", "Wait"))
-                    .font(.system(size: 9, weight: .medium))
-                    .foregroundColor(.white.opacity(0.45))
-                    .padding(.vertical, isLandscape ? 4 : 8)
             }
         }
-        .padding(.horizontal, 6)
-        .padding(.vertical, isLandscape ? 3 : 5)
-        .frame(minWidth: 74, maxWidth: maxBoxWidth)
-        .background(Color.black.opacity(isLeadingTrick ? 0.46 : 0.26))
-        .cornerRadius(8)
-        .overlay(
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(isLeadingTrick ? httGold : Color.white.opacity(0.15), lineWidth: isLeadingTrick ? 1.4 : 0.8)
-        )
     }
     
-    // MARK: - Series Match Championship Summary Banner (多局制总结算荣誉榜)
-    private func seriesMatchChampionshipBanner(isLandscape: Bool) -> some View {
-        let ranked = ddz.seats.sorted { $0.score > $1.score }
-        let mvpName = ranked.first?.name ?? ""
-        return VStack(spacing: 3) {
-            Text("🏆 \(ddz.totalTargetRounds) 局系列赛总结算 · 👑 冠军牌王: \(mvpName)")
-                .font(.system(size: isLandscape ? 10 : 11, weight: .black))
-                .foregroundColor(httGold)
-                .lineLimit(1)
-            HStack(spacing: 8) {
-                ForEach(Array(ranked.enumerated()), id: \.element.id) { rankIdx, s in
-                    Text("\(rankIdx == 0 ? "🥇" : (rankIdx == 1 ? "🥈" : "🥉")) \(s.name): \(s.score)分")
-                        .font(.system(size: isLandscape ? 9 : 10, weight: .bold))
-                        .foregroundColor(.white)
-                        .lineLimit(1)
-                }
-            }
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
-        .background(Color.black.opacity(0.65))
-        .cornerRadius(8)
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold, lineWidth: 1.2))
-    }
-    
-    // MARK: - 竖屏/横屏全可见自适应手牌扇形区（竖屏 >10 张自动双排居中叠放，横屏紧凑单排全显）
+    // MARK: - 竖屏/横屏全可见自适应手牌扇形区（竖屏 >10 张自动双排居中叠放，<=10 张或横屏单排动态步进）
     @ViewBuilder
-    private func adaptivePlayerHandView(hand: [DoudizhuCard], usableWidth: CGFloat, isLandscape: Bool) -> some View {
+    private func adaptivePlayerHandView(hand: [DoudizhuCard], usableWidth: CGFloat, isLandscape: Bool, isCompact: Bool) -> some View {
         let count = hand.count
+        let cardW: CGFloat = isCompact ? 50 : 62
+        let cardH: CGFloat = isCompact ? 74 : 90
         if count == 0 {
             EmptyView()
         } else if !isLandscape && count > 10 {
-            // 竖屏下超过10张牌（地主最多20张）：自动分为上下两排居中显示（每排最多10张），无需左右滑动即可一眼看全所有牌
             let topCount = (count + 1) / 2
             let topCards = Array(hand.prefix(topCount))
             let bottomCards = Array(hand.dropFirst(topCount))
-            let cardW: CGFloat = 62
-            let cardH: CGFloat = 90
-            VStack(spacing: -22) {
-                fittedCardRowView(cards: topCards, usableWidth: usableWidth, cardW: cardW, cardH: cardH, isLandscape: false)
+            VStack(spacing: isCompact ? -18 : -22) {
+                fittedCardRowView(cards: topCards, usableWidth: usableWidth, cardW: cardW, cardH: cardH)
                     .zIndex(1)
-                fittedCardRowView(cards: bottomCards, usableWidth: usableWidth, cardW: cardW, cardH: cardH, isLandscape: false)
+                fittedCardRowView(cards: bottomCards, usableWidth: usableWidth, cardW: cardW, cardH: cardH)
                     .zIndex(2)
             }
-            .padding(.top, 12)
+            .padding(.top, isCompact ? 10 : 14)
             .padding(.bottom, 2)
         } else {
-            // 横屏模式下采用紧凑牌高 (50x72)，确保顶栏+对手+出牌区+操作按钮+手牌+底栏100%完整同屏显示！
-            let cardW: CGFloat = isLandscape ? 50 : 62
-            let cardH: CGFloat = isLandscape ? 72 : 90
-            fittedCardRowView(cards: hand, usableWidth: usableWidth, cardW: cardW, cardH: cardH, isLandscape: isLandscape)
-                .padding(.top, isLandscape ? 6 : 12)
-                .padding(.bottom, isLandscape ? 0 : 2)
+            fittedCardRowView(cards: hand, usableWidth: usableWidth, cardW: cardW, cardH: cardH)
+                .padding(.top, isCompact ? 10 : 14)
+                .padding(.bottom, 2)
         }
     }
     
-    private func fittedCardRowView(cards: [DoudizhuCard], usableWidth: CGFloat, cardW: CGFloat, cardH: CGFloat, isLandscape: Bool) -> some View {
+    private func fittedCardRowView(cards: [DoudizhuCard], usableWidth: CGFloat, cardW: CGFloat, cardH: CGFloat) -> some View {
         let count = cards.count
-        let maxStep: CGFloat = isLandscape ? 32.0 : 36.0
-        let minStep: CGFloat = isLandscape ? 16.0 : 20.0
+        let maxStep: CGFloat = 36.0
+        let minStep: CGFloat = 20.0
         let rawStep: CGFloat = count > 1 ? (usableWidth - cardW - 4) / CGFloat(count - 1) : maxStep
         let step: CGFloat = count > 1 ? min(maxStep, max(minStep, rawStep)) : 0
         let totalWidth: CGFloat = count > 0 ? cardW + CGFloat(max(0, count - 1)) * step : cardW
-        let popOffset: CGFloat = isLandscape ? 10 : 15
         
         return ZStack(alignment: .leading) {
             ForEach(Array(cards.enumerated()), id: \.element.id) { idx, card in
@@ -10168,30 +8672,29 @@ struct KOnDoudizhuSheetView: View {
                         ddz.toggleSelectCard(card)
                     }
                 }) {
-                    handPokerCardView(card: card, isSelected: isSelected, width: cardW, height: cardH, popOffset: popOffset)
+                    handPokerCardView(card: card, isSelected: isSelected, cardW: cardW, cardH: cardH)
                 }
                 .buttonStyle(PlainButtonStyle())
                 .offset(x: CGFloat(idx) * step)
                 .zIndex(Double(idx))
             }
         }
-        .frame(width: totalWidth, height: cardH + popOffset, alignment: .leading)
+        .frame(width: totalWidth, height: cardH + 16, alignment: .leading)
         .frame(maxWidth: .infinity, alignment: .center)
     }
     
     @ViewBuilder
-    private func playerActionControlBar(isLandscape: Bool) -> some View {
-        let btnH: CGFloat = isLandscape ? 30 : 38
+    private var playerActionControlBar: some View {
         if ddz.phase == .bidding {
             if ddz.currentTurnSeat == ddz.mySeatIndex {
                 HStack(spacing: 8) {
                     Button(action: { ddz.submitBid(0) }) {
                         Text(tr("不叫", "不叫", "Pass"))
-                            .font(.system(size: isLandscape ? 13 : 14, weight: .black))
-                            .frame(maxWidth: .infinity, minHeight: btnH)
+                            .font(.system(size: 14, weight: .black))
+                            .frame(maxWidth: .infinity, minHeight: 38)
                             .background(Color.gray.opacity(0.75))
                             .foregroundColor(.white)
-                            .cornerRadius(9)
+                            .cornerRadius(10)
                     }
                     .buttonStyle(PlainButtonStyle())
                     
@@ -10201,49 +8704,48 @@ struct KOnDoudizhuSheetView: View {
                             if canBid { ddz.submitBid(score) }
                         }) {
                             Text("\(score) 分")
-                                .font(.system(size: isLandscape ? 13 : 14, weight: .black))
-                                .frame(maxWidth: .infinity, minHeight: btnH)
+                                .font(.system(size: 14, weight: .black))
+                                .frame(maxWidth: .infinity, minHeight: 38)
                                 .background(canBid ? httCrimson : Color.white.opacity(0.12))
                                 .foregroundColor(canBid ? .white : .gray)
-                                .cornerRadius(9)
-                                .overlay(RoundedRectangle(cornerRadius: 9).stroke(canBid ? httGold : Color.clear, lineWidth: 1.2))
+                                .cornerRadius(10)
+                                .overlay(RoundedRectangle(cornerRadius: 10).stroke(canBid ? httGold : Color.clear, lineWidth: 1.2))
                         }
                         .buttonStyle(PlainButtonStyle())
                         .disabled(!canBid)
                     }
                 }
             } else {
-                let turnName = (ddz.currentTurnSeat >= 0 && ddz.currentTurnSeat < ddz.seats.count) ? ddz.seats[ddz.currentTurnSeat].name : ""
-                Text(tr("等待 [\(turnName)] 叫地主...", "等待 [\(turnName)] 叫地主...", "Waiting for bid..."))
-                    .font(.system(size: isLandscape ? 11 : 12, weight: .bold))
+                Text(tr("等待其他玩家叫地主...", "等待其他玩家叫地主...", "Waiting for other players to bid..."))
+                    .font(.system(size: 12, weight: .bold))
                     .foregroundColor(httGold)
-                    .padding(.vertical, isLandscape ? 2 : 5)
+                    .padding(.vertical, 6)
             }
         } else if ddz.phase == .playing {
             if ddz.currentTurnSeat == ddz.mySeatIndex {
-                let canPass = (ddz.lastPlaySeat != ddz.mySeatIndex && ddz.lastPlaySeat != -1 && ddz.lastValidHand != nil)
+                let canPass = (ddz.lastPlaySeat != ddz.mySeatIndex && ddz.lastPlaySeat != -1)
                 HStack(spacing: 8) {
                     if canPass {
                         Button(action: { ddz.passTurn() }) {
                             Text(tr("不出", "不出", "Pass"))
-                                .font(.system(size: isLandscape ? 13 : 14, weight: .black))
+                                .font(.system(size: 14, weight: .black))
                                 .padding(.horizontal, 14)
-                                .frame(height: btnH)
+                                .frame(height: 38)
                                 .background(Color.gray.opacity(0.8))
                                 .foregroundColor(.white)
-                                .cornerRadius(9)
+                                .cornerRadius(10)
                         }
                         .buttonStyle(PlainButtonStyle())
                     }
                     
                     Button(action: { ddz.clearSelectedCards() }) {
                         Text(tr("重选", "重選", "Clear"))
-                            .font(.system(size: isLandscape ? 12 : 13, weight: .bold))
+                            .font(.system(size: 13, weight: .bold))
                             .padding(.horizontal, 12)
-                            .frame(height: btnH)
+                            .frame(height: 38)
                             .background(Color.white.opacity(0.18))
                             .foregroundColor(httCream)
-                            .cornerRadius(9)
+                            .cornerRadius(10)
                     }
                     .buttonStyle(PlainButtonStyle())
                     
@@ -10252,13 +8754,13 @@ struct KOnDoudizhuSheetView: View {
                             Image(systemName: "lightbulb.fill")
                             Text(tr("提示", "提示", "Hint"))
                         }
-                        .font(.system(size: isLandscape ? 12 : 13, weight: .black))
+                        .font(.system(size: 13, weight: .black))
                         .padding(.horizontal, 14)
-                        .frame(height: btnH)
+                        .frame(height: 38)
                         .background(Color.blue.opacity(0.85))
                         .foregroundColor(.white)
-                        .cornerRadius(9)
-                        .overlay(RoundedRectangle(cornerRadius: 9).stroke(httGold.opacity(0.7), lineWidth: 1))
+                        .cornerRadius(10)
+                        .overlay(RoundedRectangle(cornerRadius: 10).stroke(httGold.opacity(0.7), lineWidth: 1))
                     }
                     .buttonStyle(PlainButtonStyle())
                     
@@ -10267,207 +8769,207 @@ struct KOnDoudizhuSheetView: View {
                             Image(systemName: "hand.point.up.left.fill")
                             Text(tr("出牌", "出牌", "Play"))
                         }
-                        .font(.system(size: isLandscape ? 13 : 15, weight: .black))
+                        .font(.system(size: 15, weight: .black))
                         .frame(maxWidth: .infinity)
-                        .frame(height: btnH)
+                        .frame(height: 38)
                         .background(Color(red: 0.20, green: 0.78, blue: 0.35))
                         .foregroundColor(.white)
-                        .cornerRadius(9)
-                        .overlay(RoundedRectangle(cornerRadius: 9).stroke(httGold, lineWidth: 1.5))
+                        .cornerRadius(10)
+                        .overlay(RoundedRectangle(cornerRadius: 10).stroke(httGold, lineWidth: 1.5))
                     }
                     .buttonStyle(PlainButtonStyle())
                 }
             } else {
-                let turnName = (ddz.currentTurnSeat >= 0 && ddz.currentTurnSeat < ddz.seats.count) ? ddz.seats[ddz.currentTurnSeat].name : ""
-                Text(tr("等待 [\(turnName)] 出牌...", "等待 [\(turnName)] 出牌...", "Waiting for opponent..."))
-                    .font(.system(size: isLandscape ? 11 : 12, weight: .bold))
+                Text(tr("等待 [\(ddz.seats[ddz.currentTurnSeat].name)] 出牌...", "等待 [\(ddz.seats[ddz.currentTurnSeat].name)] 出牌...", "Waiting for opponent..."))
+                    .font(.system(size: 12, weight: .bold))
                     .foregroundColor(httGold)
-                    .padding(.vertical, isLandscape ? 2 : 5)
+                    .padding(.vertical, 6)
             }
         } else if ddz.phase == .roundOver {
-            HStack(spacing: 10) {
-                Button(action: {
-                    ddz.startNewRound(resetSeries: ddz.isSeriesMatchFinished)
-                }) {
+            HStack(spacing: 12) {
+                Button(action: { ddz.startNewRound() }) {
                     HStack(spacing: 5) {
                         Image(systemName: "play.fill")
-                        Text(ddz.isSeriesMatchFinished
-                             ? tr("开启新一轮 \(ddz.totalTargetRounds) 局系列赛", "開啟新一輪 \(ddz.totalTargetRounds) 局系列賽", "Start New Series")
-                             : tr("下一局 (\(ddz.roundProgressBadgeText))", "下一局 (\(ddz.roundProgressBadgeText))", "Next Round"))
+                        Text(tr("再来一局", "再來一局", "Play Again"))
                     }
-                    .font(.system(size: isLandscape ? 13 : 14, weight: .black))
-                    .frame(maxWidth: .infinity, minHeight: btnH + 2)
+                    .font(.system(size: 15, weight: .black))
+                    .frame(maxWidth: .infinity, minHeight: 42)
                     .background(httCrimson)
                     .foregroundColor(.white)
-                    .cornerRadius(9)
-                    .overlay(RoundedRectangle(cornerRadius: 9).stroke(httGold, lineWidth: 1.5))
+                    .cornerRadius(10)
+                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(httGold, lineWidth: 1.5))
                 }
                 .buttonStyle(PlainButtonStyle())
                 
                 Button(action: { ddz.phase = .lobby }) {
                     Text(tr("返回大厅", "返回大廳", "Lobby"))
-                        .font(.system(size: isLandscape ? 12 : 13, weight: .bold))
-                        .padding(.horizontal, 16)
-                        .frame(height: btnH + 2)
+                        .font(.system(size: 14, weight: .bold))
+                        .padding(.horizontal, 18)
+                        .frame(height: 42)
                         .background(Color.black.opacity(0.55))
                         .foregroundColor(httGold)
-                        .cornerRadius(9)
+                        .cornerRadius(10)
                 }
                 .buttonStyle(PlainButtonStyle())
             }
         }
     }
     
-    private func opponentSeatPanel(seat: DoudizhuPlayerSeat, isLeft: Bool, isLandscape: Bool) -> some View {
+    private func opponentSeatPanel(seat: DoudizhuPlayerSeat, isLeft: Bool, isCompact: Bool = false) -> some View {
         let isTurn = (ddz.currentTurnSeat == seat.id && ddz.phase != .roundOver)
-        return VStack(spacing: isLandscape ? 2 : 4) {
+        return VStack(spacing: isCompact ? 2 : 4) {
             ZStack(alignment: .topTrailing) {
                 if let sprite = manager.allMemberFrames[seat.characterId] {
                     Image(uiImage: sprite)
                         .interpolation(.none)
                         .resizable()
                         .scaledToFit()
-                        .frame(width: isLandscape ? 34 : 46, height: isLandscape ? 38 : 54)
+                        .frame(width: isCompact ? 38 : 48, height: isCompact ? 44 : 56)
                 }
                 if ddz.phase != .bidding {
                     Text(seat.isLandlord ? "🎩" : "🌾")
-                        .font(.system(size: isLandscape ? 11 : 13))
-                        .offset(x: 4, y: -3)
+                        .font(.system(size: 13))
+                        .offset(x: 4, y: -4)
                 }
             }
             
             Text(seat.name)
-                .font(.system(size: isLandscape ? 9 : 10, weight: .black))
+                .font(.system(size: 10, weight: .black))
                 .foregroundColor(.white)
                 .lineLimit(1)
             
-            HStack(spacing: 3) {
+            HStack(spacing: 4) {
                 if let backImg = ddz.cardBackImage() {
                     Image(uiImage: backImg)
                         .resizable()
                         .scaledToFill()
-                        .frame(width: isLandscape ? 13 : 16, height: isLandscape ? 18 : 22)
+                        .frame(width: 16, height: 22)
                         .clipShape(RoundedRectangle(cornerRadius: 3))
                         .overlay(RoundedRectangle(cornerRadius: 3).stroke(httGold, lineWidth: 0.8))
                 }
                 Text("\(seat.hand.count)")
-                    .font(.system(size: isLandscape ? 11 : 13, weight: .black, design: .monospaced))
+                    .font(.system(size: 13, weight: .black, design: .monospaced))
                     .foregroundColor(seat.hand.count <= 2 ? .red : httGold)
             }
             
-            Text("积分:\(seat.score)")
-                .font(.system(size: 8.5, weight: .bold, design: .monospaced))
-                .foregroundColor(httCream.opacity(0.8))
-                .lineLimit(1)
+            if !seat.lastActionText.isEmpty {
+                Text(seat.lastActionText)
+                    .font(.system(size: 10, weight: .heavy))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Color.black.opacity(0.6))
+                    .foregroundColor(httGold)
+                    .cornerRadius(4)
+            }
         }
-        .frame(width: isLandscape ? 80 : 84)
-        .padding(isLandscape ? 5 : 7)
+        .frame(width: isCompact ? 68 : 86)
+        .padding(isCompact ? 5 : 7)
         .background(Color.black.opacity(0.50))
-        .cornerRadius(10)
+        .cornerRadius(12)
         .overlay(
-            RoundedRectangle(cornerRadius: 10)
+            RoundedRectangle(cornerRadius: 12)
                 .stroke(isTurn ? Color.green : Color.white.opacity(0.18), lineWidth: isTurn ? 2.0 : 1.0)
         )
     }
     
-    private func handPokerCardView(card: DoudizhuCard, isSelected: Bool, width: CGFloat = 62, height: CGFloat = 90, popOffset: CGFloat = 15) -> some View {
+    private func handPokerCardView(card: DoudizhuCard, isSelected: Bool, cardW: CGFloat = 62, cardH: CGFloat = 90) -> some View {
         ZStack(alignment: .topLeading) {
             if let img = ddz.cardImage(for: card) {
                 Image(uiImage: img)
                     .resizable()
                     .scaledToFill()
-                    .frame(width: width, height: height)
+                    .frame(width: cardW, height: cardH)
                     .clipped()
             } else {
                 Color.white
-                    .frame(width: width, height: height)
+                    .frame(width: cardW, height: cardH)
             }
             
             // Crisp top-left corner index badge so overlapping cards in a 20-card fan are 100% readable at a glance!
             VStack(spacing: -1) {
                 Text(card.displayRank)
-                    .font(.system(size: card.rank >= 16 ? 8.5 : (width < 55 ? 10.5 : 12), weight: .black, design: .rounded))
+                    .font(.system(size: card.rank >= 16 ? 9 : 12, weight: .black, design: .rounded))
                     .foregroundColor(card.isRedCard ? Color(red: 0.85, green: 0.10, blue: 0.15) : .black)
                 if card.rank < 16 {
                     Text(card.suit.rawValue)
-                        .font(.system(size: width < 55 ? 8.5 : 10, weight: .bold))
+                        .font(.system(size: 10, weight: .bold))
                         .foregroundColor(card.isRedCard ? Color(red: 0.85, green: 0.10, blue: 0.15) : .black)
                 }
             }
-            .padding(.horizontal, 3)
-            .padding(.vertical, 1.5)
-            .background(Color.white.opacity(0.92))
+            .padding(.horizontal, 3.5)
+            .padding(.vertical, 2)
+            .background(Color.white.opacity(0.90))
             .cornerRadius(4)
-            .padding(.leading, 2.5)
-            .padding(.top, 2.5)
+            .padding(.leading, 3)
+            .padding(.top, 3)
         }
-        .frame(width: width, height: height)
-        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .frame(width: cardW, height: cardH)
+        .clipShape(RoundedRectangle(cornerRadius: 7))
         .overlay(
-            RoundedRectangle(cornerRadius: 6)
-                .stroke(isSelected ? httGold : Color.white.opacity(0.85), lineWidth: isSelected ? 2.4 : 1.0)
+            RoundedRectangle(cornerRadius: 7)
+                .stroke(isSelected ? httGold : Color.white.opacity(0.85), lineWidth: isSelected ? 2.5 : 1.0)
         )
-        .shadow(color: Color.black.opacity(0.42), radius: 2.5, x: -1, y: 1.5)
-        .offset(y: isSelected ? -popOffset : 0)
+        .shadow(color: Color.black.opacity(0.42), radius: 3, x: -1, y: 2)
+        .offset(y: isSelected ? -16 : 0)
     }
     
-    private func tablePokerCardView(card: DoudizhuCard, width: CGFloat = 44, height: CGFloat = 64) -> some View {
+    private func tablePokerCardView(card: DoudizhuCard) -> some View {
         ZStack(alignment: .topLeading) {
             if let img = ddz.cardImage(for: card) {
                 Image(uiImage: img)
                     .resizable()
                     .scaledToFill()
-                    .frame(width: width, height: height)
+                    .frame(width: 48, height: 70)
                     .clipped()
             } else {
                 Color.white
-                    .frame(width: width, height: height)
+                    .frame(width: 48, height: 70)
             }
             
             VStack(spacing: -1) {
                 Text(card.displayRank)
-                    .font(.system(size: card.rank >= 16 ? 7.5 : 9.5, weight: .black))
+                    .font(.system(size: card.rank >= 16 ? 8 : 10, weight: .black))
                     .foregroundColor(card.isRedCard ? Color(red: 0.85, green: 0.10, blue: 0.15) : .black)
                 if card.rank < 16 {
                     Text(card.suit.rawValue)
-                        .font(.system(size: 7.5, weight: .bold))
+                        .font(.system(size: 8, weight: .bold))
                         .foregroundColor(card.isRedCard ? Color(red: 0.85, green: 0.10, blue: 0.15) : .black)
                 }
             }
-            .padding(.horizontal, 2)
+            .padding(.horizontal, 2.5)
             .padding(.vertical, 1)
-            .background(Color.white.opacity(0.90))
+            .background(Color.white.opacity(0.88))
             .cornerRadius(3)
             .padding(.leading, 2)
             .padding(.top, 2)
         }
-        .frame(width: width, height: height)
-        .clipShape(RoundedRectangle(cornerRadius: 5))
-        .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.white.opacity(0.85), lineWidth: 0.9))
+        .frame(width: 48, height: 70)
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.white.opacity(0.85), lineWidth: 1.0))
         .shadow(color: .black.opacity(0.35), radius: 2, x: 0, y: 1)
     }
     
-    private func miniPokerCardView(card: DoudizhuCard, width: CGFloat = 28, height: CGFloat = 40) -> some View {
+    private func miniPokerCardView(card: DoudizhuCard) -> some View {
         ZStack(alignment: .topLeading) {
             if let img = ddz.cardImage(for: card) {
                 Image(uiImage: img)
                     .resizable()
                     .scaledToFill()
-                    .frame(width: width, height: height)
+                    .frame(width: 28, height: 40)
                     .clipped()
             } else {
                 Color.white
-                    .frame(width: width, height: height)
+                    .frame(width: 28, height: 40)
             }
             Text(card.displayRank)
                 .font(.system(size: card.rank >= 16 ? 6 : 8, weight: .black))
                 .foregroundColor(card.isRedCard ? Color(red: 0.85, green: 0.10, blue: 0.15) : .black)
-                .padding(.horizontal, 1.5)
+                .padding(.horizontal, 2)
                 .background(Color.white.opacity(0.88))
                 .cornerRadius(2)
                 .padding(1.5)
         }
-        .frame(width: width, height: height)
+        .frame(width: 28, height: 40)
         .clipShape(RoundedRectangle(cornerRadius: 4))
         .overlay(RoundedRectangle(cornerRadius: 4).stroke(httGold, lineWidth: 1))
     }
