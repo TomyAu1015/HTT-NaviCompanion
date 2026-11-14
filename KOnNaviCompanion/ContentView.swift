@@ -8498,37 +8498,49 @@ struct KOnDoudizhuSheetView: View {
                         .foregroundColor(ddz.turnRemainingSeconds <= 5 ? .red : httGold)
                         .cornerRadius(8)
                     
+                    Text("第\(ddz.currentRound)/\(ddz.totalRounds == 0 ? "∞" : "\(ddz.totalRounds)")局")
+                        .font(.system(size: isCompact ? 10 : 11, weight: .bold))
+                        .padding(.horizontal, isCompact ? 5 : 7)
+                        .padding(.vertical, 5)
+                        .background(Color.black.opacity(0.45))
+                        .foregroundColor(httCream)
+                        .cornerRadius(8)
+                    
                     Spacer(minLength: 2)
                     
-                    Button(action: {
-                        withAnimation { ddz.showCardCounter.toggle() }
-                    }) {
-                        HStack(spacing: 2) {
-                            Image(systemName: "number.square.fill")
-                            Text(tr("记牌器", "記牌器", "Counter"))
+                    if ddz.allowCardCounter {
+                        Button(action: {
+                            withAnimation { ddz.showCardCounter.toggle() }
+                        }) {
+                            HStack(spacing: 2) {
+                                Image(systemName: "number.square.fill")
+                                Text(tr("记牌器", "記牌器", "Counter"))
+                            }
+                            .font(.system(size: isCompact ? 10 : 11, weight: .bold))
+                            .padding(.horizontal, isCompact ? 6 : 8)
+                            .padding(.vertical, 5)
+                            .background(ddz.showCardCounter ? httGold : Color.black.opacity(0.45))
+                            .foregroundColor(ddz.showCardCounter ? .black : httCream)
+                            .cornerRadius(8)
                         }
-                        .font(.system(size: isCompact ? 10 : 11, weight: .bold))
-                        .padding(.horizontal, isCompact ? 6 : 8)
-                        .padding(.vertical, 5)
-                        .background(ddz.showCardCounter ? httGold : Color.black.opacity(0.45))
-                        .foregroundColor(ddz.showCardCounter ? .black : httCream)
-                        .cornerRadius(8)
+                        .buttonStyle(PlainButtonStyle())
                     }
-                    .buttonStyle(PlainButtonStyle())
                     
-                    Button(action: {
-                        ddz.startNewRound()
-                    }) {
-                        Image(systemName: "arrow.clockwise.circle.fill")
-                            .font(.system(size: isCompact ? 18 : 20))
-                            .foregroundColor(httGold)
+                    if ddz.isRoomAuthority {
+                        Button(action: {
+                            ddz.startNewRound()
+                        }) {
+                            Image(systemName: "arrow.clockwise.circle.fill")
+                                .font(.system(size: isCompact ? 18 : 20))
+                                .foregroundColor(httGold)
+                        }
+                        .buttonStyle(PlainButtonStyle())
                     }
-                    .buttonStyle(PlainButtonStyle())
                 }
                 .padding(.horizontal, hPad)
                 
                 // Optional Card Counter Bar (记牌器: 大王..3)
-                if ddz.showCardCounter {
+                if ddz.allowCardCounter && ddz.showCardCounter {
                     let ranksDesc = [17, 16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3]
                     let rankLabels = ["大王", "小王", "2", "A", "K", "Q", "J", "10", "9", "8", "7", "6", "5", "4", "3"]
                     HStack(spacing: 2) {
@@ -8841,31 +8853,52 @@ struct KOnDoudizhuSheetView: View {
                     .padding(.vertical, 6)
             }
         } else if ddz.phase == .roundOver {
-            HStack(spacing: 12) {
-                Button(action: { ddz.startNewRound() }) {
+            let inRoom = ddz.isOnlineConnected || ddz.isHostingRoom || !ddz.connectedPeerNames.isEmpty
+            let isGuestWaiting = inRoom && !ddz.isRoomAuthority
+            HStack(spacing: 10) {
+                Button(action: {
+                    if !isGuestWaiting { ddz.startNewRound() }
+                }) {
                     HStack(spacing: 5) {
-                        Image(systemName: "play.fill")
-                        Text(tr("再来一局", "再來一局", "Play Again"))
+                        Image(systemName: isGuestWaiting ? "hourglass" : "play.fill")
+                        Text(isGuestWaiting
+                             ? tr("⏳ 等待1号房主开启下一局...", "⏳ 等待1號房主開啟下一局...", "Waiting for Host...")
+                             : tr("再来一局", "再來一局", "Play Again"))
                     }
-                    .font(.system(size: 15, weight: .black))
+                    .font(.system(size: 14, weight: .black))
                     .frame(maxWidth: .infinity, minHeight: 42)
-                    .background(httCrimson)
+                    .background(isGuestWaiting ? Color.gray.opacity(0.75) : httCrimson)
                     .foregroundColor(.white)
                     .cornerRadius(10)
                     .overlay(RoundedRectangle(cornerRadius: 10).stroke(httGold, lineWidth: 1.5))
                 }
                 .buttonStyle(PlainButtonStyle())
+                .disabled(isGuestWaiting)
                 
-                Button(action: { ddz.leaveCurrentRoomAndReset() }) {
-                    Text(tr("返回大厅", "返回大廳", "Lobby"))
-                        .font(.system(size: 14, weight: .bold))
-                        .padding(.horizontal, 18)
-                        .frame(height: 42)
-                        .background(Color.black.opacity(0.55))
-                        .foregroundColor(httGold)
-                        .cornerRadius(10)
+                if inRoom && ddz.isRoomAuthority {
+                    Button(action: { ddz.returnRoomToLobby() }) {
+                        Text(tr("房间设置", "房間設置", "Settings"))
+                            .font(.system(size: 13, weight: .bold))
+                            .padding(.horizontal, 14)
+                            .frame(height: 42)
+                            .background(Color.black.opacity(0.55))
+                            .foregroundColor(httGold)
+                            .cornerRadius(10)
+                            .overlay(RoundedRectangle(cornerRadius: 10).stroke(httGold.opacity(0.6), lineWidth: 1))
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                } else {
+                    Button(action: { ddz.leaveCurrentRoomAndReset() }) {
+                        Text(tr("退出房间", "退出房間", "Leave"))
+                            .font(.system(size: 13, weight: .bold))
+                            .padding(.horizontal, 14)
+                            .frame(height: 42)
+                            .background(Color.black.opacity(0.55))
+                            .foregroundColor(httGold)
+                            .cornerRadius(10)
+                    }
+                    .buttonStyle(PlainButtonStyle())
                 }
-                .buttonStyle(PlainButtonStyle())
             }
         }
     }

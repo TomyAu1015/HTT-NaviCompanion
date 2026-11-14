@@ -8069,11 +8069,11 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             self.routeSelectionRenderTrigger += 1
         }
         let steps = route.steps
-        self.currentStepIndex = steps.count > 1 ? 1 : 0
+        self.currentStepIndex = (steps.count > 1 && steps[0].instructions.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) ? 1 : 0
         if self.currentStepIndex < steps.count {
             let curStep = steps[self.currentStepIndex]
             let nextStep = (self.currentStepIndex + 1 < steps.count) ? steps[self.currentStepIndex + 1] : nil
-            let rawInstr = (nextStep != nil && !(nextStep!.instructions.isEmpty)) ? nextStep!.instructions : (curStep.instructions.isEmpty ? title : curStep.instructions)
+            let rawInstr = curStep.instructions.isEmpty ? (nextStep?.instructions.isEmpty == false ? nextStep!.instructions : title) : curStep.instructions
             self.currentStepInstruction = self.verifiedTurnInstruction(raw: rawInstr, prevStep: curStep, nextStep: nextStep)
             self.distanceToNextStepMeters = curStep.distance
             self.updateRoadLanes(for: self.currentStepInstruction)
@@ -8418,7 +8418,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         let saysRight = lower.contains("右") || lower.contains("right")
         let saysLeft = lower.contains("左") || lower.contains("left")
 
-        if angle <= -35.0 && angle > -150.0 {
+        if angle <= -40.0 && angle > -155.0 {
             if saysRight && !saysLeft {
                 text = text
                     .replacingOccurrences(of: "轉右", with: "轉左")
@@ -8428,11 +8428,8 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                     .replacingOccurrences(of: "向右", with: "向左")
                     .replacingOccurrences(of: "Right", with: "Left")
                     .replacingOccurrences(of: "right", with: "left")
-            } else if !saysLeft && !lower.contains("掉头") && !lower.contains("调头") && !lower.contains("u-turn") {
-                let prefix = (language == .en) ? "Turn Left · " : (language == .zhHant ? "左轉 · " : "左转 · ")
-                text = text.isEmpty ? (language == .en ? "Turn Left" : (language == .zhHant ? "前方左轉" : "前方左转")) : (prefix + text)
             }
-        } else if angle >= 35.0 && angle < 150.0 {
+        } else if angle >= 40.0 && angle < 155.0 {
             if saysLeft && !saysRight {
                 text = text
                     .replacingOccurrences(of: "轉左", with: "轉右")
@@ -8442,24 +8439,21 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                     .replacingOccurrences(of: "向左", with: "向右")
                     .replacingOccurrences(of: "Left", with: "Right")
                     .replacingOccurrences(of: "left", with: "right")
-            } else if !saysRight && !lower.contains("掉头") && !lower.contains("调头") && !lower.contains("u-turn") {
-                let prefix = (language == .en) ? "Turn Right · " : (language == .zhHant ? "右轉 · " : "右转 · ")
-                text = text.isEmpty ? (language == .en ? "Turn Right" : (language == .zhHant ? "前方右轉" : "前方右转")) : (prefix + text)
             }
         }
         return text
     }
 
-    private func distanceAlongStepPolyline(_ step: MKRoute.Step, from coord: CLLocationCoordinate2D) -> (perpDist: Double, remainDist: Double) {
+    private func distanceAlongStepPolyline(_ step: MKRoute.Step, from coord: CLLocationCoordinate2D) -> (perpDist: Double, remainDist: Double, traveledDist: Double) {
         let pts = step.polyline.points()
         let ptCount = step.polyline.pointCount
         guard ptCount >= 2 else {
             if ptCount == 1 {
                 let p = pts[0].coordinate
                 let d = CLLocation(latitude: coord.latitude, longitude: coord.longitude).distance(from: CLLocation(latitude: p.latitude, longitude: p.longitude))
-                return (d, d)
+                return (d, d, 0.0)
             }
-            return (999999.0, 0.0)
+            return (999999.0, 0.0, 0.0)
         }
         var bestDist: Double = 999999.0
         var bestSegIdx: Int = 0
@@ -8474,6 +8468,15 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                 bestProj = proj
             }
         }
+        var traveled = 0.0
+        for i in 0..<bestSegIdx {
+            let a = pts[i].coordinate
+            let b = pts[i + 1].coordinate
+            traveled += CLLocation(latitude: a.latitude, longitude: a.longitude).distance(from: CLLocation(latitude: b.latitude, longitude: b.longitude))
+        }
+        traveled += CLLocation(latitude: pts[bestSegIdx].coordinate.latitude, longitude: pts[bestSegIdx].coordinate.longitude)
+            .distance(from: CLLocation(latitude: bestProj.latitude, longitude: bestProj.longitude))
+
         var remain = CLLocation(latitude: bestProj.latitude, longitude: bestProj.longitude)
             .distance(from: CLLocation(latitude: pts[bestSegIdx + 1].coordinate.latitude, longitude: pts[bestSegIdx + 1].coordinate.longitude))
         for i in (bestSegIdx + 1)..<(ptCount - 1) {
@@ -8481,7 +8484,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             let b = pts[i + 1].coordinate
             remain += CLLocation(latitude: a.latitude, longitude: a.longitude).distance(from: CLLocation(latitude: b.latitude, longitude: b.longitude))
         }
-        return (bestDist, remain)
+        return (bestDist, remain, traveled)
     }
 
     // Real-Time Turn-by-Turn GPS Step Evaluation
@@ -8490,17 +8493,16 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         let steps = route.steps
         guard currentStepIndex < steps.count else { return }
 
-        let currentLoc = CLLocation(latitude: userCoordinate.latitude, longitude: userCoordinate.longitude)
-
-        // Find the actual step segment the user is currently riding on (with forward bias so we never jump prematurely before the turn!)
+        // Advance to the next step ONLY after the user has actually turned at the junction and traveled >= 6m onto the next step polyline!
         var activeSeg = currentStepIndex
         var activeEval = distanceAlongStepPolyline(steps[activeSeg], from: userCoordinate)
-        let searchUpper = min(steps.count - 1, currentStepIndex + 3)
+        let searchUpper = min(steps.count - 1, currentStepIndex + 2)
         if activeSeg < searchUpper {
             for candIdx in (activeSeg + 1)...searchUpper {
-                let candEval = distanceAlongStepPolyline(steps[candIdx], from: userCoordinate)
-                // Advance to next step only when user is clearly closer to the next step polyline (or has passed the junction)
-                if candEval.perpDist + 6.0 < activeEval.perpDist || (activeEval.remainDist < 10.0 && candEval.perpDist < 28.0) {
+                let candStep = steps[candIdx]
+                let candEval = distanceAlongStepPolyline(candStep, from: userCoordinate)
+                let minEnterDist = min(6.5, max(2.5, candStep.distance * 0.25))
+                if candEval.traveledDist >= minEnterDist && candEval.perpDist <= 28.0 && (candEval.perpDist <= activeEval.perpDist + 4.0 || activeEval.remainDist <= 8.0) {
                     activeSeg = candIdx
                     activeEval = candEval
                     break
@@ -8516,12 +8518,12 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         self.distanceToNextStepMeters = dist
 
         let nextStep = (currentStepIndex + 1 < steps.count) ? steps[currentStepIndex + 1] : nil
-        let rawUpcoming = (nextStep != nil && !(nextStep!.instructions.isEmpty))
-            ? nextStep!.instructions
-            : (currentStepIndex == steps.count - 1
+        let rawStepInstr = step.instructions.isEmpty
+            ? (currentStepIndex == steps.count - 1
                ? (language == .en ? "Arrive at \(destinationName)" : (language == .zhHant ? "即將到達目的地：\(destinationName)" : "即将到达目的地：\(destinationName)"))
-               : step.instructions)
-        let verifiedInstr = verifiedTurnInstruction(raw: rawUpcoming, prevStep: step, nextStep: nextStep)
+               : (nextStep?.instructions ?? destinationName))
+            : step.instructions
+        let verifiedInstr = verifiedTurnInstruction(raw: rawStepInstr, prevStep: step, nextStep: nextStep)
         if !verifiedInstr.isEmpty && self.currentStepInstruction != verifiedInstr {
             self.currentStepInstruction = verifiedInstr
             self.updateRoadLanes(for: verifiedInstr)
@@ -10056,12 +10058,25 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
         }
     }
     private var activeConnectedRoomCode: String = ""
+    private let deviceShortTag: String = {
+        if let saved = UserDefaults.standard.string(forKey: "kon_ddz_device_tag"), !saved.isEmpty {
+            return saved
+        }
+        let generated = String(Int.random(in: 100...999))
+        UserDefaults.standard.set(generated, forKey: "kon_ddz_device_tag")
+        return generated
+    }()
     @Published var myNickname: String = UserDefaults.standard.string(forKey: "kon_ddz_nickname") ?? "轻音车友" {
         didSet {
             UserDefaults.standard.set(myNickname, forKey: "kon_ddz_nickname")
+            refreshMyPeerIdentityOnProfileChange()
         }
     }
-    @Published var myCharacter: AudioPlayerManager.CharacterFilter = .yui
+    @Published var myCharacter: AudioPlayerManager.CharacterFilter = .yui {
+        didSet {
+            refreshMyPeerIdentityOnProfileChange()
+        }
+    }
     @Published var isHostingRoom: Bool = false
     @Published var isBrowsingRooms: Bool = false
     @Published var connectedPeerNames: [String] = []
@@ -10108,15 +10123,53 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
     private var webSocketTask: URLSessionWebSocketTask?
     private var aiTurnWorkItem: DispatchWorkItem?
     private var turnCountdownTimer: Timer?
+    private var wsPingTimer: Timer?
     private var peerCharIds: [String: Int] = [:]
     private var orderedRoomPeers: [DoudizhuRoomPeer] = []
     
     override init() {
         super.init()
         let devName = UIDevice.current.name
-        self.myPeerID = MCPeerID(displayName: "\(myNickname)-\(Int.random(in: 100...999))")
-        if myNickname == "轻音车友" && !devName.isEmpty {
+        if myNickname == "轻音车友" && !devName.isEmpty && devName != "iPhone" {
             self.myNickname = devName
+        }
+        self.myPeerID = MCPeerID(displayName: makeUniquePeerKey())
+    }
+    
+    private func cleanNickname() -> String {
+        let trimmed = myNickname.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "轻音车友" : trimmed
+    }
+    
+    private func makeUniquePeerKey() -> String {
+        return "\(cleanNickname())#\(deviceShortTag)"
+    }
+    
+    private func cleanPeerLabel(_ rawName: String) -> String {
+        if let hashIdx = rawName.lastIndex(of: "#") {
+            let prefix = String(rawName[..<hashIdx]).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !prefix.isEmpty { return prefix }
+        }
+        return rawName
+    }
+    
+    private func refreshMyPeerIdentityOnProfileChange() {
+        guard myPeerID != nil else { return }
+        let oldKey = myPeerID.displayName
+        let newKey = makeUniquePeerKey()
+        if oldKey != newKey && !isHostingRoom && !isOnlineConnected && connectedPeerNames.isEmpty {
+            myPeerID = MCPeerID(displayName: newKey)
+        }
+        if let idx = orderedRoomPeers.firstIndex(where: { $0.name == oldKey || $0.name == myPeerID.displayName }) {
+            orderedRoomPeers[idx] = DoudizhuRoomPeer(name: myPeerID.displayName, charId: myCharacter.charId, displayName: cleanNickname())
+        }
+        if phase == .lobby {
+            rebuildLobbySeats()
+            if isOnlineConnected {
+                sendJoinRequestToRoom()
+            } else if isHostingRoom && isRoomAuthority {
+                broadcastFullState()
+            }
         }
     }
     
@@ -10151,16 +10204,17 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
         isRoomAuthority = true
         isBrowsingRooms = false
         mySeatIndex = 0
+        currentRound = 1
         
-        myPeerID = MCPeerID(displayName: myNickname.isEmpty ? "房主" : myNickname)
-        orderedRoomPeers = [DoudizhuRoomPeer(name: myPeerID.displayName, charId: myCharacter.charId, displayName: myNickname)]
+        myPeerID = MCPeerID(displayName: makeUniquePeerKey())
+        orderedRoomPeers = [DoudizhuRoomPeer(name: myPeerID.displayName, charId: myCharacter.charId, displayName: cleanNickname())]
         let session = MCSession(peer: myPeerID, securityIdentity: nil, encryptionPreference: .optional)
         session.delegate = self
         self.mcSession = session
         
         let info: [String: String] = [
             "code": roomCode,
-            "host": myNickname,
+            "host": cleanNickname(),
             "char": "\(myCharacter.charId)"
         ]
         let adv = MCNearbyServiceAdvertiser(peer: myPeerID, discoveryInfo: info, serviceType: serviceType)
@@ -10186,7 +10240,7 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
         isBrowsingRooms = true
         discoveredRooms.removeAll()
         
-        myPeerID = MCPeerID(displayName: myNickname.isEmpty ? "玩家" : myNickname)
+        myPeerID = MCPeerID(displayName: makeUniquePeerKey())
         let session = MCSession(peer: myPeerID, securityIdentity: nil, encryptionPreference: .optional)
         session.delegate = self
         self.mcSession = session
@@ -10213,7 +10267,7 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
         guard let brw = browser, let session = mcSession else { return }
         statusBanner = "🔗 正在加入 [\(room.hostName)] 的房间 (\(room.roomCode))..."
         let contextData = try? JSONEncoder().encode([
-            "name": myNickname,
+            "name": myPeerID.displayName,
             "char": "\(myCharacter.charId)",
             "code": room.roomCode
         ])
@@ -10234,21 +10288,32 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
         stopNetworking()
         activeConnectedRoomCode = code
         roomCode = code
-        let cleanNick = myNickname.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? UIDevice.current.name : myNickname.trimmingCharacters(in: .whitespacesAndNewlines)
-        myPeerID = MCPeerID(displayName: cleanNick)
-        orderedRoomPeers = [DoudizhuRoomPeer(name: myPeerID.displayName, charId: myCharacter.charId, displayName: cleanNick)]
+        currentRound = 1
+        myPeerID = MCPeerID(displayName: makeUniquePeerKey())
+        orderedRoomPeers = [DoudizhuRoomPeer(name: myPeerID.displayName, charId: myCharacter.charId, displayName: cleanNickname())]
         isRoomAuthority = false
         isOnlineConnected = true
         let task = URLSession.shared.webSocketTask(with: url)
         self.webSocketTask = task
         task.resume()
         receiveNextWebSocketMessage()
+        startWebSocketPingTimer()
         statusBanner = "🌐 正在连接在线服务器 (\(trimmed))，房间号：\(roomCode)..."
         
         // Send joinRequest so all peers in the same roomCode see us immediately
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
             self?.sendJoinRequestToRoom()
         }
+    }
+    
+    private func startWebSocketPingTimer() {
+        wsPingTimer?.invalidate()
+        let t = Timer(timeInterval: 15.0, repeats: true) { [weak self] _ in
+            guard let self = self, self.isOnlineConnected, let ws = self.webSocketTask else { return }
+            ws.sendPing { _ in }
+        }
+        RunLoop.main.add(t, forMode: .common)
+        wsPingTimer = t
     }
     
     func sendJoinRequestToRoom() {
@@ -10279,14 +10344,34 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
                 }
                 self.receiveNextWebSocketMessage()
             case .failure:
-                break
+                DispatchQueue.main.async {
+                    if self.isOnlineConnected {
+                        self.isOnlineConnected = false
+                    }
+                }
             }
+        }
+    }
+    
+    func returnRoomToLobby() {
+        let inMultiplayerRoom = isHostingRoom || isOnlineConnected || !connectedPeerNames.isEmpty || orderedRoomPeers.count > 1
+        if inMultiplayerRoom && isRoomAuthority {
+            aiTurnWorkItem?.cancel()
+            turnCountdownTimer?.invalidate()
+            turnCountdownTimer = nil
+            phase = .lobby
+            rebuildLobbySeats()
+            statusBanner = "⚙️ 房主已带领大家返回房间设置，可调整规则后开启下一局"
+            broadcastFullState()
+        } else {
+            leaveCurrentRoomAndReset()
         }
     }
     
     func leaveCurrentRoomAndReset() {
         stopNetworking()
         phase = .lobby
+        currentRound = 1
         mySeatIndex = 0
         rebuildLobbySeats()
         statusBanner = "✨ 已退出当前房间，座位已重置为单人+AI补位"
@@ -10296,6 +10381,8 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
         aiTurnWorkItem?.cancel()
         turnCountdownTimer?.invalidate()
         turnCountdownTimer = nil
+        wsPingTimer?.invalidate()
+        wsPingTimer = nil
         if !activeConnectedRoomCode.isEmpty && (isHostingRoom || isOnlineConnected || !connectedPeerNames.isEmpty) {
             let leavePkt = DoudizhuNetPacket(
                 kind: .leaveRoom,
@@ -10338,11 +10425,16 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
         let aiCandidates: [AudioPlayerManager.CharacterFilter] = [.mio, .ritsu, .mugi, .azusa, .yui].filter { $0 != myCharacter }
         var newSeats: [DoudizhuPlayerSeat] = []
         
+        var prevScoresByPeer: [String: Int] = [:]
+        for s in seats {
+            prevScoresByPeer[s.peerDisplayName] = s.score
+        }
+        
         var roster = orderedRoomPeers
         if roster.isEmpty {
-            roster.append(DoudizhuRoomPeer(name: myPeerID.displayName, charId: myCharacter.charId, displayName: myNickname))
+            roster.append(DoudizhuRoomPeer(name: myPeerID.displayName, charId: myCharacter.charId, displayName: cleanNickname()))
             for pName in connectedPeerNames where !roster.contains(where: { $0.name == pName }) && roster.count < 3 {
-                roster.append(DoudizhuRoomPeer(name: pName, charId: peerCharIds[pName] ?? 2, displayName: pName))
+                roster.append(DoudizhuRoomPeer(name: pName, charId: peerCharIds[pName] ?? 2, displayName: cleanPeerLabel(pName)))
             }
         }
         
@@ -10352,10 +10444,11 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
                 let isMe = (rp.name == myPeerID.displayName)
                 let ch = isMe ? myCharacter : characterFilter(for: rp.charId)
                 let roleTag = (slot == 0) ? "🏠房主" : "🎮\(slot + 1)号"
-                let disp = (rp.displayName ?? rp.name)
+                let disp = cleanPeerLabel(rp.displayName ?? rp.name)
                 if isMe {
                     mySeatIndex = slot
                 }
+                let savedScore = prevScoresByPeer[rp.name] ?? (seats.count > slot ? seats[slot].score : 1000)
                 newSeats.append(DoudizhuPlayerSeat(
                     id: slot,
                     name: "\(roleTag) \(disp) (\(ch.displayName(lang)))",
@@ -10366,21 +10459,23 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
                     isLandlord: false,
                     lastActionText: slot == 0 ? "房主" : "已准备",
                     lastPlayedCards: [],
-                    score: seats.count > slot ? seats[slot].score : 1000
+                    score: savedScore
                 ))
             } else {
                 let aiChar = aiCandidates[slot % aiCandidates.count]
+                let aiPeerKey = "AI_\(slot)"
+                let savedScore = prevScoresByPeer[aiPeerKey] ?? (seats.count > slot ? seats[slot].score : 1000)
                 newSeats.append(DoudizhuPlayerSeat(
                     id: slot,
                     name: "\(aiChar.displayName(lang)) (AI)",
                     characterId: aiChar.charId,
                     isAI: true,
-                    peerDisplayName: "AI_\(slot)",
+                    peerDisplayName: aiPeerKey,
                     hand: [],
                     isLandlord: false,
                     lastActionText: "AI陪打",
                     lastPlayedCards: [],
-                    score: seats.count > slot ? seats[slot].score : 1000
+                    score: savedScore
                 ))
             }
         }
@@ -10389,12 +10484,26 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
     
     // MARK: - Start New Doudizhu Game (Host Deals 54 Cards & Syncs to Connected Peers)
     func startNewRound() {
-        aiTurnWorkItem?.cancel()
-        isRoomAuthority = true
-        mySeatIndex = 0
-        if phase == .lobby || seats.count != 3 {
-            rebuildLobbySeats()
+        let inMultiplayerRoom = isHostingRoom || isOnlineConnected || !connectedPeerNames.isEmpty || orderedRoomPeers.count > 1
+        if inMultiplayerRoom && !isRoomAuthority {
+            statusBanner = "⏳ 只有1号房主可以开启下一局，请等待房主发牌..."
+            return
         }
+        aiTurnWorkItem?.cancel()
+        if !inMultiplayerRoom {
+            isRoomAuthority = true
+            mySeatIndex = 0
+        }
+        if phase == .roundOver {
+            if totalRounds > 0 && currentRound >= totalRounds {
+                currentRound = 1
+                for i in 0..<seats.count { seats[i].score = 1000 }
+            } else {
+                currentRound += 1
+            }
+        }
+        // Always rebuild seats from orderedRoomPeers so human players in the room never get stuck as AI on Round 2+!
+        rebuildLobbySeats()
         
         // Build 54-card deck
         var deck: [DoudizhuCard] = []
@@ -10868,15 +10977,17 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
             let prevAuth = isRoomAuthority
             isRoomAuthority = (peers.first?.name == myPeerID.displayName)
             
-            if phase == .lobby {
-                rebuildLobbySeats()
+            if phase == .lobby || phase == .roundOver {
+                if phase == .lobby {
+                    rebuildLobbySeats()
+                }
                 if isRoomAuthority {
                     statusBanner = "👑 您是房间 [\(myCode)] 的房主 (当前 \(peers.count)/3 人)，可设置规则并开始牌局"
                     if !prevAuth || peers.count > 1 {
                         broadcastFullState()
                     }
                 } else {
-                    let hostDisp = peers.first?.displayName ?? peers.first?.name ?? "1号玩家"
+                    let hostDisp = cleanPeerLabel(peers.first?.displayName ?? peers.first?.name ?? "1号玩家")
                     statusBanner = "✅ 已进入房间 [\(myCode)] (当前 \(peers.count)/3 人)，房主: [\(hostDisp)]"
                 }
             } else {
@@ -10894,19 +11005,22 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
             
         case .leaveRoom:
             let pName = pkt.senderPeerName
+            let cleanLeft = cleanPeerLabel(pName)
             connectedPeerNames.removeAll { $0 == pName }
             orderedRoomPeers.removeAll { $0.name == pName }
             peerCharIds.removeValue(forKey: pName)
-            if phase == .lobby {
+            if phase == .lobby || phase == .roundOver {
                 promoteAuthorityIfNeededAndResumeAI()
-                rebuildLobbySeats()
-                statusBanner = "ℹ️ 玩家 [\(pName)] 已离开房间 \(myCode)\(isRoomAuthority ? "，您当前为房主" : "")"
+                if phase == .lobby {
+                    rebuildLobbySeats()
+                }
+                statusBanner = "ℹ️ 玩家 [\(cleanLeft)] 已离开房间 \(myCode)\(isRoomAuthority ? "，您当前为房主" : "")"
             } else {
                 for i in 0..<seats.count where seats[i].peerDisplayName == pName {
                     seats[i].isAI = true
                     seats[i].name = "\(characterFilter(for: seats[i].characterId).displayName(AudioPlayerManager.shared.language)) (AI接管)"
                 }
-                statusBanner = "ℹ️ 玩家 [\(pName)] 已离开，由轻音AI自动接管继续对局"
+                statusBanner = "ℹ️ 玩家 [\(cleanLeft)] 已离开，由轻音AI自动接管继续对局"
                 promoteAuthorityIfNeededAndResumeAI()
             }
             
@@ -10964,8 +11078,13 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
             }
             if let s = pkt.seats {
                 self.seats = s
-                if let myIdx = s.firstIndex(where: { $0.peerDisplayName == self.myPeerID.displayName }) {
-                    self.mySeatIndex = myIdx
+                if let exactIdx = s.firstIndex(where: { $0.peerDisplayName == self.myPeerID.displayName }) {
+                    self.mySeatIndex = exactIdx
+                } else if !self.isRoomAuthority,
+                          let guestIdx = s.indices.dropFirst().first(where: { !s[$0].isAI && self.cleanPeerLabel(s[$0].peerDisplayName) == self.cleanNickname() }) {
+                    self.mySeatIndex = guestIdx
+                } else if let rosterIdx = self.orderedRoomPeers.firstIndex(where: { $0.name == self.myPeerID.displayName }), rosterIdx < s.count {
+                    self.mySeatIndex = rosterIdx
                 }
             }
             if let h = pkt.holeCards { self.holeCards = h }
@@ -10977,6 +11096,10 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
             if let acc = pkt.allowCardCounter { self.allowCardCounter = acc }
             if let aid = pkt.aiDifficulty { self.aiDifficulty = aid }
             if let p = pkt.phase {
+                if p == .bidding && self.phase != .bidding {
+                    self.selectedCardIds.removeAll()
+                    self.hintIndex = 0
+                }
                 self.phase = p
                 if p == .bidding || p == .playing {
                     self.startTurnCountdownTimer()
