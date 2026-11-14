@@ -8581,37 +8581,36 @@ struct KOnDoudizhuSheetView: View {
                     
                     Spacer(minLength: 4)
                     
-                    // Center Table Last Played Hand Banner (auto-fits within centerStageWidth)
-                    VStack(spacing: 6) {
-                        if let lastHand = ddz.lastValidHand, ddz.lastPlaySeat >= 0, ddz.lastPlaySeat < ddz.seats.count {
-                            Text("[\(ddz.seats[ddz.lastPlaySeat].name)] 出牌：\(lastHand.category.localizedName(manager.language))")
-                                .font(.system(size: 11, weight: .black))
-                                .foregroundColor(httGold)
-                                .lineLimit(1)
-                                .minimumScaleFactor(0.8)
-                            
-                            let cCount = lastHand.cards.count
-                            let cardW: CGFloat = 46
-                            let cardH: CGFloat = 68
-                            let defaultStep: CGFloat = 26
-                            let fitStep: CGFloat = cCount > 1 ? min(defaultStep, max(12, (centerStageWidth - cardW) / CGFloat(cCount - 1))) : 0
-                            let rowW: CGFloat = cCount > 0 ? cardW + CGFloat(max(0, cCount - 1)) * fitStep : cardW
-                            ZStack(alignment: .leading) {
-                                ForEach(Array(lastHand.cards.enumerated()), id: \.element.id) { idx, c in
-                                    tablePokerCardView(card: c)
-                                        .offset(x: CGFloat(idx) * fitStep)
-                                        .zIndex(Double(idx))
-                                }
+                    // Center Table: Non-overlapping 3-seat 1-round played cards (上家 | 自己 | 下家)
+                    VStack(spacing: 4) {
+                        HStack(alignment: .top, spacing: 6) {
+                            // Left Opponent Played Cards
+                            if leftSeatIdx < ddz.seats.count {
+                                let lSeat = ddz.seats[leftSeatIdx]
+                                ddzSeatPlayedPile(seat: lSeat, label: "上家", maxW: max(90, centerStageWidth * 0.46), alignRight: false)
                             }
-                            .frame(width: rowW, height: cardH, alignment: .leading)
-                            .frame(maxWidth: .infinity, alignment: .center)
-                        } else {
-                            Text(ddz.phase == .bidding
-                                 ? tr("正在叫地主阶段...", "正在叫地主階段...", "Bidding for Landlord...")
-                                 : tr("等待出牌...", "等待出牌...", "Waiting for play..."))
-                                .font(.system(size: 12, weight: .bold))
-                                .foregroundColor(httCream.opacity(0.75))
-                                .padding(.top, 24)
+                            Spacer(minLength: 4)
+                            // Right Opponent Played Cards
+                            if rightSeatIdx < ddz.seats.count {
+                                let rSeat = ddz.seats[rightSeatIdx]
+                                ddzSeatPlayedPile(seat: rSeat, label: "下家", maxW: max(90, centerStageWidth * 0.46), alignRight: true)
+                            }
+                        }
+
+                        // My Own Played Cards / Pass Bubble
+                        if ddz.mySeatIndex < ddz.seats.count {
+                            let me = ddz.seats[ddz.mySeatIndex]
+                            if !me.lastPlayedCards.isEmpty {
+                                ddzSeatPlayedPile(seat: me, label: "我方", maxW: centerStageWidth, alignRight: false)
+                            } else if ddz.phase == .bidding {
+                                Text(tr("正在叫地主阶段...", "正在叫地主階段...", "Bidding for Landlord..."))
+                                    .font(.system(size: 11, weight: .bold)).foregroundColor(httCream.opacity(0.75))
+                            } else if !me.lastActionText.isEmpty {
+                                Text("我方: \(me.lastActionText)")
+                                    .font(.system(size: 11, weight: .black))
+                                    .padding(.horizontal, 8).padding(.vertical, 2)
+                                    .background(Color.black.opacity(0.5)).foregroundColor(httGold).cornerRadius(5)
+                            }
                         }
                     }
                     .frame(maxWidth: .infinity)
@@ -8626,19 +8625,7 @@ struct KOnDoudizhuSheetView: View {
                 
                 Spacer(minLength: 2)
                 
-                // My Last Played Cards or Action Status
-                if ddz.mySeatIndex < ddz.seats.count {
-                    let me = ddz.seats[ddz.mySeatIndex]
-                    if !me.lastActionText.isEmpty {
-                        Text("我的状态: \(me.lastActionText)")
-                            .font(.system(size: 11, weight: .black))
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 3)
-                            .background(Color.black.opacity(0.5))
-                            .foregroundColor(httGold)
-                            .cornerRadius(6)
-                    }
-                }
+
                 
                 // Bottom Player Hand & Compact Landscape Footer Bar (100% visible above Home Indicator)
                 if ddz.mySeatIndex < ddz.seats.count {
@@ -8902,6 +8889,34 @@ struct KOnDoudizhuSheetView: View {
         }
     }
     
+    @ViewBuilder
+    private func ddzSeatPlayedPile(seat: DoudizhuPlayerSeat, label: String, maxW: CGFloat, alignRight: Bool) -> some View {
+        VStack(alignment: alignRight ? .trailing : .leading, spacing: 2) {
+            if !seat.lastPlayedCards.isEmpty {
+                let cCount = seat.lastPlayedCards.count
+                let cardW: CGFloat = 34
+                let cardH: CGFloat = 48
+                let step: CGFloat = cCount > 1 ? min(18.0, max(9.0, (maxW - cardW) / CGFloat(cCount - 1))) : 0
+                let rowW: CGFloat = cardW + CGFloat(max(0, cCount - 1)) * step
+                ZStack(alignment: .leading) {
+                    ForEach(Array(seat.lastPlayedCards.enumerated()), id: \.element.id) { idx, c in
+                        handPokerCardView(card: c, isSelected: false, cardW: cardW, cardH: cardH)
+                            .offset(x: CGFloat(idx) * step)
+                            .zIndex(Double(idx))
+                    }
+                }
+                .frame(width: rowW, height: cardH, alignment: .leading)
+            } else if !seat.lastActionText.isEmpty {
+                Text("\(label): \(seat.lastActionText)")
+                    .font(.system(size: 10, weight: .black))
+                    .padding(.horizontal, 6).padding(.vertical, 2)
+                    .background(Color.black.opacity(0.55))
+                    .foregroundColor(seat.lastActionText.contains("不出") ? .lightGray : httGold)
+                    .cornerRadius(5)
+            }
+        }
+    }
+
     private func opponentSeatPanel(seat: DoudizhuPlayerSeat, isLeft: Bool, isCompact: Bool = false) -> some View {
         let isTurn = (ddz.currentTurnSeat == seat.id && ddz.phase != .roundOver)
         let stackCount = min(6, max(1, (seat.hand.count + 2) / 3))
@@ -9322,6 +9337,13 @@ struct KOnMahjongSheetView: View {
                                         .background(mj.isOnlineConnected ? Color.green : Color.blue)
                                         .foregroundColor(.white).cornerRadius(8)
                                 }.buttonStyle(PlainButtonStyle())
+                                if mj.isOnlineConnected {
+                                    Button(action: { mj.leaveCurrentRoomAndReset() }) {
+                                        Text("退出")
+                                            .font(.system(size: 11, weight: .black)).padding(.horizontal, 9).frame(height: 30)
+                                            .background(httCrimson).foregroundColor(.white).cornerRadius(8)
+                                    }.buttonStyle(PlainButtonStyle())
+                                }
                             }
                         }
                     }
@@ -9528,6 +9550,12 @@ struct KOnMahjongSheetView: View {
                 .padding(.horizontal, 8)
 
                 Spacer(minLength: 2)
+
+                // My Own Discard River (so player sees their own discarded tiles just like other 3 seats)
+                if mj.mySeatIndex < mj.seats.count && !mj.seats[mj.mySeatIndex].discards.isEmpty {
+                    mjSeatRiverAndMelds(seat: mj.seats[mj.mySeatIndex], maxWidth: usableW)
+                        .padding(.horizontal, 8)
+                }
 
                 // My Badge + Action Bar in One Compact Row, followed by Melds + Hand Tiles in One Row
                 if mj.mySeatIndex < mj.seats.count {
@@ -9799,29 +9827,34 @@ struct KOnGameRoomSheetView: View {
             )
             .ignoresSafeArea()
 
+            let isInLobby = (selectedGame == 0 && ddz.phase == .lobby) || (selectedGame == 1 && mj.phase == .lobby)
             VStack(spacing: 4) {
                 // Unified Top Bar
                 HStack {
-                    Button(action: {
-                        if selectedGame == 0 {
-                            ddz.leaveCurrentRoomAndReset()
-                        } else {
-                            mj.leaveCurrentRoomAndReset()
+                    if !isInLobby {
+                        Button(action: {
+                            if selectedGame == 0 {
+                                ddz.leaveCurrentRoomAndReset()
+                            } else {
+                                mj.leaveCurrentRoomAndReset()
+                            }
+                        }) {
+                            HStack(spacing: 4) {
+                                Image(systemName: "chevron.left")
+                                Text(tr("退出房间", "退出房間", "Leave"))
+                            }
+                            .font(.system(size: 12, weight: .black))
+                            .foregroundColor(httGold)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(Color.black.opacity(0.48))
+                            .cornerRadius(14)
+                            .overlay(RoundedRectangle(cornerRadius: 14).stroke(httGold.opacity(0.55), lineWidth: 1))
                         }
-                    }) {
-                        HStack(spacing: 4) {
-                            Image(systemName: "chevron.left")
-                            Text(tr("房间大厅", "房間大廳", "Lobby"))
-                        }
-                        .font(.system(size: 12, weight: .black))
-                        .foregroundColor(httGold)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .background(Color.black.opacity(0.48))
-                        .cornerRadius(14)
-                        .overlay(RoundedRectangle(cornerRadius: 14).stroke(httGold.opacity(0.55), lineWidth: 1))
+                        .buttonStyle(PlainButtonStyle())
+                    } else {
+                        Color.clear.frame(width: 72, height: 28)
                     }
-                    .buttonStyle(PlainButtonStyle())
 
                     Spacer()
 
@@ -9832,30 +9865,33 @@ struct KOnGameRoomSheetView: View {
 
                     Spacer()
 
-                    Button(action: {
-                        ddz.leaveCurrentRoomAndReset()
-                        mj.leaveCurrentRoomAndReset()
-                        dismiss()
-                    }) {
-                        HStack(spacing: 3) {
-                            Image(systemName: "xmark.circle.fill")
-                            Text(tr("关闭", "關閉", "Close"))
+                    if isInLobby {
+                        Button(action: {
+                            ddz.leaveCurrentRoomAndReset()
+                            mj.leaveCurrentRoomAndReset()
+                            dismiss()
+                        }) {
+                            HStack(spacing: 3) {
+                                Image(systemName: "xmark.circle.fill")
+                                Text(tr("关闭", "關閉", "Close"))
+                            }
+                            .font(.system(size: 12, weight: .black))
+                            .foregroundColor(httGold)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(Color.black.opacity(0.48))
+                            .cornerRadius(14)
+                            .overlay(RoundedRectangle(cornerRadius: 14).stroke(httGold.opacity(0.55), lineWidth: 1))
                         }
-                        .font(.system(size: 12, weight: .black))
-                        .foregroundColor(httGold)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .background(Color.black.opacity(0.48))
-                        .cornerRadius(14)
-                        .overlay(RoundedRectangle(cornerRadius: 14).stroke(httGold.opacity(0.55), lineWidth: 1))
+                        .buttonStyle(PlainButtonStyle())
+                    } else {
+                        Color.clear.frame(width: 72, height: 28)
                     }
-                    .buttonStyle(PlainButtonStyle())
                 }
                 .padding(.horizontal, 10)
                 .padding(.top, 6)
 
                 // Game Switcher Bar (Auto-collapses during active game to free vertical space for cards/tiles)
-                let isInLobby = (selectedGame == 0 && ddz.phase == .lobby) || (selectedGame == 1 && mj.phase == .lobby)
                 if isInLobby {
                     HStack(spacing: 8) {
                         Button(action: {
@@ -9907,8 +9943,13 @@ struct KOnGameRoomSheetView: View {
                 }
             }
         }
-        .onAppear {
-            AppDelegate.setOrientation(.landscape, preferred: .landscapeRight)
+        .onChange(of: ddz.phase) { newPhase in
+            let inGame = (selectedGame == 0 && newPhase != .lobby) || (selectedGame == 1 && mj.phase != .lobby)
+            AppDelegate.setOrientation(inGame ? .landscape : .all, preferred: inGame ? .landscapeRight : .portrait)
+        }
+        .onChange(of: mj.phase) { newPhase in
+            let inGame = (selectedGame == 0 && ddz.phase != .lobby) || (selectedGame == 1 && newPhase != .lobby)
+            AppDelegate.setOrientation(inGame ? .landscape : .all, preferred: inGame ? .landscapeRight : .portrait)
         }
         .onDisappear {
             AppDelegate.setOrientation(.all, preferred: .portrait)
