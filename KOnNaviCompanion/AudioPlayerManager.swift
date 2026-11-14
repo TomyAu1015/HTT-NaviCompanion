@@ -10376,6 +10376,12 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
         phase = .lobby
         currentRound = 1
         mySeatIndex = 0
+        holeCards = []
+        lastValidHand = nil
+        lastPlaySeat = -1
+        winnerSeat = nil
+        selectedCardIds.removeAll()
+        playedCardsHistory = []
         rebuildLobbySeats()
         statusBanner = "✨ 已退出当前房间，座位已重置为单人+AI补位"
     }
@@ -11235,5 +11241,1330 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
         DispatchQueue.main.async {
             self.discoveredRooms.removeAll { $0.peerID == peerID }
         }
+    }
+}
+
+// MARK: - Guangdong Hongzhong Laizi Mahjong Engine (广东红中麻将 · 红中赖子 · 不能吃 · 可碰杠)
+enum MahjongSuit: String, Codable, CaseIterable {
+    case wan = "W"
+    case tiao = "T"
+    case tong = "D"
+    case honor = "H" // 1=东, 2=南, 3=西, 4=北, 5=发, 6=白
+    case zhong = "Z"
+
+    var chineseUnit: String {
+        switch self {
+        case .wan: return "万"
+        case .tiao: return "条"
+        case .tong: return "筒"
+        case .honor: return "字"
+        case .zhong: return "中"
+        }
+    }
+
+    var sortOrder: Int {
+        switch self {
+        case .zhong: return 0
+        case .wan: return 1
+        case .tiao: return 2
+        case .tong: return 3
+        case .honor: return 4
+        }
+    }
+}
+
+struct MahjongTile: Identifiable, Codable, Equatable, Hashable {
+    let id: String
+    let suit: MahjongSuit
+    let rank: Int // 1..9 for W/T/D, 1..6 for honor (东南西北发白), 0 for 红中
+
+    var isLaizi: Bool { suit == .zhong }
+
+    var typeKey: Int {
+        switch suit {
+        case .wan: return rank - 1          // 0..8
+        case .tiao: return 9 + (rank - 1)   // 9..17
+        case .tong: return 18 + (rank - 1)  // 18..26
+        case .honor: return 27 + (rank - 1) // 27..32 (东南西北发白)
+        case .zhong: return 33
+        }
+    }
+
+    var shortLabel: String {
+        if suit == .zhong { return "中" }
+        if suit == .honor {
+            let honors = ["", "东", "南", "西", "北", "发", "白"]
+            return (rank >= 1 && rank <= 6) ? honors[rank] : "字"
+        }
+        let nums = ["", "一", "二", "三", "四", "五", "六", "七", "八", "九"]
+        if suit == .wan, rank >= 1, rank <= 9 { return "\(nums[rank])" }
+        return "\(rank)"
+    }
+
+    var fullName: String {
+        if suit == .zhong { return "红中" }
+        if suit == .honor { return shortLabel }
+        return "\(rank)\(suit.chineseUnit)"
+    }
+}
+
+enum MahjongMeldKind: String, Codable {
+    case pong = "碰"
+    case exposedKong = "明杠"
+    case concealedKong = "暗杠"
+}
+
+struct MahjongMeld: Identifiable, Codable, Equatable {
+    let id: String
+    let kind: MahjongMeldKind
+    let tile: MahjongTile
+}
+
+struct MahjongSeat: Identifiable, Codable {
+    let id: Int
+    var name: String
+    var characterId: Int
+    var isAI: Bool
+    var peerDisplayName: String
+    var hand: [MahjongTile]
+    var melds: [MahjongMeld]
+    var discards: [MahjongTile]
+    var score: Int
+    var isDealer: Bool
+    var lastActionText: String
+}
+
+enum MahjongGamePhase: String, Codable {
+    case lobby
+    case playing
+    case claimWindow
+    case roundOver
+}
+
+struct MahjongPendingClaim: Codable, Equatable {
+    let discarderSeat: Int
+    let tile: MahjongTile
+    var eligibleHuSeats: [Int]
+    var eligibleKongSeats: [Int]
+    var eligiblePongSeats: [Int]
+    var passedSeats: [Int]
+}
+
+struct MahjongNetPacket: Codable {
+    enum Kind: String, Codable {
+        case joinRequest
+        case leaveRoom
+        case roomRoster
+        case roomFull
+        case stateSync
+        case discardAction
+        case claimAction
+        case selfAction
+    }
+
+    let kind: Kind
+    let roomCode: String
+    let senderPeerName: String
+    let senderCharId: Int
+    var maxPlayers: Int? = 4
+    var gameType: String? = "mahjong"
+    var hostPeerName: String? = nil
+    var roomPeers: [DoudizhuRoomPeer]? = nil
+    var seats: [MahjongSeat]? = nil
+    var wallCount: Int? = nil
+    var phase: MahjongGamePhase? = nil
+    var currentTurnSeat: Int? = nil
+    var drawnTileId: String? = nil
+    var pendingClaim: MahjongPendingClaim? = nil
+    var winnerSeat: Int? = nil
+    var winReason: String? = nil
+    var statusBanner: String? = nil
+    var totalRounds: Int? = nil
+    var currentRound: Int? = nil
+    var baseScore: Int? = nil
+    var turnTimeLimit: Int? = nil
+    var tileId: String? = nil
+    var actionType: String? = nil // "hu", "kong", "pong", "pass", "selfHu", "selfKong"
+}
+
+enum MahjongEvaluator {
+    static func sortHand(_ tiles: [MahjongTile]) -> [MahjongTile] {
+        return tiles.sorted {
+            if $0.suit.sortOrder != $1.suit.sortOrder {
+                return $0.suit.sortOrder < $1.suit.sortOrder
+            }
+            if $0.rank != $1.rank {
+                return $0.rank < $1.rank
+            }
+            return $0.id < $1.id
+        }
+    }
+
+    static func canWin(hand: [MahjongTile], meldsCount: Int, extraTile: MahjongTile? = nil) -> Bool {
+        var all = hand
+        if let ex = extraTile { all.append(ex) }
+        guard all.count == 14 - meldsCount * 3 else { return false }
+
+        var counts = [Int](repeating: 0, count: 33)
+        var laizi = 0
+        for t in all {
+            if t.isLaizi {
+                laizi += 1
+            } else if t.typeKey >= 0 && t.typeKey < 33 {
+                counts[t.typeKey] += 1
+            }
+        }
+        // 4 Hongzhong instant win
+        if laizi >= 4 { return true }
+
+        // 7 Pairs (Seven Pairs with Hongzhong Laizi) when no melds
+        if meldsCount == 0 && all.count == 14 {
+            var singles = 0
+            for c in counts {
+                if c % 2 == 1 { singles += 1 }
+            }
+            if laizi >= singles && (laizi - singles) % 2 == 0 {
+                return true
+            }
+        }
+
+        // Standard 3n + 2
+        // Case A: Use 2 Laizi as pair
+        if laizi >= 2 && canFormMelds(&counts, laizi: laizi - 2) {
+            return true
+        }
+        // Case B: Use 1 tile + 1 Laizi as pair
+        if laizi >= 1 {
+            for i in 0..<33 where counts[i] >= 1 {
+                counts[i] -= 1
+                let ok = canFormMelds(&counts, laizi: laizi - 1)
+                counts[i] += 1
+                if ok { return true }
+            }
+        }
+        // Case C: Natural pair
+        for i in 0..<33 where counts[i] >= 2 {
+            counts[i] -= 2
+            let ok = canFormMelds(&counts, laizi: laizi)
+            counts[i] += 2
+            if ok { return true }
+        }
+        return false
+    }
+
+    private static func canFormMelds(_ counts: inout [Int], laizi: Int) -> Bool {
+        guard let firstIdx = counts.firstIndex(where: { $0 > 0 }) else {
+            return laizi % 3 == 0
+        }
+        let c = counts[firstIdx]
+        // 1. Try Triplet (AAA)
+        if c >= 3 {
+            counts[firstIdx] -= 3
+            let ok = canFormMelds(&counts, laizi: laizi)
+            counts[firstIdx] += 3
+            if ok { return true }
+        } else if c == 2 && laizi >= 1 {
+            counts[firstIdx] -= 2
+            let ok = canFormMelds(&counts, laizi: laizi - 1)
+            counts[firstIdx] += 2
+            if ok { return true }
+        } else if c == 1 && laizi >= 2 {
+            counts[firstIdx] -= 1
+            let ok = canFormMelds(&counts, laizi: laizi - 2)
+            counts[firstIdx] += 1
+            if ok { return true }
+        }
+
+        // 2. Try Sequence (ABC) ONLY for suited tiles (0..26); Honor tiles (27..32) cannot form sequences
+        if firstIdx < 27 {
+            let suitBase = (firstIdx / 9) * 9
+            let posInSuit = firstIdx - suitBase
+            if posInSuit <= 6 {
+                let idx2 = firstIdx + 1
+                let idx3 = firstIdx + 2
+                let need2 = counts[idx2] > 0 ? 0 : 1
+                let need3 = counts[idx3] > 0 ? 0 : 1
+                let need = need2 + need3
+                if laizi >= need {
+                    counts[firstIdx] -= 1
+                    if need2 == 0 { counts[idx2] -= 1 }
+                    if need3 == 0 { counts[idx3] -= 1 }
+                    let ok = canFormMelds(&counts, laizi: laizi - need)
+                    counts[firstIdx] += 1
+                    if need2 == 0 { counts[idx2] += 1 }
+                    if need3 == 0 { counts[idx3] += 1 }
+                    if ok { return true }
+                }
+            }
+        }
+        return false
+    }
+
+    static func readyTiles(hand: [MahjongTile], meldsCount: Int) -> [MahjongTile] {
+        guard hand.count == 13 - meldsCount * 3 else { return [] }
+        var result: [MahjongTile] = []
+        for s in [MahjongSuit.wan, .tiao, .tong] {
+            for r in 1...9 {
+                let cand = MahjongTile(id: "ting_\(s.rawValue)_\(r)", suit: s, rank: r)
+                if canWin(hand: hand, meldsCount: meldsCount, extraTile: cand) {
+                    result.append(cand)
+                }
+            }
+        }
+        for r in 1...6 {
+            let cand = MahjongTile(id: "ting_H_\(r)", suit: .honor, rank: r)
+            if canWin(hand: hand, meldsCount: meldsCount, extraTile: cand) {
+                result.append(cand)
+            }
+        }
+        let zhong = MahjongTile(id: "ting_Z_0", suit: .zhong, rank: 0)
+        if canWin(hand: hand, meldsCount: meldsCount, extraTile: zhong) {
+            result.append(zhong)
+        }
+        return result
+    }
+
+    static func bestAIDiscard(hand: [MahjongTile]) -> MahjongTile {
+        let nonLaizi = hand.filter { !$0.isLaizi }
+        guard !nonLaizi.isEmpty else { return hand.last! }
+        var counts = [Int](repeating: 0, count: 33)
+        for t in nonLaizi where t.typeKey >= 0 && t.typeKey < 33 {
+            counts[t.typeKey] += 1
+        }
+        var bestTile = nonLaizi[0]
+        var lowestScore = Int.max
+        for t in nonLaizi {
+            let k = t.typeKey
+            var score = (counts[k] - 1) * 14
+            if k < 27 {
+                let pos = k % 9
+                if pos > 0 && counts[k - 1] > 0 { score += 7 }
+                if pos < 8 && counts[k + 1] > 0 { score += 7 }
+                if pos > 1 && counts[k - 2] > 0 { score += 3 }
+                if pos < 7 && counts[k + 2] > 0 { score += 3 }
+                if pos == 0 || pos == 8 { score -= 2 }
+            } else {
+                score -= 3 // Isolated wind/dragon discarded first unless paired/triplet
+            }
+            if score < lowestScore {
+                lowestScore = score
+                bestTile = t
+            }
+        }
+        return bestTile
+    }
+}
+
+class KOnMahjongManager: NSObject, ObservableObject, MCSessionDelegate, MCNearbyServiceAdvertiserDelegate, MCNearbyServiceBrowserDelegate {
+    static let shared = KOnMahjongManager()
+
+    @Published var networkMode: DoudizhuNetworkMode = .faceToFaceP2P
+    @Published var customServerURL: String = "wss://azusa.online/ddz"
+    @Published var roomCode: String = "" {
+        didSet {
+            let trimmed = roomCode.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed != activeConnectedRoomCode && (isHostingRoom || isOnlineConnected || isBrowsingRooms || !connectedPeerNames.isEmpty) {
+                leaveCurrentRoomAndReset()
+            }
+        }
+    }
+    private var activeConnectedRoomCode: String = ""
+    private let deviceShortTag: String = {
+        if let saved = UserDefaults.standard.string(forKey: "kon_mj_device_tag"), !saved.isEmpty { return saved }
+        let gen = String(Int.random(in: 100...999))
+        UserDefaults.standard.set(gen, forKey: "kon_mj_device_tag")
+        return gen
+    }()
+    @Published var myNickname: String = UserDefaults.standard.string(forKey: "kon_ddz_nickname") ?? "轻音雀友" {
+        didSet {
+            UserDefaults.standard.set(myNickname, forKey: "kon_ddz_nickname")
+            refreshMyIdentity()
+        }
+    }
+    @Published var myCharacter: AudioPlayerManager.CharacterFilter = .yui {
+        didSet { refreshMyIdentity() }
+    }
+    @Published var isHostingRoom: Bool = false
+    @Published var isBrowsingRooms: Bool = false
+    @Published var isOnlineConnected: Bool = false
+    @Published var isRoomAuthority: Bool = true
+    @Published var connectedPeerNames: [String] = []
+    @Published var discoveredRooms: [DoudizhuDiscoveredRoom] = []
+    @Published var mySeatIndex: Int = 0
+
+    @Published var totalRounds: Int = 4
+    @Published var currentRound: Int = 1
+    @Published var baseScore: Int = 100
+    @Published var turnTimeLimit: Int = 20
+    @Published var turnRemainingSeconds: Int = 20
+    @Published var statusBanner: String = "欢迎来到广东红中麻将！红中为赖子，不能吃，可碰杠胡"
+
+    @Published var phase: MahjongGamePhase = .lobby
+    @Published var seats: [MahjongSeat] = []
+    @Published var wallCount: Int = 0
+    @Published var currentTurnSeat: Int = 0
+    @Published var selectedTileId: String? = nil
+    @Published var drawnTileId: String? = nil
+    @Published var pendingClaim: MahjongPendingClaim? = nil
+    @Published var winnerSeat: Int? = nil
+    @Published var winReason: String = ""
+
+    private var wall: [MahjongTile] = []
+    private let serviceType = "kon-mj"
+    private var myPeerID: MCPeerID!
+    private var mcSession: MCSession?
+    private var advertiser: MCNearbyServiceAdvertiser?
+    private var browser: MCNearbyServiceBrowser?
+    private var webSocketTask: URLSessionWebSocketTask?
+    private var aiWorkItem: DispatchWorkItem?
+    private var turnTimer: Timer?
+    private var wsPingTimer: Timer?
+    private var peerCharIds: [String: Int] = [:]
+    private var orderedRoomPeers: [DoudizhuRoomPeer] = []
+
+    override init() {
+        super.init()
+        let devName = UIDevice.current.name
+        if myNickname == "轻音雀友" && !devName.isEmpty && devName != "iPhone" {
+            self.myNickname = devName
+        }
+        self.myPeerID = MCPeerID(displayName: makePeerKey())
+        rebuildLobbySeats()
+    }
+
+    private func cleanNickname() -> String {
+        let t = myNickname.trimmingCharacters(in: .whitespacesAndNewlines)
+        return t.isEmpty ? "轻音雀友" : t
+    }
+
+    private func makePeerKey() -> String { "\(cleanNickname())#\(deviceShortTag)" }
+
+    private func cleanPeerLabel(_ raw: String) -> String {
+        if let idx = raw.lastIndex(of: "#") {
+            let p = String(raw[..<idx]).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !p.isEmpty { return p }
+        }
+        return raw
+    }
+
+    private func wireRoomCode() -> String {
+        let c = roomCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        return c.isEmpty ? "" : "MJ_\(c)"
+    }
+
+    private func refreshMyIdentity() {
+        guard myPeerID != nil else { return }
+        let oldKey = myPeerID.displayName
+        let newKey = makePeerKey()
+        if oldKey != newKey && !isHostingRoom && !isOnlineConnected && connectedPeerNames.isEmpty {
+            myPeerID = MCPeerID(displayName: newKey)
+        }
+        if let idx = orderedRoomPeers.firstIndex(where: { $0.name == oldKey || $0.name == myPeerID.displayName }) {
+            orderedRoomPeers[idx] = DoudizhuRoomPeer(name: myPeerID.displayName, charId: myCharacter.charId, displayName: cleanNickname())
+        }
+        if phase == .lobby {
+            rebuildLobbySeats()
+            if isOnlineConnected { sendJoinRequestToRoom() }
+            else if isHostingRoom && isRoomAuthority { broadcastFullState() }
+        }
+    }
+
+    func syncRulesIfHost() {
+        if isRoomAuthority && (isHostingRoom || isOnlineConnected) {
+            broadcastFullState()
+        }
+    }
+
+    func characterFilter(for charId: Int) -> AudioPlayerManager.CharacterFilter {
+        switch charId {
+        case 1: return .yui
+        case 2: return .mio
+        case 3: return .ritsu
+        case 4: return .mugi
+        case 5: return .azusa
+        default: return .yui
+        }
+    }
+
+    // MARK: - Networking (P2P + Online WebSocket)
+    func startHostingFaceToFaceRoom() {
+        let code = roomCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !code.isEmpty else {
+            statusBanner = "⚠️ 请先填写房号，未填写无法创建麻将房间！"
+            return
+        }
+        stopNetworking()
+        activeConnectedRoomCode = code
+        roomCode = code
+        currentRound = 1
+        isHostingRoom = true
+        isRoomAuthority = true
+        isBrowsingRooms = false
+        mySeatIndex = 0
+        myPeerID = MCPeerID(displayName: makePeerKey())
+        orderedRoomPeers = [DoudizhuRoomPeer(name: myPeerID.displayName, charId: myCharacter.charId, displayName: cleanNickname())]
+
+        let session = MCSession(peer: myPeerID, securityIdentity: nil, encryptionPreference: .optional)
+        session.delegate = self
+        self.mcSession = session
+        let adv = MCNearbyServiceAdvertiser(peer: myPeerID, discoveryInfo: ["code": code, "host": cleanNickname(), "char": "\(myCharacter.charId)"], serviceType: serviceType)
+        adv.delegate = self
+        adv.startAdvertisingPeer()
+        self.advertiser = adv
+
+        rebuildLobbySeats()
+        statusBanner = "🀄 麻将房间 [\(code)] 已创建！最多4人同桌，不足自动由轻音AI补位"
+        AudioPlayerManager.shared.playMascotVoice(for: myCharacter)
+    }
+
+    func startScanningFaceToFaceRooms() {
+        let code = roomCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !code.isEmpty else {
+            statusBanner = "⚠️ 请先填写房号再扫描附近麻将房间！"
+            return
+        }
+        stopNetworking()
+        activeConnectedRoomCode = code
+        roomCode = code
+        isHostingRoom = false
+        isBrowsingRooms = true
+        discoveredRooms.removeAll()
+        myPeerID = MCPeerID(displayName: makePeerKey())
+        let session = MCSession(peer: myPeerID, securityIdentity: nil, encryptionPreference: .optional)
+        session.delegate = self
+        self.mcSession = session
+        let brw = MCNearbyServiceBrowser(peer: myPeerID, serviceType: serviceType)
+        brw.delegate = self
+        brw.startBrowsingForPeers()
+        self.browser = brw
+        statusBanner = "🔍 正在扫描房号 [\(code)] 的面对面麻将房间..."
+    }
+
+    func joinDiscoveredRoom(_ room: DoudizhuDiscoveredRoom) {
+        isRoomAuthority = false
+        let code = roomCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !code.isEmpty && room.roomCode == code else {
+            statusBanner = "⚠️ 房号不匹配！"
+            return
+        }
+        guard let brw = browser, let session = mcSession else { return }
+        statusBanner = "🔗 正在加入 [\(room.hostName)] 的麻将房间..."
+        let ctx = try? JSONEncoder().encode(["name": myPeerID.displayName, "char": "\(myCharacter.charId)", "code": room.roomCode])
+        brw.invitePeer(room.peerID, to: session, withContext: ctx, timeout: 15)
+    }
+
+    func connectOnlineServerRoom() {
+        let code = roomCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !code.isEmpty else {
+            statusBanner = "⚠️ 请先填写房间号再连接服务器！"
+            return
+        }
+        let trimmed = customServerURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let url = URL(string: trimmed), trimmed.hasPrefix("ws://") || trimmed.hasPrefix("wss://") else {
+            statusBanner = "⚠️ 服务器地址格式无效"
+            return
+        }
+        stopNetworking()
+        activeConnectedRoomCode = code
+        roomCode = code
+        currentRound = 1
+        myPeerID = MCPeerID(displayName: makePeerKey())
+        orderedRoomPeers = [DoudizhuRoomPeer(name: myPeerID.displayName, charId: myCharacter.charId, displayName: cleanNickname())]
+        isRoomAuthority = false
+        isOnlineConnected = true
+        let task = URLSession.shared.webSocketTask(with: url)
+        self.webSocketTask = task
+        task.resume()
+        receiveNextWebSocketMessage()
+        startWebSocketPingTimer()
+        statusBanner = "🌐 正在连接麻将房间 [\(code)]..."
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+            self?.sendJoinRequestToRoom()
+        }
+    }
+
+    private func startWebSocketPingTimer() {
+        wsPingTimer?.invalidate()
+        let t = Timer(timeInterval: 15.0, repeats: true) { [weak self] _ in
+            guard let self = self, self.isOnlineConnected, let ws = self.webSocketTask else { return }
+            ws.sendPing { _ in }
+        }
+        RunLoop.main.add(t, forMode: .common)
+        wsPingTimer = t
+    }
+
+    func sendJoinRequestToRoom() {
+        let pkt = MahjongNetPacket(kind: .joinRequest, roomCode: wireRoomCode(), senderPeerName: myPeerID.displayName, senderCharId: myCharacter.charId, maxPlayers: 4, gameType: "mahjong")
+        sendPacketToPeers(pkt)
+    }
+
+    private func receiveNextWebSocketMessage() {
+        webSocketTask?.receive { [weak self] res in
+            guard let self = self else { return }
+            switch res {
+            case .success(let msg):
+                if case .data(let data) = msg, let pkt = try? JSONDecoder().decode(MahjongNetPacket.self, from: data) {
+                    DispatchQueue.main.async { self.handleIncomingPacket(pkt) }
+                } else if case .string(let str) = msg, let data = str.data(using: .utf8), let pkt = try? JSONDecoder().decode(MahjongNetPacket.self, from: data) {
+                    DispatchQueue.main.async { self.handleIncomingPacket(pkt) }
+                }
+                self.receiveNextWebSocketMessage()
+            case .failure:
+                DispatchQueue.main.async { self.isOnlineConnected = false }
+            }
+        }
+    }
+
+    func returnRoomToLobby() {
+        let inRoom = isHostingRoom || isOnlineConnected || !connectedPeerNames.isEmpty || orderedRoomPeers.count > 1
+        if inRoom && isRoomAuthority {
+            aiWorkItem?.cancel()
+            turnTimer?.invalidate()
+            turnTimer = nil
+            phase = .lobby
+            rebuildLobbySeats()
+            statusBanner = "⚙️ 房主已返回麻将大厅设置"
+            broadcastFullState()
+        } else {
+            leaveCurrentRoomAndReset()
+        }
+    }
+
+    func leaveCurrentRoomAndReset() {
+        stopNetworking()
+        phase = .lobby
+        currentRound = 1
+        mySeatIndex = 0
+        pendingClaim = nil
+        drawnTileId = nil
+        selectedTileId = nil
+        winnerSeat = nil
+        winReason = ""
+        wallCount = 0
+        rebuildLobbySeats()
+        statusBanner = "✨ 已退出麻将房间，座位已重置为单人+AI补位"
+    }
+
+    func stopNetworking() {
+        aiWorkItem?.cancel()
+        turnTimer?.invalidate()
+        turnTimer = nil
+        wsPingTimer?.invalidate()
+        wsPingTimer = nil
+        if !activeConnectedRoomCode.isEmpty && (isHostingRoom || isOnlineConnected || !connectedPeerNames.isEmpty) {
+            let leavePkt = MahjongNetPacket(kind: .leaveRoom, roomCode: "MJ_\(activeConnectedRoomCode)", senderPeerName: myPeerID.displayName, senderCharId: myCharacter.charId)
+            sendPacketToPeers(leavePkt)
+        }
+        activeConnectedRoomCode = ""
+        peerCharIds.removeAll()
+        orderedRoomPeers.removeAll()
+        advertiser?.stopAdvertisingPeer()
+        browser?.stopBrowsingForPeers()
+        mcSession?.disconnect()
+        webSocketTask?.cancel(with: .goingAway, reason: nil)
+        advertiser = nil
+        browser = nil
+        mcSession = nil
+        webSocketTask = nil
+        isHostingRoom = false
+        isBrowsingRooms = false
+        isOnlineConnected = false
+        isRoomAuthority = true
+        mySeatIndex = 0
+        connectedPeerNames.removeAll()
+        discoveredRooms.removeAll()
+        rebuildLobbySeats()
+    }
+
+    func rebuildLobbySeats() {
+        let lang = AudioPlayerManager.shared.language
+        let aiPool: [AudioPlayerManager.CharacterFilter] = [.mio, .ritsu, .mugi, .azusa, .yui].filter { $0 != myCharacter }
+        var prevScores: [String: Int] = [:]
+        for s in seats { prevScores[s.peerDisplayName] = s.score }
+        var roster = orderedRoomPeers
+        if roster.isEmpty {
+            let key = myPeerID?.displayName ?? makePeerKey()
+            roster.append(DoudizhuRoomPeer(name: key, charId: myCharacter.charId, displayName: cleanNickname()))
+        }
+        let windLabels = ["东", "南", "西", "北"]
+        var built: [MahjongSeat] = []
+        for slot in 0..<4 {
+            if slot < roster.count {
+                let rp = roster[slot]
+                let isMe = (rp.name == myPeerID?.displayName)
+                let ch = isMe ? myCharacter : characterFilter(for: rp.charId)
+                let role = slot == 0 ? "👑房主" : "🎮\(slot + 1)号"
+                let disp = cleanPeerLabel(rp.displayName ?? rp.name)
+                if isMe { mySeatIndex = slot }
+                built.append(MahjongSeat(
+                    id: slot,
+                    name: "\(role) \(disp)",
+                    characterId: ch.charId,
+                    isAI: false,
+                    peerDisplayName: rp.name,
+                    hand: [],
+                    melds: [],
+                    discards: [],
+                    score: prevScores[rp.name] ?? (seats.count > slot ? seats[slot].score : 1000),
+                    isDealer: slot == 0,
+                    lastActionText: "\(windLabels[slot])家"
+                ))
+            } else {
+                let aiCh = aiPool[slot % aiPool.count]
+                let aiKey = "MJ_AI_\(slot)"
+                built.append(MahjongSeat(
+                    id: slot,
+                    name: "\(aiCh.displayName(lang))(AI)",
+                    characterId: aiCh.charId,
+                    isAI: true,
+                    peerDisplayName: aiKey,
+                    hand: [],
+                    melds: [],
+                    discards: [],
+                    score: prevScores[aiKey] ?? (seats.count > slot ? seats[slot].score : 1000),
+                    isDealer: slot == 0,
+                    lastActionText: "\(windLabels[slot])家"
+                ))
+            }
+        }
+        self.seats = built
+    }
+
+    // MARK: - Game Flow (112 Tiles: 万/条/筒 + 4红中赖子)
+    func startNewRound() {
+        let inRoom = isHostingRoom || isOnlineConnected || !connectedPeerNames.isEmpty || orderedRoomPeers.count > 1
+        if inRoom && !isRoomAuthority {
+            statusBanner = "⏳ 只有1号房主可以开启下一局..."
+            return
+        }
+        aiWorkItem?.cancel()
+        if !inRoom {
+            isRoomAuthority = true
+            mySeatIndex = 0
+        }
+        if phase == .roundOver {
+            if totalRounds > 0 && currentRound >= totalRounds {
+                currentRound = 1
+                for i in 0..<seats.count { seats[i].score = 1000 }
+            } else {
+                currentRound += 1
+            }
+        }
+        rebuildLobbySeats()
+
+        var deck: [MahjongTile] = []
+        for s in [MahjongSuit.wan, .tiao, .tong] {
+            for r in 1...9 {
+                for copy in 0..<4 {
+                    deck.append(MahjongTile(id: "\(s.rawValue)_\(r)_\(copy)", suit: s, rank: r))
+                }
+            }
+        }
+        for r in 1...6 {
+            for copy in 0..<4 {
+                deck.append(MahjongTile(id: "H_\(r)_\(copy)", suit: .honor, rank: r))
+            }
+        }
+        for copy in 0..<4 {
+            deck.append(MahjongTile(id: "Z_0_\(copy)", suit: .zhong, rank: 0))
+        }
+        deck.shuffle()
+
+        let dealerIdx = (currentRound - 1) % 4
+        for i in 0..<4 {
+            seats[i].melds = []
+            seats[i].discards = []
+            seats[i].isDealer = (i == dealerIdx)
+            seats[i].lastActionText = ""
+            let count = (i == dealerIdx) ? 14 : 13
+            let slice = Array(deck.prefix(count))
+            deck.removeFirst(count)
+            seats[i].hand = MahjongEvaluator.sortHand(slice)
+        }
+        wall = deck
+        wallCount = wall.count
+        selectedTileId = nil
+        drawnTileId = seats[dealerIdx].hand.last?.id
+        pendingClaim = nil
+        winnerSeat = nil
+        winReason = ""
+        phase = .playing
+        currentTurnSeat = dealerIdx
+        statusBanner = "🀄 第 \(currentRound) 局开始！[\(seats[dealerIdx].name)] 坐庄先出牌 (红中为赖子)"
+        AudioPlayerManager.shared.playMascotVoice(for: characterFilter(for: seats[dealerIdx].characterId))
+        startTurnTimer()
+        broadcastFullState()
+        scheduleAIActionIfNeeded()
+    }
+
+    private func startTurnTimer() {
+        turnTimer?.invalidate()
+        turnRemainingSeconds = turnTimeLimit > 0 ? turnTimeLimit : 20
+        let t = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
+            guard let self = self else { return }
+            guard self.phase == .playing || self.phase == .claimWindow else { return }
+            guard self.turnTimeLimit > 0 else { return }
+            if self.turnRemainingSeconds > 0 {
+                self.turnRemainingSeconds -= 1
+            } else {
+                self.turnRemainingSeconds = self.turnTimeLimit > 0 ? self.turnTimeLimit : 20
+                if self.isRoomAuthority {
+                    self.handleTimeout()
+                }
+            }
+        }
+        RunLoop.main.add(t, forMode: .common)
+        turnTimer = t
+    }
+
+    private func handleTimeout() {
+        if phase == .claimWindow {
+            resolveClaimAsAllPass()
+        } else if phase == .playing {
+            let actor = currentTurnSeat
+            guard actor >= 0 && actor < seats.count else { return }
+            let tile = MahjongEvaluator.bestAIDiscard(hand: seats[actor].hand)
+            executeDiscard(tileId: tile.id, fromSeat: actor)
+        }
+    }
+
+    // MARK: - Player Actions
+    func canDeclareSelfHu(seatIdx: Int? = nil) -> Bool {
+        let idx = seatIdx ?? mySeatIndex
+        guard phase == .playing, currentTurnSeat == idx, idx < seats.count else { return false }
+        return MahjongEvaluator.canWin(hand: seats[idx].hand, meldsCount: seats[idx].melds.count)
+    }
+
+    func selfKongOptions(seatIdx: Int? = nil) -> [MahjongTile] {
+        let idx = seatIdx ?? mySeatIndex
+        guard phase == .playing, currentTurnSeat == idx, idx < seats.count else { return [] }
+        let s = seats[idx]
+        var res: [MahjongTile] = []
+        let grouped = Dictionary(grouping: s.hand.filter { !$0.isLaizi }) { "\($0.suit.rawValue)_\($0.rank)" }
+        for (_, arr) in grouped where arr.count == 4 {
+            res.append(arr[0])
+        }
+        for m in s.melds where m.kind == .pong {
+            if let match = s.hand.first(where: { $0.suit == m.tile.suit && $0.rank == m.tile.rank }) {
+                res.append(match)
+            }
+        }
+        return res
+    }
+
+    func declareSelfHu() {
+        guard canDeclareSelfHu(seatIdx: mySeatIndex) else { return }
+        if !isRoomAuthority {
+            let pkt = MahjongNetPacket(kind: .selfAction, roomCode: wireRoomCode(), senderPeerName: myPeerID.displayName, senderCharId: myCharacter.charId, actionType: "selfHu")
+            sendPacketToPeers(pkt)
+            return
+        }
+        executeWin(winner: mySeatIndex, loser: nil, winningTile: nil, isSelfDrawn: true)
+    }
+
+    func declareSelfKong(tile: MahjongTile) {
+        guard phase == .playing, currentTurnSeat == mySeatIndex else { return }
+        if !isRoomAuthority {
+            let pkt = MahjongNetPacket(kind: .selfAction, roomCode: wireRoomCode(), senderPeerName: myPeerID.displayName, senderCharId: myCharacter.charId, tileId: tile.id, actionType: "selfKong")
+            sendPacketToPeers(pkt)
+            return
+        }
+        executeSelfKong(tile: tile, fromSeat: mySeatIndex)
+    }
+
+    func discardTile(_ tile: MahjongTile) {
+        guard phase == .playing, currentTurnSeat == mySeatIndex else { return }
+        if !isRoomAuthority {
+            let pkt = MahjongNetPacket(kind: .discardAction, roomCode: wireRoomCode(), senderPeerName: myPeerID.displayName, senderCharId: myCharacter.charId, tileId: tile.id)
+            sendPacketToPeers(pkt)
+            selectedTileId = nil
+            return
+        }
+        executeDiscard(tileId: tile.id, fromSeat: mySeatIndex)
+        selectedTileId = nil
+    }
+
+    func sendClaimResponse(_ action: String) {
+        guard phase == .claimWindow else { return }
+        if !isRoomAuthority {
+            let pkt = MahjongNetPacket(kind: .claimAction, roomCode: wireRoomCode(), senderPeerName: myPeerID.displayName, senderCharId: myCharacter.charId, actionType: action)
+            sendPacketToPeers(pkt)
+            return
+        }
+        handleClaimResponse(action, fromSeat: mySeatIndex)
+    }
+
+    // MARK: - Authoritative Execution (Host)
+    private func executeSelfKong(tile: MahjongTile, fromSeat actor: Int) {
+        guard actor >= 0 && actor < seats.count else { return }
+        let matchingInHand = seats[actor].hand.filter { $0.suit == tile.suit && $0.rank == tile.rank }
+        if matchingInHand.count == 4 {
+            seats[actor].hand.removeAll { $0.suit == tile.suit && $0.rank == tile.rank }
+            seats[actor].melds.append(MahjongMeld(id: UUID().uuidString, kind: .concealedKong, tile: tile))
+            seats[actor].lastActionText = "暗杠 \(tile.fullName)"
+            for i in 0..<4 {
+                seats[i].score += (i == actor) ? (baseScore * 3) : (-baseScore)
+            }
+        } else if let mIdx = seats[actor].melds.firstIndex(where: { $0.kind == .pong && $0.tile.suit == tile.suit && $0.tile.rank == tile.rank }),
+                  let handIdx = seats[actor].hand.firstIndex(where: { $0.suit == tile.suit && $0.rank == tile.rank }) {
+            seats[actor].hand.remove(at: handIdx)
+            seats[actor].melds[mIdx] = MahjongMeld(id: seats[actor].melds[mIdx].id, kind: .exposedKong, tile: tile)
+            seats[actor].lastActionText = "补杠 \(tile.fullName)"
+            for i in 0..<4 {
+                seats[i].score += (i == actor) ? (baseScore * 3) : (-baseScore)
+            }
+        }
+        AudioPlayerManager.shared.playMascotVoice(for: characterFilter(for: seats[actor].characterId))
+        drawTileForSeat(actor, bannerPrefix: "🎉 [\(seats[actor].name)] 杠牌并补摸一张")
+    }
+
+    private func executeDiscard(tileId: String, fromSeat actor: Int) {
+        guard phase == .playing, currentTurnSeat == actor, actor < seats.count else { return }
+        guard let idx = seats[actor].hand.firstIndex(where: { $0.id == tileId }) else { return }
+        let tile = seats[actor].hand.remove(at: idx)
+        seats[actor].hand = MahjongEvaluator.sortHand(seats[actor].hand)
+        seats[actor].discards.append(tile)
+        seats[actor].lastActionText = "打出 \(tile.fullName)"
+        drawnTileId = nil
+        AudioPlayerManager.shared.playMascotVoice(for: characterFilter(for: seats[actor].characterId))
+
+        // Check claims from the other 3 seats (NO Chow in Guangdong Mahjong; Hongzhong cannot be ponged/konged/claimed)
+        var huSeats: [Int] = []
+        var kongSeats: [Int] = []
+        var pongSeats: [Int] = []
+
+        if !tile.isLaizi {
+            for offset in 1...3 {
+                let sIdx = (actor + offset) % 4
+                let s = seats[sIdx]
+                if MahjongEvaluator.canWin(hand: s.hand, meldsCount: s.melds.count, extraTile: tile) {
+                    huSeats.append(sIdx)
+                }
+                let sameCount = s.hand.filter { $0.suit == tile.suit && $0.rank == tile.rank }.count
+                if sameCount >= 3 { kongSeats.append(sIdx) }
+                if sameCount >= 2 { pongSeats.append(sIdx) }
+            }
+        }
+
+        if !huSeats.isEmpty || !kongSeats.isEmpty || !pongSeats.isEmpty {
+            pendingClaim = MahjongPendingClaim(discarderSeat: actor, tile: tile, eligibleHuSeats: huSeats, eligibleKongSeats: kongSeats, eligiblePongSeats: pongSeats, passedSeats: [])
+            phase = .claimWindow
+            turnRemainingSeconds = min(12, turnTimeLimit > 0 ? turnTimeLimit : 12)
+            statusBanner = "⚡ [\(seats[actor].name)] 打出 \(tile.fullName)！等待玩家响应 胡/杠/碰"
+            broadcastFullState()
+            scheduleAIClaimIfNeeded()
+        } else {
+            let nextSeat = (actor + 1) % 4
+            drawTileForSeat(nextSeat)
+        }
+    }
+
+    private func handleClaimResponse(_ action: String, fromSeat seatIdx: Int) {
+        guard phase == .claimWindow, var claim = pendingClaim else { return }
+        if action == "hu" && claim.eligibleHuSeats.contains(seatIdx) {
+            seats[claim.discarderSeat].discards.removeLast()
+            executeWin(winner: seatIdx, loser: claim.discarderSeat, winningTile: claim.tile, isSelfDrawn: false)
+            return
+        }
+        if action == "kong" && claim.eligibleKongSeats.contains(seatIdx) {
+            if claim.eligibleHuSeats.contains(where: { !claim.passedSeats.contains($0) && $0 != seatIdx }) {
+                return
+            }
+            seats[claim.discarderSeat].discards.removeLast()
+            seats[seatIdx].hand.removeAll { $0.suit == claim.tile.suit && $0.rank == claim.tile.rank }
+            seats[seatIdx].melds.append(MahjongMeld(id: UUID().uuidString, kind: .exposedKong, tile: claim.tile))
+            seats[seatIdx].lastActionText = "明杠 \(claim.tile.fullName)"
+            seats[seatIdx].score += baseScore * 3
+            seats[claim.discarderSeat].score -= baseScore * 3
+            pendingClaim = nil
+            phase = .playing
+            AudioPlayerManager.shared.playMascotVoice(for: characterFilter(for: seats[seatIdx].characterId))
+            drawTileForSeat(seatIdx, bannerPrefix: "🔥 [\(seats[seatIdx].name)] 明杠 \(claim.tile.fullName) 补牌")
+            return
+        }
+        if action == "pong" && claim.eligiblePongSeats.contains(seatIdx) {
+            if claim.eligibleHuSeats.contains(where: { !claim.passedSeats.contains($0) && $0 != seatIdx }) {
+                return
+            }
+            seats[claim.discarderSeat].discards.removeLast()
+            var removed = 0
+            seats[seatIdx].hand.removeAll { t in
+                if removed < 2 && t.suit == claim.tile.suit && t.rank == claim.tile.rank {
+                    removed += 1
+                    return true
+                }
+                return false
+            }
+            seats[seatIdx].melds.append(MahjongMeld(id: UUID().uuidString, kind: .pong, tile: claim.tile))
+            seats[seatIdx].lastActionText = "碰 \(claim.tile.fullName)"
+            pendingClaim = nil
+            phase = .playing
+            currentTurnSeat = seatIdx
+            turnRemainingSeconds = turnTimeLimit > 0 ? turnTimeLimit : 20
+            statusBanner = "💥 [\(seats[seatIdx].name)] 碰了 \(claim.tile.fullName)！请出牌"
+            AudioPlayerManager.shared.playMascotVoice(for: characterFilter(for: seats[seatIdx].characterId))
+            broadcastFullState()
+            scheduleAIActionIfNeeded()
+            return
+        }
+        if action == "pass" {
+            if !claim.passedSeats.contains(seatIdx) {
+                claim.passedSeats.append(seatIdx)
+                pendingClaim = claim
+            }
+            let remainingEligible = Set(claim.eligibleHuSeats + claim.eligibleKongSeats + claim.eligiblePongSeats).subtracting(claim.passedSeats)
+            if remainingEligible.isEmpty {
+                resolveClaimAsAllPass()
+            } else {
+                broadcastFullState()
+                scheduleAIClaimIfNeeded()
+            }
+        }
+    }
+
+    private func resolveClaimAsAllPass() {
+        guard let claim = pendingClaim else { return }
+        pendingClaim = nil
+        let nextSeat = (claim.discarderSeat + 1) % 4
+        drawTileForSeat(nextSeat)
+    }
+
+    private func drawTileForSeat(_ seatIdx: Int, bannerPrefix: String? = nil) {
+        if wall.isEmpty {
+            phase = .roundOver
+            winnerSeat = nil
+            winReason = "荒庄流局（牌墙已摸完）"
+            statusBanner = "🌊 本局流局，无人胡牌！"
+            broadcastFullState()
+            return
+        }
+        let drawn = wall.removeFirst()
+        wallCount = wall.count
+        seats[seatIdx].hand.append(drawn)
+        seats[seatIdx].hand = MahjongEvaluator.sortHand(seats[seatIdx].hand)
+        drawnTileId = drawn.id
+        phase = .playing
+        currentTurnSeat = seatIdx
+        turnRemainingSeconds = turnTimeLimit > 0 ? turnTimeLimit : 20
+        statusBanner = bannerPrefix ?? "🀄 轮到 [\(seats[seatIdx].name)] 摸牌出牌 (余 \(wallCount) 张)"
+        broadcastFullState()
+        scheduleAIActionIfNeeded()
+    }
+
+    private func executeWin(winner: Int, loser: Int?, winningTile: MahjongTile?, isSelfDrawn: Bool) {
+        if let wt = winningTile {
+            seats[winner].hand.append(wt)
+            seats[winner].hand = MahjongEvaluator.sortHand(seats[winner].hand)
+        }
+        let laiziCount = seats[winner].hand.filter { $0.isLaizi }.count
+        let mult = (isSelfDrawn ? 2 : 1) * (laiziCount >= 4 ? 2 : 1)
+        let pts = baseScore * mult
+        if isSelfDrawn {
+            for i in 0..<4 {
+                seats[i].score += (i == winner) ? (pts * 3) : (-pts)
+            }
+        } else if let l = loser {
+            seats[winner].score += pts * 2
+            seats[l].score -= pts * 2
+        }
+        pendingClaim = nil
+        winnerSeat = winner
+        winReason = isSelfDrawn ? "自摸胡牌 (x\(mult))" : "点炮胡牌 (x\(mult))"
+        phase = .roundOver
+        seats[winner].lastActionText = "🎉 胡牌!"
+        statusBanner = "🎉 恭喜 [\(seats[winner].name)] \(winReason)！"
+        AudioPlayerManager.shared.triggerBirthdaySpecialVoice()
+        broadcastFullState()
+    }
+
+    // MARK: - AI Logic
+    private func scheduleAIActionIfNeeded() {
+        aiWorkItem?.cancel()
+        guard isRoomAuthority, phase == .playing, currentTurnSeat >= 0, currentTurnSeat < seats.count else { return }
+        let s = seats[currentTurnSeat]
+        guard s.isAI else { return }
+        let seatIdx = currentTurnSeat
+        let work = DispatchWorkItem { [weak self] in
+            guard let self = self, self.phase == .playing, self.currentTurnSeat == seatIdx, self.seats[seatIdx].isAI else { return }
+            if self.canDeclareSelfHu(seatIdx: seatIdx) {
+                self.executeWin(winner: seatIdx, loser: nil, winningTile: nil, isSelfDrawn: true)
+                return
+            }
+            if let kongTile = self.selfKongOptions(seatIdx: seatIdx).first {
+                self.executeSelfKong(tile: kongTile, fromSeat: seatIdx)
+                return
+            }
+            let discard = MahjongEvaluator.bestAIDiscard(hand: self.seats[seatIdx].hand)
+            self.executeDiscard(tileId: discard.id, fromSeat: seatIdx)
+        }
+        aiWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.85, execute: work)
+    }
+
+    private func scheduleAIClaimIfNeeded() {
+        aiWorkItem?.cancel()
+        guard isRoomAuthority, phase == .claimWindow, let claim = pendingClaim else { return }
+        // Check if any human still has an unanswered claim
+        let humanPending = Set(claim.eligibleHuSeats + claim.eligibleKongSeats + claim.eligiblePongSeats)
+            .subtracting(claim.passedSeats)
+            .contains(where: { !seats[$0].isAI })
+        if humanPending { return }
+
+        let work = DispatchWorkItem { [weak self] in
+            guard let self = self, self.phase == .claimWindow, let cl = self.pendingClaim else { return }
+            if let huAi = cl.eligibleHuSeats.first(where: { self.seats[$0].isAI && !cl.passedSeats.contains($0) }) {
+                self.handleClaimResponse("hu", fromSeat: huAi)
+            } else if let kongAi = cl.eligibleKongSeats.first(where: { self.seats[$0].isAI && !cl.passedSeats.contains($0) }) {
+                self.handleClaimResponse("kong", fromSeat: kongAi)
+            } else if let pongAi = cl.eligiblePongSeats.first(where: { self.seats[$0].isAI && !cl.passedSeats.contains($0) }) {
+                self.handleClaimResponse("pong", fromSeat: pongAi)
+            } else {
+                self.resolveClaimAsAllPass()
+            }
+        }
+        aiWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.75, execute: work)
+    }
+
+    // MARK: - Packet Sync & Delegates
+    private func broadcastFullState() {
+        guard isRoomAuthority else { return }
+        let pkt = MahjongNetPacket(
+            kind: .stateSync,
+            roomCode: wireRoomCode(),
+            senderPeerName: myPeerID.displayName,
+            senderCharId: myCharacter.charId,
+            maxPlayers: 4,
+            gameType: "mahjong",
+            hostPeerName: myPeerID.displayName,
+            roomPeers: orderedRoomPeers,
+            seats: seats,
+            wallCount: wallCount,
+            phase: phase,
+            currentTurnSeat: currentTurnSeat,
+            drawnTileId: drawnTileId,
+            pendingClaim: pendingClaim,
+            winnerSeat: winnerSeat,
+            winReason: winReason,
+            statusBanner: statusBanner,
+            totalRounds: totalRounds,
+            currentRound: currentRound,
+            baseScore: baseScore,
+            turnTimeLimit: turnTimeLimit
+        )
+        sendPacketToPeers(pkt)
+    }
+
+    private func sendPacketToPeers(_ pkt: MahjongNetPacket) {
+        guard let data = try? JSONEncoder().encode(pkt) else { return }
+        if let session = mcSession, !session.connectedPeers.isEmpty {
+            try? session.send(data, toPeers: session.connectedPeers, with: .reliable)
+        }
+        if let ws = webSocketTask {
+            ws.send(.data(data)) { _ in }
+        }
+    }
+
+    private func promoteAuthorityIfNeeded() {
+        let prev = isRoomAuthority
+        if let first = orderedRoomPeers.first {
+            isRoomAuthority = (first.name == myPeerID.displayName)
+        } else if let h = seats.firstIndex(where: { !$0.isAI }) {
+            isRoomAuthority = (h == mySeatIndex)
+        } else {
+            isRoomAuthority = true
+        }
+        if isRoomAuthority {
+            if !prev { statusBanner = "👑 原房主已离开，您已自动接任麻将房主！" }
+            if phase == .playing || phase == .claimWindow {
+                if turnTimer == nil { startTurnTimer() }
+                broadcastFullState()
+                scheduleAIActionIfNeeded()
+                scheduleAIClaimIfNeeded()
+            } else if phase == .lobby {
+                rebuildLobbySeats()
+                broadcastFullState()
+            }
+        }
+    }
+
+    private func handleIncomingPacket(_ pkt: MahjongNetPacket) {
+        let wCode = wireRoomCode()
+        guard !wCode.isEmpty && pkt.roomCode == wCode else { return }
+        switch pkt.kind {
+        case .roomFull:
+            let msg = pkt.statusBanner ?? "⚠️ 麻将房间已满 (4/4人)，无法加入！"
+            stopNetworking()
+            phase = .lobby
+            statusBanner = msg
+        case .roomRoster:
+            guard let peers = pkt.roomPeers, !peers.isEmpty else { return }
+            orderedRoomPeers = peers
+            for rp in peers { peerCharIds[rp.name] = rp.charId }
+            connectedPeerNames = peers.map { $0.name }.filter { $0 != myPeerID.displayName }
+            let prev = isRoomAuthority
+            isRoomAuthority = (peers.first?.name == myPeerID.displayName)
+            if phase == .lobby || phase == .roundOver {
+                if phase == .lobby { rebuildLobbySeats() }
+                if isRoomAuthority {
+                    statusBanner = "👑 您是麻将房主 (当前 \(peers.count)/4 人)"
+                    if !prev || peers.count > 1 { broadcastFullState() }
+                } else {
+                    statusBanner = "✅ 已进入麻将房间 (当前 \(peers.count)/4 人)，房主: [\(cleanPeerLabel(peers.first?.name ?? "1号"))]"
+                }
+            } else {
+                let activeSet = Set(peers.map { $0.name })
+                var changed = false
+                for i in 0..<seats.count where !seats[i].isAI && !activeSet.contains(seats[i].peerDisplayName) {
+                    seats[i].isAI = true
+                    seats[i].name = "\(characterFilter(for: seats[i].characterId).displayName(AudioPlayerManager.shared.language))(AI接管)"
+                    changed = true
+                }
+                if changed || (!prev && isRoomAuthority) { promoteAuthorityIfNeeded() }
+            }
+        case .leaveRoom:
+            let pName = pkt.senderPeerName
+            connectedPeerNames.removeAll { $0 == pName }
+            orderedRoomPeers.removeAll { $0.name == pName }
+            peerCharIds.removeValue(forKey: pName)
+            if phase == .lobby || phase == .roundOver {
+                promoteAuthorityIfNeeded()
+                if phase == .lobby { rebuildLobbySeats() }
+            } else {
+                for i in 0..<seats.count where seats[i].peerDisplayName == pName {
+                    seats[i].isAI = true
+                    seats[i].name = "\(characterFilter(for: seats[i].characterId).displayName(AudioPlayerManager.shared.language))(AI接管)"
+                }
+                promoteAuthorityIfNeeded()
+            }
+        case .joinRequest:
+            let pName = pkt.senderPeerName
+            guard pName != myPeerID.displayName else { return }
+            if isHostingRoom && isRoomAuthority {
+                let already = orderedRoomPeers.contains { $0.name == pName }
+                if !already && orderedRoomPeers.count >= 4 {
+                    sendPacketToPeers(MahjongNetPacket(kind: .roomFull, roomCode: wCode, senderPeerName: myPeerID.displayName, senderCharId: myCharacter.charId, statusBanner: "⚠️ 麻将房间人数已满 (4/4人)，无法加入！"))
+                    return
+                }
+                peerCharIds[pName] = pkt.senderCharId
+                if !already { orderedRoomPeers.append(DoudizhuRoomPeer(name: pName, charId: pkt.senderCharId, displayName: cleanPeerLabel(pName))) }
+                if !connectedPeerNames.contains(pName) { connectedPeerNames.append(pName) }
+                rebuildLobbySeats()
+                statusBanner = "🎉 [\(cleanPeerLabel(pName))] 已加入麻将房间 (\(orderedRoomPeers.count)/4 人)"
+                sendPacketToPeers(MahjongNetPacket(kind: .roomRoster, roomCode: wCode, senderPeerName: myPeerID.displayName, senderCharId: myCharacter.charId, hostPeerName: myPeerID.displayName, roomPeers: orderedRoomPeers))
+                broadcastFullState()
+            }
+        case .stateSync:
+            guard pkt.senderPeerName != myPeerID.displayName else { return }
+            if let rp = pkt.roomPeers, !rp.isEmpty {
+                orderedRoomPeers = rp
+                connectedPeerNames = rp.map { $0.name }.filter { $0 != myPeerID.displayName }
+            }
+            if let hName = pkt.hostPeerName, !hName.isEmpty {
+                isRoomAuthority = (hName == myPeerID.displayName)
+            } else {
+                isRoomAuthority = false
+            }
+            if !isRoomAuthority { aiWorkItem?.cancel(); aiWorkItem = nil }
+            if let s = pkt.seats {
+                seats = s
+                if let idx = s.firstIndex(where: { $0.peerDisplayName == myPeerID.displayName }) {
+                    mySeatIndex = idx
+                } else if let idx = orderedRoomPeers.firstIndex(where: { $0.name == myPeerID.displayName }), idx < s.count {
+                    mySeatIndex = idx
+                }
+            }
+            if let wc = pkt.wallCount { wallCount = wc }
+            if let p = pkt.phase {
+                phase = p
+                if p == .playing || p == .claimWindow { startTurnTimer() }
+            }
+            if let ct = pkt.currentTurnSeat { currentTurnSeat = ct }
+            drawnTileId = pkt.drawnTileId
+            pendingClaim = pkt.pendingClaim
+            winnerSeat = pkt.winnerSeat
+            if let wr = pkt.winReason { winReason = wr }
+            if let sb = pkt.statusBanner { statusBanner = sb }
+            if let tr = pkt.totalRounds { totalRounds = tr }
+            if let cr = pkt.currentRound { currentRound = cr }
+            if let bs = pkt.baseScore { baseScore = bs }
+            if let ttl = pkt.turnTimeLimit { turnTimeLimit = ttl }
+        case .discardAction:
+            if isRoomAuthority, let tid = pkt.tileId, let idx = seats.firstIndex(where: { $0.peerDisplayName == pkt.senderPeerName }) {
+                executeDiscard(tileId: tid, fromSeat: idx)
+            }
+        case .claimAction:
+            if isRoomAuthority, let act = pkt.actionType, let idx = seats.firstIndex(where: { $0.peerDisplayName == pkt.senderPeerName }) {
+                handleClaimResponse(act, fromSeat: idx)
+            }
+        case .selfAction:
+            if isRoomAuthority, let act = pkt.actionType, let idx = seats.firstIndex(where: { $0.peerDisplayName == pkt.senderPeerName }) {
+                if act == "selfHu" && canDeclareSelfHu(seatIdx: idx) {
+                    executeWin(winner: idx, loser: nil, winningTile: nil, isSelfDrawn: true)
+                } else if act == "selfKong", let tid = pkt.tileId, let tile = seats[idx].hand.first(where: { $0.id == tid }) {
+                    executeSelfKong(tile: tile, fromSeat: idx)
+                }
+            }
+        }
+    }
+
+    // MARK: - MCSession & Discovery Delegates
+    func session(_ session: MCSession, peer peerID: MCPeerID, didChange state: MCSessionState) {
+        DispatchQueue.main.async {
+            if state == .connected {
+                if !self.connectedPeerNames.contains(peerID.displayName) { self.connectedPeerNames.append(peerID.displayName) }
+                if self.isHostingRoom {
+                    if !self.orderedRoomPeers.contains(where: { $0.name == peerID.displayName }) && self.orderedRoomPeers.count < 4 {
+                        self.orderedRoomPeers.append(DoudizhuRoomPeer(name: peerID.displayName, charId: self.peerCharIds[peerID.displayName] ?? 2, displayName: self.cleanPeerLabel(peerID.displayName)))
+                    }
+                    self.rebuildLobbySeats()
+                    self.sendPacketToPeers(MahjongNetPacket(kind: .roomRoster, roomCode: self.wireRoomCode(), senderPeerName: self.myPeerID.displayName, senderCharId: self.myCharacter.charId, hostPeerName: self.myPeerID.displayName, roomPeers: self.orderedRoomPeers))
+                    self.broadcastFullState()
+                } else {
+                    self.sendJoinRequestToRoom()
+                }
+            } else if state == .notConnected {
+                self.connectedPeerNames.removeAll { $0 == peerID.displayName }
+                self.orderedRoomPeers.removeAll { $0.name == peerID.displayName }
+                if self.phase == .lobby || self.phase == .roundOver {
+                    self.promoteAuthorityIfNeeded()
+                    if self.phase == .lobby { self.rebuildLobbySeats() }
+                } else {
+                    for i in 0..<self.seats.count where self.seats[i].peerDisplayName == peerID.displayName {
+                        self.seats[i].isAI = true
+                        self.seats[i].name = "\(self.characterFilter(for: self.seats[i].characterId).displayName(AudioPlayerManager.shared.language))(AI接管)"
+                    }
+                    self.promoteAuthorityIfNeeded()
+                }
+            }
+        }
+    }
+
+    func session(_ session: MCSession, didReceive data: Data, fromPeer peerID: MCPeerID) {
+        guard let pkt = try? JSONDecoder().decode(MahjongNetPacket.self, from: data) else { return }
+        DispatchQueue.main.async { self.handleIncomingPacket(pkt) }
+    }
+    func session(_ session: MCSession, didReceive stream: InputStream, withName streamName: String, fromPeer peerID: MCPeerID) {}
+    func session(_ session: MCSession, didStartReceivingResourceWithName resourceName: String, fromPeer peerID: MCPeerID, with progress: Progress) {}
+    func session(_ session: MCSession, didFinishReceivingResourceWithName resourceName: String, fromPeer peerID: MCPeerID, at localURL: URL?, withError error: Error?) {}
+
+    func advertiser(_ advertiser: MCNearbyServiceAdvertiser, didReceiveInvitationFromPeer peerID: MCPeerID, withContext context: Data?, invitationHandler: @escaping (Bool, MCSession?) -> Void) {
+        invitationHandler((mcSession?.connectedPeers.count ?? 0) < 3, mcSession)
+    }
+
+    func browser(_ browser: MCNearbyServiceBrowser, foundPeer peerID: MCPeerID, withDiscoveryInfo info: [String : String]?) {
+        let code = (info?["code"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let myCode = roomCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !code.isEmpty && code == myCode else { return }
+        let room = DoudizhuDiscoveredRoom(id: "\(peerID.displayName)_\(code)", roomCode: code, hostName: info?["host"] ?? peerID.displayName, hostCharId: Int(info?["char"] ?? "1") ?? 1, peerID: peerID)
+        DispatchQueue.main.async {
+            if !self.discoveredRooms.contains(where: { $0.id == room.id }) {
+                self.discoveredRooms.append(room)
+            }
+        }
+    }
+
+    func browser(_ browser: MCNearbyServiceBrowser, lostPeer peerID: MCPeerID) {
+        DispatchQueue.main.async { self.discoveredRooms.removeAll { $0.peerID == peerID } }
     }
 }

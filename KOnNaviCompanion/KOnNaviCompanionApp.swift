@@ -33,6 +33,28 @@ class PhoneSceneDelegate: UIResponder, UIWindowSceneDelegate {
 }
 
 class AppDelegate: NSObject, UIApplicationDelegate {
+    static var orientationLock: UIInterfaceOrientationMask = .all
+
+    func application(_ application: UIApplication, supportedInterfaceOrientationsFor window: UIWindow?) -> UIInterfaceOrientationMask {
+        return AppDelegate.orientationLock
+    }
+
+    static func setOrientation(_ mask: UIInterfaceOrientationMask, preferred: UIInterfaceOrientation) {
+        orientationLock = mask
+        DispatchQueue.main.async {
+            if #available(iOS 16.0, *) {
+                for scene in UIApplication.shared.connectedScenes {
+                    if let windowScene = scene as? UIWindowScene {
+                        windowScene.requestGeometryUpdate(.iOS(interfaceOrientations: mask)) { _ in }
+                        windowScene.windows.forEach { $0.rootViewController?.setNeedsUpdateOfSupportedInterfaceOrientations() }
+                    }
+                }
+            } else {
+                UIDevice.current.setValue(preferred.rawValue, forKey: "orientation")
+                UIViewController.attemptRotationToDeviceOrientation()
+            }
+        }
+    }
     func application(_ application: UIApplication,
                      didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey : Any]? = nil) -> Bool {
         AudioPlayerManager.shared.configureAudioSession()

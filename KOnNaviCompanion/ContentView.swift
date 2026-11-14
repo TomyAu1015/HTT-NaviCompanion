@@ -1096,7 +1096,7 @@ enum ActiveModalSheet: String, Identifiable {
     case trains
     case departureTime
     case vehicleSettings
-    case doudizhu
+    case gameRoom
     
     var id: String { self.rawValue }
 }
@@ -1370,8 +1370,8 @@ struct ContentView: View {
                 RouteDepartureTimePickerSheetView(manager: manager)
             case .vehicleSettings:
                 VehicleAndPlateSettingsSheetView(manager: manager)
-            case .doudizhu:
-                KOnDoudizhuSheetView(manager: manager)
+            case .gameRoom:
+                KOnGameRoomSheetView(manager: manager)
                     .interactiveDismissDisabled(true)
             }
         }
@@ -2787,19 +2787,19 @@ struct ContentView: View {
             }
             
             Button(action: {
-                activeModalSheet = .doudizhu
+                activeModalSheet = .gameRoom
             }) {
                 HStack(spacing: 3) {
-                    Image(systemName: "suit.spade.fill")
-                        .font(.system(size: 10, weight: .bold))
-                    Text(tr("斗地主", "鬥地主", "Poker"))
+                    Text("🀄")
+                        .font(.system(size: 10))
+                    Text(tr("放课后棋牌室", "放課後棋牌室", "Game Room"))
                         .font(.system(size: 11, weight: .heavy))
                         .lineLimit(1)
                         .minimumScaleFactor(0.8)
                 }
-                .padding(.horizontal, 6)
+                .padding(.horizontal, 7)
                 .padding(.vertical, 6)
-                .background(LinearGradient(colors: [Color(red: 0.85, green: 0.35, blue: 0.12), httCrimson], startPoint: .topLeading, endPoint: .bottomTrailing))
+                .background(LinearGradient(colors: [Color(red: 0.72, green: 0.22, blue: 0.16), Color(red: 0.08, green: 0.42, blue: 0.24)], startPoint: .topLeading, endPoint: .bottomTrailing))
                 .foregroundColor(.white)
                 .cornerRadius(8)
                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold, lineWidth: 1.2))
@@ -7943,6 +7943,7 @@ struct AboutAndFeedbackContentView: View {
 
 struct KOnDoudizhuSheetView: View {
     @ObservedObject var manager: AudioPlayerManager
+    var embeddedInGameRoom: Bool = false
     @ObservedObject private var ddz = KOnDoudizhuManager.shared
     @Environment(\.dismiss) private var dismiss
     @State private var showServerConfig: Bool = false
@@ -7972,6 +7973,7 @@ struct KOnDoudizhuSheetView: View {
             
             VStack(spacing: 5) {
                 // Top Bar: Always-clickable 房间大厅 / 退出房间 + Title + 关闭
+                if !embeddedInGameRoom {
                 let canLeave = (ddz.phase != .lobby || ddz.isHostingRoom || ddz.isOnlineConnected || !ddz.connectedPeerNames.isEmpty)
                 HStack {
                     Button(action: {
@@ -8021,6 +8023,7 @@ struct KOnDoudizhuSheetView: View {
                 .padding(.horizontal, 10)
                 .padding(.top, 6)
                 .zIndex(100)
+                }
                 
                 // Status Notice Bar
                 HStack(spacing: 6) {
@@ -8073,7 +8076,7 @@ struct KOnDoudizhuSheetView: View {
                         Text(tr("面对面开房联机 (免流量)", "面對面開房聯機 (免流量)", "Face-to-Face P2P"))
                             .font(.system(size: 11, weight: .black))
                     }
-                    .frame(maxWidth: .infinity, minHeight: 32)
+                    .frame(maxWidth: .infinity, minHeight: 28)
                     .background(ddz.networkMode == .faceToFaceP2P ? httCrimson : Color.black.opacity(0.45))
                     .foregroundColor(.white)
                     .cornerRadius(8)
@@ -8089,7 +8092,7 @@ struct KOnDoudizhuSheetView: View {
                         Text(tr("在线服务器联机", "在線伺服器聯機", "Online Server"))
                             .font(.system(size: 11, weight: .black))
                     }
-                    .frame(maxWidth: .infinity, minHeight: 32)
+                    .frame(maxWidth: .infinity, minHeight: 28)
                     .background(ddz.networkMode == .onlineServer ? Color.blue : Color.black.opacity(0.45))
                     .foregroundColor(.white)
                     .cornerRadius(8)
@@ -8909,52 +8912,80 @@ struct KOnDoudizhuSheetView: View {
     
     private func opponentSeatPanel(seat: DoudizhuPlayerSeat, isLeft: Bool, isCompact: Bool = false) -> some View {
         let isTurn = (ddz.currentTurnSeat == seat.id && ddz.phase != .roundOver)
-        return VStack(spacing: isCompact ? 2 : 4) {
-            ZStack(alignment: .topTrailing) {
-                if let sprite = manager.allMemberFrames[seat.characterId] {
-                    Image(uiImage: sprite)
-                        .interpolation(.none)
-                        .resizable()
-                        .scaledToFit()
-                        .frame(width: isCompact ? 38 : 48, height: isCompact ? 44 : 56)
+        let stackCount = min(6, max(1, (seat.hand.count + 2) / 3))
+        return VStack(spacing: 4) {
+            HStack(spacing: 6) {
+                ZStack(alignment: .topTrailing) {
+                    if let sprite = manager.allMemberFrames[seat.characterId] {
+                        Image(uiImage: sprite)
+                            .interpolation(.none)
+                            .resizable()
+                            .scaledToFit()
+                            .frame(width: isCompact ? 38 : 44, height: isCompact ? 42 : 48)
+                    }
+                    if ddz.phase != .bidding {
+                        Text(seat.isLandlord ? "🎩" : "🌾")
+                            .font(.system(size: 13))
+                            .offset(x: 4, y: -4)
+                    }
                 }
-                if ddz.phase != .bidding {
-                    Text(seat.isLandlord ? "🎩" : "🌾")
-                        .font(.system(size: 13))
-                        .offset(x: 4, y: -4)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(seat.name)
+                        .font(.system(size: 11, weight: .black))
+                        .foregroundColor(.white)
+                        .lineLimit(1)
+                    Text("积分: \(seat.score)")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundColor(httCream.opacity(0.8))
                 }
             }
-            
-            Text(seat.name)
-                .font(.system(size: 10, weight: .black))
-                .foregroundColor(.white)
-                .lineLimit(1)
-            
-            HStack(spacing: 4) {
-                if let backImg = ddz.cardBackImage() {
-                    Image(uiImage: backImg)
-                        .resizable()
-                        .scaledToFill()
-                        .frame(width: 16, height: 22)
-                        .clipShape(RoundedRectangle(cornerRadius: 3))
-                        .overlay(RoundedRectangle(cornerRadius: 3).stroke(httGold, lineWidth: 0.8))
+
+            // Fanned K-ON! Card Back Stack + Exact Remaining Count
+            HStack(spacing: 6) {
+                if seat.hand.count > 0 {
+                    ZStack(alignment: .leading) {
+                        ForEach(0..<stackCount, id: \.self) { idx in
+                            Group {
+                                if let backImg = ddz.cardBackImage() {
+                                    Image(uiImage: backImg)
+                                        .resizable()
+                                        .scaledToFill()
+                                } else {
+                                    RoundedRectangle(cornerRadius: 4)
+                                        .fill(LinearGradient(colors: [httCrimson, Color(red: 0.45, green: 0.08, blue: 0.12)], startPoint: .top, endPoint: .bottom))
+                                        .overlay(Text("♪").font(.system(size: 9, weight: .black)).foregroundColor(httGold))
+                                }
+                            }
+                            .frame(width: 22, height: 31)
+                            .clipShape(RoundedRectangle(cornerRadius: 4))
+                            .overlay(RoundedRectangle(cornerRadius: 4).stroke(httGold, lineWidth: 1))
+                            .offset(x: CGFloat(idx) * 7)
+                        }
+                    }
+                    .frame(width: CGFloat(22 + (stackCount - 1) * 7), height: 32, alignment: .leading)
                 }
-                Text("\(seat.hand.count)")
-                    .font(.system(size: 13, weight: .black, design: .monospaced))
-                    .foregroundColor(seat.hand.count <= 2 ? .red : httGold)
+
+                Text("余\(seat.hand.count)张")
+                    .font(.system(size: 11, weight: .black, design: .monospaced))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(seat.hand.count <= 2 ? Color.red.opacity(0.85) : Color.black.opacity(0.65))
+                    .foregroundColor(seat.hand.count <= 2 ? .white : httGold)
+                    .cornerRadius(6)
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(httGold.opacity(0.5), lineWidth: 0.8))
             }
-            
+
             if !seat.lastActionText.isEmpty {
                 Text(seat.lastActionText)
                     .font(.system(size: 10, weight: .heavy))
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
-                    .background(Color.black.opacity(0.6))
+                    .background(Color.black.opacity(0.65))
                     .foregroundColor(httGold)
                     .cornerRadius(4)
             }
         }
-        .frame(width: isCompact ? 68 : 86)
+        .frame(width: isCompact ? 82 : 122)
         .padding(isCompact ? 5 : 7)
         .background(Color.black.opacity(0.50))
         .cornerRadius(12)
@@ -9087,6 +9118,818 @@ struct KOnDoudizhuSheetView: View {
                 .buttonStyle(PlainButtonStyle())
                 .disabled(!enabled)
             }
+        }
+    }
+}
+
+// MARK: - Guangdong Hongzhong Laizi Mahjong Sheet View (广东红中麻将 · 红中赖子 · 不能吃 · 可碰杠)
+struct KOnMahjongSheetView: View {
+    @ObservedObject var manager: AudioPlayerManager
+    var embeddedInGameRoom: Bool = false
+    @ObservedObject private var mj = KOnMahjongManager.shared
+    @Environment(\.dismiss) private var dismiss
+
+    private let httGold = Color(red: 0.88, green: 0.68, blue: 0.24)
+    private let httCrimson = Color(red: 0.78, green: 0.18, blue: 0.22)
+    private let httCream = Color(red: 0.99, green: 0.96, blue: 0.90)
+    private let tableFeltDark = Color(red: 0.05, green: 0.24, blue: 0.16)
+    private let tableFeltLight = Color(red: 0.09, green: 0.34, blue: 0.22)
+
+    var body: some View {
+        ZStack {
+            LinearGradient(colors: [tableFeltDark, tableFeltLight, Color(red: 0.04, green: 0.18, blue: 0.12)], startPoint: .topLeading, endPoint: .bottomTrailing)
+                .ignoresSafeArea()
+
+            VStack(spacing: 5) {
+                // Top Bar
+                if !embeddedInGameRoom {
+                HStack {
+                    Button(action: { mj.leaveCurrentRoomAndReset() }) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "chevron.left")
+                            Text("房间大厅")
+                        }
+                        .font(.system(size: 12, weight: .black))
+                        .foregroundColor(httGold)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(Color.black.opacity(0.48))
+                        .cornerRadius(14)
+                        .overlay(RoundedRectangle(cornerRadius: 14).stroke(httGold.opacity(0.55), lineWidth: 1))
+                    }
+                    .buttonStyle(PlainButtonStyle())
+
+                    Spacer()
+
+                    Text("放课后茶会 · 广东红中麻将")
+                        .font(.system(size: 14, weight: .black))
+                        .foregroundColor(.white)
+                        .lineLimit(1)
+
+                    Spacer()
+
+                    Button(action: {
+                        mj.leaveCurrentRoomAndReset()
+                        dismiss()
+                    }) {
+                        HStack(spacing: 3) {
+                            Image(systemName: "xmark.circle.fill")
+                            Text("关闭")
+                        }
+                        .font(.system(size: 12, weight: .black))
+                        .foregroundColor(httGold)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(Color.black.opacity(0.48))
+                        .cornerRadius(14)
+                        .overlay(RoundedRectangle(cornerRadius: 14).stroke(httGold.opacity(0.55), lineWidth: 1))
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                }
+                .padding(.horizontal, 10)
+                .padding(.top, 6)
+                .zIndex(100)
+                }
+
+                // Status Banner
+                HStack(spacing: 6) {
+                    Text("🀄")
+                    Text(mj.statusBanner)
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundColor(httCream)
+                        .lineLimit(2)
+                    Spacer()
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(Color.black.opacity(0.50))
+                .cornerRadius(8)
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold.opacity(0.6), lineWidth: 1))
+                .padding(.horizontal, 10)
+
+                if mj.phase == .lobby {
+                    mjLobbyView
+                } else {
+                    mjTableView
+                }
+            }
+        }
+        .onAppear {
+            if mj.phase == .lobby { mj.rebuildLobbySeats() }
+        }
+        .onDisappear {
+            mj.leaveCurrentRoomAndReset()
+        }
+    }
+
+    private var mjLobbyView: some View {
+        VStack(spacing: 6) {
+            ScrollView(.vertical, showsIndicators: true) {
+                VStack(alignment: .leading, spacing: 8) {
+                    // Mode Tabs
+                    HStack(spacing: 8) {
+                        Button(action: { mj.networkMode = .faceToFaceP2P }) {
+                            HStack(spacing: 4) {
+                                Image(systemName: "antenna.radiowaves.left.and.right")
+                                Text("面对面开房联机 (免流量)").font(.system(size: 11, weight: .black))
+                            }
+                            .frame(maxWidth: .infinity, minHeight: 28)
+                            .background(mj.networkMode == .faceToFaceP2P ? httCrimson : Color.black.opacity(0.45))
+                            .foregroundColor(.white).cornerRadius(8)
+                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(mj.networkMode == .faceToFaceP2P ? httGold : .clear, lineWidth: 1.5))
+                        }.buttonStyle(PlainButtonStyle())
+
+                        Button(action: { mj.networkMode = .onlineServer }) {
+                            HStack(spacing: 4) {
+                                Image(systemName: "icloud.and.arrow.up.fill")
+                                Text("在线服务器联机").font(.system(size: 11, weight: .black))
+                            }
+                            .frame(maxWidth: .infinity, minHeight: 28)
+                            .background(mj.networkMode == .onlineServer ? Color.blue : Color.black.opacity(0.45))
+                            .foregroundColor(.white).cornerRadius(8)
+                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(mj.networkMode == .onlineServer ? httGold : .clear, lineWidth: 1.5))
+                        }.buttonStyle(PlainButtonStyle())
+                    }
+
+                    // 1. Profile
+                    VStack(alignment: .leading, spacing: 5) {
+                        HStack(spacing: 8) {
+                            Text("1. 昵称与角色").font(.system(size: 12, weight: .black)).foregroundColor(httGold)
+                            TextField("输入房间昵称", text: $mj.myNickname)
+                                .font(.system(size: 12, weight: .bold)).foregroundColor(.white)
+                                .padding(.horizontal, 8).padding(.vertical, 5)
+                                .background(Color.white.opacity(0.12)).cornerRadius(6)
+                        }
+                        HStack(spacing: 6) {
+                            ForEach(AudioPlayerManager.CharacterFilter.fiveIndividuals, id: \.self) { char in
+                                Button(action: { mj.myCharacter = char }) {
+                                    VStack(spacing: 2) {
+                                        if let sprite = manager.allMemberFrames[char.charId] {
+                                            Image(uiImage: sprite).interpolation(.none).resizable().scaledToFit().frame(width: 30, height: 36)
+                                        }
+                                        Text(char.displayName(manager.language)).font(.system(size: 9, weight: .bold)).foregroundColor(.white).lineLimit(1)
+                                    }
+                                    .frame(maxWidth: .infinity).padding(.vertical, 4)
+                                    .background(mj.myCharacter == char ? httCrimson.opacity(0.85) : Color.white.opacity(0.10))
+                                    .cornerRadius(8)
+                                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(mj.myCharacter == char ? httGold : .clear, lineWidth: 1.5))
+                                }.buttonStyle(PlainButtonStyle())
+                            }
+                        }
+                    }
+                    .padding(8).background(Color.black.opacity(0.45)).cornerRadius(10)
+
+                    // 2. Room Connection
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Text(mj.networkMode == .faceToFaceP2P ? "2. 面对面建房/加入 (4人麻将)" : "2. 在线服务器联机 (4人麻将)")
+                                .font(.system(size: 12, weight: .black)).foregroundColor(httGold)
+                            Spacer()
+                            Text("房号:").font(.system(size: 11, weight: .bold)).foregroundColor(httCream)
+                            TextField("必填(如88)", text: $mj.roomCode)
+                                .font(.system(size: 12, weight: .black, design: .monospaced))
+                                .foregroundColor(httGold)
+                                .frame(width: 78).padding(4)
+                                .background(Color.white.opacity(0.15)).cornerRadius(6)
+                        }
+                        if mj.networkMode == .faceToFaceP2P {
+                            HStack(spacing: 8) {
+                                Button(action: { mj.startHostingFaceToFaceRoom() }) {
+                                    Text(mj.isHostingRoom ? "📡 房间已开启" : "创建房间(房主)")
+                                        .font(.system(size: 11, weight: .black))
+                                        .frame(maxWidth: .infinity, minHeight: 34)
+                                        .background(mj.isHostingRoom ? Color.green : httCrimson)
+                                        .foregroundColor(.white).cornerRadius(8)
+                                }.buttonStyle(PlainButtonStyle())
+                                Button(action: { mj.startScanningFaceToFaceRooms() }) {
+                                    Text(mj.isBrowsingRooms ? "🔍 扫描中..." : "扫描并加入房间")
+                                        .font(.system(size: 11, weight: .black))
+                                        .frame(maxWidth: .infinity, minHeight: 34)
+                                        .background(mj.isBrowsingRooms ? Color.blue : Color.green.opacity(0.8))
+                                        .foregroundColor(.white).cornerRadius(8)
+                                }.buttonStyle(PlainButtonStyle())
+                            }
+                            ForEach(mj.discoveredRooms) { room in
+                                Button(action: { mj.joinDiscoveredRoom(room) }) {
+                                    HStack {
+                                        Text("\(room.hostName) (房号: \(room.roomCode))").font(.system(size: 11, weight: .bold)).foregroundColor(.white)
+                                        Spacer()
+                                        Text("点击加入 >").font(.system(size: 11, weight: .black)).foregroundColor(httGold)
+                                    }
+                                    .padding(8).background(Color.white.opacity(0.15)).cornerRadius(8)
+                                }.buttonStyle(PlainButtonStyle())
+                            }
+                        } else {
+                            HStack(spacing: 6) {
+                                TextField("wss://azusa.online/ddz", text: $mj.customServerURL)
+                                    .font(.system(size: 11, design: .monospaced)).foregroundColor(.white)
+                                    .padding(6).background(Color.white.opacity(0.12)).cornerRadius(6)
+                                Button(action: { mj.connectOnlineServerRoom() }) {
+                                    Text(mj.isOnlineConnected ? "已连(\(mj.roomCode))" : "连接房间")
+                                        .font(.system(size: 11, weight: .black)).padding(.horizontal, 10).frame(height: 30)
+                                        .background(mj.isOnlineConnected ? Color.green : Color.blue)
+                                        .foregroundColor(.white).cornerRadius(8)
+                                }.buttonStyle(PlainButtonStyle())
+                            }
+                        }
+                    }
+                    .padding(8).background(Color.black.opacity(0.45)).cornerRadius(10)
+
+                    // 3. Rules
+                    let canEdit = mj.isRoomAuthority || (!mj.isHostingRoom && !mj.isOnlineConnected && mj.connectedPeerNames.isEmpty)
+                    VStack(alignment: .leading, spacing: 5) {
+                        HStack {
+                            Text("3. 广东红中麻将规则 (红中赖子 · 不能吃 · 可碰杠)")
+                                .font(.system(size: 11, weight: .black)).foregroundColor(httGold)
+                            Spacer()
+                            Text(canEdit ? "第\(mj.currentRound)/\(mj.totalRounds == 0 ? "∞" : "\(mj.totalRounds)")局" : "🔒 仅房主可改")
+                                .font(.system(size: 10, weight: .bold)).foregroundColor(canEdit ? .green : .orange)
+                        }
+                        HStack(spacing: 5) {
+                            Text("局数:").font(.system(size: 10, weight: .bold)).foregroundColor(httCream).frame(width: 34, alignment: .leading)
+                            ForEach([4, 8, 16, 0], id: \.self) { r in
+                                Button(action: { if canEdit { mj.totalRounds = r; mj.syncRulesIfHost() } }) {
+                                    Text(r == 0 ? "无限" : "\(r)局").font(.system(size: 10, weight: .bold))
+                                        .frame(maxWidth: .infinity).padding(.vertical, 4)
+                                        .background(mj.totalRounds == r ? httCrimson : Color.white.opacity(0.12))
+                                        .foregroundColor(.white).cornerRadius(6)
+                                }.buttonStyle(PlainButtonStyle()).disabled(!canEdit)
+                            }
+                        }
+                        HStack(spacing: 5) {
+                            Text("底分:").font(.system(size: 10, weight: .bold)).foregroundColor(httCream).frame(width: 34, alignment: .leading)
+                            ForEach([50, 100, 200, 500], id: \.self) { b in
+                                Button(action: { if canEdit { mj.baseScore = b; mj.syncRulesIfHost() } }) {
+                                    Text("\(b)分").font(.system(size: 10, weight: .bold))
+                                        .frame(maxWidth: .infinity).padding(.vertical, 4)
+                                        .background(mj.baseScore == b ? Color.orange : Color.white.opacity(0.12))
+                                        .foregroundColor(.white).cornerRadius(6)
+                                }.buttonStyle(PlainButtonStyle()).disabled(!canEdit)
+                            }
+                        }
+                        HStack(spacing: 5) {
+                            Text("限时:").font(.system(size: 10, weight: .bold)).foregroundColor(httCream).frame(width: 34, alignment: .leading)
+                            ForEach([15, 20, 30, 0], id: \.self) { t in
+                                Button(action: { if canEdit { mj.turnTimeLimit = t; mj.turnRemainingSeconds = t; mj.syncRulesIfHost() } }) {
+                                    Text(t == 0 ? "不限" : "\(t)秒").font(.system(size: 10, weight: .bold))
+                                        .frame(maxWidth: .infinity).padding(.vertical, 4)
+                                        .background(mj.turnTimeLimit == t ? Color.blue : Color.white.opacity(0.12))
+                                        .foregroundColor(.white).cornerRadius(6)
+                                }.buttonStyle(PlainButtonStyle()).disabled(!canEdit)
+                            }
+                        }
+                    }
+                    .padding(8).background(Color.black.opacity(0.45)).cornerRadius(10)
+
+                    // 4. 4-Seat Preview
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text("4. 四人牌桌座位预览 (1号为房主，不足4人由轻音AI补位)")
+                            .font(.system(size: 11, weight: .black)).foregroundColor(httGold)
+                        HStack(spacing: 5) {
+                            ForEach(mj.seats) { seat in
+                                VStack(spacing: 2) {
+                                    if let sprite = manager.allMemberFrames[seat.characterId] {
+                                        Image(uiImage: sprite).interpolation(.none).resizable().scaledToFit().frame(width: 30, height: 34)
+                                    }
+                                    Text(seat.name).font(.system(size: 9, weight: .black)).foregroundColor(.white).lineLimit(1)
+                                    Text(seat.isAI ? "🤖 AI" : "📱 真人").font(.system(size: 8, weight: .bold)).foregroundColor(seat.isAI ? httGold : .green)
+                                    Text("\(seat.score)分").font(.system(size: 8, design: .monospaced)).foregroundColor(httCream)
+                                }
+                                .frame(maxWidth: .infinity).padding(.vertical, 4)
+                                .background(Color.white.opacity(0.10)).cornerRadius(7)
+                                .overlay(RoundedRectangle(cornerRadius: 7).stroke(seat.isAI ? Color.white.opacity(0.2) : Color.green, lineWidth: 1))
+                            }
+                        }
+                    }
+                    .padding(8).background(Color.black.opacity(0.45)).cornerRadius(10)
+                }
+                .padding(.bottom, 6)
+            }
+
+            let isGuestWaiting = !mj.isRoomAuthority && (mj.isOnlineConnected || !mj.connectedPeerNames.isEmpty)
+            Button(action: { if !isGuestWaiting { mj.startNewRound() } }) {
+                Text(isGuestWaiting ? "⏳ 等待1号房主开始麻将..." : "🀄 立即开始广东红中麻将 (底分 \(mj.baseScore))")
+                    .font(.system(size: 14, weight: .black))
+                    .frame(maxWidth: .infinity, minHeight: 42)
+                    .background(isGuestWaiting ? Color.gray : httCrimson)
+                    .foregroundColor(.white).cornerRadius(10)
+                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(httGold, lineWidth: 1.5))
+            }
+            .buttonStyle(PlainButtonStyle())
+            .disabled(isGuestWaiting)
+        }
+        .padding(.horizontal, 10)
+        .padding(.bottom, 6)
+    }
+
+    private var mjTableView: some View {
+        GeometryReader { geo in
+            let oppIdx = (mj.mySeatIndex + 2) % 4
+            let leftIdx = (mj.mySeatIndex + 3) % 4
+            let rightIdx = (mj.mySeatIndex + 1) % 4
+            let usableW = max(280, geo.size.width - 16)
+
+            VStack(spacing: 5) {
+                // Top Row: Opposite Seat with Standing Tile Wall + Info
+                HStack(spacing: 10) {
+                    if oppIdx < mj.seats.count {
+                        let opp = mj.seats[oppIdx]
+                        mjCompactSeatBadge(seat: opp, isTurn: mj.currentTurnSeat == oppIdx)
+                        HStack(spacing: 1.5) {
+                            ForEach(0..<min(14, max(0, opp.hand.count)), id: \.self) { _ in
+                                mjTileBackView(width: 14, height: 22)
+                            }
+                        }
+                        .padding(.horizontal, 6).padding(.vertical, 3)
+                        .background(Color.black.opacity(0.35)).cornerRadius(6)
+                    }
+                    Spacer()
+                    HStack(spacing: 8) {
+                        Text("余 \(mj.wallCount) 张").font(.system(size: 11, weight: .black, design: .monospaced)).foregroundColor(httGold)
+                        Text("第\(mj.currentRound)局").font(.system(size: 11, weight: .bold)).foregroundColor(httCream)
+                        Text("⏱ \(mj.turnRemainingSeconds)s").font(.system(size: 11, weight: .black, design: .monospaced))
+                            .foregroundColor(mj.turnRemainingSeconds <= 5 ? .red : .green)
+                    }
+                    .padding(.horizontal, 10).padding(.vertical, 4)
+                    .background(Color.black.opacity(0.5)).cornerRadius(8)
+                    if mj.isRoomAuthority {
+                        Button(action: { mj.startNewRound() }) {
+                            Image(systemName: "arrow.clockwise.circle.fill").font(.system(size: 20)).foregroundColor(httGold)
+                        }.buttonStyle(PlainButtonStyle())
+                    }
+                }
+                .padding(.horizontal, 8)
+
+                // Opposite Melds & Discards
+                if oppIdx < mj.seats.count {
+                    mjSeatRiverAndMelds(seat: mj.seats[oppIdx], maxWidth: usableW)
+                        .padding(.horizontal, 8)
+                }
+
+                // Middle Row: Left Standing Wall + River | Center Compass Hub | Right River + Standing Wall
+                HStack(alignment: .center, spacing: 8) {
+                    if leftIdx < mj.seats.count {
+                        let lSeat = mj.seats[leftIdx]
+                        HStack(spacing: 5) {
+                            VStack(spacing: 1) {
+                                ForEach(0..<min(10, max(0, lSeat.hand.count)), id: \.self) { _ in
+                                    mjTileBackView(width: 18, height: 9)
+                                }
+                            }
+                            .padding(3).background(Color.black.opacity(0.32)).cornerRadius(5)
+                            VStack(alignment: .leading, spacing: 3) {
+                                mjCompactSeatBadge(seat: lSeat, isTurn: mj.currentTurnSeat == leftIdx)
+                                mjSeatRiverAndMelds(seat: lSeat, maxWidth: usableW * 0.28)
+                            }
+                        }
+                        .frame(maxWidth: usableW * 0.36, alignment: .leading)
+                    }
+
+                    // Center Compass & Highlight
+                    VStack(spacing: 4) {
+                        if let cl = mj.pendingClaim {
+                            Text("⚡ 响应牌").font(.system(size: 11, weight: .black)).foregroundColor(httGold)
+                            mjTileView(tile: cl.tile, width: 36, height: 50, isSelected: false, isHighlight: true)
+                        } else if mj.phase == .roundOver {
+                            Text(mj.winnerSeat != nil ? "🎉 \(mj.seats[mj.winnerSeat!].name) 胡牌" : "🌊 流局")
+                                .font(.system(size: 12, weight: .black)).foregroundColor(httGold).multilineTextAlignment(.center)
+                            Text(mj.winReason).font(.system(size: 10, weight: .bold)).foregroundColor(.white)
+                        } else {
+                            let tingList = mj.mySeatIndex < mj.seats.count ? MahjongEvaluator.readyTiles(hand: mj.seats[mj.mySeatIndex].hand, meldsCount: mj.seats[mj.mySeatIndex].melds.count) : []
+                            Text("广东红中赖子 · 136张无花牌")
+                                .font(.system(size: 10, weight: .black)).foregroundColor(httGold)
+                            if !tingList.isEmpty {
+                                Text("💡 听牌: \(tingList.map { $0.fullName }.prefix(6).joined(separator: " "))")
+                                    .font(.system(size: 10, weight: .black))
+                                    .foregroundColor(.green)
+                                    .multilineTextAlignment(.center)
+                            } else {
+                                Text("红中=赖子 · 不能吃 · 可碰杠")
+                                    .font(.system(size: 9, weight: .bold))
+                                    .foregroundColor(httCream.opacity(0.75))
+                                    .multilineTextAlignment(.center)
+                            }
+                        }
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 82)
+                    .padding(.horizontal, 6)
+                    .background(Color.black.opacity(0.32)).cornerRadius(12)
+                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(httGold.opacity(0.45), lineWidth: 1.2))
+
+                    if rightIdx < mj.seats.count {
+                        let rSeat = mj.seats[rightIdx]
+                        HStack(spacing: 5) {
+                            VStack(alignment: .trailing, spacing: 3) {
+                                mjCompactSeatBadge(seat: rSeat, isTurn: mj.currentTurnSeat == rightIdx)
+                                mjSeatRiverAndMelds(seat: rSeat, maxWidth: usableW * 0.28)
+                            }
+                            VStack(spacing: 1) {
+                                ForEach(0..<min(10, max(0, rSeat.hand.count)), id: \.self) { _ in
+                                    mjTileBackView(width: 18, height: 9)
+                                }
+                            }
+                            .padding(3).background(Color.black.opacity(0.32)).cornerRadius(5)
+                        }
+                        .frame(maxWidth: usableW * 0.36, alignment: .trailing)
+                    }
+                }
+                .padding(.horizontal, 8)
+
+                Spacer(minLength: 2)
+
+                // Action Bar (Hu / Kong / Pong / Pass / Discard / RoundOver)
+                mjActionBar
+                    .padding(.horizontal, 8)
+
+                // My Melds + Hand Tiles + Footer
+                if mj.mySeatIndex < mj.seats.count {
+                    let me = mj.seats[mj.mySeatIndex]
+                    if !me.melds.isEmpty {
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 6) {
+                                ForEach(me.melds) { m in
+                                    HStack(spacing: 1) {
+                                        ForEach(0..<(m.kind == .pong ? 3 : 4), id: \.self) { _ in
+                                            mjTileView(tile: m.tile, width: 22, height: 32, isSelected: false, isHighlight: false)
+                                        }
+                                    }
+                                    .padding(2).background(Color.black.opacity(0.35)).cornerRadius(5)
+                                }
+                            }
+                        }
+                        .padding(.horizontal, 8)
+                    }
+
+                    // My Hand (2 rows on compact portrait if > 8 tiles, or single row fitted)
+                    mjMyHandView(hand: me.hand, usableWidth: usableW)
+                        .padding(.horizontal, 8)
+
+                    HStack(spacing: 8) {
+                        if let sprite = manager.allMemberFrames[me.characterId] {
+                            Image(uiImage: sprite).interpolation(.none).resizable().scaledToFit().frame(width: 30, height: 34)
+                        }
+                        Text("\(me.name) · \(me.score)分").font(.system(size: 12, weight: .black)).foregroundColor(.white)
+                        if me.isDealer {
+                            Text("庄").font(.system(size: 10, weight: .black)).padding(.horizontal, 5).padding(.vertical, 2).background(httCrimson).foregroundColor(.white).cornerRadius(4)
+                        }
+                        Spacer()
+                        if mj.currentTurnSeat == mj.mySeatIndex && mj.phase == .playing {
+                            Text("👉 请出牌").font(.system(size: 11, weight: .black)).padding(.horizontal, 8).padding(.vertical, 3).background(Color.green).foregroundColor(.white).cornerRadius(6)
+                        }
+                    }
+                    .padding(.horizontal, 10).padding(.vertical, 5)
+                    .background(Color.black.opacity(0.55)).cornerRadius(10)
+                    .padding(.horizontal, 8).padding(.bottom, 6)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var mjActionBar: some View {
+        if mj.phase == .claimWindow, let cl = mj.pendingClaim {
+            let canHu = cl.eligibleHuSeats.contains(mj.mySeatIndex) && !cl.passedSeats.contains(mj.mySeatIndex)
+            let canKong = cl.eligibleKongSeats.contains(mj.mySeatIndex) && !cl.passedSeats.contains(mj.mySeatIndex)
+            let canPong = cl.eligiblePongSeats.contains(mj.mySeatIndex) && !cl.passedSeats.contains(mj.mySeatIndex)
+            if canHu || canKong || canPong {
+                HStack(spacing: 8) {
+                    if canHu {
+                        Button(action: { mj.sendClaimResponse("hu") }) {
+                            Text("🀄 胡牌!").font(.system(size: 14, weight: .black)).frame(maxWidth: .infinity, minHeight: 38).background(httCrimson).foregroundColor(.white).cornerRadius(10)
+                        }.buttonStyle(PlainButtonStyle())
+                    }
+                    if canKong {
+                        Button(action: { mj.sendClaimResponse("kong") }) {
+                            Text("杠 \(cl.tile.fullName)").font(.system(size: 13, weight: .black)).frame(maxWidth: .infinity, minHeight: 38).background(Color.orange).foregroundColor(.white).cornerRadius(10)
+                        }.buttonStyle(PlainButtonStyle())
+                    }
+                    if canPong {
+                        Button(action: { mj.sendClaimResponse("pong") }) {
+                            Text("碰 \(cl.tile.fullName)").font(.system(size: 13, weight: .black)).frame(maxWidth: .infinity, minHeight: 38).background(Color.blue).foregroundColor(.white).cornerRadius(10)
+                        }.buttonStyle(PlainButtonStyle())
+                    }
+                    Button(action: { mj.sendClaimResponse("pass") }) {
+                        Text("过").font(.system(size: 13, weight: .bold)).padding(.horizontal, 16).frame(height: 38).background(Color.gray.opacity(0.8)).foregroundColor(.white).cornerRadius(10)
+                    }.buttonStyle(PlainButtonStyle())
+                }
+            } else {
+                Text("⏳ 等待其他玩家响应...").font(.system(size: 11, weight: .bold)).foregroundColor(httGold).padding(.vertical, 6)
+            }
+        } else if mj.phase == .playing && mj.currentTurnSeat == mj.mySeatIndex {
+            let canSelfHu = mj.canDeclareSelfHu()
+            let kongOpts = mj.selfKongOptions()
+            HStack(spacing: 8) {
+                if canSelfHu {
+                    Button(action: { mj.declareSelfHu() }) {
+                        Text("🀄 自摸胡!").font(.system(size: 14, weight: .black)).frame(maxWidth: .infinity, minHeight: 38).background(httCrimson).foregroundColor(.white).cornerRadius(10)
+                    }.buttonStyle(PlainButtonStyle())
+                }
+                if let kTile = kongOpts.first {
+                    Button(action: { mj.declareSelfKong(tile: kTile) }) {
+                        Text("杠 \(kTile.fullName)").font(.system(size: 13, weight: .black)).padding(.horizontal, 12).frame(height: 38).background(Color.orange).foregroundColor(.white).cornerRadius(10)
+                    }.buttonStyle(PlainButtonStyle())
+                }
+                if let selId = mj.selectedTileId, mj.mySeatIndex < mj.seats.count, let tile = mj.seats[mj.mySeatIndex].hand.first(where: { $0.id == selId }) {
+                    Button(action: { mj.discardTile(tile) }) {
+                        Text("打出 \(tile.fullName)").font(.system(size: 14, weight: .black)).frame(maxWidth: .infinity, minHeight: 38).background(Color.green).foregroundColor(.white).cornerRadius(10)
+                    }.buttonStyle(PlainButtonStyle())
+                } else {
+                    Text("点选或双击手牌出牌").font(.system(size: 11, weight: .bold)).foregroundColor(httCream.opacity(0.8))
+                }
+            }
+        } else if mj.phase == .roundOver {
+            let inRoom = mj.isOnlineConnected || mj.isHostingRoom || !mj.connectedPeerNames.isEmpty
+            let isGuestWaiting = inRoom && !mj.isRoomAuthority
+            HStack(spacing: 10) {
+                Button(action: { if !isGuestWaiting { mj.startNewRound() } }) {
+                    Text(isGuestWaiting ? "⏳ 等待1号房主开启下一局..." : "▶ 再来一局")
+                        .font(.system(size: 14, weight: .black)).frame(maxWidth: .infinity, minHeight: 40)
+                        .background(isGuestWaiting ? Color.gray : httCrimson).foregroundColor(.white).cornerRadius(10)
+                }.buttonStyle(PlainButtonStyle()).disabled(isGuestWaiting)
+
+                if inRoom && mj.isRoomAuthority {
+                    Button(action: { mj.returnRoomToLobby() }) {
+                        Text("房间设置").font(.system(size: 13, weight: .bold)).padding(.horizontal, 14).frame(height: 40)
+                            .background(Color.black.opacity(0.55)).foregroundColor(httGold).cornerRadius(10)
+                    }.buttonStyle(PlainButtonStyle())
+                } else {
+                    Button(action: { mj.leaveCurrentRoomAndReset() }) {
+                        Text("退出房间").font(.system(size: 13, weight: .bold)).padding(.horizontal, 14).frame(height: 40)
+                            .background(Color.black.opacity(0.55)).foregroundColor(httGold).cornerRadius(10)
+                    }.buttonStyle(PlainButtonStyle())
+                }
+            }
+        }
+    }
+
+    private func mjCompactSeatBadge(seat: MahjongSeat, isTurn: Bool) -> some View {
+        HStack(spacing: 4) {
+            if let sprite = manager.allMemberFrames[seat.characterId] {
+                Image(uiImage: sprite).interpolation(.none).resizable().scaledToFit().frame(width: 24, height: 28)
+            }
+            VStack(alignment: .leading, spacing: 1) {
+                Text(seat.name).font(.system(size: 9, weight: .black)).foregroundColor(.white).lineLimit(1)
+                Text("\(seat.score)分 · \(seat.hand.count)张").font(.system(size: 8, design: .monospaced)).foregroundColor(httGold)
+            }
+        }
+        .padding(.horizontal, 6).padding(.vertical, 4)
+        .background(Color.black.opacity(0.45)).cornerRadius(8)
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(isTurn ? httGold : Color.white.opacity(0.2), lineWidth: isTurn ? 1.5 : 0.8))
+    }
+
+    private func mjSeatRiverAndMelds(seat: MahjongSeat, maxWidth: CGFloat) -> some View {
+        let cols = max(4, Int(maxWidth / 22))
+        let rows = stride(from: 0, to: seat.discards.count, by: cols).map { Array(seat.discards[$0..<min($0 + cols, seat.discards.count)]) }
+        return VStack(alignment: .leading, spacing: 2) {
+            if !seat.melds.isEmpty {
+                HStack(spacing: 3) {
+                    ForEach(seat.melds) { m in
+                        Text("\(m.kind.rawValue)\(m.tile.fullName)")
+                            .font(.system(size: 8, weight: .black)).foregroundColor(.black)
+                            .padding(.horizontal, 4).padding(.vertical, 1)
+                            .background(httGold).cornerRadius(3)
+                    }
+                }
+            }
+            ForEach(0..<rows.count, id: \.self) { rIdx in
+                HStack(spacing: 1.5) {
+                    ForEach(rows[rIdx]) { t in
+                        mjTileView(tile: t, width: 19, height: 26, isSelected: false, isHighlight: false)
+                    }
+                }
+            }
+        }
+    }
+
+    private func mjMyHandView(hand: [MahjongTile], usableWidth: CGFloat) -> some View {
+        let needTwoRows = hand.count > 9 && usableWidth < 500
+        if needTwoRows {
+            let split = (hand.count + 1) / 2
+            let top = Array(hand.prefix(split))
+            let bot = Array(hand.dropFirst(split))
+            let tileW = min(38.0, (usableWidth - 16) / CGFloat(max(1, split)))
+            let tileH = tileW * 1.38
+            return AnyView(VStack(spacing: 4) {
+                mjTileRow(tiles: top, tileW: tileW, tileH: tileH)
+                mjTileRow(tiles: bot, tileW: tileW, tileH: tileH)
+            })
+        } else {
+            let tileW = min(40.0, (usableWidth - 18) / CGFloat(max(1, hand.count)))
+            let tileH = tileW * 1.4
+            return AnyView(mjTileRow(tiles: hand, tileW: tileW, tileH: tileH))
+        }
+    }
+
+    private func mjTileRow(tiles: [MahjongTile], tileW: CGFloat, tileH: CGFloat) -> some View {
+        HStack(spacing: 2) {
+            ForEach(tiles) { tile in
+                let sel = (mj.selectedTileId == tile.id)
+                let isDrawn = (mj.drawnTileId == tile.id)
+                Button(action: {
+                    if mj.phase == .playing && mj.currentTurnSeat == mj.mySeatIndex {
+                        if mj.selectedTileId == tile.id {
+                            mj.discardTile(tile)
+                        } else {
+                            mj.selectedTileId = tile.id
+                        }
+                    }
+                }) {
+                    mjTileView(tile: tile, width: tileW, height: tileH, isSelected: sel, isHighlight: isDrawn)
+                }
+                .buttonStyle(PlainButtonStyle())
+            }
+        }
+    }
+
+    private func mjTileBackView(width: CGFloat, height: CGFloat) -> some View {
+        RoundedRectangle(cornerRadius: 3)
+            .fill(LinearGradient(colors: [Color(red: 0.06, green: 0.56, blue: 0.34), Color(red: 0.03, green: 0.36, blue: 0.20)], startPoint: .top, endPoint: .bottom))
+            .frame(width: width, height: height)
+            .overlay(RoundedRectangle(cornerRadius: 3).stroke(Color(red: 0.85, green: 0.96, blue: 0.88).opacity(0.75), lineWidth: 0.8))
+    }
+
+    private func mjTileView(tile: MahjongTile, width: CGFloat, height: CGFloat, isSelected: Bool, isHighlight: Bool) -> some View {
+        let mainColor: Color = {
+            switch tile.suit {
+            case .wan, .zhong: return Color(red: 0.78, green: 0.10, blue: 0.14)
+            case .tiao: return Color(red: 0.08, green: 0.48, blue: 0.20)
+            case .tong: return Color(red: 0.08, green: 0.30, blue: 0.68)
+            case .honor:
+                if tile.rank == 5 { return Color(red: 0.06, green: 0.52, blue: 0.24) } // 发财
+                if tile.rank == 6 { return Color(red: 0.18, green: 0.34, blue: 0.62) } // 白板
+                return Color(red: 0.12, green: 0.16, blue: 0.32) // 东南西北
+            }
+        }()
+        return ZStack(alignment: .topTrailing) {
+            VStack(spacing: 0) {
+                Text(tile.shortLabel)
+                    .font(.system(size: max(10, width * (tile.suit == .honor || tile.suit == .zhong ? 0.48 : 0.42)), weight: .black))
+                    .foregroundColor(mainColor)
+                if tile.suit != .zhong && tile.suit != .honor {
+                    Text(tile.suit.chineseUnit)
+                        .font(.system(size: max(7, width * 0.28), weight: .bold))
+                        .foregroundColor(mainColor)
+                }
+            }
+            .frame(width: width, height: height)
+            .background(Color(red: 0.98, green: 0.97, blue: 0.93))
+            .cornerRadius(4)
+            .overlay(RoundedRectangle(cornerRadius: 4).stroke(isSelected ? httGold : (isHighlight ? Color.green : Color(red: 0.75, green: 0.70, blue: 0.60)), lineWidth: isSelected ? 2.2 : 1))
+            .offset(y: isSelected ? -8 : 0)
+
+            if tile.isLaizi {
+                Text("赖")
+                    .font(.system(size: max(6, width * 0.22), weight: .black))
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 2)
+                    .background(httGold)
+                    .cornerRadius(2)
+                    .offset(x: 1, y: isSelected ? -9 : -1)
+            }
+        }
+    }
+}
+
+
+// MARK: - Unified Ho-kago Game Room (放课后棋牌室：斗地主 + 广东红中麻将二合一)
+struct KOnGameRoomSheetView: View {
+    @ObservedObject var manager: AudioPlayerManager
+    @ObservedObject private var ddz = KOnDoudizhuManager.shared
+    @ObservedObject private var mj = KOnMahjongManager.shared
+    @Environment(\.dismiss) private var dismiss
+    @State private var selectedGame: Int = 0 // 0 = 斗地主, 1 = 广东红中麻将
+
+    private let httGold = Color(red: 0.88, green: 0.68, blue: 0.24)
+
+    private func tr(_ hans: String, _ hant: String, _ en: String) -> String {
+        switch manager.language {
+        case .zhHans: return hans
+        case .zhHant: return hant
+        case .en: return en
+        }
+    }
+
+    var body: some View {
+        ZStack {
+            LinearGradient(
+                colors: selectedGame == 0
+                    ? [Color(red: 0.09, green: 0.28, blue: 0.20), Color(red: 0.07, green: 0.20, blue: 0.14)]
+                    : [Color(red: 0.05, green: 0.24, blue: 0.16), Color(red: 0.04, green: 0.18, blue: 0.12)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            .ignoresSafeArea()
+
+            VStack(spacing: 4) {
+                // Unified Top Bar
+                HStack {
+                    Button(action: {
+                        if selectedGame == 0 {
+                            ddz.leaveCurrentRoomAndReset()
+                        } else {
+                            mj.leaveCurrentRoomAndReset()
+                        }
+                    }) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "chevron.left")
+                            Text(tr("房间大厅", "房間大廳", "Lobby"))
+                        }
+                        .font(.system(size: 12, weight: .black))
+                        .foregroundColor(httGold)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(Color.black.opacity(0.48))
+                        .cornerRadius(14)
+                        .overlay(RoundedRectangle(cornerRadius: 14).stroke(httGold.opacity(0.55), lineWidth: 1))
+                    }
+                    .buttonStyle(PlainButtonStyle())
+
+                    Spacer()
+
+                    Text(tr("放课后茶会 · 放课后棋牌室", "放課後茶會 · 放課後棋牌室", "HTT · Game Room"))
+                        .font(.system(size: 15, weight: .black))
+                        .foregroundColor(.white)
+                        .lineLimit(1)
+
+                    Spacer()
+
+                    Button(action: {
+                        ddz.leaveCurrentRoomAndReset()
+                        mj.leaveCurrentRoomAndReset()
+                        dismiss()
+                    }) {
+                        HStack(spacing: 3) {
+                            Image(systemName: "xmark.circle.fill")
+                            Text(tr("关闭", "關閉", "Close"))
+                        }
+                        .font(.system(size: 12, weight: .black))
+                        .foregroundColor(httGold)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(Color.black.opacity(0.48))
+                        .cornerRadius(14)
+                        .overlay(RoundedRectangle(cornerRadius: 14).stroke(httGold.opacity(0.55), lineWidth: 1))
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                }
+                .padding(.horizontal, 10)
+                .padding(.top, 6)
+
+                // Game Switcher Bar
+                HStack(spacing: 8) {
+                    Button(action: {
+                        if selectedGame != 0 {
+                            mj.leaveCurrentRoomAndReset()
+                            selectedGame = 0
+                        }
+                    }) {
+                        HStack(spacing: 4) {
+                            Text("🃏")
+                            Text(tr("放课后斗地主 (3人)", "放課後鬥地主 (3人)", "Doudizhu (3P)"))
+                                .font(.system(size: 12, weight: .black))
+                        }
+                        .frame(maxWidth: .infinity, minHeight: 28)
+                        .background(selectedGame == 0 ? Color(red: 0.78, green: 0.18, blue: 0.22) : Color.black.opacity(0.42))
+                        .foregroundColor(.white)
+                        .cornerRadius(9)
+                        .overlay(RoundedRectangle(cornerRadius: 9).stroke(selectedGame == 0 ? httGold : httGold.opacity(0.35), lineWidth: selectedGame == 0 ? 1.5 : 1))
+                    }
+                    .buttonStyle(PlainButtonStyle())
+
+                    Button(action: {
+                        if selectedGame != 1 {
+                            ddz.leaveCurrentRoomAndReset()
+                            selectedGame = 1
+                        }
+                    }) {
+                        HStack(spacing: 4) {
+                            Text("🀄")
+                            Text(tr("广东红中麻将 (4人)", "廣東紅中麻將 (4人)", "Mahjong (4P)"))
+                                .font(.system(size: 12, weight: .black))
+                        }
+                        .frame(maxWidth: .infinity, minHeight: 28)
+                        .background(selectedGame == 1 ? Color(red: 0.08, green: 0.45, blue: 0.25) : Color.black.opacity(0.42))
+                        .foregroundColor(.white)
+                        .cornerRadius(9)
+                        .overlay(RoundedRectangle(cornerRadius: 9).stroke(selectedGame == 1 ? httGold : httGold.opacity(0.35), lineWidth: selectedGame == 1 ? 1.5 : 1))
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                }
+                .padding(.horizontal, 10)
+                .padding(.bottom, 2)
+
+                if selectedGame == 0 {
+                    KOnDoudizhuSheetView(manager: manager, embeddedInGameRoom: true)
+                } else {
+                    KOnMahjongSheetView(manager: manager, embeddedInGameRoom: true)
+                }
+            }
+        }
+        .onAppear {
+            AppDelegate.setOrientation(.landscape, preferred: .landscapeRight)
+        }
+        .onDisappear {
+            AppDelegate.setOrientation(.all, preferred: .portrait)
         }
     }
 }
