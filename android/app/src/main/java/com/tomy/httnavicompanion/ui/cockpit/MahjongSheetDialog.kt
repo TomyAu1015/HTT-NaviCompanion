@@ -22,6 +22,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -130,7 +131,11 @@ fun KOnGameRoomSheetDialog(onDismiss: () -> Unit) {
                     }
                 }
 
-                // Game Switcher Bar
+                // Game Switcher Bar (auto-collapses during active game to give maximum vertical space to hand cards/tiles)
+                val ddzPhase by ddzEngine.phase.collectAsState()
+                val mjPhase by mjEngine.phase.collectAsState()
+                val inLobbyNow = (selectedGame == 0 && ddzPhase == DoudizhuGamePhase.LOBBY) || (selectedGame == 1 && mjPhase == MahjongGamePhase.LOBBY)
+                if (inLobbyNow) {
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -187,6 +192,8 @@ fun KOnGameRoomSheetDialog(onDismiss: () -> Unit) {
                             fontWeight = FontWeight.Black
                         )
                     }
+                }
+
                 }
 
                 Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
@@ -559,110 +566,99 @@ fun KOnMahjongSheetDialog(onDismiss: () -> Unit, embeddedInGameRoom: Boolean = f
                         }
                     }
 
-                    // Action Row
-                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                        val cl = pendingClaim
-                        if (phase == MahjongGamePhase.CLAIM_WINDOW && cl != null) {
-                            val canHu = cl.eligibleHuSeats.contains(mySeatIdx) && !cl.passedSeats.contains(mySeatIdx)
-                            val canKong = cl.eligibleKongSeats.contains(mySeatIdx) && !cl.passedSeats.contains(mySeatIdx)
-                            val canPong = cl.eligiblePongSeats.contains(mySeatIdx) && !cl.passedSeats.contains(mySeatIdx)
-                            if (canHu || canKong || canPong) {
-                                if (canHu) Button(onClick = { engine.sendClaimResponse("hu") }, colors = ButtonDefaults.buttonColors(containerColor = MjRed), modifier = Modifier.weight(1f)) { Text("🀄 胡!", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Black) }
-                                if (canKong) Button(onClick = { engine.sendClaimResponse("kong") }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD99426)), modifier = Modifier.weight(1f)) { Text("杠", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Black) }
-                                if (canPong) Button(onClick = { engine.sendClaimResponse("pong") }, colors = ButtonDefaults.buttonColors(containerColor = MjBlue), modifier = Modifier.weight(1f)) { Text("碰", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Black) }
-                                Button(onClick = { engine.sendClaimResponse("pass") }, colors = ButtonDefaults.buttonColors(containerColor = Color.DarkGray)) { Text("过", color = Color.White, fontSize = 13.sp) }
-                            } else {
-                                Text("⏳ 等待其他玩家响应...", color = MjGold, fontSize = 11.sp, modifier = Modifier.padding(vertical = 6.dp))
-                            }
-                        } else if (phase == MahjongGamePhase.PLAYING && currentTurn == mySeatIdx) {
-                            if (engine.canDeclareSelfHu()) {
-                                Button(onClick = { engine.declareSelfHu() }, colors = ButtonDefaults.buttonColors(containerColor = MjRed), modifier = Modifier.weight(1f)) { Text("🀄 自摸胡!", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Black) }
-                            }
-                            engine.selfKongOptions().firstOrNull()?.let { kt ->
-                                Button(onClick = { engine.declareSelfKong(kt) }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD99426))) { Text("杠 ${kt.fullName}", color = Color.White, fontSize = 12.sp) }
-                            }
-                            val selTile = seats.getOrNull(mySeatIdx)?.hand?.firstOrNull { it.id == selectedTileId }
-                            if (selTile != null) {
-                                Button(onClick = { engine.discardTile(selTile) }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32)), modifier = Modifier.weight(1f)) {
-                                    Text("打出 ${selTile.fullName}", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Black)
-                                }
-                            } else {
-                                Text("点选或双击手牌出牌", color = MjCream, fontSize = 11.sp, modifier = Modifier.padding(vertical = 6.dp))
-                            }
-                        } else if (phase == MahjongGamePhase.ROUND_OVER) {
-                            val inRoom = isServerConn || isHosting || connectedPeers.isNotEmpty()
-                            val isGuestWaiting = inRoom && !isRoomAuthority
-                            Button(onClick = { if (!isGuestWaiting) engine.startNewGame() }, enabled = !isGuestWaiting, colors = ButtonDefaults.buttonColors(containerColor = if (isGuestWaiting) Color.DarkGray else MjRed), modifier = Modifier.weight(1f)) {
-                                Text(if (isGuestWaiting) "⏳ 等待1号房主开启下一局..." else "▶ 再来一局", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Black)
-                            }
-                            if (inRoom && isRoomAuthority) {
-                                Button(onClick = { engine.returnRoomToLobby() }, colors = ButtonDefaults.buttonColors(containerColor = MjCardGreen)) { Text("房间设置", color = MjGold, fontSize = 12.sp) }
-                            } else {
-                                Button(onClick = { engine.leaveRoomAndResetLobby() }, colors = ButtonDefaults.buttonColors(containerColor = MjCardGreen)) { Text("退出房间", color = MjGold, fontSize = 12.sp) }
-                            }
-                        }
-                    }
-
-                    // My Melds & Hand
+                    // Compact Single-Line My Info + Action Bar + Side-by-Side Melds & Hand Row
                     val me = seats.getOrNull(mySeatIdx)
                     if (me != null) {
-                        if (me.melds.isNotEmpty()) {
-                            Row(modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-                                me.melds.forEach { m ->
-                                    Row(modifier = Modifier.clip(RoundedCornerShape(5.dp)).background(Color.Black.copy(alpha = 0.35f)).padding(2.dp), horizontalArrangement = Arrangement.spacedBy(1.dp)) {
-                                        repeat(if (m.kind == MahjongMeldKind.PONG) 3 else 4) {
-                                            MjTileCard(m.tile, 22.dp, 30.dp, isSelected = false, isHighlight = false)
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        Spacer(Modifier.height(4.dp))
-                        BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
-                            val w = maxWidth
-                            val twoRows = me.hand.size > 9 && w < 500.dp
-                            if (twoRows) {
-                                val split = (me.hand.size + 1) / 2
-                                val tileW = ((w - 20.dp) / split).coerceIn(26.dp, 38.dp)
-                                val tileH = tileW * 1.38f
-                                Column(modifier = Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                    Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                                        me.hand.take(split).forEach { t ->
-                                            MjTileCard(t, tileW, tileH, selectedTileId == t.id, drawnTileId == t.id) { engine.selectOrDiscardTile(t) }
-                                        }
-                                    }
-                                    Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                                        me.hand.drop(split).forEach { t ->
-                                            MjTileCard(t, tileW, tileH, selectedTileId == t.id, drawnTileId == t.id) { engine.selectOrDiscardTile(t) }
-                                        }
-                                    }
-                                }
-                            } else {
-                                val tileW = ((w - 22.dp) / me.hand.size.coerceAtLeast(1)).coerceIn(28.dp, 40.dp)
-                                val tileH = tileW * 1.4f
-                                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
-                                    me.hand.forEach { t ->
-                                        Box(modifier = Modifier.padding(horizontal = 1.dp)) {
-                                            MjTileCard(t, tileW, tileH, selectedTileId == t.id, drawnTileId == t.id) { engine.selectOrDiscardTile(t) }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        Spacer(Modifier.height(4.dp))
                         Row(
-                            modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(MjCardGreen).padding(horizontal = 10.dp, vertical = 4.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Row(
+                                modifier = Modifier.clip(RoundedCornerShape(8.dp)).background(MjCardGreen).padding(horizontal = 8.dp, vertical = 3.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(5.dp)
+                            ) {
                                 allMemberFrames[me.character.charId]?.let { bmp ->
-                                    Image(bitmap = bmp.asImageBitmap(), contentDescription = null, filterQuality = FilterQuality.None, modifier = Modifier.size(28.dp))
+                                    Image(bitmap = bmp.asImageBitmap(), contentDescription = null, filterQuality = FilterQuality.None, modifier = Modifier.size(22.dp))
                                 }
-                                Text("${me.name}${if (me.isDealer) " [庄]" else ""} · ${me.score}分", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Black)
+                                Text("${me.name}${if (me.isDealer) "[庄]" else ""} · ${me.score}分", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Black)
                             }
-                            if (currentTurn == mySeatIdx && phase == MahjongGamePhase.PLAYING) {
-                                Text("👉 请出牌", color = Color(0xFF00E676), fontSize = 11.sp, fontWeight = FontWeight.Black)
+
+                            Row(modifier = Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                                val cl = pendingClaim
+                                if (phase == MahjongGamePhase.CLAIM_WINDOW && cl != null) {
+                                    val canHu = cl.eligibleHuSeats.contains(mySeatIdx) && !cl.passedSeats.contains(mySeatIdx)
+                                    val canKong = cl.eligibleKongSeats.contains(mySeatIdx) && !cl.passedSeats.contains(mySeatIdx)
+                                    val canPong = cl.eligiblePongSeats.contains(mySeatIdx) && !cl.passedSeats.contains(mySeatIdx)
+                                    if (canHu || canKong || canPong) {
+                                        if (canHu) Button(onClick = { engine.sendClaimResponse("hu") }, contentPadding = PaddingValues(vertical = 4.dp), colors = ButtonDefaults.buttonColors(containerColor = MjRed), modifier = Modifier.weight(1f).height(32.dp)) { Text("🀄 胡!", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Black) }
+                                        if (canKong) Button(onClick = { engine.sendClaimResponse("kong") }, contentPadding = PaddingValues(vertical = 4.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD99426)), modifier = Modifier.weight(1f).height(32.dp)) { Text("杠", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Black) }
+                                        if (canPong) Button(onClick = { engine.sendClaimResponse("pong") }, contentPadding = PaddingValues(vertical = 4.dp), colors = ButtonDefaults.buttonColors(containerColor = MjBlue), modifier = Modifier.weight(1f).height(32.dp)) { Text("碰", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Black) }
+                                        Button(onClick = { engine.sendClaimResponse("pass") }, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp), colors = ButtonDefaults.buttonColors(containerColor = Color.DarkGray), modifier = Modifier.height(32.dp)) { Text("过", color = Color.White, fontSize = 12.sp) }
+                                    } else {
+                                        Text("⏳ 等待其他玩家响应...", color = MjGold, fontSize = 11.sp)
+                                    }
+                                } else if (phase == MahjongGamePhase.PLAYING && currentTurn == mySeatIdx) {
+                                    if (engine.canDeclareSelfHu()) {
+                                        Button(onClick = { engine.declareSelfHu() }, contentPadding = PaddingValues(vertical = 4.dp), colors = ButtonDefaults.buttonColors(containerColor = MjRed), modifier = Modifier.weight(1f).height(32.dp)) { Text("🀄 自摸胡!", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Black) }
+                                    }
+                                    engine.selfKongOptions().firstOrNull()?.let { kt ->
+                                        Button(onClick = { engine.declareSelfKong(kt) }, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD99426)), modifier = Modifier.height(32.dp)) { Text("杠 ${kt.fullName}", color = Color.White, fontSize = 11.sp) }
+                                    }
+                                    val selTile = me.hand.firstOrNull { it.id == selectedTileId }
+                                    if (selTile != null) {
+                                        Button(onClick = { engine.discardTile(selTile) }, contentPadding = PaddingValues(vertical = 4.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32)), modifier = Modifier.weight(1f).height(32.dp)) {
+                                            Text("打出 ${selTile.fullName}", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Black)
+                                        }
+                                    } else {
+                                        Text("👉 请点选或双击手牌出牌", color = Color(0xFF00E676), fontSize = 11.sp, fontWeight = FontWeight.Black)
+                                    }
+                                } else if (phase == MahjongGamePhase.ROUND_OVER) {
+                                    val inRoom = isServerConn || isHosting || connectedPeers.isNotEmpty()
+                                    val isGuestWaiting = inRoom && !isRoomAuthority
+                                    Button(onClick = { if (!isGuestWaiting) engine.startNewGame() }, enabled = !isGuestWaiting, contentPadding = PaddingValues(vertical = 4.dp), colors = ButtonDefaults.buttonColors(containerColor = if (isGuestWaiting) Color.DarkGray else MjRed), modifier = Modifier.weight(1f).height(32.dp)) {
+                                        Text(if (isGuestWaiting) "⏳ 等待房主..." else "▶ 再来一局", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Black)
+                                    }
+                                    if (inRoom && isRoomAuthority) {
+                                        Button(onClick = { engine.returnRoomToLobby() }, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp), colors = ButtonDefaults.buttonColors(containerColor = MjCardGreen), modifier = Modifier.height(32.dp)) { Text("房间设置", color = MjGold, fontSize = 11.sp) }
+                                    } else {
+                                        Button(onClick = { engine.leaveRoomAndResetLobby() }, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp), colors = ButtonDefaults.buttonColors(containerColor = MjCardGreen), modifier = Modifier.height(32.dp)) { Text("退出房间", color = MjGold, fontSize = 11.sp) }
+                                    }
+                                }
+                            }
+                        }
+
+                        Spacer(Modifier.height(4.dp))
+
+                        // Melds + Hand Tiles side-by-side on bottom row so tiles are 100% visible!
+                        BoxWithConstraints(modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp)) {
+                            val totalW = maxWidth
+                            val meldW = (me.melds.size * 84).dp
+                            val handW = (totalW - meldW - 12.dp).coerceAtLeast(220.dp)
+                            val tileW = (handW / me.hand.size.coerceAtLeast(1)).coerceIn(28.dp, 42.dp)
+                            val tileH = tileW * 1.4f
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.Bottom,
+                                horizontalArrangement = Arrangement.Center
+                            ) {
+                                if (me.melds.isNotEmpty()) {
+                                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.padding(end = 8.dp)) {
+                                        me.melds.forEach { m ->
+                                            Row(modifier = Modifier.clip(RoundedCornerShape(5.dp)).background(Color.Black.copy(alpha = 0.35f)).padding(2.dp), horizontalArrangement = Arrangement.spacedBy(1.dp)) {
+                                                repeat(if (m.kind == MahjongMeldKind.PONG) 3 else 4) {
+                                                    MjTileCard(m.tile, 24.dp, 34.dp, isSelected = false, isHighlight = false)
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                Row(horizontalArrangement = Arrangement.spacedBy(1.5.dp)) {
+                                    me.hand.forEach { t ->
+                                        MjTileCard(t, tileW, tileH, selectedTileId == t.id, drawnTileId == t.id) { engine.selectOrDiscardTile(t) }
+                                    }
+                                }
                             }
                         }
                     }
@@ -744,19 +740,10 @@ private fun MjDiscardRiver(seat: MahjongSeat) {
 
 @Composable
 private fun MjTileCard(tile: MahjongTile, w: Dp, h: Dp, isSelected: Boolean, isHighlight: Boolean, onClick: (() -> Unit)? = null) {
-    val fg = when (tile.suit) {
-        MahjongSuit.WAN, MahjongSuit.ZHONG -> Color(0xFFC81922)
-        MahjongSuit.TIAO -> Color(0xFF147A33)
-        MahjongSuit.TONG -> Color(0xFF144DAE)
-        MahjongSuit.HONOR -> when (tile.rank) {
-            5 -> Color(0xFF0E853D)
-            6 -> Color(0xFF2E579E)
-            else -> Color(0xFF1F2952)
-        }
-    }
+    val tileBmp = HTTNaviApp.instance.assetDecryptor.getMahjongTileBitmap(tile.id, tile.suit.code, tile.rank)
     Box(
         modifier = Modifier
-            .offset(y = if (isSelected) (-7).dp else 0.dp)
+            .offset(y = if (isSelected) (-6).dp else 0.dp)
             .size(w, h)
             .clip(RoundedCornerShape(4.dp))
             .background(Color(0xFFFAF7ED))
@@ -764,11 +751,15 @@ private fun MjTileCard(tile: MahjongTile, w: Dp, h: Dp, isSelected: Boolean, isH
             .let { if (onClick != null) it.clickable { onClick() } else it },
         contentAlignment = Alignment.Center
     ) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Text(tile.shortLabel, color = fg, fontSize = (w.value * 0.40f).coerceAtLeast(9f).sp, fontWeight = FontWeight.Black, lineHeight = (w.value * 0.44f).sp)
-            if (tile.suit != MahjongSuit.ZHONG && tile.suit != MahjongSuit.HONOR) {
-                Text(tile.suit.unit, color = fg, fontSize = (w.value * 0.27f).coerceAtLeast(7f).sp, fontWeight = FontWeight.Bold, lineHeight = (w.value * 0.30f).sp)
-            }
+        if (tileBmp != null) {
+            Image(
+                bitmap = tileBmp.asImageBitmap(),
+                contentDescription = tile.fullName,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
+        } else {
+            Text(tile.shortLabel, color = Color.Black, fontSize = (w.value * 0.40f).coerceAtLeast(9f).sp, fontWeight = FontWeight.Black)
         }
         if (tile.isLaizi) {
             Text(

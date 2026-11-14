@@ -219,6 +219,14 @@ class AssetDecryptor(private val context: Context) {
         return doudizhuCardCache[cardKey]
     }
 
+    fun getMahjongTileBitmap(tileId: String, suitCode: String, rank: Int): Bitmap? {
+        if (doudizhuCardCache.isEmpty()) {
+            loadDoudizhuCardsArchive()
+        }
+        doudizhuCardCache["mj_$tileId"]?.let { return it }
+        return doudizhuCardCache["mj_${suitCode}_${rank}_0"]
+    }
+
     fun decryptVoiceChunk(oneBasedId: Int): ByteArray? {
         val index = oneBasedId - 1
         if (index < 0 || index >= voiceEntries.size) return null

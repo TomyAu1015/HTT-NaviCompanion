@@ -768,190 +768,167 @@ fun KOnDoudizhuSheetDialog(onDismiss: () -> Unit, embeddedInGameRoom: Boolean = 
 
                     Spacer(Modifier.height(6.dp))
 
-                    // Action Buttons Row (Bid / Play / Hint / Pass / Play Again)
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        when (phase) {
-                            DoudizhuGamePhase.BIDDING -> {
-                                if (currentTurn == mySeatIdx) {
-                                    listOf(0 to "不叫", 1 to "1 分", 2 to "2 分", 3 to "3 分").forEach { (b, lbl) ->
-                                        val enabled = (b == 0 || b > highestBid)
-                                        Button(
-                                            onClick = { if (enabled) engine.submitBid(b) },
-                                            enabled = enabled,
-                                            colors = ButtonDefaults.buttonColors(
-                                                containerColor = when (b) {
-                                                    0 -> Color(0xFF424242)
-                                                    3 -> DdzRed
-                                                    else -> Color(0xFFD99426)
-                                                }
-                                            ),
-                                            shape = RoundedCornerShape(10.dp),
-                                            contentPadding = PaddingValues(vertical = 8.dp),
-                                            modifier = Modifier.weight(1f)
-                                        ) {
-                                            Text(lbl, color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Black)
-                                        }
-                                    }
-                                } else {
-                                    Box(
-                                        modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        Text(
-                                            "等待 [${seats.getOrNull(currentTurn)?.name ?: "其他玩家"}] 叫分...",
-                                            color = DdzGold,
-                                            fontSize = 12.sp,
-                                            fontWeight = FontWeight.Bold
-                                        )
-                                    }
-                                }
-                            }
-                            DoudizhuGamePhase.PLAYING -> {
-                                if (currentTurn == mySeatIdx) {
-                                    val canPass = (lastPlaySeat != mySeatIdx && lastPlaySeat != -1)
-                                    if (canPass) {
-                                        Button(
-                                            onClick = { engine.passTurn() },
-                                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF424242)),
-                                            shape = RoundedCornerShape(10.dp),
-                                            contentPadding = PaddingValues(vertical = 8.dp),
-                                            modifier = Modifier.weight(1f)
-                                        ) { Text("不出", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold) }
-                                    }
-                                    Button(
-                                        onClick = { engine.hintCards() },
-                                        colors = ButtonDefaults.buttonColors(containerColor = DdzBlue),
-                                        shape = RoundedCornerShape(10.dp),
-                                        contentPadding = PaddingValues(vertical = 8.dp),
-                                        modifier = Modifier.weight(1f)
-                                    ) { Text("提示", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold) }
-                                    Button(
-                                        onClick = { engine.clearSelection() },
-                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF455A64)),
-                                        shape = RoundedCornerShape(10.dp),
-                                        contentPadding = PaddingValues(vertical = 8.dp),
-                                        modifier = Modifier.weight(1f)
-                                    ) { Text("重选", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold) }
-                                    Button(
-                                        onClick = { engine.playSelectedCards() },
-                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32)),
-                                        shape = RoundedCornerShape(10.dp),
-                                        contentPadding = PaddingValues(vertical = 8.dp),
-                                        modifier = Modifier.weight(1.3f)
-                                    ) { Text("出牌 (${selectedIds.size})", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Black) }
-                                } else {
-                                    Box(
-                                        modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        Text(
-                                            "等待 [${seats.getOrNull(currentTurn)?.name ?: "对手"}] 出牌...",
-                                            color = DdzGold,
-                                            fontSize = 12.sp,
-                                            fontWeight = FontWeight.Bold
-                                        )
-                                    }
-                                }
-                            }
-                            DoudizhuGamePhase.FINISHED -> {
-                                val inRoom = isServerConn || isHosting || connectedPeers.isNotEmpty()
-                                val isGuestWaiting = inRoom && !isRoomAuthority
-                                Button(
-                                    onClick = { if (!isGuestWaiting) engine.startNewGame() },
-                                    enabled = !isGuestWaiting,
-                                    colors = ButtonDefaults.buttonColors(containerColor = if (isGuestWaiting) Color.DarkGray else DdzRed),
-                                    shape = RoundedCornerShape(10.dp),
-                                    modifier = Modifier.weight(1f)
-                                ) {
-                                    Text(
-                                        if (isGuestWaiting) "⏳ 等待1号房主开启下一局..." else "▶ 再来一局",
-                                        color = Color.White,
-                                        fontSize = 13.sp,
-                                        fontWeight = FontWeight.Black
-                                    )
-                                }
-                                if (inRoom && isRoomAuthority) {
-                                    Button(
-                                        onClick = { engine.returnRoomToLobby() },
-                                        colors = ButtonDefaults.buttonColors(containerColor = DdzCardGreen),
-                                        shape = RoundedCornerShape(10.dp)
-                                    ) { Text("房间设置", color = DdzGold, fontSize = 12.sp, fontWeight = FontWeight.Bold) }
-                                } else {
-                                    Button(
-                                        onClick = { engine.leaveRoomAndResetLobby() },
-                                        colors = ButtonDefaults.buttonColors(containerColor = DdzCardGreen),
-                                        shape = RoundedCornerShape(10.dp)
-                                    ) { Text("退出房间", color = DdzGold, fontSize = 12.sp, fontWeight = FontWeight.Bold) }
-                                }
-                            }
-                            else -> {}
-                        }
-                    }
-
-                    Spacer(Modifier.height(4.dp))
-
-                    // =====================================================
-                    // Adaptive 1-Row / 2-Row Player Hand Area (100% visible, zero clipping!)
-                    // =====================================================
+                    // Compact Single-Row My Info Badge + Action Buttons, followed by Full-Height Hand Cards
                     val mySeat = seats.getOrNull(mySeatIdx)
                     if (mySeat != null) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(DdzCardGreen)
+                                    .border(1.dp, DdzGold.copy(alpha = 0.6f), RoundedCornerShape(8.dp))
+                                    .padding(horizontal = 8.dp, vertical = 3.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(5.dp)
+                            ) {
+                                allMemberFrames[mySeat.character.charId]?.let { bmp ->
+                                    Image(
+                                        bitmap = bmp.asImageBitmap(),
+                                        contentDescription = null,
+                                        filterQuality = FilterQuality.None,
+                                        modifier = Modifier.size(22.dp)
+                                    )
+                                }
+                                Text(
+                                    "${mySeat.name} ${if (mySeat.isLandlord) "🎩" else "🌾"} · 余${mySeat.hand.size} · ${mySeat.score}分",
+                                    color = Color.White,
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Black,
+                                    maxLines = 1
+                                )
+                            }
+
+                            Row(
+                                modifier = Modifier.weight(1f),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                when (phase) {
+                                    DoudizhuGamePhase.BIDDING -> {
+                                        if (currentTurn == mySeatIdx) {
+                                            listOf(0 to "不叫", 1 to "1分", 2 to "2分", 3 to "3分").forEach { (b, lbl) ->
+                                                val enabled = (b == 0 || b > highestBid)
+                                                Button(
+                                                    onClick = { if (enabled) engine.submitBid(b) },
+                                                    enabled = enabled,
+                                                    colors = ButtonDefaults.buttonColors(
+                                                        containerColor = when (b) {
+                                                            0 -> Color(0xFF424242)
+                                                            3 -> DdzRed
+                                                            else -> Color(0xFFD99426)
+                                                        }
+                                                    ),
+                                                    shape = RoundedCornerShape(8.dp),
+                                                    contentPadding = PaddingValues(vertical = 4.dp),
+                                                    modifier = Modifier.weight(1f).height(32.dp)
+                                                ) {
+                                                    Text(lbl, color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Black)
+                                                }
+                                            }
+                                        } else {
+                                            Text(
+                                                "⏳ 等待 [${seats.getOrNull(currentTurn)?.name ?: "其他玩家"}] 叫分...",
+                                                color = DdzGold,
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                        }
+                                    }
+                                    DoudizhuGamePhase.PLAYING -> {
+                                        if (currentTurn == mySeatIdx) {
+                                            val canPass = (lastPlaySeat != mySeatIdx && lastPlaySeat != -1)
+                                            if (canPass) {
+                                                Button(
+                                                    onClick = { engine.passTurn() },
+                                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF424242)),
+                                                    shape = RoundedCornerShape(8.dp),
+                                                    contentPadding = PaddingValues(vertical = 4.dp),
+                                                    modifier = Modifier.weight(1f).height(32.dp)
+                                                ) { Text("不出", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold) }
+                                            }
+                                            Button(
+                                                onClick = { engine.hintCards() },
+                                                colors = ButtonDefaults.buttonColors(containerColor = DdzBlue),
+                                                shape = RoundedCornerShape(8.dp),
+                                                contentPadding = PaddingValues(vertical = 4.dp),
+                                                modifier = Modifier.weight(1f).height(32.dp)
+                                            ) { Text("提示", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold) }
+                                            Button(
+                                                onClick = { engine.clearSelection() },
+                                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF455A64)),
+                                                shape = RoundedCornerShape(8.dp),
+                                                contentPadding = PaddingValues(vertical = 4.dp),
+                                                modifier = Modifier.weight(1f).height(32.dp)
+                                            ) { Text("重选", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold) }
+                                            Button(
+                                                onClick = { engine.playSelectedCards() },
+                                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32)),
+                                                shape = RoundedCornerShape(8.dp),
+                                                contentPadding = PaddingValues(vertical = 4.dp),
+                                                modifier = Modifier.weight(1.3f).height(32.dp)
+                                            ) { Text("出牌 (${selectedIds.size})", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Black) }
+                                        } else {
+                                            Text(
+                                                "⏳ 等待 [${seats.getOrNull(currentTurn)?.name ?: "对手"}] 出牌...",
+                                                color = DdzGold,
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                        }
+                                    }
+                                    DoudizhuGamePhase.FINISHED -> {
+                                        val inRoom = isServerConn || isHosting || connectedPeers.isNotEmpty()
+                                        val isGuestWaiting = inRoom && !isRoomAuthority
+                                        Button(
+                                            onClick = { if (!isGuestWaiting) engine.startNewGame() },
+                                            enabled = !isGuestWaiting,
+                                            colors = ButtonDefaults.buttonColors(containerColor = if (isGuestWaiting) Color.DarkGray else DdzRed),
+                                            shape = RoundedCornerShape(8.dp),
+                                            contentPadding = PaddingValues(vertical = 4.dp),
+                                            modifier = Modifier.weight(1f).height(32.dp)
+                                        ) {
+                                            Text(
+                                                if (isGuestWaiting) "⏳ 等待房主..." else "▶ 再来一局",
+                                                color = Color.White,
+                                                fontSize = 12.sp,
+                                                fontWeight = FontWeight.Black
+                                            )
+                                        }
+                                        if (inRoom && isRoomAuthority) {
+                                            Button(
+                                                onClick = { engine.returnRoomToLobby() },
+                                                colors = ButtonDefaults.buttonColors(containerColor = DdzCardGreen),
+                                                shape = RoundedCornerShape(8.dp),
+                                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                                modifier = Modifier.height(32.dp)
+                                            ) { Text("房间设置", color = DdzGold, fontSize = 11.sp, fontWeight = FontWeight.Bold) }
+                                        } else {
+                                            Button(
+                                                onClick = { engine.leaveRoomAndResetLobby() },
+                                                colors = ButtonDefaults.buttonColors(containerColor = DdzCardGreen),
+                                                shape = RoundedCornerShape(8.dp),
+                                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                                modifier = Modifier.height(32.dp)
+                                            ) { Text("退出房间", color = DdzGold, fontSize = 11.sp, fontWeight = FontWeight.Bold) }
+                                        }
+                                    }
+                                    else -> {}
+                                }
+                            }
+                        }
+
+                        Spacer(Modifier.height(4.dp))
+
                         AdaptivePlayerHandView(
                             hand = mySeat.hand,
                             selectedIds = selectedIds,
                             app = app,
                             onToggle = { engine.toggleSelectCard(it) }
                         )
-
-                        Spacer(Modifier.height(6.dp))
-
-                        // Bottom Player Status Bar
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(10.dp))
-                                .background(DdzCardGreen)
-                                .border(1.dp, DdzGold.copy(alpha = 0.6f), RoundedCornerShape(10.dp))
-                                .padding(horizontal = 10.dp, vertical = 5.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                allMemberFrames[mySeat.character.charId]?.let { bmp ->
-                                    Image(
-                                        bitmap = bmp.asImageBitmap(),
-                                        contentDescription = null,
-                                        filterQuality = FilterQuality.None,
-                                        modifier = Modifier.size(30.dp)
-                                    )
-                                }
-                                Text(
-                                    "${mySeat.name} ${if (mySeat.isLandlord) "[🎩地主]" else "[🌾农民]"} · 手牌:${mySeat.hand.size}张 · 积分:${mySeat.score}",
-                                    color = Color.White,
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            }
-
-                            Box(
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .background(if (currentTurn == mySeatIdx) Color(0xFF2E7D32) else Color.DarkGray)
-                                    .padding(horizontal = 8.dp, vertical = 3.dp)
-                            ) {
-                                Text(
-                                    if (currentTurn == mySeatIdx) "👉 轮到你" else "等待中",
-                                    color = Color.White,
-                                    fontSize = 10.sp,
-                                    fontWeight = FontWeight.Black
-                                )
-                            }
-                        }
                     }
                 }
             }
@@ -1038,8 +1015,8 @@ private fun FittedHandCardRow(
     app: HTTNaviApp,
     onToggle: (String) -> Unit
 ) {
-    val cardW = 60.dp
-    val cardH = 86.dp
+    val cardW = 54.dp
+    val cardH = 76.dp
     val count = cards.size
     if (count == 0) return
 
