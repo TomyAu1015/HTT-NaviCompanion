@@ -63,6 +63,7 @@ fun KOnDoudizhuSheetDialog(onDismiss: () -> Unit) {
     val isHosting by engine.isHostingRoom.collectAsState()
     val isScanning by engine.isScanningRooms.collectAsState()
     val isServerConn by engine.isServerConnected.collectAsState()
+    val isRoomAuthority by engine.isRoomAuthority.collectAsState()
     val discoveredRooms by engine.discoveredRooms.collectAsState()
     val connectedPeers by engine.connectedPeerNames.collectAsState()
 
@@ -475,14 +476,15 @@ fun KOnDoudizhuSheetDialog(onDismiss: () -> Unit) {
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.SpaceBetween
                             ) {
+                                val canEditRules = isRoomAuthority || (!isHosting && !isServerConn && connectedPeers.isEmpty())
                                 Text("3. 房主房间规则设置 (局数/底分/封顶/倒计时/AI难度)", color = DdzGold, fontSize = 11.sp, fontWeight = FontWeight.Black, modifier = Modifier.weight(1f))
-                                Text("第 $currentRound / ${if (totalRounds == 0) "∞" else totalRounds} 局", color = Color(0xFF00E676), fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                Text(if (canEditRules) "第 $currentRound / ${if (totalRounds == 0) "∞" else totalRounds} 局" else "🔒 仅房主可改", color = if (canEditRules) Color(0xFF00E676) else Color(0xFFFFB74D), fontSize = 11.sp, fontWeight = FontWeight.Bold)
                             }
 
-                            RuleOptionRow("对局局数:", listOf(3 to "3局", 5 to "5局", 10 to "10局", 0 to "无限局"), totalRounds, DdzRed) { engine.setTotalRounds(it) }
-                            RuleOptionRow("每局底分:", listOf(50 to "50分", 100 to "100分", 200 to "200分", 500 to "500分"), baseScore, Color(0xFFD99426)) { engine.setBaseScore(it) }
-                            RuleOptionRow("倍数封顶:", listOf(16 to "16倍", 32 to "32倍", 64 to "64倍", 0 to "不封顶"), maxMult, Color(0xFF9C27B0)) { engine.setMaxMultiplier(it) }
-                            RuleOptionRow("出牌限时:", listOf(15 to "15秒", 25 to "25秒", 30 to "30秒", 0 to "不限时"), turnLimit, DdzBlue) { engine.setTurnTimeLimit(it) }
+                            RuleOptionRow("对局局数:", listOf(3 to "3局", 5 to "5局", 10 to "10局", 0 to "无限局"), totalRounds, DdzRed) { if (isRoomAuthority || (!isHosting && !isServerConn && connectedPeers.isEmpty())) engine.setTotalRounds(it) }
+                            RuleOptionRow("每局底分:", listOf(50 to "50分", 100 to "100分", 200 to "200分", 500 to "500分"), baseScore, Color(0xFFD99426)) { if (isRoomAuthority || (!isHosting && !isServerConn && connectedPeers.isEmpty())) engine.setBaseScore(it) }
+                            RuleOptionRow("倍数封顶:", listOf(16 to "16倍", 32 to "32倍", 64 to "64倍", 0 to "不封顶"), maxMult, Color(0xFF9C27B0)) { if (isRoomAuthority || (!isHosting && !isServerConn && connectedPeers.isEmpty())) engine.setMaxMultiplier(it) }
+                            RuleOptionRow("出牌限时:", listOf(15 to "15秒", 25 to "25秒", 30 to "30秒", 0 to "不限时"), turnLimit, DdzBlue) { if (isRoomAuthority || (!isHosting && !isServerConn && connectedPeers.isEmpty())) engine.setTurnTimeLimit(it) }
 
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
@@ -494,7 +496,7 @@ fun KOnDoudizhuSheetDialog(onDismiss: () -> Unit) {
                                     modifier = Modifier
                                         .clip(RoundedCornerShape(7.dp))
                                         .background(if (allowCounter) Color(0xFF2E7D32) else Color.Black.copy(alpha = 0.35f))
-                                        .clickable { engine.setAllowCardCounter(!allowCounter) }
+                                        .clickable { if (isRoomAuthority || (!isHosting && !isServerConn && connectedPeers.isEmpty())) engine.setAllowCardCounter(!allowCounter) }
                                         .padding(horizontal = 7.dp, vertical = 5.dp)
                                 ) {
                                     Text(if (allowCounter) "✓ 记牌器" else "记牌器", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
@@ -506,7 +508,7 @@ fun KOnDoudizhuSheetDialog(onDismiss: () -> Unit) {
                                             .weight(1f)
                                             .clip(RoundedCornerShape(7.dp))
                                             .background(if (sel) Color(0xFFD99426) else Color.Black.copy(alpha = 0.35f))
-                                            .clickable { engine.setAIDifficulty(diff) }
+                                            .clickable { if (isRoomAuthority || (!isHosting && !isServerConn && connectedPeers.isEmpty())) engine.setAIDifficulty(diff) }
                                             .padding(vertical = 5.dp),
                                         contentAlignment = Alignment.Center
                                     ) {
@@ -556,15 +558,22 @@ fun KOnDoudizhuSheetDialog(onDismiss: () -> Unit) {
 
                     Spacer(Modifier.height(6.dp))
 
-                    // Bottom Start Button
+                    // Bottom Start Button (Guest waits for Host)
+                    val isGuestWaiting = !isRoomAuthority && (isServerConn || connectedPeers.isNotEmpty())
                     Button(
-                        onClick = { engine.startNewGame() },
-                        colors = ButtonDefaults.buttonColors(containerColor = DdzRed),
+                        onClick = { if (!isGuestWaiting) engine.startNewGame() },
+                        enabled = !isGuestWaiting,
+                        colors = ButtonDefaults.buttonColors(containerColor = if (isGuestWaiting) Color.DarkGray else DdzRed),
                         shape = RoundedCornerShape(12.dp),
                         modifier = Modifier.fillMaxWidth().height(44.dp)
                     ) {
                         val roundTxt = if (totalRounds == 0) "无限局" else "${totalRounds}局制"
-                        Text("▶ 立即开始牌局 ($roundTxt · 底分 $baseScore)", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Black)
+                        Text(
+                            if (isGuestWaiting) "⏳ 等待房主开始牌局 ($roundTxt · 底分 $baseScore)..." else "▶ 立即开始牌局 ($roundTxt · 底分 $baseScore)",
+                            color = Color.White,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Black
+                        )
                     }
                 } else {
                     // =====================================================

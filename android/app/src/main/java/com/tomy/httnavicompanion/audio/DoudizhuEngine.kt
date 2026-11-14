@@ -325,7 +325,9 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
 
     private var hintIndex = 0
     private var hasUnmodifiedIosWsPeer = false
-    private var isRoomAuthority = true
+    private val _isRoomAuthority = MutableStateFlow(true)
+    val isRoomAuthority: StateFlow<Boolean> = _isRoomAuthority
+    private val isRoomAuthorityVal: Boolean get() = _isRoomAuthority.value
 
     // Transport handles
     private interface PeerChannel {
@@ -366,7 +368,7 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
                 if ((_phase.value == DoudizhuGamePhase.BIDDING || _phase.value == DoudizhuGamePhase.PLAYING) && _turnTimeLimit.value > 0) {
                     if (_turnRemainingSeconds.value > 0) {
                         _turnRemainingSeconds.value -= 1
-                    } else if (isRoomAuthority) {
+                    } else if (isRoomAuthorityVal) {
                         handleTurnTimeout()
                     }
                 }
@@ -431,12 +433,12 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
         _myChar.value = if (char == CharacterFilter.ALL) CharacterFilter.YUI else char
         rebuildLobbySeats()
     }
-    fun setTotalRounds(rounds: Int) { _totalRounds.value = rounds }
-    fun setBaseScore(score: Int) { _baseScore.value = score }
-    fun setMaxMultiplier(maxM: Int) { _maxMultiplier.value = maxM }
-    fun setTurnTimeLimit(secs: Int) { _turnTimeLimit.value = secs; _turnRemainingSeconds.value = secs }
-    fun setAllowCardCounter(allow: Boolean) { _allowCardCounter.value = allow }
-    fun setAIDifficulty(diff: DoudizhuAIDifficulty) { _aiDifficulty.value = diff }
+    fun setTotalRounds(rounds: Int) { _totalRounds.value = rounds ; syncRulesIfHost() }
+    fun setBaseScore(score: Int) { _baseScore.value = score ; syncRulesIfHost() }
+    fun setMaxMultiplier(maxM: Int) { _maxMultiplier.value = maxM ; syncRulesIfHost() }
+    fun setTurnTimeLimit(secs: Int) { _turnTimeLimit.value = secs; _turnRemainingSeconds.value = secs ; syncRulesIfHost() }
+    fun setAllowCardCounter(allow: Boolean) { _allowCardCounter.value = allow ; syncRulesIfHost() }
+    fun setAIDifficulty(diff: DoudizhuAIDifficulty) { _aiDifficulty.value = diff ; syncRulesIfHost() }
 
     private fun currentLang(): AppLanguage {
         return try {
@@ -484,6 +486,7 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
         stopNetworking()
         val ip = refreshLocalIpAddress()
         _isHostingRoom.value = true
+        _isRoomAuthority.value = true
         _isScanningRooms.value = false
         _mySeatIndex.value = 0
         rebuildLobbySeats()
@@ -861,6 +864,7 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
             return
         }
         _isScanningRooms.value = false
+        _isRoomAuthority.value = false
         _statusBanner.value = "🔗 正在加入 [${room.hostName}] 的房间 (${room.roomCode})..."
         Thread {
             try {
@@ -1161,6 +1165,7 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
             return
         }
         stopNetworking()
+        _isRoomAuthority.value = true
         _statusBanner.value = "🌐 正在连接服务器 ($url) 房间 [${_roomCode.value}]..."
 
         val req = Request.Builder().url(url).build()
@@ -1284,6 +1289,12 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
         sendPacketJson(pkt)
     }
 
+    private fun syncRulesIfHost() {
+        if (isRoomAuthorityVal && (_isHostingRoom.value || _isServerConnected.value)) {
+            broadcastFullStateSync()
+        }
+    }
+
     private fun broadcastFullStateSync() {
         val pkt = JSONObject().apply {
             put("kind", "stateSync")
@@ -1301,6 +1312,13 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
             put("lastPlaySeat", _lastPlaySeat.value)
             _winnerSeat.value?.let { put("winnerSeat", it) }
             put("statusBanner", _statusBanner.value)
+            put("totalRounds", _totalRounds.value)
+            put("currentRound", _currentRound.value)
+            put("baseScore", _baseScore.value)
+            put("maxMultiplier", _maxMultiplier.value)
+            put("turnTimeLimit", _turnTimeLimit.value)
+            put("allowCardCounter", _allowCardCounter.value)
+            put("aiDifficulty", _aiDifficulty.value.label)
         }
         sendPacketJson(pkt)
     }
@@ -1341,11 +1359,14 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
                         _statusBanner.value = "🎉 [$senderName] 已加入房间！"
                         if (isNew) {
                             sendJoinRequestPacket()
+                            if (isRoomAuthorityVal) {
+                                mainHandler.postDelayed({ broadcastFullStateSync() }, 150L)
+                            }
                         }
                     }
                 }
                 "stateSync" -> {
-                    isRoomAuthority = false
+                    _isRoomAuthority.value = false
                     val sArr = obj.optJSONArray("seats")
                     var parsedSeats: List<DoudizhuPlayerSeat> = emptyList()
                     if (sArr != null) {
@@ -1365,6 +1386,20 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
                     _lastPlaySeat.value = obj.optInt("lastPlaySeat", -1)
                     _winnerSeat.value = if (obj.has("winnerSeat") && !obj.isNull("winnerSeat")) obj.optInt("winnerSeat") else null
                     _statusBanner.value = obj.optString("statusBanner", _statusBanner.value)
+                    if (obj.has("totalRounds")) _totalRounds.value = obj.optInt("totalRounds", _totalRounds.value)
+                    if (obj.has("currentRound")) _currentRound.value = obj.optInt("currentRound", _currentRound.value)
+                    if (obj.has("baseScore")) _baseScore.value = obj.optInt("baseScore", _baseScore.value)
+                    if (obj.has("maxMultiplier")) _maxMultiplier.value = obj.optInt("maxMultiplier", _maxMultiplier.value)
+                    if (obj.has("turnTimeLimit")) {
+                        val ttl = obj.optInt("turnTimeLimit", _turnTimeLimit.value)
+                        _turnTimeLimit.value = ttl
+                        _turnRemainingSeconds.value = ttl
+                    }
+                    if (obj.has("allowCardCounter")) _allowCardCounter.value = obj.optBoolean("allowCardCounter", _allowCardCounter.value)
+                    if (obj.has("aiDifficulty")) {
+                        val lbl = obj.optString("aiDifficulty")
+                        DoudizhuAIDifficulty.values().firstOrNull { it.label == lbl }?.let { _aiDifficulty.value = it }
+                    }
 
                     if (hasUnmodifiedIosWsPeer && parsedSeats.size == 3) {
                         // Unmodified iOS sent stateSync (either after starting a round or making a move at Seat 0)
@@ -1402,13 +1437,13 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
                     _turnRemainingSeconds.value = _turnTimeLimit.value
                 }
                 "bidAction" -> {
-                    if (isRoomAuthority) {
+                    if (isRoomAuthorityVal) {
                         val seatIdx = _seats.value.indexOfFirst { it.peerDisplayName == senderName }
                         if (seatIdx >= 0) processBid(seatIdx, obj.optInt("bidScore", 0))
                     }
                 }
                 "playCardsAction" -> {
-                    if (isRoomAuthority) {
+                    if (isRoomAuthorityVal) {
                         val seatIdx = _seats.value.indexOfFirst { it.peerDisplayName == senderName }
                         val cArr = obj.optJSONArray("playedCards")
                         if (seatIdx >= 0 && cArr != null) {
@@ -1418,7 +1453,7 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
                     }
                 }
                 "passAction" -> {
-                    if (isRoomAuthority) {
+                    if (isRoomAuthorityVal) {
                         val seatIdx = _seats.value.indexOfFirst { it.peerDisplayName == senderName }
                         if (seatIdx >= 0) executePass(seatIdx)
                     }
@@ -1447,7 +1482,7 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
     }
 
     fun startNewGame() {
-        isRoomAuthority = true
+        _isRoomAuthority.value = true
         val deck = createShuffledDeck()
         val p0 = deck.subList(0, 17).sortedWith(compareByDescending<DoudizhuCard> { it.rank }.thenBy { it.suit.ordinal })
         val p1 = deck.subList(17, 34).sortedWith(compareByDescending<DoudizhuCard> { it.rank }.thenBy { it.suit.ordinal })
