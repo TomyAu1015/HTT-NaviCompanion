@@ -41,6 +41,7 @@ class AssetDecryptor(private val context: Context) {
 
     private val bitmapCache = ConcurrentHashMap<String, Bitmap>()
     private val croppedCache = ConcurrentHashMap<String, Bitmap>()
+    private val doudizhuCardCache = ConcurrentHashMap<String, Bitmap>()
     val cachedTeaPartyFrames = ArrayList<Bitmap>(4)
 
     var deskSpriteFrame: Bitmap? = null
@@ -159,8 +160,7 @@ class AssetDecryptor(private val context: Context) {
         }
     }
 
-    private fun loadVehicleSpritesArchive()
-        loadDoudizhuCardsArchive() {
+    private fun loadVehicleSpritesArchive() {
         try {
             context.assets.open("vehicle_sprites.zip").use { rawStream ->
                 ZipInputStream(rawStream).use { zis ->
@@ -184,6 +184,39 @@ class AssetDecryptor(private val context: Context) {
         } catch (e: Exception) {
             Log.e(TAG, "Failed loading vehicle_sprites.zip", e)
         }
+    }
+
+    private fun loadDoudizhuCardsArchive() {
+        try {
+            context.assets.open("doudizhu_cards.zip").use { rawStream ->
+                ZipInputStream(rawStream).use { zis ->
+                    val opts = BitmapFactory.Options().apply { inScaled = false }
+                    var entry = zis.nextEntry
+                    while (entry != null) {
+                        if (!entry.isDirectory && (entry.name.endsWith(".jpg") || entry.name.endsWith(".png"))) {
+                            val key = entry.name.substringBeforeLast(".")
+                            val bytes = zis.readBytes()
+                            val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
+                            if (bmp != null) {
+                                doudizhuCardCache[key] = bmp
+                            }
+                        }
+                        zis.closeEntry()
+                        entry = zis.nextEntry
+                    }
+                }
+            }
+            Log.d(TAG, "Loaded \${doudizhuCardCache.size} Doudizhu card sprites into cache")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed loading doudizhu_cards.zip", e)
+        }
+    }
+
+    fun getDoudizhuCardBitmap(cardKey: String): Bitmap? {
+        if (doudizhuCardCache.isEmpty()) {
+            loadDoudizhuCardsArchive()
+        }
+        return doudizhuCardCache[cardKey]
     }
 
     fun decryptVoiceChunk(oneBasedId: Int): ByteArray? {
