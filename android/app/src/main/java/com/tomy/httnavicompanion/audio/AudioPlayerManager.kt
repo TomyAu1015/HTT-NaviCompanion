@@ -157,8 +157,8 @@ enum class RM500ArrowOutfit(val rawValue: Int) {
             AppLanguage.EN -> "Animal Suit"
         }
         TONCHAN -> when (lang) {
-            AppLanguage.ZH_HANS -> "豚骨(乌龟)"
-            AppLanguage.ZH_HANT -> "豚骨(烏龜)"
+            AppLanguage.ZH_HANS -> "小猪(猪鼻龟)"
+            AppLanguage.ZH_HANT -> "小豬(豬鼻龜)"
             AppLanguage.EN -> "Ton-chan"
         }
         CLASSIC_3D -> when (lang) {
@@ -298,6 +298,26 @@ class AudioPlayerManager(
 
     private val _mascotOffsetX = MutableStateFlow(0f)
     val mascotOffsetX: StateFlow<Float> = _mascotOffsetX
+
+    private val _mascotOffsetY = MutableStateFlow(0f)
+    val mascotOffsetY: StateFlow<Float> = _mascotOffsetY
+
+    private val _isDraggingMascot = MutableStateFlow(false)
+    val isDraggingMascot: StateFlow<Boolean> = _isDraggingMascot
+
+    private val _draggedMemberId = MutableStateFlow<Int?>(null)
+    val draggedMemberId: StateFlow<Int?> = _draggedMemberId
+
+    private val _memberPositions = MutableStateFlow<Map<Int, Pair<Float, Float>>>(emptyMap())
+    val memberPositions: StateFlow<Map<Int, Pair<Float, Float>>> = _memberPositions
+
+    private val _unseatedTeaMemberIds = MutableStateFlow<Set<Int>>(emptySet())
+    val unseatedTeaMemberIds: StateFlow<Set<Int>> = _unseatedTeaMemberIds
+
+    private val _memberSpecificActions = MutableStateFlow<Map<Int, MascotActionState>>(emptyMap())
+    val memberSpecificActions: StateFlow<Map<Int, MascotActionState>> = _memberSpecificActions
+
+    private var dragLastActiveTick = 0
 
     private val _currentSpeechBubble = MutableStateFlow("[五人同台] 放课后茶会 (HTT) v1.6.3 专属导航与桌面伴侣已就绪♪")
     val currentSpeechBubble: StateFlow<String> = _currentSpeechBubble
@@ -694,6 +714,14 @@ class AudioPlayerManager(
     }
 
     private fun stepMascotBehavior() {
+        if (_isDraggingMascot.value) {
+            if (animTick - dragLastActiveTick > 40) {
+                _isDraggingMascot.value = false
+                _draggedMemberId.value = null
+            } else {
+                return
+            }
+        }
         if (_currentSpeedKmh.value > _speedLimitKmh.value) {
             _mascotAction.value = MascotActionState.PANIC
             return
@@ -708,19 +736,65 @@ class AudioPlayerManager(
         }
     }
 
+    fun markDragActive(memberId: Int? = null) {
+        dragLastActiveTick = animTick
+        val wasDragging = _isDraggingMascot.value && _draggedMemberId.value == memberId
+        _isDraggingMascot.value = true
+        _draggedMemberId.value = memberId
+        updateAllSpriteFrames()
+        if (!wasDragging) {
+            val target = memberId?.let { id -> CharacterFilter.fiveIndividuals.firstOrNull { it.charId == id } }
+            playMascotVoice(target)
+        }
+    }
+
+    fun finishDraggingMascot(memberId: Int? = null, dropX: Float = 0f, dropY: Float = 0f) {
+        val randomPool = listOf(MascotActionState.IDLE, MascotActionState.WALK_RIGHT, MascotActionState.SPECIAL)
+        val chosenAction = randomPool.random()
+        _isDraggingMascot.value = false
+        _draggedMemberId.value = null
+
+        if (_selectedCharacter.value == CharacterFilter.ALL && memberId != null) {
+            val posMap = _memberPositions.value.toMutableMap()
+            posMap[memberId] = Pair(dropX, dropY)
+            _memberPositions.value = posMap
+            if (_mascotAction.value == MascotActionState.TEA_CAKE) {
+                _unseatedTeaMemberIds.value = _unseatedTeaMemberIds.value + memberId
+            }
+            val actMap = _memberSpecificActions.value.toMutableMap()
+            actMap[memberId] = chosenAction
+            _memberSpecificActions.value = actMap
+        } else {
+            _mascotOffsetX.value = dropX
+            _mascotOffsetY.value = dropY
+            _mascotAction.value = chosenAction
+        }
+        updateAllSpriteFrames()
+    }
+
     private fun updateAllSpriteFrames() {
         if (!assetDecryptor.isInitialized) return
         val newFrames = HashMap<Int, Bitmap>()
         val isPlay = _isPlaying.value
-        val curAction = if (_hasActiveNavigation.value && _currentSpeedKmh.value > 3) {
-            MascotActionState.WALK_RIGHT
-        } else {
-            _mascotAction.value
-        }
+        val dragging = _isDraggingMascot.value
+        val draggedId = _draggedMemberId.value
+        val specActions = _memberSpecificActions.value
+        val unseatedIds = _unseatedTeaMemberIds.value
 
         for (member in CharacterFilter.fiveIndividuals) {
             val phaseTick = animTick + (member.charId * 3)
-            val bmp = assetDecryptor.sliceMascotFrame(member, curAction, phaseTick, isPlay)
+            val memberAction: MascotActionState = when {
+                dragging && (draggedId == null || draggedId == member.charId) -> MascotActionState.GRABBED
+                _selectedCharacter.value == CharacterFilter.ALL -> {
+                    specActions[member.charId]
+                        ?: if (unseatedIds.contains(member.charId)) MascotActionState.IDLE
+                        else if (_hasActiveNavigation.value && _currentSpeedKmh.value > 3) MascotActionState.WALK_RIGHT
+                        else _mascotAction.value
+                }
+                _hasActiveNavigation.value && _currentSpeedKmh.value > 3 -> MascotActionState.WALK_RIGHT
+                else -> _mascotAction.value
+            }
+            val bmp = assetDecryptor.sliceMascotFrame(member, memberAction, phaseTick, isPlay)
             if (bmp != null) {
                 newFrames[member.charId] = bmp
                 if (member == _selectedCharacter.value) {
@@ -731,20 +805,22 @@ class AudioPlayerManager(
         _allMemberFrames.value = newFrames
 
         if (_selectedCharacter.value == CharacterFilter.ALL) {
-            if (animTick >= nextAllMemberSwitchTick && !isPlay) {
+            if (animTick >= nextAllMemberSwitchTick && !isPlay && !dragging) {
                 val others = CharacterFilter.fiveIndividuals.filter { it != _activeAllMemberChar.value }
                 _activeAllMemberChar.value = others.random()
                 nextAllMemberSwitchTick = animTick + Random.nextInt(46, 138)
                 refreshThemeBackground()
             }
-            _currentSpriteFrame.value = newFrames[_activeAllMemberChar.value.charId] ?: newFrames[1]
+            val activeCharId = if (dragging && draggedId != null) draggedId else _activeAllMemberChar.value.charId
+            _currentSpriteFrame.value = newFrames[activeCharId] ?: newFrames[1]
         }
 
-        // Update Tea Party composited frame
+        // Update Tea Party composited frame (excluding any lifted/unseated members!)
         val seatedIds = if (_selectedCharacter.value == CharacterFilter.ALL) {
-            setOf(1, 2, 3, 4, 5)
+            val base = setOf(1, 2, 3, 4, 5) - unseatedIds
+            if (dragging && draggedId != null) base - draggedId else base
         } else {
-            setOf(_selectedCharacter.value.charId)
+            if (dragging) emptySet() else setOf(_selectedCharacter.value.charId)
         }
         _teaPartyCompositedFrame.value = assetDecryptor.renderTeaPartySceneFrame(seatedIds, animTick / 2)
 
@@ -781,7 +857,15 @@ class AudioPlayerManager(
     fun toggleHUDMirror() { _isHUDMirrored.value = !_isHUDMirrored.value }
 
     fun setMascotPose(pose: MascotActionState) {
-        _mascotOffsetX.value = 0f
+        _isDraggingMascot.value = false
+        _draggedMemberId.value = null
+        _memberSpecificActions.value = emptyMap()
+        if (pose == MascotActionState.TEA_CAKE) {
+            _unseatedTeaMemberIds.value = emptySet()
+            _memberPositions.value = emptyMap()
+            _mascotOffsetX.value = 0f
+            _mascotOffsetY.value = 0f
+        }
         _mascotAction.value = pose
         updateAllSpriteFrames()
         if (pose == MascotActionState.TEA_CAKE) {
@@ -792,8 +876,14 @@ class AudioPlayerManager(
     }
 
     fun resetPositions() {
+        _isDraggingMascot.value = false
+        _draggedMemberId.value = null
         _mascotOffsetX.value = 0f
-        _mascotAction.value = MascotActionState.IDLE
+        _mascotOffsetY.value = 0f
+        _memberPositions.value = emptyMap()
+        _unseatedTeaMemberIds.value = emptySet()
+        _memberSpecificActions.value = emptyMap()
+        updateAllSpriteFrames()
     }
 
     fun selectCharacter(char: CharacterFilter) {

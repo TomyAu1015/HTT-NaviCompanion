@@ -8,6 +8,9 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -333,20 +336,7 @@ fun TopBezelBar(
             )
         }
 
-        // 3. Soundboard 984 Original Voice Button
-        Row(
-            modifier = Modifier
-                .clip(RoundedCornerShape(8.dp))
-                .background(Color.White.copy(alpha = 0.14f))
-                .border(1.dp, HTTGold.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
-                .clickable { onOpenSoundboard() }
-                .padding(horizontal = 8.dp, vertical = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(3.dp)
-        ) {
-            Icon(Icons.Default.RecordVoiceOver, contentDescription = null, tint = HTTGold, modifier = Modifier.size(13.dp))
-            Text("原声库", color = HTTCream, fontSize = 11.sp, fontWeight = FontWeight.Bold, maxLines = 1)
-        }
+        // 原声库按钮已按需求隐藏 (与 iOS v1.6.3 保持一致)
 
         // 4. Desktop Floating Pet Trigger
         Row(
@@ -617,19 +607,38 @@ fun ClubroomStageView(
     stageHeight: Dp
 ) {
     val app = HTTNaviApp.instance
+    val density = LocalDensity.current
     val selectedChar by manager.selectedCharacter.collectAsState()
     val mascotAction by manager.mascotAction.collectAsState()
     val allMemberFrames by manager.allMemberFrames.collectAsState()
     val currentSprite by manager.currentSpriteFrame.collectAsState()
     val teaPartyBmp by manager.teaPartyCompositedFrame.collectAsState()
     val offsetX by manager.mascotOffsetX.collectAsState()
+    val offsetY by manager.mascotOffsetY.collectAsState()
+    val isDragging by manager.isDraggingMascot.collectAsState()
+    val draggedMemberId by manager.draggedMemberId.collectAsState()
+    val memberPositions by manager.memberPositions.collectAsState()
+    val unseatedTeaIds by manager.unseatedTeaMemberIds.collectAsState()
     val lang by manager.language.collectAsState()
+
+    var dragDeltaX by remember { mutableStateOf(0f) }
+    var dragDeltaY by remember { mutableStateOf(0f) }
 
     val themeColor = characterThemeColor(selectedChar)
     val isCompactStage = stageHeight < 215.dp
     val spriteSize = if (isCompactStage) 104.dp else 124.dp
     val singleSpriteSize = if (isCompactStage) 122.dp else 144.dp
     val teaSceneHeight = if (isCompactStage) 138.dp else 166.dp
+
+    val seatedOrder = remember {
+        listOf(
+            CharacterFilter.MIO,
+            CharacterFilter.RITSU,
+            CharacterFilter.YUI,
+            CharacterFilter.MUGI,
+            CharacterFilter.AZUSA
+        )
+    }
 
     Box(
         modifier = Modifier
@@ -643,9 +652,8 @@ fun ClubroomStageView(
             )
             .border(2.dp, HTTGold, RoundedCornerShape(16.dp))
     ) {
-        // 1. Characters / Tea Party Scene Layer (drawn first so top PosePill bar is ALWAYS on top and 100% clickable!)
+        // 1. Characters / Tea Party Scene Layer (with 1:1 iOS Drag-to-Lift "提起挣扎" support!)
         if (mascotAction == MascotActionState.TEA_CAKE && teaPartyBmp != null) {
-            // Authentic 5-Member / Single-Member Afternoon Tea Table Scene matching iOS v1.6.3!
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -661,13 +669,193 @@ fun ClubroomStageView(
                     modifier = Modifier
                         .height(teaSceneHeight)
                         .fillMaxWidth(0.96f)
-                        .clickable {
-                            manager.triggerCharacterTap(null)
-                        }
                 )
+
+                if (selectedChar == CharacterFilter.ALL) {
+                    // 5 interactive seat hit-boxes over the tea table so any seated girl can be tapped or lifted out of her chair!
+                    Row(
+                        modifier = Modifier
+                            .height(teaSceneHeight)
+                            .fillMaxWidth(0.94f),
+                        horizontalArrangement = Arrangement.SpaceEvenly,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        seatedOrder.forEachIndexed { sIdx, member ->
+                            val isUnseated = unseatedTeaIds.contains(member.charId)
+                            val isThisLifted = isDragging && draggedMemberId == member.charId
+                            val seatCenterOffsetDp = (sIdx - 2) * 52f
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .fillMaxHeight()
+                                    .then(
+                                        if (!isUnseated) {
+                                            Modifier
+                                                .clickable { manager.triggerCharacterTap(member) }
+                                                .pointerInput(member.charId) {
+                                                    detectDragGestures(
+                                                        onDragStart = {
+                                                            dragDeltaX = 0f
+                                                            dragDeltaY = 0f
+                                                            manager.markDragActive(member.charId)
+                                                        },
+                                                        onDrag = { change, dragAmount ->
+                                                            change.consume()
+                                                            dragDeltaX += with(density) { dragAmount.x.toDp().value }
+                                                            dragDeltaY += with(density) { dragAmount.y.toDp().value }
+                                                            manager.markDragActive(member.charId)
+                                                        },
+                                                        onDragEnd = {
+                                                            val dropX = (seatCenterOffsetDp + dragDeltaX).coerceIn(-125f, 125f)
+                                                            val dropY = dragDeltaY.coerceIn(-48f, 26f)
+                                                            manager.finishDraggingMascot(member.charId, dropX, dropY)
+                                                            dragDeltaX = 0f
+                                                            dragDeltaY = 0f
+                                                        },
+                                                        onDragCancel = {
+                                                            manager.finishDraggingMascot(member.charId, seatCenterOffsetDp, 0f)
+                                                            dragDeltaX = 0f
+                                                            dragDeltaY = 0f
+                                                        }
+                                                    )
+                                                }
+                                        } else Modifier
+                                    ),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                if (isThisLifted && !isUnseated) {
+                                    allMemberFrames[member.charId]?.let { grabbedBmp ->
+                                        Image(
+                                            bitmap = grabbedBmp.asImageBitmap(),
+                                            contentDescription = member.displayName(lang),
+                                            filterQuality = FilterQuality.None,
+                                            contentScale = ContentScale.Fit,
+                                            modifier = Modifier
+                                                .size(spriteSize)
+                                                .offset(x = dragDeltaX.dp, y = dragDeltaY.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Render any unseated girls who were lifted out of the tea table at their dropped stage positions!
+                    seatedOrder.forEach { member ->
+                        if (unseatedTeaIds.contains(member.charId)) {
+                            val frame = allMemberFrames[member.charId]
+                            val savedPos = memberPositions[member.charId] ?: Pair(0f, 0f)
+                            val isThisDragged = isDragging && draggedMemberId == member.charId
+                            val curX = savedPos.first + if (isThisDragged) dragDeltaX else 0f
+                            val curY = savedPos.second + if (isThisDragged) dragDeltaY else 0f
+
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                modifier = Modifier
+                                    .offset(x = curX.dp, y = curY.dp)
+                                    .clickable { manager.triggerCharacterTap(member) }
+                                    .pointerInput(member.charId, "unseated") {
+                                        detectDragGestures(
+                                            onDragStart = {
+                                                dragDeltaX = 0f
+                                                dragDeltaY = 0f
+                                                manager.markDragActive(member.charId)
+                                            },
+                                            onDrag = { change, dragAmount ->
+                                                change.consume()
+                                                dragDeltaX += with(density) { dragAmount.x.toDp().value }
+                                                dragDeltaY += with(density) { dragAmount.y.toDp().value }
+                                                manager.markDragActive(member.charId)
+                                            },
+                                            onDragEnd = {
+                                                val oldP = manager.memberPositions.value[member.charId] ?: Pair(0f, 0f)
+                                                val dropX = (oldP.first + dragDeltaX).coerceIn(-125f, 125f)
+                                                val dropY = (oldP.second + dragDeltaY).coerceIn(-48f, 26f)
+                                                manager.finishDraggingMascot(member.charId, dropX, dropY)
+                                                dragDeltaX = 0f
+                                                dragDeltaY = 0f
+                                            },
+                                            onDragCancel = {
+                                                val oldP = manager.memberPositions.value[member.charId] ?: Pair(0f, 0f)
+                                                manager.finishDraggingMascot(member.charId, oldP.first, oldP.second)
+                                                dragDeltaX = 0f
+                                                dragDeltaY = 0f
+                                            }
+                                        )
+                                    }
+                            ) {
+                                if (frame != null) {
+                                    Image(
+                                        bitmap = frame.asImageBitmap(),
+                                        contentDescription = member.displayName(lang),
+                                        filterQuality = FilterQuality.None,
+                                        contentScale = ContentScale.Fit,
+                                        modifier = Modifier.size(spriteSize)
+                                    )
+                                }
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(4.dp))
+                                        .background(characterThemeColor(member).copy(alpha = 0.90f))
+                                        .padding(horizontal = 5.dp, vertical = 1.dp)
+                                ) {
+                                    Text(member.displayName(lang), color = Color.White, fontSize = 9.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    // Single character seated at the afternoon tea table: tap or drag to lift her out of her chair!
+                    Box(
+                        modifier = Modifier
+                            .height(teaSceneHeight)
+                            .fillMaxWidth(0.94f)
+                            .clickable { manager.triggerCharacterTap(selectedChar) }
+                            .pointerInput(selectedChar.charId, "single_tea") {
+                                detectDragGestures(
+                                    onDragStart = {
+                                        dragDeltaX = 0f
+                                        dragDeltaY = 0f
+                                        manager.markDragActive(selectedChar.charId)
+                                    },
+                                    onDrag = { change, dragAmount ->
+                                        change.consume()
+                                        dragDeltaX += with(density) { dragAmount.x.toDp().value }
+                                        dragDeltaY += with(density) { dragAmount.y.toDp().value }
+                                        manager.markDragActive(selectedChar.charId)
+                                    },
+                                    onDragEnd = {
+                                        val dropX = dragDeltaX.coerceIn(-125f, 125f)
+                                        val dropY = dragDeltaY.coerceIn(-48f, 26f)
+                                        manager.finishDraggingMascot(null, dropX, dropY)
+                                        dragDeltaX = 0f
+                                        dragDeltaY = 0f
+                                    },
+                                    onDragCancel = {
+                                        manager.finishDraggingMascot(null, 0f, 0f)
+                                        dragDeltaX = 0f
+                                        dragDeltaY = 0f
+                                    }
+                                )
+                            },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (isDragging && currentSprite != null) {
+                            Image(
+                                bitmap = currentSprite!!.asImageBitmap(),
+                                contentDescription = selectedChar.displayName(lang),
+                                filterQuality = FilterQuality.None,
+                                contentScale = ContentScale.Fit,
+                                modifier = Modifier
+                                    .size(singleSpriteSize)
+                                    .offset(x = dragDeltaX.dp, y = dragDeltaY.dp)
+                            )
+                        }
+                    }
+                }
             }
         } else if (selectedChar == CharacterFilter.ALL) {
-            // 5-Member Standing / Walking / Dance Stage Mode
+            // 5-Member Standing / Walking / Dance Stage Mode (each girl can be individually lifted & dragged!)
             val deskBmp = app.assetDecryptor.deskSpriteFrame
             if (deskBmp != null) {
                 Image(
@@ -683,6 +871,10 @@ fun ClubroomStageView(
                 )
             }
 
+            val walkShift = if (mascotAction == MascotActionState.WALK_LEFT || mascotAction == MascotActionState.WALK_RIGHT) {
+                offsetX * 0.42f
+            } else 0f
+
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -694,12 +886,46 @@ fun ClubroomStageView(
             ) {
                 CharacterFilter.fiveIndividuals.forEach { member ->
                     val frame = allMemberFrames[member.charId]
+                    val savedPos = memberPositions[member.charId] ?: Pair(0f, 0f)
+                    val isThisDragged = isDragging && draggedMemberId == member.charId
+                    val totalX = savedPos.first + if (isThisDragged) dragDeltaX else walkShift
+                    val totalY = savedPos.second + if (isThisDragged) dragDeltaY else 0f
+
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         modifier = Modifier
                             .weight(1f)
-                            .offset(x = (offsetX * 0.42f).dp)
+                            .offset(x = totalX.dp, y = totalY.dp)
                             .clickable { manager.triggerCharacterTap(member) }
+                            .pointerInput(member.charId) {
+                                detectDragGestures(
+                                    onDragStart = {
+                                        dragDeltaX = 0f
+                                        dragDeltaY = 0f
+                                        manager.markDragActive(member.charId)
+                                    },
+                                    onDrag = { change, dragAmount ->
+                                        change.consume()
+                                        dragDeltaX += with(density) { dragAmount.x.toDp().value }
+                                        dragDeltaY += with(density) { dragAmount.y.toDp().value }
+                                        manager.markDragActive(member.charId)
+                                    },
+                                    onDragEnd = {
+                                        val oldP = manager.memberPositions.value[member.charId] ?: Pair(0f, 0f)
+                                        val newX = (oldP.first + dragDeltaX).coerceIn(-120f, 120f)
+                                        val newY = (oldP.second + dragDeltaY).coerceIn(-45f, 30f)
+                                        manager.finishDraggingMascot(member.charId, newX, newY)
+                                        dragDeltaX = 0f
+                                        dragDeltaY = 0f
+                                    },
+                                    onDragCancel = {
+                                        val oldP = manager.memberPositions.value[member.charId] ?: Pair(0f, 0f)
+                                        manager.finishDraggingMascot(member.charId, oldP.first, oldP.second)
+                                        dragDeltaX = 0f
+                                        dragDeltaY = 0f
+                                    }
+                                )
+                            }
                     ) {
                         if (frame != null) {
                             Image(
@@ -722,7 +948,7 @@ fun ClubroomStageView(
                 }
             }
         } else {
-            // Single Character Mode (Yui, Mio, Ritsu, Mugi, or Azusa)
+            // Single Character Mode (Yui, Mio, Ritsu, Mugi, or Azusa) with full Drag-to-Lift support!
             val deskBmp = app.assetDecryptor.deskSpriteFrame
             if (deskBmp != null) {
                 Image(
@@ -738,13 +964,43 @@ fun ClubroomStageView(
                 )
             }
 
+            val totalSingleX = offsetX + if (isDragging) dragDeltaX else 0f
+            val totalSingleY = offsetY + if (isDragging) dragDeltaY else 0f
+
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    .offset(x = offsetX.dp)
+                    .offset(x = totalSingleX.dp, y = totalSingleY.dp)
                     .padding(bottom = if (isCompactStage) 8.dp else 14.dp)
                     .clickable { manager.triggerCharacterTap(selectedChar) }
+                    .pointerInput(selectedChar.charId) {
+                        detectDragGestures(
+                            onDragStart = {
+                                dragDeltaX = 0f
+                                dragDeltaY = 0f
+                                manager.markDragActive(null)
+                            },
+                            onDrag = { change, dragAmount ->
+                                change.consume()
+                                dragDeltaX += with(density) { dragAmount.x.toDp().value }
+                                dragDeltaY += with(density) { dragAmount.y.toDp().value }
+                                manager.markDragActive(null)
+                            },
+                            onDragEnd = {
+                                val newX = (manager.mascotOffsetX.value + dragDeltaX).coerceIn(-125f, 125f)
+                                val newY = (manager.mascotOffsetY.value + dragDeltaY).coerceIn(-45f, 30f)
+                                manager.finishDraggingMascot(null, newX, newY)
+                                dragDeltaX = 0f
+                                dragDeltaY = 0f
+                            },
+                            onDragCancel = {
+                                manager.finishDraggingMascot(null, manager.mascotOffsetX.value, manager.mascotOffsetY.value)
+                                dragDeltaX = 0f
+                                dragDeltaY = 0f
+                            }
+                        )
+                    }
             ) {
                 if (currentSprite != null) {
                     Image(

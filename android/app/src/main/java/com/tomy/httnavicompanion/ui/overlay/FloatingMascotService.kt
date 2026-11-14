@@ -127,14 +127,17 @@ class FloatingMascotService : Service() {
                         val dy = (event.rawY - initialTouchY).toInt()
                         if (kotlin.math.abs(dx) > 6 || kotlin.math.abs(dy) > 6) {
                             isMoved = true
+                            mgr.markDragActive(null)
                         }
                         params.x = initialX + dx
                         params.y = initialY + dy
-                        windowManager?.updateViewLayout(floatView, params)
+                        try { windowManager?.updateViewLayout(floatView, params) } catch (_: Exception) {}
                         return true
                     }
-                    MotionEvent.ACTION_UP -> {
-                        if (!isMoved) {
+                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                        if (isMoved) {
+                            mgr.finishDraggingMascot(null, 0f, 0f)
+                        } else {
                             mgr.triggerCharacterTap(null)
                         }
                         return true

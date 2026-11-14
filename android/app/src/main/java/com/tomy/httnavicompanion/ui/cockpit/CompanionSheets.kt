@@ -7,6 +7,8 @@ import android.content.Intent
 import android.graphics.Bitmap
 import android.net.Uri
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -51,9 +53,10 @@ private val SheetCream = Color(0xFFFAF2E0)
 private val SheetDarkBg = Color(0xFF161821)
 private val SheetCardBg = Color(0xFF202431)
 
-// 1. Music Library Sheet Dialog
+// 1. Music Library Sheet Dialog (1:1 with iOS v1.6.3 KOnMusicLibraryView including Import Music Button!)
 @Composable
 fun MusicLibrarySheetDialog(onDismiss: () -> Unit) {
+    val context = LocalContext.current
     val app = HTTNaviApp.instance
     val musicMgr = app.musicManager
     val playlist by musicMgr.playlist.collectAsState()
@@ -65,9 +68,21 @@ fun MusicLibrarySheetDialog(onDismiss: () -> Unit) {
     val selectedCat by musicMgr.selectedCategory.collectAsState()
     val statusMsg by musicMgr.libraryStatusMessage.collectAsState()
 
+    val importMusicLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenMultipleDocuments()
+    ) { uris ->
+        if (uris.isNotEmpty()) {
+            musicMgr.importAudioUris(uris)
+            Toast.makeText(context, "正在导入 ${uris.size} 个音频文件...", Toast.LENGTH_SHORT).show()
+        }
+    }
+
     val filteredList = remember(playlist, selectedCat) {
-        if (selectedCat == MusicCategoryFilter.ALL) playlist
-        else playlist.filter { it.category == selectedCat }
+        when (selectedCat) {
+            MusicCategoryFilter.ALL -> playlist
+            MusicCategoryFilter.READY -> playlist.filter { it.isAvailable }
+            else -> playlist.filter { it.category == selectedCat }
+        }
     }
 
     Dialog(
@@ -83,21 +98,44 @@ fun MusicLibrarySheetDialog(onDismiss: () -> Unit) {
             color = SheetDarkBg
         ) {
             Column(modifier = Modifier.fillMaxSize().padding(14.dp)) {
-                // Header
+                // Header with iOS-matching Gold "导入音乐" Button!
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(
+                        modifier = Modifier.weight(1f),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
                         Icon(Icons.Default.MusicNote, contentDescription = null, tint = SheetGold)
                         Column {
-                            Text("放课后茶会 · 专属轻音音乐馆", color = SheetCream, fontSize = 16.sp, fontWeight = FontWeight.Black)
-                            Text(statusMsg, color = SheetGold, fontSize = 10.sp)
+                            Text("放课后茶会 · 轻音音乐馆", color = SheetCream, fontSize = 15.sp, fontWeight = FontWeight.Black, maxLines = 1)
+                            Text(statusMsg, color = SheetGold, fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
                     }
-                    IconButton(onClick = onDismiss) {
-                        Icon(Icons.Default.Close, contentDescription = null, tint = Color.White)
+
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        // Gold "导入音乐" Button matching iOS KOnMusicLibraryView
+                        Row(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(SheetGold)
+                                .clickable {
+                                    importMusicLauncher.launch(arrayOf("audio/*", "video/mp4", "application/octet-stream", "*/*"))
+                                }
+                                .padding(horizontal = 10.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Icon(Icons.Default.FileUpload, contentDescription = "导入音乐", tint = Color.Black, modifier = Modifier.size(14.dp))
+                            Text("导入音乐", color = Color.Black, fontSize = 11.sp, fontWeight = FontWeight.Black)
+                        }
+
+                        IconButton(onClick = onDismiss, modifier = Modifier.size(32.dp)) {
+                            Icon(Icons.Default.Close, contentDescription = null, tint = Color.White)
+                        }
                     }
                 }
 
@@ -117,7 +155,15 @@ fun MusicLibrarySheetDialog(onDismiss: () -> Unit) {
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(currentTrack.title, color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Black, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                Text("${currentTrack.artist} · ${currentTrack.album}", color = SheetGold, fontSize = 11.sp, maxLines = 1)
+                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    Text("${currentTrack.artist} · ${currentTrack.album}", color = SheetGold, fontSize = 11.sp, maxLines = 1)
+                                    Text(
+                                        if (currentTrack.isAvailable) "● 已就绪" else "○ 待导入",
+                                        color = if (currentTrack.isAvailable) Color(0xFF4CAF50) else Color(0xFFFF9800),
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
                             }
                             Text(
                                 String.format("%02d:%02d / %02d:%02d", currentTime / 60, currentTime % 60, duration / 60, duration % 60),
@@ -127,7 +173,17 @@ fun MusicLibrarySheetDialog(onDismiss: () -> Unit) {
                             )
                         }
 
-                        Spacer(Modifier.height(8.dp))
+                        val progressFraction = if (duration > 0) (currentTime.toFloat() / duration.toFloat()).coerceIn(0f, 1f) else 0f
+                        Slider(
+                            value = progressFraction,
+                            onValueChange = { musicMgr.seekToFraction(it) },
+                            colors = SliderDefaults.colors(
+                                thumbColor = SheetGold,
+                                activeTrackColor = SheetCrimson,
+                                inactiveTrackColor = Color.White.copy(alpha = 0.2f)
+                            ),
+                            modifier = Modifier.height(26.dp)
+                        )
 
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -154,6 +210,13 @@ fun MusicLibrarySheetDialog(onDismiss: () -> Unit) {
                             IconButton(onClick = { musicMgr.nextTrack() }) {
                                 Icon(Icons.Default.SkipNext, contentDescription = null, tint = Color.White, modifier = Modifier.size(28.dp))
                             }
+                            TextButton(
+                                onClick = {
+                                    importMusicLauncher.launch(arrayOf("audio/*", "video/mp4", "application/octet-stream", "*/*"))
+                                }
+                            ) {
+                                Text("+ 导入", color = SheetGold, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            }
                         }
                     }
                 }
@@ -161,7 +224,7 @@ fun MusicLibrarySheetDialog(onDismiss: () -> Unit) {
                 Spacer(Modifier.height(8.dp))
 
                 // Category Filter Tabs
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
                     MusicCategoryFilter.values().forEach { cat ->
                         val sel = cat == selectedCat
                         Box(
@@ -174,7 +237,7 @@ fun MusicLibrarySheetDialog(onDismiss: () -> Unit) {
                                 .padding(vertical = 6.dp),
                             contentAlignment = Alignment.Center
                         ) {
-                            Text(cat.label, color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            Text(cat.label, color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold, maxLines = 1)
                         }
                     }
                 }
@@ -207,12 +270,30 @@ fun MusicLibrarySheetDialog(onDismiss: () -> Unit) {
                                     fontFamily = FontFamily.Monospace,
                                     fontSize = 12.sp
                                 )
-                                Column {
+                                Column(modifier = Modifier.weight(1f)) {
                                     Text(song.title, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                    Text("${song.artist} · ${song.album}", color = Color.LightGray, fontSize = 10.sp, maxLines = 1)
+                                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        Text("${song.artist} · ${song.album}", color = Color.LightGray, fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                        Text(
+                                            if (song.isAvailable) "● 已就绪" else "○ 待导入",
+                                            color = if (song.isAvailable) Color(0xFF4CAF50) else Color(0xFFFF9800),
+                                            fontSize = 9.sp,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
                                 }
                             }
-                            Text(song.durationFormatted, color = SheetCream, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Text(song.durationFormatted, color = SheetCream, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                                if (song.localFilePath != null) {
+                                    IconButton(
+                                        onClick = { musicMgr.deleteSongFile(song) },
+                                        modifier = Modifier.size(24.dp)
+                                    ) {
+                                        Icon(Icons.Default.Delete, contentDescription = "移除", tint = Color(0xFFFF5252), modifier = Modifier.size(16.dp))
+                                    }
+                                }
+                            }
                         }
                     }
                 }
