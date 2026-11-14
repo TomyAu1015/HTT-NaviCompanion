@@ -219,7 +219,7 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
     private val _networkMode = MutableStateFlow(DoudizhuNetworkMode.FACE_TO_FACE_P2P)
     val networkMode: StateFlow<DoudizhuNetworkMode> = _networkMode
 
-    private val _serverUrl = MutableStateFlow("wss://psp.azusa.online/ddz")
+    private val _serverUrl = MutableStateFlow("wss://azusa.online/ddz")
     val serverUrl: StateFlow<String> = _serverUrl
 
     private val _directConnectIp = MutableStateFlow("")
@@ -325,6 +325,7 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
 
     private var hintIndex = 0
     private var hasUnmodifiedIosWsPeer = false
+    private var isRoomAuthority = true
 
     // Transport handles
     private interface PeerChannel {
@@ -365,6 +366,8 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
                 if ((_phase.value == DoudizhuGamePhase.BIDDING || _phase.value == DoudizhuGamePhase.PLAYING) && _turnTimeLimit.value > 0) {
                     if (_turnRemainingSeconds.value > 0) {
                         _turnRemainingSeconds.value -= 1
+                    } else if (isRoomAuthority) {
+                        handleTurnTimeout()
                     }
                 }
                 mainHandler.postDelayed(this, 1000L)
@@ -1288,9 +1291,11 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
 
             when (kind) {
                 "joinRequest" -> {
+                    if (senderName == _myNickname.value) return
                     hasUnmodifiedIosWsPeer = false
                     val peers = _connectedPeerNames.value.toMutableList()
-                    if (!peers.contains(senderName)) {
+                    val isNew = !peers.contains(senderName)
+                    if (isNew) {
                         peers.add(senderName)
                         _connectedPeerNames.value = peers
                     }
@@ -1308,10 +1313,13 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
                         )
                         _seats.value = curSeats
                         _statusBanner.value = "🎉 [$senderName] 已加入房间！"
-                        broadcastFullStateSync()
+                        if (isNew) {
+                            sendJoinRequestPacket()
+                        }
                     }
                 }
                 "stateSync" -> {
+                    isRoomAuthority = false
                     val sArr = obj.optJSONArray("seats")
                     var parsedSeats: List<DoudizhuPlayerSeat> = emptyList()
                     if (sArr != null) {
@@ -1368,13 +1376,13 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
                     _turnRemainingSeconds.value = _turnTimeLimit.value
                 }
                 "bidAction" -> {
-                    if (_isHostingRoom.value || _mySeatIndex.value == 0) {
+                    if (isRoomAuthority) {
                         val seatIdx = _seats.value.indexOfFirst { it.peerDisplayName == senderName }
                         if (seatIdx >= 0) processBid(seatIdx, obj.optInt("bidScore", 0))
                     }
                 }
                 "playCardsAction" -> {
-                    if (_isHostingRoom.value || _mySeatIndex.value == 0) {
+                    if (isRoomAuthority) {
                         val seatIdx = _seats.value.indexOfFirst { it.peerDisplayName == senderName }
                         val cArr = obj.optJSONArray("playedCards")
                         if (seatIdx >= 0 && cArr != null) {
@@ -1384,7 +1392,7 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
                     }
                 }
                 "passAction" -> {
-                    if (_isHostingRoom.value || _mySeatIndex.value == 0) {
+                    if (isRoomAuthority) {
                         val seatIdx = _seats.value.indexOfFirst { it.peerDisplayName == senderName }
                         if (seatIdx >= 0) executePass(seatIdx)
                     }
@@ -1398,7 +1406,22 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
     // =========================================================================
     // 4. Game Play & Complete Doudizhu Rules Engine (1:1 with iOS)
     // =========================================================================
+    private fun handleTurnTimeout() {
+        val actor = _currentTurnSeat.value
+        val seat = _seats.value.getOrNull(actor) ?: return
+        if (_phase.value == DoudizhuGamePhase.BIDDING) {
+            processBid(actor, 0)
+        } else if (_phase.value == DoudizhuGamePhase.PLAYING) {
+            if (_lastPlaySeat.value == actor || _lastPlaySeat.value == -1) {
+                seat.hand.lastOrNull()?.let { c -> executePlay(actor, evaluateHand(listOf(c))) }
+            } else {
+                executePass(actor)
+            }
+        }
+    }
+
     fun startNewGame() {
+        isRoomAuthority = true
         val deck = createShuffledDeck()
         val p0 = deck.subList(0, 17).sortedWith(compareByDescending<DoudizhuCard> { it.rank }.thenBy { it.suit.ordinal })
         val p1 = deck.subList(17, 34).sortedWith(compareByDescending<DoudizhuCard> { it.rank }.thenBy { it.suit.ordinal })

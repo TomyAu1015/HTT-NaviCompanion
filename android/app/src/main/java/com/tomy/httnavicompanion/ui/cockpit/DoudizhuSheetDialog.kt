@@ -410,7 +410,28 @@ fun KOnDoudizhuSheetDialog(onDismiss: () -> Unit) {
                                     }
                                 }
                             } else {
-                                Text("2. 在线联机服务器配置 (支持 ws:// 或 wss://，可填局域网房主 ws://IP:47790)", color = DdzGold, fontSize = 11.sp, fontWeight = FontWeight.Black)
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text("2. 在线服务器联机配置", color = DdzGold, fontSize = 12.sp, fontWeight = FontWeight.Black, modifier = Modifier.weight(1f))
+                                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                        Text("房号:", color = Color.LightGray, fontSize = 11.sp)
+                                        OutlinedTextField(
+                                            value = roomCode,
+                                            onValueChange = { engine.setRoomCode(it) },
+                                            singleLine = true,
+                                            colors = OutlinedTextFieldDefaults.colors(
+                                                focusedTextColor = DdzGold,
+                                                unfocusedTextColor = DdzGold,
+                                                focusedBorderColor = DdzGold,
+                                                unfocusedBorderColor = Color.White.copy(alpha = 0.2f)
+                                            ),
+                                            modifier = Modifier.width(80.dp)
+                                        )
+                                    }
+                                }
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
                                     verticalAlignment = Alignment.CenterVertically,
