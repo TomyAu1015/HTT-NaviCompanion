@@ -1834,8 +1834,8 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
         _winnerSeat.value = null
         _playedCardsHistory.value = emptyList()
         hintIndex = 0
-        // If connected with unmodified iOS peer, start bidding at Android seat (1) or iOS seat (0)
-        _currentTurnSeat.value = if (hasUnmodifiedIosWsPeer) 1 else 0
+        // Randomly pick starting bidder (0, 1, or 2) instead of always host (0)
+        _currentTurnSeat.value = (0..2).random()
         _turnRemainingSeconds.value = _turnTimeLimit.value
         _phase.value = DoudizhuGamePhase.BIDDING
         _statusBanner.value = "🃏 发牌完成！轮到 [${_seats.value[_currentTurnSeat.value].name}] 叫地主"

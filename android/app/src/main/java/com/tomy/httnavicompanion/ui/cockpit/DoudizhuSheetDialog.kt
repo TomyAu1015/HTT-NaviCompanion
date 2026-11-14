@@ -44,7 +44,7 @@ private val DdzCream = Color(0xFFFAF2E0)
 private val CardRedColor = Color(0xFFD91924)
 
 @Composable
-fun KOnDoudizhuSheetDialog(onDismiss: () -> Unit) {
+fun KOnDoudizhuSheetDialog(onDismiss: () -> Unit, embeddedInGameRoom: Boolean = false) {
     val context = LocalContext.current
     val app = HTTNaviApp.instance
     val manager = app.audioPlayerManager
@@ -100,19 +100,9 @@ fun KOnDoudizhuSheetDialog(onDismiss: () -> Unit) {
         }
     }
 
-    Dialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
-    ) {
-        Surface(
-            modifier = Modifier
-                .fillMaxWidth(0.98f)
-                .fillMaxHeight(0.96f)
-                .clip(RoundedCornerShape(18.dp))
-                .border(2.dp, DdzGold, RoundedCornerShape(18.dp)),
-            color = DdzBgGreen
-        ) {
+    val contentBody: @Composable () -> Unit = {
             Column(modifier = Modifier.fillMaxSize().padding(8.dp)) {
+                if (!embeddedInGameRoom) {
                 // Top Bar (matches iOS 1:1)
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -158,6 +148,7 @@ fun KOnDoudizhuSheetDialog(onDismiss: () -> Unit) {
                     ) {
                         Text("✕ 关闭", color = DdzGold, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                     }
+                }
                 }
 
                 Spacer(Modifier.height(5.dp))
@@ -964,6 +955,24 @@ fun KOnDoudizhuSheetDialog(onDismiss: () -> Unit) {
                     }
                 }
             }
+    }
+    if (embeddedInGameRoom) {
+        contentBody()
+    } else {
+        Dialog(
+            onDismissRequest = onDismiss,
+            properties = DialogProperties(usePlatformDefaultWidth = false)
+        ) {
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth(0.98f)
+                    .fillMaxHeight(0.96f)
+                    .clip(RoundedCornerShape(18.dp))
+                    .border(2.dp, DdzGold, RoundedCornerShape(18.dp)),
+                color = DdzBgGreen
+            ) {
+                contentBody()
+            }
         }
     }
 }
@@ -1328,61 +1337,93 @@ private fun OpponentSeatBox(
     app: HTTNaviApp
 ) {
     val backBmp = app.assetDecryptor.getDoudizhuCardBitmap("back")
+    val stackCount = minOf(6, maxOf(1, (seat.hand.size + 2) / 3))
     Column(
         modifier = Modifier
-            .width(80.dp)
+            .width(126.dp)
             .clip(RoundedCornerShape(12.dp))
-            .background(Color.Black.copy(alpha = 0.48f))
-            .border(if (isTurn) 2.dp else 1.dp, if (isTurn) Color(0xFF00E676) else Color.White.copy(alpha = 0.18f), RoundedCornerShape(12.dp))
+            .background(Color.Black.copy(alpha = 0.52f))
+            .border(if (isTurn) 2.dp else 1.dp, if (isTurn) Color(0xFF00E676) else Color.White.copy(alpha = 0.22f), RoundedCornerShape(12.dp))
             .padding(6.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(3.dp)
+        verticalArrangement = Arrangement.spacedBy(4.dp)
     ) {
-        Box(contentAlignment = Alignment.TopEnd) {
-            if (spriteBmp != null) {
-                Image(
-                    bitmap = spriteBmp.asImageBitmap(),
-                    contentDescription = null,
-                    filterQuality = FilterQuality.None,
-                    modifier = Modifier.size(44.dp, 50.dp)
-                )
-            }
-            if (phase != DoudizhuGamePhase.BIDDING) {
-                Text(if (seat.isLandlord) "🎩" else "🌾", fontSize = 12.sp)
-            }
-        }
-        Text(
-            seat.name,
-            color = Color.White,
-            fontSize = 10.sp,
-            fontWeight = FontWeight.Black,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-        )
         Row(
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(4.dp)
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            if (backBmp != null) {
-                Image(
-                    bitmap = backBmp.asImageBitmap(),
-                    contentDescription = null,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier
-                        .size(14.dp, 20.dp)
-                        .clip(RoundedCornerShape(2.dp))
-                        .border(0.8.dp, DdzGold, RoundedCornerShape(2.dp))
+            Box(contentAlignment = Alignment.TopEnd) {
+                if (spriteBmp != null) {
+                    Image(
+                        bitmap = spriteBmp.asImageBitmap(),
+                        contentDescription = null,
+                        filterQuality = FilterQuality.None,
+                        modifier = Modifier.size(40.dp, 46.dp)
+                    )
+                }
+                if (phase != DoudizhuGamePhase.BIDDING) {
+                    Text(if (seat.isLandlord) "🎩" else "🌾", fontSize = 12.sp)
+                }
+            }
+            Column {
+                Text(
+                    seat.name,
+                    color = Color.White,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Black,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text("积分:${seat.score}", color = Color.LightGray, fontSize = 9.sp)
+            }
+        }
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            if (seat.hand.isNotEmpty()) {
+                Box(modifier = Modifier.width((20 + (stackCount - 1) * 6).dp).height(29.dp)) {
+                    for (idx in 0 until stackCount) {
+                        if (backBmp != null) {
+                            Image(
+                                bitmap = backBmp.asImageBitmap(),
+                                contentDescription = null,
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier
+                                    .offset(x = (idx * 6).dp)
+                                    .size(20.dp, 29.dp)
+                                    .clip(RoundedCornerShape(3.dp))
+                                    .border(0.9.dp, DdzGold, RoundedCornerShape(3.dp))
+                            )
+                        } else {
+                            Box(
+                                modifier = Modifier
+                                    .offset(x = (idx * 6).dp)
+                                    .size(20.dp, 29.dp)
+                                    .clip(RoundedCornerShape(3.dp))
+                                    .background(DdzRed)
+                                    .border(0.9.dp, DdzGold, RoundedCornerShape(3.dp))
+                            )
+                        }
+                    }
+                }
+            }
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(if (seat.hand.size <= 2) Color(0xFFD32F2F) else Color.Black.copy(alpha = 0.65f))
+                    .border(0.8.dp, DdzGold.copy(alpha = 0.5f), RoundedCornerShape(6.dp))
+                    .padding(horizontal = 5.dp, vertical = 2.dp)
+            ) {
+                Text(
+                    "余${seat.hand.size}张",
+                    color = if (seat.hand.size <= 2) Color.White else DdzGold,
+                    fontSize = 11.sp,
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.Black
                 )
             }
-            Text(
-                "${seat.hand.size}",
-                color = if (seat.hand.size <= 2) Color.Red else DdzGold,
-                fontSize = 13.sp,
-                fontFamily = FontFamily.Monospace,
-                fontWeight = FontWeight.Black
-            )
         }
-        Text("积分:${seat.score}", color = Color.LightGray, fontSize = 9.sp)
     }
 }
 

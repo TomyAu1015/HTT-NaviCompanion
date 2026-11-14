@@ -79,7 +79,7 @@ fun CockpitScreen(
     var albumInitialTab by remember { mutableStateOf(0) }
     var showSearchDialog by remember { mutableStateOf(false) }
     var showSoundboardDialog by remember { mutableStateOf(false) }
-    var showDoudizhuDialog by remember { mutableStateOf(false) }
+    var showGameRoomDialog by remember { mutableStateOf(false) }
     var showVehicleDialog by remember { mutableStateOf(false) }
 
     Box(
@@ -124,7 +124,7 @@ fun CockpitScreen(
                     },
                     onOpenSoundboard = { showSoundboardDialog = true },
                     onStartFloatingPet = onStartFloatingPet,
-                    onOpenDoudizhu = { showDoudizhuDialog = true },
+                    onOpenGameRoom = { showGameRoomDialog = true },
                     onOpenVehicle = { showVehicleDialog = true }
                 )
 
@@ -198,7 +198,7 @@ fun CockpitScreen(
                     },
                     onOpenSoundboard = { showSoundboardDialog = true },
                     onStartFloatingPet = onStartFloatingPet,
-                    onOpenDoudizhu = { showDoudizhuDialog = true },
+                    onOpenGameRoom = { showGameRoomDialog = true },
                     onOpenVehicle = { showVehicleDialog = true }
                 )
                 SpeedometerCockpit(manager = manager, isCompact = false)
@@ -251,8 +251,8 @@ fun CockpitScreen(
         if (showSoundboardDialog) {
             SoundboardSheetDialog(onDismiss = { showSoundboardDialog = false })
         }
-        if (showDoudizhuDialog) {
-            KOnDoudizhuSheetDialog(onDismiss = { showDoudizhuDialog = false })
+        if (showGameRoomDialog) {
+            KOnGameRoomSheetDialog(onDismiss = { showGameRoomDialog = false })
         }
         if (showVehicleDialog) {
             VehicleAndPlateSettingsDialog(onDismiss = { showVehicleDialog = false })
@@ -268,7 +268,7 @@ fun TopBezelBar(
     onOpenAlbum: () -> Unit,
     onOpenSoundboard: () -> Unit,
     onStartFloatingPet: () -> Unit,
-    onOpenDoudizhu: () -> Unit,
+    onOpenGameRoom: () -> Unit,
     onOpenVehicle: () -> Unit
 ) {
     val showMapMode by manager.showMapMode.collectAsState()
@@ -353,19 +353,29 @@ fun TopBezelBar(
             Text("悬浮宠", color = Color(0xFF00E5FF), fontSize = 11.sp, fontWeight = FontWeight.Bold, maxLines = 1)
         }
 
-        // 4.5 K-ON! Doudizhu Game
+        // 4.5 K-ON! Ho-kago Game Room (放课后棋牌室：斗地主 + 广东红中麻将)
         Row(
             modifier = Modifier
                 .clip(RoundedCornerShape(8.dp))
                 .background(Color(0xFF1B5E20))
                 .border(1.dp, HTTGold, RoundedCornerShape(8.dp))
-                .clickable { onOpenDoudizhu() }
+                .clickable { onOpenGameRoom() }
                 .padding(horizontal = 8.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(3.dp)
         ) {
-            Icon(Icons.Default.Style, contentDescription = null, tint = HTTGold, modifier = Modifier.size(13.dp))
-            Text("斗地主", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+            Text("🀄", fontSize = 11.sp)
+            Text(
+                when (lang) {
+                    AppLanguage.ZH_HANS -> "放课后棋牌室"
+                    AppLanguage.ZH_HANT -> "放課後棋牌室"
+                    AppLanguage.EN -> "Game Room"
+                },
+                color = Color.White,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1
+            )
         }
 
         // 4.6 Vehicle & Map Layer Settings

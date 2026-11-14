@@ -494,6 +494,7 @@ class AudioPlayerManager(
     private var lastRealLoc: LatLng? = null
 
     val doudizhuEngine: DoudizhuEngine by lazy { DoudizhuEngine(context, this) }
+    val mahjongEngine: MahjongEngine by lazy { MahjongEngine(context, this) }
 
     @Volatile var isAppInForeground: Boolean = true
     val appVersion = "1.7.1"
@@ -622,6 +623,12 @@ class AudioPlayerManager(
             offRouteStrikeCount = 0
         }
 
+        if (dest != null && CoordinateConverter.distanceMeters(coord, dest) <= 25.0) {
+            _distanceToNextStepMeters.value = 0
+            _currentStepInstruction.value = "已抵达目的地：${_destinationName.value}"
+            stopNavigation()
+            return
+        }
         val steps = route.steps
         if (steps.isNotEmpty()) {
             if (currentRouteStepIdx >= steps.size) currentRouteStepIdx = steps.lastIndex
@@ -629,7 +636,7 @@ class AudioPlayerManager(
             val distToManeuver = CoordinateConverter.distanceMeters(coord, step.maneuverLocation).toInt()
             _distanceToNextStepMeters.value = distToManeuver
             _currentStepInstruction.value = step.instruction
-            if (distToManeuver <= 15 && currentRouteStepIdx < steps.lastIndex) {
+            if (distToManeuver <= 18 && currentRouteStepIdx < steps.lastIndex) {
                 currentRouteStepIdx += 1
             }
         }
@@ -702,6 +709,8 @@ class AudioPlayerManager(
         _activeRoutePoints.value = r.points
         _remainingRouteDistanceKm.value = r.totalDistanceMeters / 1000.0
         _remainingRouteMinutes.value = (r.durationSeconds / 60.0).toInt().coerceAtLeast(1)
+        offRouteStrikeCount = 0
+        lastRerouteMillis = 0L
         currentRouteStepIdx = if (r.steps.size > 1 && (r.steps[0].instruction.contains("出发"))) 1 else 0
         val activeStep = r.steps.getOrNull(currentRouteStepIdx) ?: r.steps.firstOrNull()
         _currentStepInstruction.value = activeStep?.instruction ?: "沿规划路线前往 ${_destinationName.value}"
