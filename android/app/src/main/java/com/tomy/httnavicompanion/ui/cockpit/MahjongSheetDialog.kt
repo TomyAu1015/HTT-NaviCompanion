@@ -59,7 +59,16 @@ fun KOnGameRoomSheetDialog(onDismiss: () -> Unit) {
     val context = LocalContext.current
     val ddzPhase by ddzEngine.phase.collectAsState()
     val mjPhase by mjEngine.phase.collectAsState()
+    val ddzHosting by ddzEngine.isHostingRoom.collectAsState()
+    val ddzServerConn by ddzEngine.isServerConnected.collectAsState()
+    val ddzPeers by ddzEngine.connectedPeerNames.collectAsState()
+    val mjHosting by mjEngine.isHostingRoom.collectAsState()
+    val mjServerConn by mjEngine.isServerConnected.collectAsState()
+    val mjPeers by mjEngine.connectedPeerNames.collectAsState()
     val inLobbyNow = (selectedGame == 0 && ddzPhase == DoudizhuGamePhase.LOBBY) || (selectedGame == 1 && mjPhase == MahjongGamePhase.LOBBY)
+    val isInJoinedRoom = !inLobbyNow ||
+        (selectedGame == 0 && (ddzHosting || ddzServerConn || ddzPeers.isNotEmpty())) ||
+        (selectedGame == 1 && (mjHosting || mjServerConn || mjPeers.isNotEmpty()))
 
     val activity = remember(context) {
         var ctx: Context? = context
@@ -154,8 +163,8 @@ fun KOnGameRoomSheetDialog(onDismiss: () -> Unit) {
                     }
                 }
 
-                // Game Switcher Bar (auto-collapses during active game to give maximum vertical space to hand cards/tiles)
-                if (inLobbyNow) {
+                // Game Switcher Bar (hidden once user enters/hosts a room or starts an active game)
+                if (!isInJoinedRoom) {
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
