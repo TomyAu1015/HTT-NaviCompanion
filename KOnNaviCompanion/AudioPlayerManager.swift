@@ -10381,7 +10381,6 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
         lastPlaySeat = -1
         winnerSeat = nil
         selectedCardIds.removeAll()
-        playedCardsHistory = []
         rebuildLobbySeats()
         statusBanner = "✨ 已退出当前房间，座位已重置为单人+AI补位"
     }
@@ -11558,7 +11557,7 @@ enum MahjongEvaluator {
 class KOnMahjongManager: NSObject, ObservableObject, MCSessionDelegate, MCNearbyServiceAdvertiserDelegate, MCNearbyServiceBrowserDelegate {
     static let shared = KOnMahjongManager()
 
-    @Published var networkMode: DoudizhuNetworkMode = .faceToFaceP2P
+    @Published var networkMode: KOnDoudizhuManager.NetworkMode = .faceToFaceP2P
     @Published var customServerURL: String = "wss://azusa.online/ddz"
     @Published var roomCode: String = "" {
         didSet {
