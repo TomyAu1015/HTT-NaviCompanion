@@ -1401,6 +1401,9 @@ struct ContentView: View {
                 KOnDoudizhuSheetView(manager: manager, onClose: { activeModalSheet = nil })
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("KON_OPEN_SEARCH_SHEET"))) { _ in
+            showSearchSheet = true
+        }
     }
     
     private func restoreRootWindowTouchInteractions() {
@@ -9437,17 +9440,26 @@ struct KOnDoudizhuSheetView: View {
                                     Button(action: {
                                         ddz.joinDiscoveredRoom(rm)
                                     }) {
-                                        HStack {
-                                            Image(systemName: "person.2.wave.2.fill")
+                                        HStack(spacing: 8) {
+                                            Image(systemName: rm.transportTag == "BLE" ? "dot.radiowaves.left.and.right" : "person.2.wave.2.fill")
                                                 .foregroundColor(httGold)
-                                            Text("房主: \(rm.hostName) · 房号: \(rm.roomCode)")
-                                                .font(.system(size: 13, weight: .black))
-                                                .foregroundColor(.white)
+                                            VStack(alignment: .leading, spacing: 2) {
+                                                Text("房主: \(rm.hostName) · 房号: \(rm.roomCode)")
+                                                    .font(.system(size: 13, weight: .black))
+                                                    .foregroundColor(.white)
+                                                Text(rm.transportTag == "MCSession"
+                                                     ? tr("🍎 iOS 隔空点对点秒连", "🍎 iOS 隔空點對點秒連", "🍎 iOS P2P Direct")
+                                                     : (rm.transportTag == "BLE"
+                                                        ? tr("🦷 跨平台蓝牙 BLE 免流秒连 (iOS↔安卓)", "🦷 跨平台藍牙 BLE 免流秒連 (iOS↔安卓)", "🦷 Cross-Platform BLE")
+                                                        : tr("📡 跨平台局域网/热点免流秒连 (\(rm.hostIP ?? "直连"))", "📡 跨平台局域網/熱點免流秒連 (\(rm.hostIP ?? "直連"))", "📡 Cross-Platform LAN")))
+                                                    .font(.system(size: 10, weight: .bold))
+                                                    .foregroundColor(httGold)
+                                            }
                                             Spacer()
-                                            Text(tr("点击加入", "點擊加入", "Join"))
+                                            Text(tr("一键秒连", "一鍵秒連", "Join"))
                                                 .font(.system(size: 11, weight: .black))
                                                 .padding(.horizontal, 10)
-                                                .padding(.vertical, 5)
+                                                .padding(.vertical, 6)
                                                 .background(Color.green)
                                                 .foregroundColor(.white)
                                                 .cornerRadius(6)

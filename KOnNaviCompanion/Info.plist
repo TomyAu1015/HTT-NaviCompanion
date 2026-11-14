@@ -133,6 +133,10 @@
 	<string>保存作者反馈与交流二维码到系统相册，方便扫码添加</string>
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
 	<string>用于在后台与CarPlay导航共存时持续监测车速并播报放课后茶会伴侣提醒</string>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>用于在放课后茶会面对面斗地主中跨平台扫描并免流量直连附近的安卓与 iOS 手机房间</string>
+	<key>NSBluetoothPeripheralUsageDescription</key>
+	<string>用于在放课后茶会面对面斗地主中广播房间信息，支持附近好友一键秒连</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>用于在放课后茶会面对面斗地主中发现并直连附近好友的手机房间</string>
 	<key>NSBonjourServices</key>

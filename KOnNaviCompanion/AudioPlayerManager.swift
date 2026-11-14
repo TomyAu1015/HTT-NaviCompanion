@@ -1,4 +1,5 @@
 import MultipeerConnectivity
+import CoreBluetooth
 import Foundation
 import AVFoundation
 import CryptoKit
@@ -12698,7 +12699,12 @@ struct DoudizhuDiscoveredRoom: Identifiable, Equatable {
     let roomCode: String
     let hostName: String
     let hostCharId: Int
-    let peerID: MCPeerID
+    var peerID: MCPeerID? = nil
+    var transportTag: String = "MCSession" // "MCSession", "LAN_TCP", "LAN_WS", "BLE"
+    var hostIP: String? = nil
+    var tcpPort: UInt16 = 47789
+    var wsPort: UInt16 = 47790
+    var blePeripheralID: UUID? = nil
 }
 
 enum DoudizhuGamePhase: String, Codable {
@@ -12754,7 +12760,7 @@ protocol DoudizhuTransportProtocol: AnyObject {
     func sendPacket(_ packet: DoudizhuNetPacket)
 }
 
-class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearbyServiceAdvertiserDelegate, MCNearbyServiceBrowserDelegate {
+class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearbyServiceAdvertiserDelegate, MCNearbyServiceBrowserDelegate, CBCentralManagerDelegate, CBPeripheralManagerDelegate {
     static let shared = KOnDoudizhuManager()
     private static let pokerCardImagesBase64: [String: String] = [
         "back": "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",
@@ -12923,6 +12929,47 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
     private var turnCountdownTimer: Timer?
     private var isIntentionallyStopping: Bool = false
     
+    // MARK: - Cross-Platform iOS <-> Android Zero-IP P2P State (UDP 47788 + TCP 47789 + WS 47790 + CoreBluetooth BLE)
+    private let udpDiscoveryPort: UInt16 = 47788
+    private let tcpDirectPort: UInt16 = 47789
+    private let wsBridgePort: UInt16 = 47790
+    private let bleServiceUUID = CBUUID(string: "0000DD70-0000-1000-8000-00805F9B34FB")
+    private let bleCharUUID    = CBUUID(string: "0000DD71-0000-1000-8000-00805F9B34FB")
+    private let bleAltServiceUUID = CBUUID(string: "0000FFE0-0000-1000-8000-00805F9B34FB")
+    private let bleAltCharUUID    = CBUUID(string: "0000FFE1-0000-1000-8000-00805F9B34FB")
+    
+    private var udpSocketFD: Int32 = -1
+    private var tcpServerFD47789: Int32 = -1
+    private var tcpServerFD47790: Int32 = -1
+    private var tcpGuestFD: Int32 = -1
+    private var udpBeaconTimer: Timer?
+    private var tcpAcceptTimer: Timer?
+    private var connectedPeerChars: [String: Int] = [:]
+    
+    private final class CrossPlatformClientConn {
+        let fd: Int32
+        var isWebSocket: Bool = false
+        var handshakeCompleted: Bool = false
+        var receiveBuffer: Data = Data()
+        var peerName: String = ""
+        init(fd: Int32) { self.fd = fd }
+    }
+    private var lanHostClients: [Int32: CrossPlatformClientConn] = [:]
+    private var guestReceiveBuffer: Data = Data()
+    
+    private var bleCentral: CBCentralManager?
+    private var blePeripheralMgr: CBPeripheralManager?
+    private var bleMutableChar: CBMutableCharacteristic?
+    private var bleDiscoveredPeripherals: [UUID: CBPeripheral] = [:]
+    private var bleConnectedPeripheral: CBPeripheral?
+    private var bleWriteCharacteristic: CBCharacteristic?
+    private var bleSubscribedCentrals: [CBCentral] = []
+    private var bleRxBuffer: Data = Data()
+    
+    var hasActiveRemoteConnection: Bool {
+        return !connectedPeerNames.isEmpty || isOnlineServerConnected || tcpGuestFD >= 0 || !lanHostClients.isEmpty || bleConnectedPeripheral != nil || !bleSubscribedCentrals.isEmpty
+    }
+    
     /// Creates a guaranteed valid MCPeerID (non-empty, <= 36 UTF-8 bytes) so MultipeerConnectivity NEVER throws NSInvalidArgumentException
     private static func makeSafePeerID(_ rawName: String, fallback: String = "轻音玩家") -> MCPeerID {
         let trimmed = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -12958,7 +13005,7 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
         return "第 \(currentRoundNumber) / \(totalTargetRounds) 局"
     }
     
-    // MARK: - Face-to-Face P2P Room Creation & Discovery
+    // MARK: - Face-to-Face P2P Room Creation & Discovery (MCSession + Cross-Platform UDP 47788 + TCP 47789 + WS 47790 + BLE)
     func startHostingFaceToFaceRoom() {
         stopNetworking(sendCloseBroadcast: false)
         isHostingRoom = true
@@ -12967,7 +13014,9 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
         currentRoundNumber = 1
         isSeriesMatchFinished = false
         roomClosedNotice = nil
+        connectedPeerChars.removeAll()
         
+        // 1. Original Apple MCSession (iOS <-> iOS)
         myPeerID = Self.makeSafePeerID(myNickname, fallback: "房主")
         let session = MCSession(peer: myPeerID, securityIdentity: nil, encryptionPreference: .optional)
         session.delegate = self
@@ -12987,9 +13036,16 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
         adv.startAdvertisingPeer()
         self.advertiser = adv
         
+        // 2. Cross-Platform TCP Direct Server (47789) + WebSocket Bridge Server (47790) + UDP Beacon Broadcaster (47788)
+        startCrossPlatformLANHostServers()
+        
+        // 3. Cross-Platform CoreBluetooth BLE Peripheral Advertiser (No-WiFi Face-to-Face)
+        startCrossPlatformBLEHosting()
+        
         rebuildLobbySeats(resetScores: true)
         let roundsDesc = totalTargetRounds > 0 ? "\(totalTargetRounds)局制" : "无限局"
-        statusBanner = "📡 房间 [\(roomCode)] 已创建（\(roundsDesc) · 底分\(baseScore)）！附近好友点击「扫描并加入」即可秒连"
+        let ipHint = Self.localIPv4Addresses().first ?? "局域网/蓝牙"
+        statusBanner = "📡 跨平台房间 [\(roomCode)] 已创建（\(roundsDesc) · 底分\(baseScore) · \(ipHint)）！iOS与安卓点击「扫描并加入」即可一键秒连"
         AudioPlayerManager.shared.playMascotVoice(for: myCharacter)
     }
     
@@ -13000,6 +13056,7 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
         roomClosedNotice = nil
         discoveredRooms.removeAll()
         
+        // 1. Original Apple MCNearbyServiceBrowser (iOS <-> iOS)
         myPeerID = Self.makeSafePeerID(myNickname, fallback: "玩家")
         let session = MCSession(peer: myPeerID, securityIdentity: nil, encryptionPreference: .optional)
         session.delegate = self
@@ -13010,19 +13067,39 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
         brw.startBrowsingForPeers()
         self.browser = brw
         
-        statusBanner = "🔍 正在通过蓝牙与点对点 Wi-Fi 扫描附近的面对面房间..."
+        // 2. Cross-Platform UDP 47788 Listener & Active Subnet Prober (Discovers Android & iOS LAN/Hotspot hosts)
+        startCrossPlatformLANScanner()
+        
+        // 3. Cross-Platform CoreBluetooth BLE Scanner (Discovers Android & iOS BLE hosts without Wi-Fi)
+        startCrossPlatformBLEScanner()
+        
+        statusBanner = "🔍 正在通过蓝牙 BLE + UDP 47788 + 局域网/热点自动扫描附近的 iOS 与安卓房间..."
     }
     
     func joinDiscoveredRoom(_ room: DoudizhuDiscoveredRoom) {
-        guard let brw = browser, let session = mcSession else { return }
         roomClosedNotice = nil
-        statusBanner = "🔗 正在加入 [\(room.hostName)] 的房间 (\(room.roomCode))..."
-        let contextData = try? JSONEncoder().encode([
-            "name": String(myNickname.prefix(12)),
-            "char": "\(myCharacter.charId)",
-            "code": room.roomCode
-        ])
-        brw.invitePeer(room.peerID, to: session, withContext: contextData, timeout: 15)
+        roomCode = room.roomCode
+        statusBanner = "🔗 正在一键秒连 [\(room.hostName)] 的房间 (\(room.roomCode))..."
+        
+        if room.transportTag == "MCSession", let peerID = room.peerID, let brw = browser, let session = mcSession {
+            let contextData = try? JSONEncoder().encode([
+                "name": String(myNickname.prefix(12)),
+                "char": "\(myCharacter.charId)",
+                "code": room.roomCode
+            ])
+            brw.invitePeer(peerID, to: session, withContext: contextData, timeout: 15)
+            return
+        }
+        
+        if room.transportTag == "LAN_TCP" || room.transportTag == "LAN_WS", let hostIP = room.hostIP {
+            connectToCrossPlatformLANHost(ip: hostIP, tcpPort: room.tcpPort, wsPort: room.wsPort, hostName: room.hostName, roomCode: room.roomCode)
+            return
+        }
+        
+        if room.transportTag == "BLE", let periphID = room.blePeripheralID, let periph = bleDiscoveredPeripherals[periphID] {
+            connectToCrossPlatformBLEHost(peripheral: periph, hostName: room.hostName, roomCode: room.roomCode)
+            return
+        }
     }
     
     // MARK: - Safe Non-Crashing Online WebSocket Server Connection
@@ -13154,6 +13231,7 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
         mcSession?.disconnect()
         webSocketTask?.cancel()
         webSocketSession?.invalidateAndCancel()
+        stopCrossPlatformTransports()
         advertiser = nil
         browser = nil
         mcSession = nil
@@ -13197,6 +13275,7 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
         // Use URLSessionTask.cancel() instead of cancel(with:reason:) so unestablished sockets NEVER crash!
         webSocketTask?.cancel()
         webSocketSession?.invalidateAndCancel()
+        stopCrossPlatformTransports()
         advertiser = nil
         browser = nil
         mcSession = nil
@@ -13234,7 +13313,7 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
             let peerIdx = slot - 1
             if peerIdx < connectedPeerNames.count {
                 let pName = connectedPeerNames[peerIdx]
-                let charPick = aiCandidates[slot % aiCandidates.count]
+                let charPick = connectedPeerChars[pName].flatMap { characterFilter(for: $0) } ?? aiCandidates[slot % aiCandidates.count]
                 newSeats.append(DoudizhuPlayerSeat(
                     id: slot,
                     name: "🎮 \(pName)",
@@ -13373,11 +13452,11 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
         let actor = seatIdx ?? mySeatIndex
         guard phase == .bidding, currentTurnSeat == actor, actor >= 0 && actor < seats.count else { return }
         
-        if !isHostingRoom && connectedPeerNames.count > 0 && actor == mySeatIndex {
+        if !isHostingRoom && hasActiveRemoteConnection && actor == mySeatIndex {
             let pkt = DoudizhuNetPacket(
                 kind: .bidAction,
                 roomCode: roomCode,
-                senderPeerName: myPeerID.displayName,
+                senderPeerName: seats[mySeatIndex].peerDisplayName.isEmpty ? myNickname : seats[mySeatIndex].peerDisplayName,
                 senderCharId: myCharacter.charId,
                 bidScore: score
             )
@@ -13478,11 +13557,11 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
             return
         }
         
-        if !isHostingRoom && connectedPeerNames.count > 0 {
+        if !isHostingRoom && hasActiveRemoteConnection {
             let pkt = DoudizhuNetPacket(
                 kind: .playCardsAction,
                 roomCode: roomCode,
-                senderPeerName: myPeerID.displayName,
+                senderPeerName: seats[mySeatIndex].peerDisplayName.isEmpty ? myNickname : seats[mySeatIndex].peerDisplayName,
                 senderCharId: myCharacter.charId,
                 playedCards: chosen
             )
@@ -13503,11 +13582,11 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
             return
         }
         
-        if !isHostingRoom && connectedPeerNames.count > 0 && actor == mySeatIndex {
+        if !isHostingRoom && hasActiveRemoteConnection && actor == mySeatIndex {
             let pkt = DoudizhuNetPacket(
                 kind: .passAction,
                 roomCode: roomCode,
-                senderPeerName: myPeerID.displayName,
+                senderPeerName: seats[mySeatIndex].peerDisplayName.isEmpty ? myNickname : seats[mySeatIndex].peerDisplayName,
                 senderCharId: myCharacter.charId
             )
             sendPacketToPeers(pkt)
@@ -13591,7 +13670,7 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
     // MARK: - Intelligent K-ON! AI Decision Engine
     private func scheduleAITurnIfNeeded() {
         aiTurnWorkItem?.cancel()
-        if !isHostingRoom && connectedPeerNames.count > 0 { return }
+        if !isHostingRoom && hasActiveRemoteConnection { return }
         guard currentTurnSeat >= 0 && currentTurnSeat < seats.count else { return }
         let activePlayer = seats[currentTurnSeat]
         guard activePlayer.isAI else { return }
@@ -13686,16 +13765,48 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
     
     private func sendPacketToPeers(_ packet: DoudizhuNetPacket) {
         guard let data = try? JSONEncoder().encode(packet) else { return }
+        // 1. Apple MCSession (iOS <-> iOS)
         if let session = mcSession, !session.connectedPeers.isEmpty {
             try? session.send(data, toPeers: session.connectedPeers, with: .reliable)
         }
+        // 2. WebSocket Client (Online server OR Android WS 47790 host)
         if let ws = webSocketTask, isOnlineServerConnected {
-            ws.send(.data(data)) { _ in }
+            if let jsonStr = String(data: data, encoding: .utf8) {
+                ws.send(.string(jsonStr)) { _ in }
+            } else {
+                ws.send(.data(data)) { _ in }
+            }
         }
+        // 3. Cross-Platform LAN TCP (47789) / WebSocket (47790) Sockets
+        sendCrossPlatformLANPacket(data)
+        // 4. Cross-Platform CoreBluetooth BLE
+        sendCrossPlatformBLEPacket(data)
+    }
+    
+    private func resolveSeatIndex(for senderName: String) -> Int? {
+        if let exact = seats.firstIndex(where: { $0.peerDisplayName == senderName }) {
+            return exact
+        }
+        if let partial = seats.firstIndex(where: { !$0.isAI && ($0.name.contains(senderName) || senderName.contains($0.peerDisplayName)) }) {
+            return partial
+        }
+        return seats.firstIndex(where: { !$0.isAI && $0.id != 0 })
     }
     
     private func handleIncomingPacket(_ pkt: DoudizhuNetPacket) {
         switch pkt.kind {
+        case .joinRequest:
+            guard isHostingRoom else { return }
+            let joiner = pkt.senderPeerName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "安卓牌友" : pkt.senderPeerName
+            connectedPeerChars[joiner] = pkt.senderCharId
+            if !connectedPeerNames.contains(joiner) && connectedPeerNames.count < 2 {
+                connectedPeerNames.append(joiner)
+            }
+            roomClosedNotice = nil
+            rebuildLobbySeats(resetScores: false)
+            statusBanner = "✅ 跨平台玩家 [\(joiner)] 已一键秒连进桌！(当前真机玩家: \(connectedPeerNames.count + 1) 人)"
+            broadcastFullState()
+            
         case .roomClosed:
             let reason = pkt.closeReason ?? "⚠️ 玩家 [\(pkt.senderPeerName)] 已离开房间，当前房间已关闭！"
             handlePeerLeftAndCloseRoom(leaverName: pkt.senderPeerName)
@@ -13715,8 +13826,23 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
             if let aid = pkt.aiDifficulty { self.aiDifficulty = aid }
             if let s = pkt.seats, s.count == 3 {
                 self.seats = s
-                if let myIdx = s.firstIndex(where: { $0.peerDisplayName == self.myPeerID?.displayName || $0.peerDisplayName == self.myNickname }) {
+                if let myIdx = s.firstIndex(where: {
+                    $0.peerDisplayName == self.myPeerID?.displayName ||
+                    $0.peerDisplayName == self.myNickname ||
+                    $0.name.contains(self.myNickname)
+                }) {
                     self.mySeatIndex = myIdx
+                }
+                if !self.isHostingRoom {
+                    let remotePeers = s.enumerated().compactMap { (idx, seat) -> String? in
+                        if idx != self.mySeatIndex && !seat.isAI { return seat.peerDisplayName }
+                        return nil
+                    }
+                    if !remotePeers.isEmpty {
+                        self.connectedPeerNames = remotePeers
+                    } else if self.connectedPeerNames.isEmpty {
+                        self.connectedPeerNames = [pkt.senderPeerName]
+                    }
                 }
             }
             if let h = pkt.holeCards { self.holeCards = h }
@@ -13738,13 +13864,13 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
             
         case .bidAction:
             if isHostingRoom, let score = pkt.bidScore,
-               let seatIdx = seats.firstIndex(where: { $0.peerDisplayName == pkt.senderPeerName }) {
+               let seatIdx = resolveSeatIndex(for: pkt.senderPeerName) {
                 submitBid(score, fromSeat: seatIdx)
             }
             
         case .playCardsAction:
             if isHostingRoom, let cards = pkt.playedCards,
-               let seatIdx = seats.firstIndex(where: { $0.peerDisplayName == pkt.senderPeerName }) {
+               let seatIdx = resolveSeatIndex(for: pkt.senderPeerName) {
                 let ev = DoudizhuHandEvaluator.evaluate(cards)
                 if ev.category != .invalid {
                     executePlayCards(cards, Evaluated: ev, fromSeat: seatIdx)
@@ -13753,7 +13879,7 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
             
         case .passAction:
             if isHostingRoom,
-               let seatIdx = seats.firstIndex(where: { $0.peerDisplayName == pkt.senderPeerName }) {
+               let seatIdx = resolveSeatIndex(for: pkt.senderPeerName) {
                 passTurn(fromSeat: seatIdx)
             }
             
@@ -13805,6 +13931,13 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
     func session(_ session: MCSession, didFinishReceivingResourceWithName resourceName: String, fromPeer peerID: MCPeerID, at localURL: URL?, withError error: Error?) {}
     
     func advertiser(_ advertiser: MCNearbyServiceAdvertiser, didReceiveInvitationFromPeer peerID: MCPeerID, withContext context: Data?, invitationHandler: @escaping (Bool, MCSession?) -> Void) {
+        if let data = context,
+           let dict = try? JSONDecoder().decode([String: String].self, from: data),
+           let charStr = dict["char"], let cid = Int(charStr) {
+            DispatchQueue.main.async {
+                self.connectedPeerChars[peerID.displayName] = cid
+            }
+        }
         let canAccept = (mcSession?.connectedPeers.count ?? 0) < 2
         invitationHandler(canAccept, mcSession)
     }
@@ -13832,5 +13965,1015 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
         DispatchQueue.main.async {
             self.discoveredRooms.removeAll { $0.peerID == peerID }
         }
+    }
+    
+    // MARK: - Cross-Platform iOS <-> Android Engine (UDP 47788 Discovery + TCP 47789 Direct + RFC-6455 WS 47790 + CoreBluetooth BLE)
+    
+    private static func localIPv4Addresses() -> [String] {
+        var ips: [String] = []
+        var ifaddr: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&ifaddr) == 0, let firstAddr = ifaddr else { return ips }
+        defer { freeifaddrs(ifaddr) }
+        var ptr: UnsafeMutablePointer<ifaddrs>? = firstAddr
+        while let current = ptr {
+            let interface = current.pointee
+            let addrFamily = interface.ifa_addr.pointee.sa_family
+            if addrFamily == UInt8(AF_INET) {
+                let name = String(cString: interface.ifa_name)
+                if name.hasPrefix("en") || name.hasPrefix("bridge") || name.hasPrefix("ap") || name.hasPrefix("wlan") {
+                    var hostname = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+                    if getnameinfo(interface.ifa_addr, socklen_t(interface.ifa_addr.pointee.sa_len),
+                                   &hostname, socklen_t(hostname.count), nil, socklen_t(0), NI_NUMERICHOST) == 0 {
+                        let ip = String(cString: hostname)
+                        if !ip.hasPrefix("127.") && !ip.hasPrefix("169.254.") && !ips.contains(ip) {
+                            ips.append(ip)
+                        }
+                    }
+                }
+            }
+            ptr = interface.ifa_next
+        }
+        return ips
+    }
+    
+    private static func localBroadcastAddresses() -> [String] {
+        var bcasts: [String] = ["255.255.255.255"]
+        for ip in localIPv4Addresses() {
+            let parts = ip.split(separator: ".")
+            if parts.count == 4 {
+                let subnet255 = "\(parts[0]).\(parts[1]).\(parts[2]).255"
+                if !bcasts.contains(subnet255) { bcasts.append(subnet255) }
+                // iOS Personal Hotspot uses 172.20.10.1/28 -> broadcast 172.20.10.15
+                if parts[0] == "172" && parts[1] == "20" && parts[2] == "10" {
+                    if !bcasts.contains("172.20.10.15") { bcasts.append("172.20.10.15") }
+                }
+                // Gateway .1 (e.g. when Android is Hotspot host or iOS is Hotspot host)
+                let gateway1 = "\(parts[0]).\(parts[1]).\(parts[2]).1"
+                if gateway1 != ip && !bcasts.contains(gateway1) {
+                    bcasts.append(gateway1)
+                }
+            }
+        }
+        return bcasts
+    }
+    
+    private func stopCrossPlatformTransports() {
+        udpBeaconTimer?.invalidate()
+        udpBeaconTimer = nil
+        tcpAcceptTimer?.invalidate()
+        tcpAcceptTimer = nil
+        
+        if udpSocketFD >= 0 {
+            Darwin.close(udpSocketFD)
+            udpSocketFD = -1
+        }
+        if tcpServerFD47789 >= 0 {
+            Darwin.close(tcpServerFD47789)
+            tcpServerFD47789 = -1
+        }
+        if tcpServerFD47790 >= 0 {
+            Darwin.close(tcpServerFD47790)
+            tcpServerFD47790 = -1
+        }
+        if tcpGuestFD >= 0 {
+            Darwin.close(tcpGuestFD)
+            tcpGuestFD = -1
+        }
+        for (_, client) in lanHostClients {
+            Darwin.close(client.fd)
+        }
+        lanHostClients.removeAll()
+        guestReceiveBuffer.removeAll()
+        
+        if let pm = blePeripheralMgr {
+            if pm.isAdvertising { pm.stopAdvertising() }
+            pm.removeAllServices()
+        }
+        if let cm = bleCentral {
+            if cm.isScanning { cm.stopScan() }
+            if let periph = bleConnectedPeripheral {
+                cm.cancelPeripheralConnection(periph)
+            }
+        }
+        bleConnectedPeripheral = nil
+        bleWriteCharacteristic = nil
+        bleSubscribedCentrals.removeAll()
+        bleDiscoveredPeripherals.removeAll()
+        bleRxBuffer.removeAll()
+    }
+    
+    private func createUDP47788Socket() -> Int32 {
+        let fd = Darwin.socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
+        guard fd >= 0 else { return -1 }
+        var yes: Int32 = 1
+        setsockopt(fd, SOL_SOCKET, SO_BROADCAST, &yes, socklen_t(MemoryLayout<Int32>.size))
+        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, socklen_t(MemoryLayout<Int32>.size))
+        setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &yes, socklen_t(MemoryLayout<Int32>.size))
+        let flags = fcntl(fd, F_GETFL, 0)
+        _ = fcntl(fd, F_SETFL, flags | O_NONBLOCK)
+        
+        var addr = sockaddr_in()
+        addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = udpDiscoveryPort.bigEndian
+        addr.sin_addr.s_addr = INADDR_ANY.bigEndian
+        let bindRes = withUnsafePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        if bindRes < 0 {
+            // Still usable for sending/ephemeral port if 47788 is already bound
+        }
+        return fd
+    }
+    
+    private func createTCPListeningSocket(port: UInt16) -> Int32 {
+        let fd = Darwin.socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)
+        guard fd >= 0 else { return -1 }
+        var yes: Int32 = 1
+        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, socklen_t(MemoryLayout<Int32>.size))
+        setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &yes, socklen_t(MemoryLayout<Int32>.size))
+        setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &yes, socklen_t(MemoryLayout<Int32>.size))
+        let flags = fcntl(fd, F_GETFL, 0)
+        _ = fcntl(fd, F_SETFL, flags | O_NONBLOCK)
+        
+        var addr = sockaddr_in()
+        addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = port.bigEndian
+        addr.sin_addr.s_addr = INADDR_ANY.bigEndian
+        let bindRes = withUnsafePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        if bindRes < 0 || Darwin.listen(fd, 8) < 0 {
+            Darwin.close(fd)
+            return -1
+        }
+        return fd
+    }
+    
+    private func startCrossPlatformLANHostServers() {
+        udpSocketFD = createUDP47788Socket()
+        tcpServerFD47789 = createTCPListeningSocket(port: tcpDirectPort)
+        tcpServerFD47790 = createTCPListeningSocket(port: wsBridgePort)
+        
+        // Immediately broadcast beacon and schedule periodic broadcast + non-blocking socket poll
+        broadcastUDP47788RoomBeacon()
+        udpBeaconTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            guard let self = self, self.isHostingRoom else { return }
+            self.broadcastUDP47788RoomBeacon()
+        }
+        tcpAcceptTimer = Timer.scheduledTimer(withTimeInterval: 0.08, repeats: true) { [weak self] _ in
+            guard let self = self else { return }
+            self.pollUDP47788Socket()
+            if self.isHostingRoom {
+                self.pollHostTCPSockets()
+            } else if self.tcpGuestFD >= 0 {
+                self.pollGuestTCPSocket()
+            }
+        }
+    }
+    
+    private func startCrossPlatformLANScanner() {
+        udpSocketFD = createUDP47788Socket()
+        sendUDP47788DiscoveryProbe()
+        probeSubnetForActiveDoudizhuHosts()
+        
+        udpBeaconTimer = Timer.scheduledTimer(withTimeInterval: 1.2, repeats: true) { [weak self] _ in
+            guard let self = self, self.isBrowsingRooms else { return }
+            self.sendUDP47788DiscoveryProbe()
+        }
+        tcpAcceptTimer = Timer.scheduledTimer(withTimeInterval: 0.08, repeats: true) { [weak self] _ in
+            guard let self = self else { return }
+            self.pollUDP47788Socket()
+            if self.tcpGuestFD >= 0 {
+                self.pollGuestTCPSocket()
+            }
+        }
+    }
+    
+    private func buildRoomBeaconPayloads() -> (Data, Data) {
+        let cleanCode = roomCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "8888" : roomCode
+        let safeHost = myNickname.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "房主" : myNickname
+        let myIP = Self.localIPv4Addresses().first ?? ""
+        let jsonDict: [String: Any] = [
+            "magic": "KON_DDZ",
+            "type": "KON_DDZ_BEACON",
+            "code": cleanCode,
+            "roomCode": cleanCode,
+            "host": safeHost,
+            "hostName": safeHost,
+            "char": myCharacter.charId,
+            "hostCharId": myCharacter.charId,
+            "ip": myIP,
+            "port": Int(tcpDirectPort),
+            "tcpPort": Int(tcpDirectPort),
+            "wsPort": Int(wsBridgePort),
+            "rounds": totalTargetRounds,
+            "base": baseScore,
+            "platform": "iOS"
+        ]
+        let jsonData = (try? JSONSerialization.data(withJSONObject: jsonDict)) ?? Data()
+        let pipeStr = "KON_DDZ|\(cleanCode)|\(safeHost)|\(myCharacter.charId)|\(myIP)|\(tcpDirectPort)|\(wsBridgePort)"
+        let pipeData = pipeStr.data(using: .utf8) ?? Data()
+        return (jsonData, pipeData)
+    }
+    
+    private func sendUDPDatagram(_ data: Data, toIP ip: String, port: UInt16) {
+        guard udpSocketFD >= 0, !data.isEmpty else { return }
+        var dest = sockaddr_in()
+        dest.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        dest.sin_family = sa_family_t(AF_INET)
+        dest.sin_port = port.bigEndian
+        guard inet_pton(AF_INET, ip, &dest.sin_addr) == 1 else { return }
+        data.withUnsafeBytes { rawBuf in
+            guard let base = rawBuf.baseAddress else { return }
+            withUnsafePointer(to: &dest) {
+                $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                    _ = Darwin.sendto(udpSocketFD, base, data.count, 0, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+                }
+            }
+        }
+    }
+    
+    private func broadcastUDP47788RoomBeacon() {
+        let (jsonData, pipeData) = buildRoomBeaconPayloads()
+        for targetIP in Self.localBroadcastAddresses() {
+            sendUDPDatagram(jsonData, toIP: targetIP, port: udpDiscoveryPort)
+            sendUDPDatagram(pipeData, toIP: targetIP, port: udpDiscoveryPort)
+        }
+    }
+    
+    private func sendUDP47788DiscoveryProbe() {
+        let cleanCode = roomCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "8888" : roomCode
+        let probeJSON = "{\"magic\":\"KON_DDZ_DISCOVER\",\"type\":\"KON_DDZ_DISCOVER\",\"roomCode\":\"\(cleanCode)\",\"sender\":\"\(myNickname)\"}"
+        let probePipe = "KON_DDZ_DISCOVER|\(cleanCode)|\(myNickname)|\(myCharacter.charId)"
+        let d1 = probeJSON.data(using: .utf8) ?? Data()
+        let d2 = probePipe.data(using: .utf8) ?? Data()
+        for targetIP in Self.localBroadcastAddresses() {
+            sendUDPDatagram(d1, toIP: targetIP, port: udpDiscoveryPort)
+            sendUDPDatagram(d2, toIP: targetIP, port: udpDiscoveryPort)
+        }
+    }
+    
+    private func pollUDP47788Socket() {
+        guard udpSocketFD >= 0 else { return }
+        var buf = [UInt8](repeating: 0, count: 2048)
+        while true {
+            var srcAddr = sockaddr_in()
+            var addrLen = socklen_t(MemoryLayout<sockaddr_in>.size)
+            let n = withUnsafeMutablePointer(to: &srcAddr) {
+                $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                    Darwin.recvfrom(udpSocketFD, &buf, buf.count, 0, $0, &addrLen)
+                }
+            }
+            if n <= 0 { break }
+            var ipC = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
+            inet_ntop(AF_INET, &srcAddr.sin_addr, &ipC, socklen_t(INET_ADDRSTRLEN))
+            let senderIP = String(cString: ipC)
+            let senderPort = UInt16(bigEndian: srcAddr.sin_port)
+            if Self.localIPv4Addresses().contains(senderIP) { continue }
+            
+            let data = Data(buf[0..<n])
+            guard let text = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { continue }
+            
+            if isHostingRoom {
+                if text.contains("DISCOVER") || text.contains("discover") {
+                    let (jsonData, pipeData) = buildRoomBeaconPayloads()
+                    sendUDPDatagram(jsonData, toIP: senderIP, port: senderPort)
+                    sendUDPDatagram(jsonData, toIP: senderIP, port: udpDiscoveryPort)
+                    sendUDPDatagram(pipeData, toIP: senderIP, port: udpDiscoveryPort)
+                }
+                continue
+            }
+            
+            guard isBrowsingRooms else { continue }
+            // Parse either Pipe format ("KON_DDZ|8888|Host|1|IP|47789|47790") or JSON beacon
+            if text.hasPrefix("KON_DDZ|") || text.hasPrefix("KON_DDZ:") {
+                let sep: Character = text.hasPrefix("KON_DDZ|") ? "|" : ":"
+                let parts = text.split(separator: sep).map { String($0) }
+                if parts.count >= 3 && parts[0] == "KON_DDZ" {
+                    let rCode = parts[1]
+                    let hName = parts[2]
+                    let hChar = parts.count >= 4 ? (Int(parts[3]) ?? 1) : 1
+                    let tPort = parts.count >= 6 ? (UInt16(parts[5]) ?? tcpDirectPort) : tcpDirectPort
+                    let wPort = parts.count >= 7 ? (UInt16(parts[6]) ?? wsBridgePort) : wsBridgePort
+                    registerDiscoveredLANRoom(ip: senderIP, code: rCode, host: hName, charId: hChar, tcpPort: tPort, wsPort: wPort, tag: "LAN_TCP")
+                }
+            } else if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                let typeStr = (json["type"] as? String) ?? (json["magic"] as? String) ?? ""
+                if typeStr.contains("DISCOVER") { continue }
+                let rCode = (json["roomCode"] as? String) ?? (json["code"] as? String) ?? "8888"
+                let hName = (json["hostName"] as? String) ?? (json["host"] as? String) ?? (json["senderPeerName"] as? String) ?? "附近房主"
+                let hChar = (json["hostCharId"] as? Int) ?? (json["char"] as? Int) ?? (json["senderCharId"] as? Int) ?? 1
+                let tPort = UInt16((json["tcpPort"] as? Int) ?? (json["port"] as? Int) ?? Int(tcpDirectPort))
+                let wPort = UInt16((json["wsPort"] as? Int) ?? Int(wsBridgePort))
+                let reportedIP = (json["ip"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                let finalIP = (!reportedIP.isEmpty && !reportedIP.hasPrefix("127.")) ? reportedIP : senderIP
+                registerDiscoveredLANRoom(ip: finalIP, code: rCode, host: hName, charId: hChar, tcpPort: tPort, wsPort: wPort, tag: "LAN_TCP")
+            }
+        }
+    }
+    
+    private func registerDiscoveredLANRoom(ip: String, code: String, host: String, charId: Int, tcpPort: UInt16, wsPort: UInt16, tag: String) {
+        guard !ip.isEmpty, !Self.localIPv4Addresses().contains(ip) else { return }
+        let roomID = "LAN_\(ip)_\(code)"
+        let room = DoudizhuDiscoveredRoom(
+            id: roomID,
+            roomCode: code,
+            hostName: host,
+            hostCharId: charId,
+            peerID: nil,
+            transportTag: tag,
+            hostIP: ip,
+            tcpPort: tcpPort,
+            wsPort: wsPort,
+            blePeripheralID: nil
+        )
+        DispatchQueue.main.async {
+            if let existingIdx = self.discoveredRooms.firstIndex(where: { $0.hostIP == ip || $0.id == roomID }) {
+                self.discoveredRooms[existingIdx] = room
+            } else {
+                self.discoveredRooms.append(room)
+                self.statusBanner = "🎉 发现跨平台房间：房主 [\(host)] (房号 \(code) · \(ip))，点击即可一键秒连！"
+            }
+        }
+    }
+    
+    /// Fast non-blocking /24 subnet scanner for port 47789 / 47790 so even if router blocks UDP broadcast or Android runs v1.6.3 WS server, iOS finds it automatically without typing IP!
+    private func probeSubnetForActiveDoudizhuHosts() {
+        let myIPs = Self.localIPv4Addresses()
+        guard let primaryIP = myIPs.first else { return }
+        let parts = primaryIP.split(separator: ".")
+        guard parts.count == 4, let myLastOctet = Int(parts[3]) else { return }
+        let prefix = "\(parts[0]).\(parts[1]).\(parts[2])."
+        
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else { return }
+            // Order candidates: .1 (Hotspot gateway), neighbors around myLastOctet, then rest of /24
+            var octets: [Int] = [1]
+            for delta in 1...30 {
+                if myLastOctet - delta >= 2 { octets.append(myLastOctet - delta) }
+                if myLastOctet + delta <= 254 { octets.append(myLastOctet + delta) }
+            }
+            for o in 2...254 where o != myLastOctet && !octets.contains(o) {
+                octets.append(o)
+            }
+            
+            let batchSize = 32
+            for startIdx in stride(from: 0, to: octets.count, by: batchSize) {
+                if !self.isBrowsingRooms { return }
+                let slice = octets[startIdx..<min(startIdx + batchSize, octets.count)]
+                var fds: [(fd: Int32, ip: String, port: UInt16)] = []
+                for o in slice where o != myLastOctet {
+                    let candIP = prefix + "\(o)"
+                    for p in [self.tcpDirectPort, self.wsBridgePort] {
+                        let fd = Darwin.socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)
+                        if fd >= 0 {
+                            let flags = fcntl(fd, F_GETFL, 0)
+                            _ = fcntl(fd, F_SETFL, flags | O_NONBLOCK)
+                            var addr = sockaddr_in()
+                            addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+                            addr.sin_family = sa_family_t(AF_INET)
+                            addr.sin_port = p.bigEndian
+                            inet_pton(AF_INET, candIP, &addr.sin_addr)
+                            _ = withUnsafePointer(to: &addr) {
+                                $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                                    Darwin.connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+                                }
+                            }
+                            fds.append((fd, candIP, p))
+                        }
+                    }
+                }
+                usleep(140_000) // 140ms wait per batch
+                for item in fds {
+                    var pfd = pollfd(fd: item.fd, events: Int16(POLLOUT), revents: 0)
+                    let res = Darwin.poll(&pfd, 1, 0)
+                    if res > 0 && (pfd.revents & Int16(POLLOUT)) != 0 {
+                        var err: Int32 = 0
+                        var len = socklen_t(MemoryLayout<Int32>.size)
+                        if getsockopt(item.fd, SOL_SOCKET, SO_ERROR, &err, &len) == 0 && err == 0 {
+                            let tag = (item.port == self.wsBridgePort) ? "LAN_WS" : "LAN_TCP"
+                            self.registerDiscoveredLANRoom(
+                                ip: item.ip,
+                                code: self.roomCode,
+                                host: "跨平台房主(\(item.ip))",
+                                charId: 1,
+                                tcpPort: self.tcpDirectPort,
+                                wsPort: self.wsBridgePort,
+                                tag: tag
+                            )
+                        }
+                    }
+                    Darwin.close(item.fd)
+                }
+            }
+        }
+    }
+    
+    // MARK: - Host TCP (47789) & Embedded RFC-6455 WebSocket (47790) Polling
+    private func pollHostTCPSockets() {
+        for srvFD in [tcpServerFD47789, tcpServerFD47790] where srvFD >= 0 {
+            while true {
+                var cliAddr = sockaddr_in()
+                var cliLen = socklen_t(MemoryLayout<sockaddr_in>.size)
+                let cfd = withUnsafeMutablePointer(to: &cliAddr) {
+                    $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                        Darwin.accept(srvFD, $0, &cliLen)
+                    }
+                }
+                if cfd < 0 { break }
+                var yes: Int32 = 1
+                setsockopt(cfd, SOL_SOCKET, SO_NOSIGPIPE, &yes, socklen_t(MemoryLayout<Int32>.size))
+                let flags = fcntl(cfd, F_GETFL, 0)
+                _ = fcntl(cfd, F_SETFL, flags | O_NONBLOCK)
+                lanHostClients[cfd] = CrossPlatformClientConn(fd: cfd)
+            }
+        }
+        
+        var disconnectedFDs: [Int32] = []
+        var buf = [UInt8](repeating: 0, count: 8192)
+        for (fd, conn) in lanHostClients {
+            let n = Darwin.recv(fd, &buf, buf.count, 0)
+            if n > 0 {
+                conn.receiveBuffer.append(contentsOf: buf[0..<n])
+                processHostClientBuffer(conn)
+            } else if n == 0 {
+                disconnectedFDs.append(fd)
+            } else {
+                let err = errno
+                if err != EAGAIN && err != EWOULDBLOCK && err != EINTR {
+                    disconnectedFDs.append(fd)
+                }
+            }
+        }
+        
+        for fd in disconnectedFDs {
+            if let removed = lanHostClients.removeValue(forKey: fd) {
+                Darwin.close(fd)
+                if !isIntentionallyStopping && !removed.peerName.isEmpty {
+                    handlePeerLeftAndCloseRoom(leaverName: removed.peerName)
+                }
+            }
+        }
+    }
+    
+    private func processHostClientBuffer(_ conn: CrossPlatformClientConn) {
+        // 1. Check if incoming stream starts with HTTP WebSocket Upgrade ("GET ")
+        if !conn.handshakeCompleted {
+            if let preview = String(data: conn.receiveBuffer.prefix(6), encoding: .utf8), preview.hasPrefix("GET ") {
+                guard let headerEndRange = conn.receiveBuffer.range(of: Data("\r\n\r\n".utf8)) else { return }
+                let headerData = conn.receiveBuffer.subdata(in: 0..<headerEndRange.upperBound)
+                conn.receiveBuffer.removeSubrange(0..<headerEndRange.upperBound)
+                let headerStr = String(data: headerData, encoding: .utf8) ?? ""
+                var wsKey = ""
+                for line in headerStr.components(separatedBy: "\r\n") {
+                    if line.lowercased().hasPrefix("sec-websocket-key:") {
+                        wsKey = line.dropFirst("sec-websocket-key:".count).trimmingCharacters(in: .whitespacesAndNewlines)
+                        break
+                    }
+                }
+                let acceptKey = Self.computeWebSocketAcceptKey(wsKey)
+                let resp = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: \(acceptKey)\r\n\r\n"
+                if let respData = resp.data(using: .utf8) {
+                    respData.withUnsafeBytes { raw in
+                        if let base = raw.baseAddress {
+                            _ = Darwin.send(conn.fd, base, respData.count, 0)
+                        }
+                    }
+                }
+                conn.isWebSocket = true
+                conn.handshakeCompleted = true
+                // Immediately send current room state so WebSocket guest sees room seats even before sending joinRequest
+                if let syncData = try? JSONEncoder().encode(buildCurrentStateSyncPacket()) {
+                    let frame = Self.encodeWebSocketFrame(syncData)
+                    frame.withUnsafeBytes { raw in
+                        if let base = raw.baseAddress { _ = Darwin.send(conn.fd, base, frame.count, 0) }
+                    }
+                }
+            } else if !conn.receiveBuffer.isEmpty {
+                conn.isWebSocket = false
+                conn.handshakeCompleted = true
+            }
+        }
+        
+        if conn.isWebSocket {
+            while let payload = Self.decodeNextWebSocketFrame(from: &conn.receiveBuffer) {
+                decodeAndDispatchIncomingCrossPlatformJSON(payload, fromConn: conn)
+            }
+        } else {
+            extractAndDispatchJSONObjects(from: &conn.receiveBuffer, fromConn: conn)
+        }
+    }
+    
+    private func extractAndDispatchJSONObjects(from buffer: inout Data, fromConn conn: CrossPlatformClientConn?) {
+        // Support newline-delimited JSON as well as balanced-brace JSON objects
+        while !buffer.isEmpty {
+            if let nlRange = buffer.range(of: Data([0x0A])) {
+                let lineData = buffer.subdata(in: 0..<nlRange.lowerBound)
+                buffer.removeSubrange(0..<nlRange.upperBound)
+                if !lineData.isEmpty {
+                    decodeAndDispatchIncomingCrossPlatformJSON(lineData, fromConn: conn)
+                }
+                continue
+            }
+            // Check if buffer contains a complete balanced JSON object `{ ... }`
+            if let str = String(data: buffer, encoding: .utf8) {
+                let trimmed = str.trimmingCharacters(in: .whitespacesAndNewlines)
+                if trimmed.hasPrefix("{") && trimmed.hasSuffix("}") {
+                    if let _ = try? JSONSerialization.jsonObject(with: buffer) {
+                        let fullData = buffer
+                        buffer.removeAll()
+                        decodeAndDispatchIncomingCrossPlatformJSON(fullData, fromConn: conn)
+                        return
+                    }
+                }
+            }
+            break
+        }
+    }
+    
+    private func decodeAndDispatchIncomingCrossPlatformJSON(_ data: Data, fromConn conn: CrossPlatformClientConn?) {
+        if let pkt = try? JSONDecoder().decode(DoudizhuNetPacket.self, from: data) {
+            if let c = conn, c.peerName.isEmpty {
+                c.peerName = pkt.senderPeerName
+            }
+            DispatchQueue.main.async {
+                self.handleIncomingPacket(pkt)
+            }
+            return
+        }
+        // Compatibility fallback for flexible Android JSON keys
+        guard let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+        let rawKind = (dict["kind"] as? String) ?? (dict["type"] as? String) ?? "joinRequest"
+        let sender = (dict["senderPeerName"] as? String) ?? (dict["name"] as? String) ?? (dict["playerName"] as? String) ?? "安卓牌友"
+        let charId = (dict["senderCharId"] as? Int) ?? (dict["charId"] as? Int) ?? (dict["char"] as? Int) ?? 1
+        let rCode = (dict["roomCode"] as? String) ?? (dict["code"] as? String) ?? roomCode
+        if let c = conn, c.peerName.isEmpty {
+            c.peerName = sender
+        }
+        if rawKind.lowercased().contains("join") {
+            let pkt = DoudizhuNetPacket(kind: .joinRequest, roomCode: rCode, senderPeerName: sender, senderCharId: charId)
+            DispatchQueue.main.async { self.handleIncomingPacket(pkt) }
+        } else if rawKind.lowercased().contains("bid") {
+            let score = (dict["bidScore"] as? Int) ?? (dict["score"] as? Int) ?? 0
+            let pkt = DoudizhuNetPacket(kind: .bidAction, roomCode: rCode, senderPeerName: sender, senderCharId: charId, bidScore: score)
+            DispatchQueue.main.async { self.handleIncomingPacket(pkt) }
+        } else if rawKind.lowercased().contains("pass") {
+            let pkt = DoudizhuNetPacket(kind: .passAction, roomCode: rCode, senderPeerName: sender, senderCharId: charId)
+            DispatchQueue.main.async { self.handleIncomingPacket(pkt) }
+        }
+    }
+    
+    private func buildCurrentStateSyncPacket() -> DoudizhuNetPacket {
+        return DoudizhuNetPacket(
+            kind: .stateSync,
+            roomCode: roomCode,
+            senderPeerName: myPeerID?.displayName ?? myNickname,
+            senderCharId: myCharacter.charId,
+            seats: seats,
+            holeCards: holeCards,
+            phase: phase,
+            currentTurnSeat: currentTurnSeat,
+            highestBid: highestBid,
+            highestBidderSeat: highestBidderSeat,
+            multiplier: multiplier,
+            lastValidHand: lastValidHand,
+            lastPlaySeat: lastPlaySeat,
+            winnerSeat: winnerSeat,
+            statusBanner: statusBanner,
+            totalTargetRounds: totalTargetRounds,
+            currentRoundNumber: currentRoundNumber,
+            baseScore: baseScore,
+            maxMultiplierCap: maxMultiplierCap,
+            turnTimeoutSeconds: turnTimeoutSeconds,
+            allowCardCounter: allowCardCounter,
+            aiDifficulty: aiDifficulty
+        )
+    }
+    
+    private func sendCrossPlatformLANPacket(_ data: Data) {
+        var nlData = data
+        nlData.append(0x0A)
+        let wsFrame = Self.encodeWebSocketFrame(data)
+        
+        if isHostingRoom {
+            for (_, conn) in lanHostClients {
+                let out = conn.isWebSocket ? wsFrame : nlData
+                out.withUnsafeBytes { raw in
+                    if let base = raw.baseAddress {
+                        _ = Darwin.send(conn.fd, base, out.count, 0)
+                    }
+                }
+            }
+        } else if tcpGuestFD >= 0 {
+            nlData.withUnsafeBytes { raw in
+                if let base = raw.baseAddress {
+                    _ = Darwin.send(tcpGuestFD, base, nlData.count, 0)
+                }
+            }
+        }
+    }
+    
+    // MARK: - Guest One-Tap Connection to Android / iOS LAN Host (TCP 47789 with automatic WebSocket 47790 fallback)
+    private func connectToCrossPlatformLANHost(ip: String, tcpPort: UInt16, wsPort: UInt16, hostName: String, roomCode: String) {
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else { return }
+            // Try direct TCP 47789 first
+            let fd = Darwin.socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)
+            var connectedTCP = false
+            if fd >= 0 {
+                var yes: Int32 = 1
+                setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &yes, socklen_t(MemoryLayout<Int32>.size))
+                let flags = fcntl(fd, F_GETFL, 0)
+                _ = fcntl(fd, F_SETFL, flags | O_NONBLOCK)
+                var addr = sockaddr_in()
+                addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+                addr.sin_family = sa_family_t(AF_INET)
+                addr.sin_port = tcpPort.bigEndian
+                inet_pton(AF_INET, ip, &addr.sin_addr)
+                _ = withUnsafePointer(to: &addr) {
+                    $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                        Darwin.connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+                    }
+                }
+                var pfd = pollfd(fd: fd, events: Int16(POLLOUT), revents: 0)
+                if Darwin.poll(&pfd, 1, 450) > 0 && (pfd.revents & Int16(POLLOUT)) != 0 {
+                    var err: Int32 = 0
+                    var len = socklen_t(MemoryLayout<Int32>.size)
+                    if getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &len) == 0 && err == 0 {
+                        connectedTCP = true
+                    }
+                }
+            }
+            
+            if connectedTCP {
+                DispatchQueue.main.async {
+                    if self.tcpGuestFD >= 0 { Darwin.close(self.tcpGuestFD) }
+                    self.tcpGuestFD = fd
+                    self.guestReceiveBuffer.removeAll()
+                    self.isBrowsingRooms = false
+                    self.browser?.stopBrowsingForPeers()
+                    self.udpBeaconTimer?.invalidate()
+                    if !self.connectedPeerNames.contains(hostName) {
+                        self.connectedPeerNames = [hostName]
+                    }
+                    self.statusBanner = "✅ 已通过局域网 TCP 秒连房主 [\(hostName)] (\(ip):\(tcpPort))！等待房主发牌..."
+                    let joinPkt = DoudizhuNetPacket(
+                        kind: .joinRequest,
+                        roomCode: roomCode,
+                        senderPeerName: self.myNickname,
+                        senderCharId: self.myCharacter.charId,
+                        totalTargetRounds: self.totalTargetRounds,
+                        baseScore: self.baseScore,
+                        maxMultiplierCap: self.maxMultiplierCap,
+                        turnTimeoutSeconds: self.turnTimeoutSeconds,
+                        allowCardCounter: self.allowCardCounter,
+                        aiDifficulty: self.aiDifficulty
+                    )
+                    self.sendPacketToPeers(joinPkt)
+                }
+            } else {
+                if fd >= 0 { Darwin.close(fd) }
+                // Automatic zero-IP fallback to Android's embedded RFC-6455 WebSocket server on port 47790!
+                DispatchQueue.main.async {
+                    self.customServerURL = "ws://\(ip):\(wsPort)"
+                    self.connectOnlineServerRoom()
+                }
+            }
+        }
+    }
+    
+    private func pollGuestTCPSocket() {
+        guard tcpGuestFD >= 0 else { return }
+        var buf = [UInt8](repeating: 0, count: 8192)
+        let n = Darwin.recv(tcpGuestFD, &buf, buf.count, 0)
+        if n > 0 {
+            guestReceiveBuffer.append(contentsOf: buf[0..<n])
+            extractAndDispatchJSONObjects(from: &guestReceiveBuffer, fromConn: nil)
+        } else if n == 0 {
+            Darwin.close(tcpGuestFD)
+            tcpGuestFD = -1
+            if !isIntentionallyStopping {
+                handlePeerLeftAndCloseRoom(leaverName: connectedPeerNames.first ?? "房主")
+            }
+        } else {
+            let err = errno
+            if err != EAGAIN && err != EWOULDBLOCK && err != EINTR {
+                Darwin.close(tcpGuestFD)
+                tcpGuestFD = -1
+                if !isIntentionallyStopping {
+                    handlePeerLeftAndCloseRoom(leaverName: connectedPeerNames.first ?? "房主")
+                }
+            }
+        }
+    }
+    
+    // MARK: - Pure Swift RFC-6455 WebSocket Handshake & Framing Helper (Zero External Dependencies)
+    private static func computeWebSocketAcceptKey(_ clientKey: String) -> String {
+        let magic = clientKey + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+        let bytes = Array(magic.utf8)
+        let digest = sha1Digest(bytes)
+        return Data(digest).base64EncodedString()
+    }
+    
+    private static func sha1Digest(_ message: [UInt8]) -> [UInt8] {
+        var msg = message
+        let bitLen = UInt64(msg.count) * 8
+        msg.append(0x80)
+        while (msg.count % 64) != 56 { msg.append(0x00) }
+        for i in (0..<8).reversed() {
+            msg.append(UInt8((bitLen >> (i * 8)) & 0xFF))
+        }
+        var h0: UInt32 = 0x67452301
+        var h1: UInt32 = 0xEFCDAB89
+        var h2: UInt32 = 0x98BADCFE
+        var h3: UInt32 = 0x10325476
+        var h4: UInt32 = 0xC3D2E1F0
+        
+        @inline(__always) func rotl(_ x: UInt32, _ n: UInt32) -> UInt32 {
+            return (x << n) | (x >> (32 - n))
+        }
+        
+        for chunkStart in stride(from: 0, to: msg.count, by: 64) {
+            var w = [UInt32](repeating: 0, count: 80)
+            for i in 0..<16 {
+                let b = chunkStart + i * 4
+                w[i] = (UInt32(msg[b]) << 24) | (UInt32(msg[b+1]) << 16) | (UInt32(msg[b+2]) << 8) | UInt32(msg[b+3])
+            }
+            for i in 16..<80 {
+                w[i] = rotl(w[i-3] ^ w[i-8] ^ w[i-14] ^ w[i-16], 1)
+            }
+            var a = h0, b = h1, c = h2, d = h3, e = h4
+            for i in 0..<80 {
+                let f: UInt32
+                let k: UInt32
+                if i < 20 {
+                    f = (b & c) | ((~b) & d); k = 0x5A827999
+                } else if i < 40 {
+                    f = b ^ c ^ d; k = 0x6ED9EBA1
+                } else if i < 60 {
+                    f = (b & c) | (b & d) | (c & d); k = 0x8F1BBCDC
+                } else {
+                    f = b ^ c ^ d; k = 0xCA62C1D6
+                }
+                let temp = rotl(a, 5) &+ f &+ e &+ k &+ w[i]
+                e = d; d = c; c = rotl(b, 30); b = a; a = temp
+            }
+            h0 = h0 &+ a; h1 = h1 &+ b; h2 = h2 &+ c; h3 = h3 &+ d; h4 = h4 &+ e
+        }
+        var out: [UInt8] = []
+        for h in [h0, h1, h2, h3, h4] {
+            out.append(UInt8((h >> 24) & 0xFF))
+            out.append(UInt8((h >> 16) & 0xFF))
+            out.append(UInt8((h >> 8) & 0xFF))
+            out.append(UInt8(h & 0xFF))
+        }
+        return out
+    }
+    
+    private static func encodeWebSocketFrame(_ payload: Data) -> Data {
+        var frame = Data([0x81]) // FIN + Text frame (accepted by both string & binary WS receivers)
+        let len = payload.count
+        if len <= 125 {
+            frame.append(UInt8(len))
+        } else if len <= 65535 {
+            frame.append(126)
+            frame.append(UInt8((len >> 8) & 0xFF))
+            frame.append(UInt8(len & 0xFF))
+        } else {
+            frame.append(127)
+            let u64 = UInt64(len)
+            for i in (0..<8).reversed() {
+                frame.append(UInt8((u64 >> (i * 8)) & 0xFF))
+            }
+        }
+        frame.append(payload)
+        return frame
+    }
+    
+    private static func decodeNextWebSocketFrame(from buffer: inout Data) -> Data? {
+        guard buffer.count >= 2 else { return nil }
+        let bytes = [UInt8](buffer)
+        let opcode = bytes[0] & 0x0F
+        let isMasked = (bytes[1] & 0x80) != 0
+        var payloadLen = Int(bytes[1] & 0x7F)
+        var offset = 2
+        if payloadLen == 126 {
+            guard bytes.count >= 4 else { return nil }
+            payloadLen = (Int(bytes[2]) << 8) | Int(bytes[3])
+            offset = 4
+        } else if payloadLen == 127 {
+            guard bytes.count >= 10 else { return nil }
+            var l64: UInt64 = 0
+            for i in 2..<10 { l64 = (l64 << 8) | UInt64(bytes[i]) }
+            payloadLen = Int(l64)
+            offset = 10
+        }
+        var maskKey: [UInt8] = [0, 0, 0, 0]
+        if isMasked {
+            guard bytes.count >= offset + 4 else { return nil }
+            maskKey = Array(bytes[offset..<(offset + 4)])
+            offset += 4
+        }
+        guard bytes.count >= offset + payloadLen else { return nil }
+        var payload = [UInt8](repeating: 0, count: payloadLen)
+        for i in 0..<payloadLen {
+            payload[i] = isMasked ? (bytes[offset + i] ^ maskKey[i % 4]) : bytes[offset + i]
+        }
+        buffer.removeSubrange(0..<(offset + payloadLen))
+        if opcode == 0x08 { return nil } // Close frame
+        return Data(payload)
+    }
+    
+    // MARK: - CoreBluetooth BLE Cross-Platform Discovery & Transfer (CBCentralManager + CBPeripheralManager)
+    private func startCrossPlatformBLEHosting() {
+        if blePeripheralMgr == nil {
+            blePeripheralMgr = CBPeripheralManager(delegate: self, queue: .main)
+        } else if blePeripheralMgr?.state == .poweredOn {
+            setupAndAdvertiseBLEService()
+        }
+    }
+    
+    private func setupAndAdvertiseBLEService() {
+        guard let pm = blePeripheralMgr, pm.state == .poweredOn, isHostingRoom else { return }
+        pm.stopAdvertising()
+        pm.removeAllServices()
+        let char = CBMutableCharacteristic(
+            type: bleCharUUID,
+            properties: [.read, .write, .writeWithoutResponse, .notify],
+            value: nil,
+            permissions: [.readable, .writeable]
+        )
+        self.bleMutableChar = char
+        let service = CBMutableService(type: bleServiceUUID, primary: true)
+        service.characteristics = [char]
+        pm.add(service)
+        
+        let cleanCode = String(roomCode.trimmingCharacters(in: .whitespacesAndNewlines).prefix(6))
+        let safeHost = String(myNickname.trimmingCharacters(in: .whitespacesAndNewlines).prefix(10))
+        let localName = "KON|\(cleanCode)|\(safeHost)|\(myCharacter.charId)"
+        pm.startAdvertising([
+            CBAdvertisementDataServiceUUIDsKey: [bleServiceUUID, bleAltServiceUUID],
+            CBAdvertisementDataLocalNameKey: localName
+        ])
+    }
+    
+    private func startCrossPlatformBLEScanner() {
+        if bleCentral == nil {
+            bleCentral = CBCentralManager(delegate: self, queue: .main)
+        } else if bleCentral?.state == .poweredOn {
+            bleCentral?.scanForPeripherals(withServices: nil, options: [CBCentralManagerScanOptionAllowDuplicatesKey: false])
+        }
+    }
+    
+    private func connectToCrossPlatformBLEHost(peripheral: CBPeripheral, hostName: String, roomCode: String) {
+        bleConnectedPeripheral = peripheral
+        peripheral.delegate = self
+        bleCentral?.stopScan()
+        bleCentral?.connect(peripheral, options: nil)
+    }
+    
+    private func sendCrossPlatformBLEPacket(_ data: Data) {
+        var framed = data
+        framed.append(0x0A) // Newline delimiter for BLE chunk reassembly
+        let chunkSize = 180
+        if isHostingRoom, let pm = blePeripheralMgr, let ch = bleMutableChar, !bleSubscribedCentrals.isEmpty {
+            var offset = 0
+            while offset < framed.count {
+                let end = min(offset + chunkSize, framed.count)
+                let slice = framed.subdata(in: offset..<end)
+                _ = pm.updateValue(slice, for: ch, onSubscribedCentrals: nil)
+                offset = end
+            }
+        } else if let periph = bleConnectedPeripheral, let ch = bleWriteCharacteristic {
+            let writeType: CBCharacteristicWriteType = ch.properties.contains(.writeWithoutResponse) ? .withoutResponse : .withResponse
+            var offset = 0
+            while offset < framed.count {
+                let end = min(offset + chunkSize, framed.count)
+                let slice = framed.subdata(in: offset..<end)
+                periph.writeValue(slice, for: ch, type: writeType)
+                offset = end
+            }
+        }
+    }
+    
+    func centralManagerDidUpdateState(_ central: CBCentralManager) {
+        if central.state == .poweredOn && isBrowsingRooms {
+            central.scanForPeripherals(withServices: nil, options: [CBCentralManagerScanOptionAllowDuplicatesKey: false])
+        }
+    }
+    
+    func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral, advertisementData: [String : Any], rssi RSSI: NSNumber) {
+        guard isBrowsingRooms else { return }
+        let advName = (advertisementData[CBAdvertisementDataLocalNameKey] as? String) ?? peripheral.name ?? ""
+        let advServices = (advertisementData[CBAdvertisementDataServiceUUIDsKey] as? [CBUUID]) ?? []
+        let hasKOnService = advServices.contains(bleServiceUUID) || advServices.contains(bleAltServiceUUID)
+        let hasKOnName = advName.hasPrefix("KON|") || advName.hasPrefix("KON_DDZ") || advName.hasPrefix("HTT")
+        guard hasKOnService || hasKOnName else { return }
+        
+        var rCode = roomCode
+        var hName = "蓝牙房主"
+        var hChar = 1
+        if advName.hasPrefix("KON|") {
+            let parts = advName.split(separator: "|").map { String($0) }
+            if parts.count >= 3 {
+                rCode = parts[1]
+                hName = parts[2]
+                if parts.count >= 4 { hChar = Int(parts[3]) ?? 1 }
+            }
+        } else if !advName.isEmpty {
+            hName = advName
+        }
+        
+        bleDiscoveredPeripherals[peripheral.identifier] = peripheral
+        let roomID = "BLE_\(peripheral.identifier.uuidString)"
+        let room = DoudizhuDiscoveredRoom(
+            id: roomID,
+            roomCode: rCode,
+            hostName: hName,
+            hostCharId: hChar,
+            peerID: nil,
+            transportTag: "BLE",
+            hostIP: nil,
+            tcpPort: tcpDirectPort,
+            wsPort: wsBridgePort,
+            blePeripheralID: peripheral.identifier
+        )
+        if !discoveredRooms.contains(where: { $0.id == roomID }) {
+            discoveredRooms.append(room)
+            statusBanner = "🎉 发现蓝牙免流房间：房主 [\(hName)] (房号 \(rCode))，点击即可一键秒连！"
+        }
+    }
+    
+    func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
+        peripheral.delegate = self
+        peripheral.discoverServices(nil)
+    }
+    
+    func peripheralManagerDidUpdateState(_ peripheral: CBPeripheralManager) {
+        if peripheral.state == .poweredOn && isHostingRoom {
+            setupAndAdvertiseBLEService()
+        }
+    }
+    
+    func peripheralManager(_ peripheral: CBPeripheralManager, central: CBCentral, didSubscribeTo characteristic: CBCharacteristic) {
+        if !bleSubscribedCentrals.contains(where: { $0.identifier == central.identifier }) {
+            bleSubscribedCentrals.append(central)
+        }
+        broadcastFullState()
+    }
+    
+    func peripheralManager(_ peripheral: CBPeripheralManager, didReceiveWrite requests: [CBATTRequest]) {
+        for req in requests {
+            if let val = req.value {
+                bleRxBuffer.append(val)
+                extractAndDispatchJSONObjects(from: &bleRxBuffer, fromConn: nil)
+            }
+            peripheral.respond(to: req, withResult: .success)
+        }
+    }
+}
+
+extension KOnDoudizhuManager: CBPeripheralDelegate {
+    func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
+        guard let services = peripheral.services else { return }
+        for srv in services {
+            peripheral.discoverCharacteristics(nil, for: srv)
+        }
+    }
+    
+    func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
+        guard let chars = service.characteristics else { return }
+        for ch in chars {
+            if ch.properties.contains(.notify) || ch.properties.contains(.indicate) {
+                peripheral.setNotifyValue(true, for: ch)
+            }
+            if ch.properties.contains(.write) || ch.properties.contains(.writeWithoutResponse) {
+                if bleWriteCharacteristic == nil || ch.uuid == bleCharUUID || ch.uuid == bleAltCharUUID {
+                    bleWriteCharacteristic = ch
+                }
+            }
+        }
+        if bleWriteCharacteristic != nil {
+            let joinPkt = DoudizhuNetPacket(
+                kind: .joinRequest,
+                roomCode: roomCode,
+                senderPeerName: myNickname,
+                senderCharId: myCharacter.charId
+            )
+            sendPacketToPeers(joinPkt)
+            statusBanner = "✅ 已通过蓝牙 BLE 秒连房主牌桌！等待房主发牌..."
+        }
+    }
+    
+    func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
+        guard let val = characteristic.value else { return }
+        bleRxBuffer.append(val)
+        extractAndDispatchJSONObjects(from: &bleRxBuffer, fromConn: nil)
     }
 }
