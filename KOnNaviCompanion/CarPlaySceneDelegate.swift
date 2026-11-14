@@ -253,7 +253,7 @@ class CarPlayMapViewController: UIViewController, MKMapViewDelegate {
             switch AudioPlayerManager.shared.travelMode {
             case .driving:
                 r.strokeColor = UIColor(red: 0.92, green: 0.22, blue: 0.35, alpha: 0.92)
-            case .ebike, .bicycle:
+            case .ebike:
                 r.strokeColor = UIColor(red: 1.0, green: 0.82, blue: 0.10, alpha: 0.96)
             case .walking:
                 r.strokeColor = UIColor(red: 0.25, green: 0.58, blue: 0.95, alpha: 0.92)

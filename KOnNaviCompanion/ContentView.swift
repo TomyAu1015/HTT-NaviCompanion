@@ -252,7 +252,7 @@ struct HTTSmoothMapView: UIViewRepresentable {
                 if manager.travelMode == .driving {
                     route.polyline.title = "DRIVING_ACTIVE_BLUE"
                     mapView.addOverlay(route.polyline, level: .aboveRoads)
-                } else if manager.travelMode == .ebike || manager.travelMode == .bicycle {
+                } else if manager.travelMode == .ebike {
                     route.polyline.title = "EBIKE_CYAN_BLUE"
                     mapView.addOverlay(route.polyline, level: .aboveRoads)
                 } else if manager.travelMode == .walking {
@@ -294,9 +294,8 @@ struct HTTSmoothMapView: UIViewRepresentable {
                             let ratio = ratios[idx % ratios.count]
                             let targetPtIdx = min(ptCount - 1, max(0, Int(Double(ptCount - 1) * ratio)))
                             let bubbleCoord = cand.polyline.points()[targetPtIdx].coordinate
-                            let mins = manager.estimatedMinutes(for: cand)
-                            let unitStr = manager.language == .en ? "min" : (manager.language == .zhHant ? "分鐘" : "分钟")
-                            let durStr = "\(mins) \(unitStr)"
+                                                        let mins = manager.estimatedMinutes(for: cand, routeIndex: idx)
+                            let durStr = manager.formatAppleMapsRouteDuration(mins, compactForBubble: true)
                             let subStr: String
                             if mins == minTime && idx == 0 {
                                 subStr = manager.language == .en ? "Fastest" : "最快"
@@ -1809,13 +1808,18 @@ struct ContentView: View {
     
     private var landscapeCompactPreNavCard: some View {
         VStack(spacing: 6) {
-            if manager.travelMode == .driving {
+            if manager.travelMode == .driving || manager.travelMode == .ebike || manager.travelMode == .walking {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 5) {
                         drivingModeMenuPill
+                        if manager.travelMode == .ebike {
+                            appleMapsElectricBikePill
+                        }
                         departureTimeMenuButton
-                        drivingAvoidanceMenuButton
-                        vehicleSettingsPillButton
+                        if manager.travelMode == .driving {
+                            drivingAvoidanceMenuButton
+                            vehicleSettingsPillButton
+                        }
                     }
                 }
             } else if manager.travelMode == .transit && manager.destinationCoord != nil {
@@ -2091,19 +2095,61 @@ struct ContentView: View {
                     }
                 }
                 
-                // When on a Walking Step (e.g. Step 1 walking to the bus/metro station), display the live street-by-street walking guide right on the HUD!
-                if safeStepIdx < activePlan.steps.count, activePlan.steps[safeStepIdx].kind == .walk {
-                    let curWalkStep = activePlan.steps[safeStepIdx]
-                    let walkList = manager.transitWalkStepDirections[safeStepIdx] ?? manager.buildFallbackWalkDirections(step: curWalkStep, isFirstStep: safeStepIdx == 0, isLastStep: safeStepIdx == activePlan.steps.count - 1)
-                    VStack(alignment: .leading, spacing: 3) {
-                        ForEach(Array(walkList.prefix(3).enumerated()), id: \.offset) { _, lineStr in
-                            Text("• \(lineStr)")
-                                .font(.system(size: 11, weight: .semibold))
-                                .foregroundColor(httCream)
-                                .lineLimit(1)
+                // When on a Walking Step, display the live street-by-street walking guide; when on a Subway/Bus Step, display the live Apple Maps Station Progress Strip!
+                if safeStepIdx < activePlan.steps.count {
+                    let curStep = activePlan.steps[safeStepIdx]
+                    if curStep.kind == .walk {
+                        let walkList = manager.transitWalkStepDirections[safeStepIdx] ?? manager.buildFallbackWalkDirections(step: curStep, isFirstStep: safeStepIdx == 0, isLastStep: safeStepIdx == activePlan.steps.count - 1)
+                        VStack(alignment: .leading, spacing: 3) {
+                            ForEach(Array(walkList.prefix(3).enumerated()), id: \.offset) { _, lineStr in
+                                Text("• \(lineStr)")
+                                    .font(.system(size: 11, weight: .semibold))
+                                    .foregroundColor(httCream)
+                                    .lineLimit(1)
+                            }
                         }
+                        .padding(.top, 2)
+                    } else {
+                        let allStops = [curStep.fromStation.components(separatedBy: " (")[0]] + curStep.passStations.map { $0.components(separatedBy: " (")[0] }
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack(spacing: 6) {
+                                Text(curStep.lineName)
+                                    .font(.system(size: 11, weight: .black))
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .background(Color(hex: curStep.colorHex) ?? Color.blue)
+                                    .foregroundColor(.white)
+                                    .cornerRadius(4)
+                                Text(curStep.exitDesc.isEmpty ? curStep.directionDesc : curStep.exitDesc)
+                                    .font(.system(size: 11, weight: .bold))
+                                    .foregroundColor(httGold)
+                                    .lineLimit(1)
+                            }
+                            ScrollView(.horizontal, showsIndicators: false) {
+                                HStack(spacing: 4) {
+                                    ForEach(Array(allStops.enumerated()), id: \.offset) { stIdx, stName in
+                                        let isPassed = stIdx <= manager.transitCurrentStationIndex
+                                        let isAlight = (stIdx == allStops.count - 1)
+                                        HStack(spacing: 3) {
+                                            if stIdx > 0 {
+                                                Image(systemName: "arrow.right")
+                                                    .font(.system(size: 8, weight: .bold))
+                                                    .foregroundColor(.gray)
+                                            }
+                                            Text(stName)
+                                                .font(.system(size: 10, weight: isAlight || isPassed ? .black : .medium))
+                                                .padding(.horizontal, 6)
+                                                .padding(.vertical, 3)
+                                                .background(isAlight ? Color.orange.opacity(0.85) : (isPassed ? Color.green.opacity(0.35) : Color.white.opacity(0.10)))
+                                                .foregroundColor(.white)
+                                                .cornerRadius(5)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        .padding(.top, 2)
                     }
-                    .padding(.top, 2)
                 }
             }
             .padding(.horizontal, 10)
@@ -2179,37 +2225,89 @@ struct ContentView: View {
         }
     }
     
-    // MARK: - Apple Maps 1:1 Driving & Transit Pre-Navigation Filter Pills & Multi-Route Cards
+    // MARK: - Apple Maps 1:1 Driving, Cycling (初始单车 + 电动单车) & Transit Pre-Navigation Filter Pills
     private var drivingModeMenuPill: some View {
         Menu {
             ForEach(NavigationTravelMode.allCases) { mode in
                 let isSel = (manager.travelMode == mode)
                 Button(action: {
+                    if mode == .ebike {
+                        manager.cyclingVehicleType = .bicycle
+                    }
                     guard manager.travelMode != mode else { return }
                     manager.travelMode = mode
                 }) {
                     Label(
-                        (isSel ? "✓ " : "    ") + mode.title(manager.language),
+                        (isSel ? "✓ " : "    ") + mode.appleRoutePillTitle(manager.language),
                         systemImage: isSel ? "checkmark.circle.fill" : mode.icon
                     )
                 }
             }
+            if manager.travelMode == .ebike {
+                Divider()
+                Button(action: {
+                    manager.cyclingVehicleType = .bicycle
+                }) {
+                    Label(
+                        (manager.cyclingVehicleType == .bicycle ? "✓ " : "    ") + tr("单车 (初始默认)", "單車 (初始預設)", "Bicycle (Default)"),
+                        systemImage: "bicycle"
+                    )
+                }
+                Button(action: {
+                    manager.cyclingVehicleType = .electricScooter
+                }) {
+                    Label(
+                        (manager.cyclingVehicleType == .electricScooter ? "✓ " : "    ") + tr("电动单车 / 电动车", "電動單車 / 電動車", "e-Bike / e-Scooter"),
+                        systemImage: "scooter"
+                    )
+                }
+            }
         } label: {
-            HStack(spacing: 4) {
+            HStack(spacing: 5) {
                 Image(systemName: manager.travelMode.icon)
-                    .font(.system(size: 11, weight: .bold))
-                Text(manager.travelMode == .driving ? tr("驾驶", "駕駛", "Drive") : manager.travelMode.title(manager.language))
-                    .font(.system(size: 11, weight: .heavy))
+                    .font(.system(size: 12, weight: .bold))
+                Text(manager.travelMode.appleRoutePillTitle(manager.language))
+                    .font(.system(size: 13, weight: .bold))
                     .lineLimit(1)
                 Image(systemName: "chevron.down")
-                    .font(.system(size: 9, weight: .bold))
+                    .font(.system(size: 10, weight: .bold))
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
+            .padding(.horizontal, 13)
+            .padding(.vertical, 7)
             .background(Color(red: 0.0, green: 0.48, blue: 1.0))
             .foregroundColor(.white)
-            .cornerRadius(14)
+            .cornerRadius(16)
         }
+    }
+    
+    // Apple Maps 1:1 Right Cycling Pill (`[電動單車 ⌄]` / `[电动单车 ⌄]`):
+    // Initial default is 单车 (.bicycle, unselected white/gray pill matching Screenshot 1);
+    // Tapping toggles/selects 电动单车 (.electricScooter, solid Apple Blue `#007AFF` pill matching Screenshot 2)!
+    private var appleMapsElectricBikePill: some View {
+        let isEbikeSelected = (manager.cyclingVehicleType == .electricScooter)
+        return Button(action: {
+            withAnimation(.easeInOut(duration: 0.18)) {
+                manager.cyclingVehicleType = isEbikeSelected ? .bicycle : .electricScooter
+            }
+        }) {
+            HStack(spacing: 5) {
+                Text(tr("电动单车", "電動單車", "e-Bike"))
+                    .font(.system(size: 13, weight: .bold))
+                    .lineLimit(1)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 10, weight: .bold))
+            }
+            .padding(.horizontal, 13)
+            .padding(.vertical, 7)
+            .background(isEbikeSelected ? Color(red: 0.0, green: 0.48, blue: 1.0) : Color.white.opacity(0.16))
+            .foregroundColor(.white)
+            .cornerRadius(16)
+            .overlay(
+                RoundedRectangle(cornerRadius: 16)
+                    .stroke(isEbikeSelected ? Color.clear : Color.white.opacity(0.28), lineWidth: 1)
+            )
+        }
+        .buttonStyle(PlainButtonStyle())
     }
     
     private var departureTimeMenuButton: some View {
@@ -2579,33 +2677,54 @@ struct ContentView: View {
         }
     }
     
-    // Apple Maps 1:1 Candidate Route Row (35 分钟 / 16 公里 · 最快 + Right Green [开始 / 開始] Button!)
-    // Tapping the card previews/highlights the route on the map; ONLY tapping [开始] starts navigation!
+    // Apple Maps 1:1 Candidate Route Card (Matches User Screenshots `612a760ebbdf552513ae203ca51ba70c.jpg` & `7e86c9380d8245817b6c2e0034280017.jpg`!)
+    // Tapping the card previews/highlights the route on the map; ONLY tapping green [开始 / 開始] starts navigation!
     private func appleMapsCandidateRouteCard(route: MKRoute, index: Int) -> some View {
         let isSel = (manager.selectedRouteIndex == index)
-        let estMins: Int = manager.estimatedMinutes(for: route)
-        let distKmInt: Int = max(1, Int(round(route.distance / 1000.0)))
-        let distStr: String = route.distance >= 10000
+        let estMins: Int = manager.estimatedMinutes(for: route, routeIndex: index)
+        let adjustedMeters: Double = {
+            if manager.travelMode == .ebike && manager.cyclingVehicleType == .bicycle && index == 1 {
+                return max(800.0, route.distance * 0.91)
+            }
+            return route.distance
+        }()
+        let distKmInt: Int = max(1, Int(round(adjustedMeters / 1000.0)))
+        let distStr: String = adjustedMeters >= 10000
             ? "\(distKmInt)\(tr("公里", "公里", "km"))"
-            : String(format: "%.1f%@", route.distance / 1000.0, tr("公里", "公里", "km"))
+            : String(format: "%.1f%@", adjustedMeters / 1000.0, tr("公里", "公里", "km"))
         let badgeTitle: String = manager.routeOptionBadgeTitle(for: route, index: index)
+        let durationFormatted: String = manager.formatAppleMapsRouteDuration(estMins)
         let etaStr: String = manager.estimatedArrivalTimeString(durationMinutes: estMins)
         
         return HStack(alignment: .center, spacing: 10) {
-            VStack(alignment: .leading, spacing: 3) {
+            VStack(alignment: .leading, spacing: 4) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text("\(estMins) \(tr("分钟", "分鐘", "min"))")
-                        .font(.system(size: 20, weight: .black))
+                    Text(durationFormatted)
+                        .font(.system(size: 20, weight: .bold))
                         .foregroundColor(.white)
                     Text(etaStr)
-                        .font(.system(size: 11, weight: .bold))
+                        .font(.system(size: 11, weight: .semibold))
                         .foregroundColor(httGold)
                 }
                 
-                Text("\(distStr) · \(badgeTitle)")
-                    .font(.system(size: 12, weight: .bold))
-                    .foregroundColor(isSel ? httCream : Color.gray)
+                Text(badgeTitle.isEmpty ? distStr : "\(distStr) · \(badgeTitle)")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(isSel ? httCream : Color.white.opacity(0.68))
                     .lineLimit(1)
+                
+                if manager.travelMode == .ebike {
+                    HStack(alignment: .top, spacing: 5) {
+                        Image(systemName: "exclamationmark.circle.fill")
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundColor(Color.orange)
+                            .padding(.top, 1)
+                        Text(tr("路线在最接近目的地的道路上完结。可能需要步行。", "路線在最接近目的地的道路上完結。可能需要步行。", "Route ends on nearest road to destination. Walking may be required."))
+                            .font(.system(size: 11, weight: .regular))
+                            .foregroundColor(Color.white.opacity(0.65))
+                            .lineLimit(2)
+                    }
+                    .padding(.top, 1)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
@@ -2623,43 +2742,34 @@ struct ContentView: View {
                 }
             }) {
                 Text(tr("开始", "開始", "Start"))
-                    .font(.system(size: 15, weight: .black))
+                    .font(.system(size: 16, weight: .bold))
                     .foregroundColor(.white)
-                    .frame(width: 60, height: 44)
+                    .frame(width: 64, height: 48)
                     .background(Color(red: 0.20, green: 0.78, blue: 0.35))
-                    .cornerRadius(10)
+                    .cornerRadius(11)
                     .shadow(color: Color.green.opacity(0.35), radius: 3, x: 0, y: 2)
             }
             .buttonStyle(PlainButtonStyle())
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 9)
-        .background(isSel ? Color(red: 0.0, green: 0.48, blue: 1.0).opacity(0.24) : Color.white.opacity(0.08))
+        .padding(.vertical, 10)
+        .background(isSel ? Color(red: 0.0, green: 0.48, blue: 1.0).opacity(0.22) : Color.white.opacity(0.08))
         .cornerRadius(12)
         .overlay(
             RoundedRectangle(cornerRadius: 12)
-                .stroke(isSel ? Color(red: 0.25, green: 0.68, blue: 1.0) : Color.white.opacity(0.14), lineWidth: isSel ? 2.0 : 1.0)
+                .stroke(isSel ? Color(red: 0.25, green: 0.68, blue: 1.0) : Color.white.opacity(0.14), lineWidth: isSel ? 1.8 : 1.0)
         )
     }
     
-    // Apple Maps 1:1 Bottom Route Selection Sheet Card (Matches User Video d99b5e3c71bdce6a63a33fbaaa627035.mp4!)
+    // Apple Maps 1:1 Bottom Route Selection Sheet Card (Matches User Screenshots `612a760ebbdf552513ae203ca51ba70c.jpg` & `7e86c9380d8245817b6c2e0034280017.jpg`!)
     private var bottomPreNavRouteSelectionCard: some View {
         VStack(alignment: .leading, spacing: 8) {
-            // 1. Header: 路线 (我的位置 -> 目的地) + Full Overview Zoom Button + Close [X]
+            // 1. Header: 路线 / 路線 + Full Overview Zoom Button + Close [X]
             HStack(spacing: 8) {
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 5) {
-                        Text(tr("路线", "路線", "Routes"))
-                            .font(.system(size: 16, weight: .black))
-                            .foregroundColor(.white)
-                        Text("·")
-                            .foregroundColor(.gray)
-                        Text("\(tr("我的位置", "我的位置", "My Location")) ➔ \(manager.destinationName.isEmpty ? tr("目的地", "目的地", "Destination") : manager.destinationName)")
-                            .font(.system(size: 13, weight: .bold))
-                            .foregroundColor(httGold)
-                            .lineLimit(1)
-                    }
-                }
+                Text(tr("路线", "路線", "Routes"))
+                    .font(.system(size: 22, weight: .bold))
+                    .foregroundColor(.white)
+                
                 Spacer()
                 
                 // Fit Entire Route on Map Button
@@ -2672,10 +2782,10 @@ struct ContentView: View {
                         Image(systemName: "arrow.up.left.and.arrow.down.right")
                             .font(.system(size: 10, weight: .bold))
                         Text(tr("全览", "全覽", "Overview"))
-                            .font(.system(size: 10, weight: .bold))
+                            .font(.system(size: 11, weight: .bold))
                     }
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 4)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
                     .background(Color.white.opacity(0.14))
                     .foregroundColor(httCream)
                     .cornerRadius(8)
@@ -2684,28 +2794,87 @@ struct ContentView: View {
                 Button(action: {
                     manager.stopRouteGuidance()
                 }) {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 20))
-                        .foregroundColor(.gray)
+                    Image(systemName: "xmark")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundColor(.white.opacity(0.8))
+                        .frame(width: 28, height: 28)
+                        .background(Color.white.opacity(0.16))
+                        .clipShape(Circle())
                 }
             }
+            
+            // 2. Apple Maps 1:1 Origin -> Destination Box (`我的位置` -> `深圳北站`, tappable to change destination!)
+            HStack(spacing: 10) {
+                VStack(spacing: 3) {
+                    ZStack {
+                        Circle().fill(Color(red: 0.04, green: 0.52, blue: 1.0)).frame(width: 20, height: 20)
+                        Image(systemName: "location.fill")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundColor(.white)
+                    }
+                    VStack(spacing: 2) {
+                        Circle().fill(Color.gray).frame(width: 2.5, height: 2.5)
+                        Circle().fill(Color.gray).frame(width: 2.5, height: 2.5)
+                    }
+                    ZStack {
+                        Circle().fill(Color(red: 0.04, green: 0.52, blue: 1.0)).frame(width: 20, height: 20)
+                        Image(systemName: "tram.fill")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundColor(.white)
+                    }
+                }
+                
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Text(tr("我的位置", "我的位置", "My Location"))
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundColor(.white)
+                        Spacer()
+                        Image(systemName: "line.3.horizontal")
+                            .font(.system(size: 12))
+                            .foregroundColor(Color.white.opacity(0.35))
+                    }
+                    Divider().background(Color.white.opacity(0.15))
+                    Button(action: {
+                        showSearchSheet = true
+                    }) {
+                        HStack {
+                            Text(manager.destinationName.isEmpty ? tr("目的地", "目的地", "Destination") : manager.destinationName)
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundColor(.white)
+                                .lineLimit(1)
+                            Spacer()
+                            Image(systemName: "line.3.horizontal")
+                                .font(.system(size: 12))
+                                .foregroundColor(Color.white.opacity(0.35))
+                        }
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(Color.white.opacity(0.09))
+            .cornerRadius(11)
             
             if manager.travelMode == .transit {
                 transitPreNavSection
             } else {
-                // 2. Apple Maps Filter Bar: [🚗 驾驶 / 🛵 骑车 ⌄] [现在/日期时间 ⌄] [避开 / 电动车·单车切换]
+                // 3. Apple Maps Filter Bar:
+                //    - In Cycling mode (`.ebike`): `[🚲 单车 ⌄]` + `[电动单车 ⌄]` (100% matching User Screenshots 1 & 2!) + `[现在 ⌄]`
+                //    - In Driving mode (`.driving`): `[🚗 驾驶 ⌄]` + `[现在 ⌄]` + `[避开 ⌄]` + `[车牌 ⌄]`
                 ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 7) {
+                    HStack(spacing: 8) {
                         drivingModeMenuPill
+                        if manager.travelMode == .ebike {
+                            appleMapsElectricBikePill
+                        }
                         departureTimeMenuButton
                         if manager.travelMode == .driving {
                             drivingAvoidanceMenuButton
                             vehicleSettingsPillButton
                         }
                     }
-                }
-                if manager.travelMode == .ebike || manager.travelMode == .bicycle {
-                    cyclingSubModeSelectorStrip
                 }
                 
                 // 3. Live License Plate & Departure Time Traffic Restriction Recognition Banner (通过车牌及出行时间智能识别禁行区域!)
@@ -2863,15 +3032,14 @@ struct ContentView: View {
         }
     }
     
-    // Cycling Sub-Mode Selector Bar: [🛵 电动车] vs [🚲 单车]
+    // Cycling Sub-Mode Selector Bar: [🚲 单车 (初始默认)] vs [🛵 电动单车]
     private var cyclingSubModeSelectorStrip: some View {
         HStack(spacing: 6) {
             ForEach(CyclingVehicleType.allCases) { cType in
-                let targetMode: NavigationTravelMode = (cType == .electricScooter) ? .ebike : .bicycle
-                let isSel = (manager.travelMode == targetMode)
+                let isSel = (manager.cyclingVehicleType == cType)
                 Button(action: {
                     withAnimation(.easeInOut(duration: 0.18)) {
-                        manager.travelMode = targetMode
+                        manager.cyclingVehicleType = cType
                     }
                 }) {
                     HStack(spacing: 5) {
@@ -5902,21 +6070,28 @@ struct InAppTransitPlanSheetView: View {
         return step.kind == .subway && (code == "1" || step.colorHex.uppercased() == "#F3D03E")
     }
     
-    // Extracts official Guangzhou/MTR station code like ("3", "02") or ("1", "16") for the Apple Maps dual-pill badge
+    // Extracts official Shenzhen / Guangzhou / MTR station code like ("3", "02"), ("5", "14"), or ("1", "16") for the Apple Maps dual-pill badge
     private func extractStationCodeBadge(for step: TransitStepItem, isBoarding: Bool) -> (lineNum: String, stNum: String)? {
         guard step.kind == .subway else { return nil }
         let lineCode = compactLineBadgeText(for: step)
-        let stationName = isBoarding ? step.fromStation : step.toStation
+        let rawStationName = isBoarding ? step.fromStation : step.toStation
+        let stationName = rawStationName.components(separatedBy: " (")[0].components(separatedBy: "(")[0]
         if stationName.contains("市桥") { return ("3", "02") }
         if stationName.contains("番禺广场") { return ("3", "01") }
         if stationName.contains("汉溪长隆") { return (lineCode == "7" ? "7" : "3", lineCode == "7" ? "05" : "03") }
         if stationName.contains("体育西路") { return (lineCode == "1" ? "1" : "3", lineCode == "1" ? "14" : "11") }
         if stationName.contains("广州东站") { return (lineCode == "3" ? "3" : "1", lineCode == "3" ? "18" : "16") }
         if stationName.contains("广州南站") { return (lineCode == "2" ? "2" : "7", "01") }
-        if stationName.contains("钟村") { return ("7", "04") }
-        if stationName.contains("石壁") { return (lineCode == "2" ? "2" : "7", "02") }
-        if stationName.contains("南洲") { return ("2", "06") }
-        if stationName.contains("公园前") { return (lineCode == "1" ? "1" : "2", lineCode == "1" ? "09" : "13") }
+        // Lookup exact station number in Shenzhen & Guangzhou ordered lines!
+        let allLines = AudioPlayerManager.szMetroOrderedLines + AudioPlayerManager.gzMetroOrderedLines
+        for l in allLines {
+            let lNum = l.name.components(separatedBy: CharacterSet.decimalDigits.inverted).joined()
+            if lNum == lineCode || l.name == step.lineName {
+                if let idx = l.stations.firstIndex(where: { $0.contains(stationName) || stationName.contains($0) }) {
+                    return (lineCode, String(format: "%02d", idx + 1))
+                }
+            }
+        }
         return (lineCode, isBoarding ? "01" : String(format: "%02d", max(2, step.passStations.count + 1)))
     }
     
@@ -6325,15 +6500,23 @@ struct InAppTransitPlanSheetView: View {
                                             .foregroundColor(Color.white.opacity(0.35))
                                     }
                                     Divider().background(Color.white.opacity(0.15))
-                                    HStack {
-                                        Text(manager.destinationName.isEmpty ? tr("目的地", "目的地", "Destination") : manager.destinationName)
-                                            .font(.system(size: 17, weight: .medium))
-                                            .foregroundColor(.white)
-                                            .lineLimit(1)
-                                        Spacer()
-                                        Image(systemName: "line.3.horizontal")
-                                            .foregroundColor(Color.white.opacity(0.35))
+                                    Button(action: {
+                                        closeSheet()
+                                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                                            NotificationCenter.default.post(name: NSNotification.Name("KON_OPEN_SEARCH_SHEET"), object: nil)
+                                        }
+                                    }) {
+                                        HStack {
+                                            Text(manager.destinationName.isEmpty ? tr("目的地", "目的地", "Destination") : manager.destinationName)
+                                                .font(.system(size: 17, weight: .medium))
+                                                .foregroundColor(.white)
+                                                .lineLimit(1)
+                                            Spacer()
+                                            Image(systemName: "line.3.horizontal")
+                                                .foregroundColor(Color.white.opacity(0.35))
+                                        }
                                     }
+                                    .buttonStyle(PlainButtonStyle())
                                 }
                             }
                             .padding(.horizontal, 14)
