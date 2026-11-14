@@ -9717,6 +9717,7 @@ enum DoudizhuGamePhase: String, Codable {
 struct DoudizhuNetPacket: Codable {
     enum PacketKind: String, Codable {
         case joinRequest
+        case leaveRoom
         case stateSync
         case bidAction
         case playCardsAction
@@ -9858,7 +9859,13 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
         var id: String { rawValue }
     }
     
-    @Published var networkMode: NetworkMode = .faceToFaceP2P
+    @Published var networkMode: NetworkMode = .faceToFaceP2P {
+        didSet {
+            if oldValue != networkMode {
+                leaveCurrentRoomAndReset()
+            }
+        }
+    }
     @Published var customServerURL: String = UserDefaults.standard.string(forKey: "kon_ddz_server_url") ?? "wss://psp.azusa.online/ddz" {
         didSet {
             UserDefaults.standard.set(customServerURL, forKey: "kon_ddz_server_url")
@@ -9866,7 +9873,15 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
     }
     
     // Room & Lobby State
-    @Published var roomCode: String = ""
+    @Published var roomCode: String = "" {
+        didSet {
+            let trimmed = roomCode.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed != activeConnectedRoomCode && (isHostingRoom || isOnlineConnected || isBrowsingRooms || !connectedPeerNames.isEmpty) {
+                leaveCurrentRoomAndReset()
+            }
+        }
+    }
+    private var activeConnectedRoomCode: String = ""
     @Published var myNickname: String = UserDefaults.standard.string(forKey: "kon_ddz_nickname") ?? "轻音车友" {
         didSet {
             UserDefaults.standard.set(myNickname, forKey: "kon_ddz_nickname")
@@ -9954,8 +9969,9 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
             statusBanner = "⚠️ 请先填写房号，未填写无法创建房间！"
             return
         }
-        roomCode = code
         stopNetworking()
+        activeConnectedRoomCode = code
+        roomCode = code
         isHostingRoom = true
         isRoomAuthority = true
         isBrowsingRooms = false
@@ -9987,8 +10003,9 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
             statusBanner = "⚠️ 请先填写房号，未填写无法扫描加入房间！"
             return
         }
-        roomCode = code
         stopNetworking()
+        activeConnectedRoomCode = code
+        roomCode = code
         isHostingRoom = false
         isBrowsingRooms = true
         discoveredRooms.removeAll()
@@ -10087,10 +10104,35 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
         }
     }
     
+    func leaveCurrentRoomAndReset() {
+        stopNetworking()
+        phase = .lobby
+        mySeatIndex = 0
+        rebuildLobbySeats()
+        statusBanner = "✨ 已退出当前房间，座位已重置为单人+AI补位"
+    }
+
     func stopNetworking() {
         aiTurnWorkItem?.cancel()
         turnCountdownTimer?.invalidate()
         turnCountdownTimer = nil
+        if !activeConnectedRoomCode.isEmpty && (isHostingRoom || isOnlineConnected || !connectedPeerNames.isEmpty) {
+            let leavePkt = DoudizhuNetPacket(
+                kind: .leaveRoom,
+                roomCode: activeConnectedRoomCode,
+                senderPeerName: myPeerID.displayName,
+                senderCharId: myCharacter.charId
+            )
+            if let data = try? JSONEncoder().encode(leavePkt) {
+                if let session = mcSession, !session.connectedPeers.isEmpty {
+                    try? session.send(data, toPeers: session.connectedPeers, with: .reliable)
+                }
+                if let ws = webSocketTask {
+                    ws.send(.data(data)) { _ in }
+                }
+            }
+        }
+        activeConnectedRoomCode = ""
         peerCharIds.removeAll()
         advertiser?.stopAdvertisingPeer()
         browser?.stopBrowsingForPeers()
@@ -10104,8 +10146,10 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
         isBrowsingRooms = false
         isOnlineConnected = false
         isRoomAuthority = true
+        mySeatIndex = 0
         connectedPeerNames.removeAll()
         discoveredRooms.removeAll()
+        rebuildLobbySeats()
     }
     
     func rebuildLobbySeats() {
@@ -10557,8 +10601,32 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
     }
     
     private func handleIncomingPacket(_ pkt: DoudizhuNetPacket) {
-        guard pkt.roomCode == roomCode else { return }
+        let myCode = roomCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !myCode.isEmpty && pkt.roomCode == myCode else { return }
         switch pkt.kind {
+        case .leaveRoom:
+            let pName = pkt.senderPeerName
+            connectedPeerNames.removeAll { $0 == pName }
+            peerCharIds.removeValue(forKey: pName)
+            if phase == .lobby {
+                if connectedPeerNames.isEmpty {
+                    isRoomAuthority = true
+                    mySeatIndex = 0
+                }
+                rebuildLobbySeats()
+                statusBanner = "ℹ️ 玩家 [\(pName)] 已离开房间 \(myCode)"
+            } else {
+                for i in 0..<seats.count where seats[i].peerDisplayName == pName {
+                    seats[i].isAI = true
+                    seats[i].name = "\(characterFilter(for: seats[i].characterId).displayName(AudioPlayerManager.shared.language)) (AI接管)"
+                }
+                statusBanner = "ℹ️ 玩家 [\(pName)] 已离开，由轻音AI自动接管继续对局"
+                if isRoomAuthority {
+                    broadcastFullState()
+                    scheduleAITurnIfNeeded()
+                }
+            }
+            
         case .joinRequest:
             let pName = pkt.senderPeerName
             guard pName != myPeerID.displayName else { return }
@@ -10659,6 +10727,11 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
             } else if state == .connected {
                 self.statusBanner = "✅ 已成功连入房主 [\(peerID.displayName)] 的面对面牌桌！等待房主发牌..."
             } else if state == .notConnected {
+                self.connectedPeerNames.removeAll { $0 == peerID.displayName }
+                self.peerCharIds.removeValue(forKey: peerID.displayName)
+                if self.phase == .lobby {
+                    self.rebuildLobbySeats()
+                }
                 self.statusBanner = "ℹ️ 与 [\(peerID.displayName)] 的连接已断开"
             }
         }
@@ -10682,7 +10755,9 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
     }
     
     func browser(_ browser: MCNearbyServiceBrowser, foundPeer peerID: MCPeerID, withDiscoveryInfo info: [String : String]?) {
-        let code = info?["code"] ?? "8888"
+        let code = (info?["code"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let myCode = roomCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !code.isEmpty && code == myCode else { return }
         let host = info?["host"] ?? peerID.displayName
         let charId = Int(info?["char"] ?? "1") ?? 1
         let room = DoudizhuDiscoveredRoom(

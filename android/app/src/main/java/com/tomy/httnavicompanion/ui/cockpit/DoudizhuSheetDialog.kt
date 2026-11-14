@@ -118,14 +118,15 @@ fun KOnDoudizhuSheetDialog(onDismiss: () -> Unit) {
                             .clip(RoundedCornerShape(16.dp))
                             .background(DdzCardGreen)
                             .clickable {
-                                if (phase != DoudizhuGamePhase.LOBBY) {
+                                if (phase != DoudizhuGamePhase.LOBBY || isHosting || isServerConn || connectedPeers.isNotEmpty()) {
                                     engine.leaveRoomAndResetLobby()
                                 }
                             }
                             .padding(horizontal = 10.dp, vertical = 5.dp)
                     ) {
+                        val canLeaveRoom = (phase != DoudizhuGamePhase.LOBBY || isHosting || isServerConn || connectedPeers.isNotEmpty())
                         Text(
-                            if (phase == DoudizhuGamePhase.LOBBY) "♠ 房间大厅" else "< 退出房间",
+                            if (canLeaveRoom) "< 退出房间" else "♠ 房间大厅",
                             color = DdzGold,
                             fontSize = 12.sp,
                             fontWeight = FontWeight.Bold
@@ -457,7 +458,16 @@ fun KOnDoudizhuSheetDialog(onDismiss: () -> Unit) {
                                         colors = ButtonDefaults.buttonColors(containerColor = if (isServerConn) Color(0xFF2E7D32) else DdzBlue),
                                         shape = RoundedCornerShape(10.dp)
                                     ) {
-                                        Text(if (isServerConn) "已连接" else "连接服务器", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                        Text(if (isServerConn) "已连($roomCode)" else "连接服务器", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                    }
+                                    if (isServerConn || connectedPeers.isNotEmpty()) {
+                                        Button(
+                                            onClick = { engine.leaveRoomAndResetLobby() },
+                                            colors = ButtonDefaults.buttonColors(containerColor = DdzRed),
+                                            shape = RoundedCornerShape(10.dp)
+                                        ) {
+                                            Text("断开", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                        }
                                     }
                                 }
                             }

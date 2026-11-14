@@ -7999,17 +7999,18 @@ struct KOnDoudizhuSheetView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
-                    if ddz.phase != .lobby {
-                        Button(action: {
-                            ddz.phase = .lobby
-                        }) {
-                            HStack(spacing: 3) {
-                                Image(systemName: "chevron.left")
-                                Text(tr("房间大厅", "房間大廳", "Lobby"))
-                            }
-                            .font(.system(size: 13, weight: .bold))
-                            .foregroundColor(httGold)
+                    let canLeave = (ddz.phase != .lobby || ddz.isHostingRoom || ddz.isOnlineConnected || !ddz.connectedPeerNames.isEmpty)
+                    Button(action: {
+                        if canLeave {
+                            ddz.leaveCurrentRoomAndReset()
                         }
+                    }) {
+                        HStack(spacing: 3) {
+                            Image(systemName: canLeave ? "chevron.left" : "suit.spade.fill")
+                            Text(canLeave ? tr("退出房间", "退出房間", "Leave Room") : tr("房间大厅", "房間大廳", "Lobby"))
+                        }
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundColor(httGold)
                     }
                 }
                 ToolbarItem(placement: .navigationBarTrailing) {
@@ -8257,15 +8258,30 @@ struct KOnDoudizhuSheetView: View {
                             Button(action: {
                                 ddz.connectOnlineServerRoom()
                             }) {
-                                Text(tr("连接服务器", "連接伺服器", "Connect"))
+                                Text(ddz.isOnlineConnected ? tr("已连(\(ddz.roomCode))", "已連(\(ddz.roomCode))", "Connected") : tr("连接服务器", "連接伺服器", "Connect"))
                                     .font(.system(size: 12, weight: .black))
-                                    .padding(.horizontal, 12)
+                                    .padding(.horizontal, 10)
                                     .frame(height: 36)
-                                    .background(Color.blue)
+                                    .background(ddz.isOnlineConnected ? Color.green.opacity(0.85) : Color.blue)
                                     .foregroundColor(.white)
                                     .cornerRadius(8)
                             }
                             .buttonStyle(PlainButtonStyle())
+                            
+                            if ddz.isOnlineConnected || !ddz.connectedPeerNames.isEmpty {
+                                Button(action: {
+                                    ddz.leaveCurrentRoomAndReset()
+                                }) {
+                                    Text(tr("取消/退出", "取消/退出", "Leave"))
+                                        .font(.system(size: 12, weight: .black))
+                                        .padding(.horizontal, 10)
+                                        .frame(height: 36)
+                                        .background(httCrimson)
+                                        .foregroundColor(.white)
+                                        .cornerRadius(8)
+                                }
+                                .buttonStyle(PlainButtonStyle())
+                            }
                         }
                     }
                     .padding(12)
@@ -8870,7 +8886,7 @@ struct KOnDoudizhuSheetView: View {
                 }
                 .buttonStyle(PlainButtonStyle())
                 
-                Button(action: { ddz.phase = .lobby }) {
+                Button(action: { ddz.leaveCurrentRoomAndReset() }) {
                     Text(tr("返回大厅", "返回大廳", "Lobby"))
                         .font(.system(size: 14, weight: .bold))
                         .padding(.horizontal, 18)

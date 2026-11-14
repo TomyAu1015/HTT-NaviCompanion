@@ -424,10 +424,28 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
         return list
     }
 
-    fun setNetworkMode(mode: DoudizhuNetworkMode) { _networkMode.value = mode }
+    private var activeConnectedRoomCode: String = ""
+    private val peerCharMap = mutableMapOf<String, CharacterFilter>()
+
+    fun setNetworkMode(mode: DoudizhuNetworkMode) {
+        if (_networkMode.value != mode) {
+            leaveRoomAndResetLobby()
+            _networkMode.value = mode
+        }
+    }
     fun setServerUrl(url: String) { _serverUrl.value = url }
     fun setDirectConnectIp(ip: String) { _directConnectIp.value = ip }
-    fun setRoomCode(code: String) { _roomCode.value = code }
+    fun setRoomCode(code: String) {
+        val trimmed = code.trim()
+        if (trimmed != activeConnectedRoomCode && (_isHostingRoom.value || _isServerConnected.value || _isScanningRooms.value || _connectedPeerNames.value.isNotEmpty())) {
+            stopNetworking()
+            _phase.value = DoudizhuGamePhase.LOBBY
+            _mySeatIndex.value = 0
+            rebuildLobbySeats()
+            _statusBanner.value = "ℹ️ 房号已变更为 [$trimmed]，旧房间连接与座位已重置"
+        }
+        _roomCode.value = code
+    }
     fun setMyNickname(name: String) { _myNickname.value = name; rebuildLobbySeats() }
     fun setMyCharacter(char: CharacterFilter) {
         _myChar.value = if (char == CharacterFilter.ALL) CharacterFilter.YUI else char
@@ -462,12 +480,22 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
             _seats.value = listOf(s0, s1, s2)
             return
         }
-        val existingPeers = _seats.value.filter { !it.isAI && it.seatIndex != 0 }
+        val peers = _connectedPeerNames.value
         val s0 = DoudizhuPlayerSeat(0, "${_myNickname.value} (${_myChar.value.displayName(lang)})", _myChar.value, isAI = false, peerDisplayName = _myNickname.value)
-        val s1 = existingPeers.getOrNull(0)?.copy(seatIndex = 1)
-            ?: DoudizhuPlayerSeat(1, "${aiPool[0].displayName(lang)} (AI)", aiPool[0], isAI = true, peerDisplayName = "AI_1")
-        val s2 = existingPeers.getOrNull(1)?.copy(seatIndex = 2)
-            ?: DoudizhuPlayerSeat(2, "${aiPool[1].displayName(lang)} (AI)", aiPool[1], isAI = true, peerDisplayName = "AI_2")
+        val p1Name = peers.getOrNull(0)
+        val s1 = if (p1Name != null) {
+            val ch1 = peerCharMap[p1Name] ?: aiPool[0]
+            DoudizhuPlayerSeat(1, "$p1Name (${ch1.displayName(lang)})", ch1, isAI = false, peerDisplayName = p1Name)
+        } else {
+            DoudizhuPlayerSeat(1, "${aiPool[0].displayName(lang)} (AI)", aiPool[0], isAI = true, peerDisplayName = "AI_1")
+        }
+        val p2Name = peers.getOrNull(1)
+        val s2 = if (p2Name != null) {
+            val ch2 = peerCharMap[p2Name] ?: aiPool[1]
+            DoudizhuPlayerSeat(2, "$p2Name (${ch2.displayName(lang)})", ch2, isAI = false, peerDisplayName = p2Name)
+        } else {
+            DoudizhuPlayerSeat(2, "${aiPool[1].displayName(lang)} (AI)", aiPool[1], isAI = true, peerDisplayName = "AI_2")
+        }
         _mySeatIndex.value = 0
         _seats.value = listOf(s0, s1, s2)
     }
@@ -482,8 +510,9 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
             _statusBanner.value = "⚠️ 请先填写房号，未填写无法创建房间！"
             return
         }
-        _roomCode.value = code
         stopNetworking()
+        activeConnectedRoomCode = code
+        _roomCode.value = code
         val ip = refreshLocalIpAddress()
         _isHostingRoom.value = true
         _isRoomAuthority.value = true
@@ -687,8 +716,9 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
             _statusBanner.value = "⚠️ 请先填写房号，未填写无法扫描加入房间！"
             return
         }
-        _roomCode.value = code
         stopNetworking()
+        activeConnectedRoomCode = code
+        _roomCode.value = code
         refreshLocalIpAddress()
         _isHostingRoom.value = false
         _isScanningRooms.value = true
@@ -709,7 +739,7 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
                         val pkt = DatagramPacket(buf, buf.size)
                         ds.receive(pkt)
                         val json = JSONObject(String(pkt.data, 0, pkt.length, Charsets.UTF_8))
-                        if (json.optString("type") == "kon_ddz_room") {
+                        if (json.optString("type") == "kon_ddz_room" && json.optString("code").trim() == _roomCode.value.trim()) {
                             val hostIp = json.optString("ip").ifBlank { pkt.address.hostAddress ?: "" }
                             val room = DiscoveredP2PRoom(
                                 id = "$hostIp:${json.optInt("port", tcpPort)}",
@@ -1223,10 +1253,28 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
 
     @SuppressLint("MissingPermission")
     fun stopNetworking() {
+        if (activeConnectedRoomCode.isNotEmpty() && (_isHostingRoom.value || _isServerConnected.value || _connectedPeerNames.value.isNotEmpty())) {
+            val leaveRaw = JSONObject().apply {
+                put("kind", "leaveRoom")
+                put("roomCode", activeConnectedRoomCode)
+                put("senderPeerName", _myNickname.value)
+                put("senderCharId", _myChar.value.charId)
+            }.toString()
+            try { webSocket?.send(leaveRaw) } catch (_: Exception) {}
+            Thread {
+                activeChannels.forEach { ch ->
+                    try { ch.sendJson(leaveRaw) } catch (_: Exception) {}
+                }
+            }.start()
+        }
+        activeConnectedRoomCode = ""
+        peerCharMap.clear()
         _isHostingRoom.value = false
         _isScanningRooms.value = false
         _isServerConnected.value = false
+        _isRoomAuthority.value = true
         hasUnmodifiedIosWsPeer = false
+        _mySeatIndex.value = 0
         _connectedPeerNames.value = emptyList()
         try { tcpServerSocket?.close() } catch (_: Exception) {}
         try { wsServerSocket?.close() } catch (_: Exception) {}
@@ -1247,6 +1295,7 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
         try { nsdDiscListener?.let { nsdManager?.stopServiceDiscovery(it) } } catch (_: Exception) {}
         nsdRegListener = null
         nsdDiscListener = null
+        rebuildLobbySeats()
     }
 
     private fun handleIncomingBluetoothSocket(sock: BluetoothSocket) {
@@ -1334,34 +1383,48 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
             val senderCid = obj.optInt("senderCharId", 1)
 
             when (kind) {
+                "leaveRoom" -> {
+                    val peers = _connectedPeerNames.value.toMutableList()
+                    peers.removeAll { it == senderName }
+                    _connectedPeerNames.value = peers
+                    peerCharMap.remove(senderName)
+                    if (_phase.value == DoudizhuGamePhase.LOBBY) {
+                        if (peers.isEmpty()) {
+                            _isRoomAuthority.value = true
+                            _mySeatIndex.value = 0
+                        }
+                        rebuildLobbySeats()
+                        _statusBanner.value = "ℹ️ 玩家 [$senderName] 已离开房间 $myCode"
+                    } else {
+                        _seats.value = _seats.value.map { s ->
+                            if (s.peerDisplayName == senderName) {
+                                s.copy(isAI = true, name = "${s.character.displayName(currentLang())} (AI接管)")
+                            } else s
+                        }
+                        _statusBanner.value = "ℹ️ 玩家 [$senderName] 已离开，由轻音AI自动接管"
+                        if (isRoomAuthorityVal) {
+                            broadcastFullStateSync()
+                            runAITurnsIfNeeded()
+                        }
+                    }
+                }
                 "joinRequest" -> {
                     if (senderName == _myNickname.value) return
                     hasUnmodifiedIosWsPeer = false
+                    val ch = CharacterFilter.fiveIndividuals.firstOrNull { it.charId == senderCid } ?: CharacterFilter.MIO
+                    peerCharMap[senderName] = ch
                     val peers = _connectedPeerNames.value.toMutableList()
                     val isNew = !peers.contains(senderName)
                     if (isNew) {
                         peers.add(senderName)
                         _connectedPeerNames.value = peers
                     }
-                    val curSeats = _seats.value.toMutableList()
-                    val existingSlot = curSeats.indexOfFirst { it.peerDisplayName == senderName }
-                    val targetSlot = if (existingSlot != -1) existingSlot else curSeats.indexOfFirst { it.isAI && it.seatIndex > 0 }
-                    if (targetSlot != -1) {
-                        val ch = CharacterFilter.fiveIndividuals.firstOrNull { it.charId == senderCid } ?: CharacterFilter.MIO
-                        curSeats[targetSlot] = DoudizhuPlayerSeat(
-                            seatIndex = targetSlot,
-                            name = "$senderName (${ch.displayName(currentLang())})",
-                            character = ch,
-                            isAI = false,
-                            peerDisplayName = senderName
-                        )
-                        _seats.value = curSeats
-                        _statusBanner.value = "🎉 [$senderName] 已加入房间！"
-                        if (isNew) {
-                            sendJoinRequestPacket()
-                            if (isRoomAuthorityVal) {
-                                mainHandler.postDelayed({ broadcastFullStateSync() }, 150L)
-                            }
+                    rebuildLobbySeats()
+                    _statusBanner.value = "🎉 [$senderName] 已加入房间 $myCode！(当前真机: ${peers.size + 1}人)"
+                    if (isNew) {
+                        sendJoinRequestPacket()
+                        if (isRoomAuthorityVal) {
+                            mainHandler.postDelayed({ broadcastFullStateSync() }, 150L)
                         }
                     }
                 }
