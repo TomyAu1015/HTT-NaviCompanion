@@ -691,7 +691,7 @@ fun KOnDoudizhuSheetDialog(onDismiss: () -> Unit, embeddedInGameRoom: Boolean = 
                                 app = app
                             )
 
-                            // Wide Center Stage for Played Card Combinations (100% visible, never clipped!)
+                            // Wide Center Stage: Non-overlapping 3-seat 1-round played cards (上家 | 我方 | 下家)
                             Column(
                                 modifier = Modifier
                                     .weight(1f)
@@ -706,54 +706,37 @@ fun KOnDoudizhuSheetDialog(onDismiss: () -> Unit, embeddedInGameRoom: Boolean = 
                             ) {
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.Top
                                 ) {
-                                    ActionBadge("⬅ 上家", leftSeat.lastActionText.ifBlank { "等待中" })
-                                    ActionBadge("下家 ➡", rightSeat.lastActionText.ifBlank { "等待中" })
-                                }
-
-                                val activeHand = lastValidHand
-                                if (activeHand != null && activeHand.cards.isNotEmpty()) {
-                                    val playOwnerName = seats.getOrNull(lastPlaySeat)?.name ?: ""
-                                    Column(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalAlignment = Alignment.CenterHorizontally,
-                                        verticalArrangement = Arrangement.spacedBy(4.dp)
-                                    ) {
-                                        Box(
-                                            modifier = Modifier
-                                                .clip(RoundedCornerShape(10.dp))
-                                                .background(DdzRed.copy(alpha = 0.88f))
-                                                .border(1.dp, DdzGold, RoundedCornerShape(10.dp))
-                                                .padding(horizontal = 8.dp, vertical = 2.dp)
-                                        ) {
-                                            Text(
-                                                "$playOwnerName · ${activeHand.type.label} (${activeHand.cards.size}张)",
-                                                color = Color.White,
-                                                fontSize = 10.sp,
-                                                fontWeight = FontWeight.Black,
-                                                maxLines = 1
-                                            )
+                                    // Left Opponent Played Cards (上家)
+                                    Column(modifier = Modifier.weight(1f), horizontalAlignment = Alignment.Start, verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                        if (leftSeat.lastPlayed.isNotEmpty()) {
+                                            FittedTablePlayedCardsView(cards = leftSeat.lastPlayed, app = app)
+                                        } else {
+                                            ActionBadge("⬅ 上家", leftSeat.lastActionText.ifBlank { "等待中" })
                                         }
-
-                                        FittedTablePlayedCardsView(cards = activeHand.cards, app = app)
                                     }
-                                } else {
-                                    Text(
-                                        if (phase == DoudizhuGamePhase.BIDDING) "📢 叫地主阶段 · 请选择叫分" else "🃏 等待出牌...",
-                                        color = Color.White.copy(alpha = 0.55f),
-                                        fontSize = 11.sp,
-                                        fontWeight = FontWeight.Bold
-                                    )
+                                    Spacer(Modifier.width(6.dp))
+                                    // Right Opponent Played Cards (下家)
+                                    Column(modifier = Modifier.weight(1f), horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                        if (rightSeat.lastPlayed.isNotEmpty()) {
+                                            FittedTablePlayedCardsView(cards = rightSeat.lastPlayed, app = app)
+                                        } else {
+                                            ActionBadge("下家 ➡", rightSeat.lastActionText.ifBlank { "等待中" })
+                                        }
+                                    }
                                 }
 
+                                // My Own Played Cards / Status
                                 val mySeatNow = seats.getOrNull(mySeatIdx)
-                                Text(
-                                    if (mySeatNow != null && mySeatNow.lastActionText.isNotEmpty()) "我的状态: ${mySeatNow.lastActionText}" else "",
-                                    color = DdzGold,
-                                    fontSize = 10.sp,
-                                    fontWeight = FontWeight.Bold
-                                )
+                                if (mySeatNow != null && mySeatNow.lastPlayed.isNotEmpty()) {
+                                    FittedTablePlayedCardsView(cards = mySeatNow.lastPlayed, app = app)
+                                } else if (phase == DoudizhuGamePhase.BIDDING) {
+                                    Text("📢 叫地主阶段 · 请选择叫分", color = Color.White.copy(alpha = 0.65f), fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                } else if (mySeatNow != null && mySeatNow.lastActionText.isNotEmpty()) {
+                                    Text("我方: ${mySeatNow.lastActionText}", color = DdzGold, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                }
                             }
 
                             OpponentSeatBox(

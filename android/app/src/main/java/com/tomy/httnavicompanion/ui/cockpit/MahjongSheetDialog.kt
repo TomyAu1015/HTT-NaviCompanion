@@ -57,15 +57,30 @@ fun KOnGameRoomSheetDialog(onDismiss: () -> Unit) {
     }
 
     val context = LocalContext.current
-    DisposableEffect(Unit) {
+    val ddzPhase by ddzEngine.phase.collectAsState()
+    val mjPhase by mjEngine.phase.collectAsState()
+    val inLobbyNow = (selectedGame == 0 && ddzPhase == DoudizhuGamePhase.LOBBY) || (selectedGame == 1 && mjPhase == MahjongGamePhase.LOBBY)
+
+    val activity = remember(context) {
         var ctx: Context? = context
-        var activity: Activity? = null
+        var act: Activity? = null
         while (ctx is ContextWrapper) {
-            if (ctx is Activity) { activity = ctx; break }
+            if (ctx is Activity) { act = ctx; break }
             ctx = ctx.baseContext
         }
-        val prevOrientation = activity?.requestedOrientation ?: ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
-        activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        act
+    }
+    val prevOrientation = remember { activity?.requestedOrientation ?: ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED }
+
+    LaunchedEffect(inLobbyNow) {
+        if (!inLobbyNow) {
+            activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        } else {
+            activity?.requestedOrientation = prevOrientation
+        }
+    }
+
+    DisposableEffect(Unit) {
         onDispose {
             activity?.requestedOrientation = prevOrientation
             ddzEngine.leaveRoomAndResetLobby()
@@ -96,17 +111,21 @@ fun KOnGameRoomSheetDialog(onDismiss: () -> Unit) {
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(16.dp))
-                            .background(MjCardGreen)
-                            .clickable {
-                                if (selectedGame == 0) ddzEngine.leaveRoomAndResetLobby()
-                                else mjEngine.leaveRoomAndResetLobby()
-                            }
-                            .padding(horizontal = 10.dp, vertical = 5.dp)
-                    ) {
-                        Text(tr("🏠 房间大厅", "🏠 房間大廳", "🏠 Lobby"), color = MjGold, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    if (!inLobbyNow) {
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(16.dp))
+                                .background(MjCardGreen)
+                                .clickable {
+                                    if (selectedGame == 0) ddzEngine.leaveRoomAndResetLobby()
+                                    else mjEngine.leaveRoomAndResetLobby()
+                                }
+                                .padding(horizontal = 10.dp, vertical = 5.dp)
+                        ) {
+                            Text(tr("< 退出房间", "< 退出房間", "< Leave"), color = MjGold, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        }
+                    } else {
+                        Spacer(Modifier.width(72.dp))
                     }
                     Text(
                         tr("放课后茶会 · 放课后棋牌室", "放課後茶會 · 放課後棋牌室", "HTT · Game Room"),
@@ -116,25 +135,26 @@ fun KOnGameRoomSheetDialog(onDismiss: () -> Unit) {
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
-                    Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(16.dp))
-                            .background(MjCardGreen)
-                            .clickable {
-                                ddzEngine.leaveRoomAndResetLobby()
-                                mjEngine.leaveRoomAndResetLobby()
-                                onDismiss()
-                            }
-                            .padding(horizontal = 10.dp, vertical = 5.dp)
-                    ) {
-                        Text(tr("✕ 关闭", "✕ 關閉", "✕ Close"), color = MjGold, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    if (inLobbyNow) {
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(16.dp))
+                                .background(MjCardGreen)
+                                .clickable {
+                                    ddzEngine.leaveRoomAndResetLobby()
+                                    mjEngine.leaveRoomAndResetLobby()
+                                    onDismiss()
+                                }
+                                .padding(horizontal = 10.dp, vertical = 5.dp)
+                        ) {
+                            Text(tr("✕ 关闭", "✕ 關閉", "✕ Close"), color = MjGold, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        }
+                    } else {
+                        Spacer(Modifier.width(72.dp))
                     }
                 }
 
                 // Game Switcher Bar (auto-collapses during active game to give maximum vertical space to hand cards/tiles)
-                val ddzPhase by ddzEngine.phase.collectAsState()
-                val mjPhase by mjEngine.phase.collectAsState()
-                val inLobbyNow = (selectedGame == 0 && ddzPhase == DoudizhuGamePhase.LOBBY) || (selectedGame == 1 && mjPhase == MahjongGamePhase.LOBBY)
                 if (inLobbyNow) {
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
@@ -416,6 +436,11 @@ fun KOnMahjongSheetDialog(onDismiss: () -> Unit, embeddedInGameRoom: Boolean = f
                                     Button(onClick = { engine.connectOnlineServerRoom() }, colors = ButtonDefaults.buttonColors(containerColor = if (isServerConn) Color(0xFF2E7D32) else MjBlue)) {
                                         Text(if (isServerConn) "已连($roomCode)" else "连接", color = Color.White, fontSize = 11.sp)
                                     }
+                                    if (isServerConn) {
+                                        Button(onClick = { engine.leaveRoomAndResetLobby() }, colors = ButtonDefaults.buttonColors(containerColor = MjRed)) {
+                                            Text("退出", color = Color.White, fontSize = 11.sp)
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -566,9 +591,12 @@ fun KOnMahjongSheetDialog(onDismiss: () -> Unit, embeddedInGameRoom: Boolean = f
                         }
                     }
 
-                    // Compact Single-Line My Info + Action Bar + Side-by-Side Melds & Hand Row
+                    // Compact Single-Line My Info + Action Bar + My Discard River + Melds & Hand Row
                     val me = seats.getOrNull(mySeatIdx)
                     if (me != null) {
+                        if (me.discards.isNotEmpty()) {
+                            MjDiscardRiver(me)
+                        }
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
