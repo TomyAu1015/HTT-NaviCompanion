@@ -283,6 +283,7 @@ fun KOnDoudizhuSheetDialog(onDismiss: () -> Unit) {
                                         OutlinedTextField(
                                             value = roomCode,
                                             onValueChange = { engine.setRoomCode(it) },
+                                            placeholder = { Text("必填", color = Color.Gray, fontSize = 10.sp) },
                                             singleLine = true,
                                             colors = OutlinedTextFieldDefaults.colors(
                                                 focusedTextColor = DdzGold,
@@ -421,6 +422,7 @@ fun KOnDoudizhuSheetDialog(onDismiss: () -> Unit) {
                                         OutlinedTextField(
                                             value = roomCode,
                                             onValueChange = { engine.setRoomCode(it) },
+                                            placeholder = { Text("必填", color = Color.Gray, fontSize = 10.sp) },
                                             singleLine = true,
                                             colors = OutlinedTextFieldDefaults.colors(
                                                 focusedTextColor = DdzGold,

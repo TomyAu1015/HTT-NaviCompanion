@@ -228,7 +228,7 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
     private val _localIpAddress = MutableStateFlow("127.0.0.1")
     val localIpAddress: StateFlow<String> = _localIpAddress
 
-    private val _roomCode = MutableStateFlow("8888")
+    private val _roomCode = MutableStateFlow("")
     val roomCode: StateFlow<String> = _roomCode
 
     private val _myNickname = MutableStateFlow(Build.MODEL.ifBlank { "轻音车友" })
@@ -475,6 +475,12 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
     // =========================================================================
     @SuppressLint("MissingPermission")
     fun startHostingFaceToFaceRoom() {
+        val code = _roomCode.value.trim()
+        if (code.isEmpty()) {
+            _statusBanner.value = "⚠️ 请先填写房号，未填写无法创建房间！"
+            return
+        }
+        _roomCode.value = code
         stopNetworking()
         val ip = refreshLocalIpAddress()
         _isHostingRoom.value = true
@@ -673,6 +679,12 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
 
     @SuppressLint("MissingPermission")
     fun startScanningFaceToFaceRooms() {
+        val code = _roomCode.value.trim()
+        if (code.isEmpty()) {
+            _statusBanner.value = "⚠️ 请先填写房号，未填写无法扫描加入房间！"
+            return
+        }
+        _roomCode.value = code
         stopNetworking()
         refreshLocalIpAddress()
         _isHostingRoom.value = false
@@ -839,6 +851,15 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
 
     @SuppressLint("MissingPermission")
     fun joinDiscoveredRoom(room: DiscoveredP2PRoom) {
+        val code = _roomCode.value.trim()
+        if (code.isEmpty()) {
+            _statusBanner.value = "⚠️ 请先填写房号再加入房间！"
+            return
+        }
+        if (!room.isBle && !room.isBluetooth && room.roomCode != code) {
+            _statusBanner.value = "⚠️ 房号不匹配（您填写的是 $code，该房间房号为 ${room.roomCode}）！"
+            return
+        }
         _isScanningRooms.value = false
         _statusBanner.value = "🔗 正在加入 [${room.hostName}] 的房间 (${room.roomCode})..."
         Thread {
@@ -1128,6 +1149,12 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
     // 3. Online WebSocket Client (`ws://` or `wss://`)
     // =========================================================================
     fun connectOnlineServerRoom() {
+        val code = _roomCode.value.trim()
+        if (code.isEmpty()) {
+            _statusBanner.value = "⚠️ 请先填写房间号，不填写无法进入在线房间！"
+            return
+        }
+        _roomCode.value = code
         val url = _serverUrl.value.trim()
         if (!url.startsWith("ws://") && !url.startsWith("wss://")) {
             _statusBanner.value = "⚠️ 服务器地址无效，请使用 ws:// 或 wss:// 开头"
@@ -1281,10 +1308,9 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
     private fun handleReceivedPacketJson(raw: String) {
         try {
             val obj = JSONObject(raw)
-            val pktRoom = obj.optString("roomCode")
-            if (pktRoom.isNotEmpty() && pktRoom != _roomCode.value && !_isHostingRoom.value) {
-                _roomCode.value = pktRoom
-            }
+            val pktRoom = obj.optString("roomCode").trim()
+            val myCode = _roomCode.value.trim()
+            if (myCode.isEmpty() || pktRoom != myCode) return
             val kind = obj.optString("kind")
             val senderName = obj.optString("senderPeerName", "玩家")
             val senderCid = obj.optInt("senderCharId", 1)
