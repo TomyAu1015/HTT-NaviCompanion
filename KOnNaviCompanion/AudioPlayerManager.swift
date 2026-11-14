@@ -559,6 +559,46 @@ enum NavigationTravelMode: String, CaseIterable, Identifiable {
     }
 }
 
+// Cycling Sub-Mode: Electric Scooter (电动车) vs Pedal Bicycle (单车/自行车)
+enum CyclingVehicleType: String, CaseIterable, Identifiable {
+    case electricScooter = "electric_scooter"
+    case bicycle = "bicycle"
+    
+    var id: String { self.rawValue }
+    
+    func title(_ lang: AppLanguage) -> String {
+        switch (self, lang) {
+        case (.electricScooter, .zhHans): return "电动车"
+        case (.electricScooter, .zhHant): return "電動車"
+        case (.electricScooter, .en): return "e-Scooter"
+        case (.bicycle, .zhHans): return "单车"
+        case (.bicycle, .zhHant): return "單車"
+        case (.bicycle, .en): return "Bicycle"
+        }
+    }
+    
+    var icon: String {
+        switch self {
+        case .electricScooter: return "scooter"
+        case .bicycle: return "bicycle"
+        }
+    }
+    
+    var cruisingSpeedKmh: Double {
+        switch self {
+        case .electricScooter: return 20.5 // Realistic urban e-bike speed with intersections (max 25 km/h)
+        case .bicycle: return 13.5         // Realistic urban pedal bicycle speed matching Apple Maps cycling ETA
+        }
+    }
+    
+    var maxSpeedLimitKmh: Double {
+        switch self {
+        case .electricScooter: return 25.0 // New National Standard e-bike limit
+        case .bicycle: return 0.0          // No motor speed limit for pedal bicycle
+        }
+    }
+}
+
 struct RoadLaneItem: Identifiable {
     let id = UUID()
     let iconName: String       // e.g. "arrow.turn.up.left", "arrow.up", "arrow.turn.up.right"
@@ -1084,12 +1124,35 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     private var trafficLightCalibrationOffset: Int = 0
     @Published var rawTransitPlans: [TransitPlanOption] = []
     @Published var transitPlans: [TransitPlanOption] = []
+    @Published var cyclingVehicleType: CyclingVehicleType = {
+        if let raw = UserDefaults.standard.string(forKey: "kon_cycling_vehicle_type"),
+           let saved = CyclingVehicleType(rawValue: raw) {
+            return saved
+        }
+        return .electricScooter
+    }() {
+        didSet {
+            UserDefaults.standard.set(cyclingVehicleType.rawValue, forKey: "kon_cycling_vehicle_type")
+            if travelMode == .ebike {
+                speedLimitKmh = cyclingVehicleType.maxSpeedLimitKmh
+                if cyclingVehicleType == .bicycle {
+                    upcomingCameraLimit = 0
+                    isOverspeeding = false
+                }
+                if let dest = destinationCoord {
+                    calculateAndStartRoute(to: dest, title: destinationName, isReroute: false, silentFilterUpdate: false)
+                }
+            }
+        }
+    }
     @Published var selectedTransitPlanIndex: Int = 0
     @Published var activeTransitStepIndex: Int = 0
     @Published var transitSegmentPolylines: [MKPolyline] = []
     @Published var transitWalkStepDirections: [Int: [String]] = [:]
     @Published var customMapFocusRect: MKMapRect? = nil
     @Published var customMapFocusTrigger: Int = 0
+    @Published var isFocusingSingleTransitStep: Bool = false
+    var cachedFirstWalkRoute: MKRoute? = nil
     var dynamicStationCoordCache: [String: CLLocationCoordinate2D] = [:]
     var latestCorridorRoadPolyline: MKPolyline? = nil
     private var lastNetworkLocSyncTime: Date = .distantPast
@@ -2630,16 +2693,19 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         StationCoord(name: "机场南", exit: "3|29", lat: 23.3885, lon: 113.2995, line: "3号线")
     ]
     
-    func findNearestGZStation(to coord: CLLocationCoordinate2D, destTitle: String = "") -> StationCoord {
+    func findNearestGZStation(to coord: CLLocationCoordinate2D, destTitle: String = "", metroOnly: Bool = true) -> StationCoord {
         let clean = destTitle.replacingOccurrences(of: " ", with: "")
-        for s in AudioPlayerManager.gzStationsDatabase {
+        let pool = metroOnly
+            ? AudioPlayerManager.gzStationsDatabase.filter { $0.line.contains("号线") }
+            : AudioPlayerManager.gzStationsDatabase
+        for s in pool {
             if !clean.isEmpty && (clean.contains(s.name) || (s.name == "广州南站" && clean.contains("广州南"))) {
                 return s
             }
         }
-        var best = AudioPlayerManager.gzStationsDatabase[0]
+        var best = pool.first ?? AudioPlayerManager.gzStationsDatabase[0]
         var minD = 999999.0
-        for s in AudioPlayerManager.gzStationsDatabase {
+        for s in pool {
             let d = hypot(coord.latitude - s.lat, coord.longitude - s.lon)
             if d < minD {
                 minD = d
@@ -4271,7 +4337,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                         lineName: "步行前往公交站",
                         directionDesc: "前往 沙头/市桥 番16路公交站台",
                         fromStation: "我的位置",
-                        toStation: "沙头/银平路公交站",
+                        toStation: "沙头新村巴士站",
                         passStations: [],
                         durationMins: 12,
                         walkMeters: 780,
@@ -4285,8 +4351,8 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                         kind: .bus,
                         lineName: "番16路",
                         directionDesc: "往 市桥地铁站 / 城北公园 方向",
-                        fromStation: "沙头/银平路公交站",
-                        toStation: "百越广场西门 (地铁市桥站)",
+                        fromStation: "沙头新村",
+                        toStation: "光明北路",
                         passStations: ["沙头派出所", "大罗村", "西丽广场", "百越广场西门(地铁市桥站)"],
                         durationMins: 18,
                         walkMeters: 0,
@@ -4300,7 +4366,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                         kind: .walk,
                         lineName: "步行进站换乘",
                         directionDesc: "进入 市桥 地铁站 (B口)",
-                        fromStation: "百越广场西门 (地铁市桥站)",
+                        fromStation: "光明北路",
                         toStation: "市桥 (地铁3号线)",
                         passStations: [],
                         durationMins: 3,
@@ -4393,7 +4459,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                         lineName: "步行前往公交站",
                         directionDesc: "前往 番9路 / 番30路 公交站台",
                         fromStation: "我的位置",
-                        toStation: "大罗村/沙头公交站",
+                        toStation: "大罗村",
                         passStations: [],
                         durationMins: 12,
                         walkMeters: 790,
@@ -4407,7 +4473,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                         kind: .bus,
                         lineName: "番9路 / 番30路",
                         directionDesc: "往 汉溪长隆 / 钟村地铁站 方向",
-                        fromStation: "大罗村/沙头公交站",
+                        fromStation: "大罗村",
                         toStation: "地铁汉溪长隆站总站",
                         passStations: ["银平路", "市桥汽车站", "里仁洞", "地铁汉溪长隆站"],
                         durationMins: 37,
@@ -4485,7 +4551,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                         lineName: "步行前往番30路站",
                         directionDesc: "前往 番30路 公交站",
                         fromStation: "我的位置",
-                        toStation: "康乐路/富华路公交站",
+                        toStation: "康乐路",
                         passStations: [],
                         durationMins: 23,
                         walkMeters: 1450,
@@ -4499,7 +4565,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                         kind: .bus,
                         lineName: "番30路",
                         directionDesc: "往 余荫山房 / 钟村地铁站 方向",
-                        fromStation: "康乐路/富华路公交站",
+                        fromStation: "康乐路",
                         toStation: "地铁钟村站",
                         passStations: ["市桥医院", "钟村市场", "地铁钟村站"],
                         durationMins: 36,
@@ -7652,6 +7718,23 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     }
 
 
+    func isCoordinateNearActiveCorridor(_ candidate: CLLocationCoordinate2D, maxKm: Double = 55.0) -> Bool {
+        let dUser = Double(metersBetween(userCoordinate, candidate)) / 1000.0
+        if dUser <= maxKm { return true }
+        if let dest = destinationCoord {
+            let dDest = Double(metersBetween(dest, candidate)) / 1000.0
+            if dDest <= maxKm { return true }
+            let mid = CLLocationCoordinate2D(
+                latitude: (userCoordinate.latitude + dest.latitude) * 0.5,
+                longitude: (userCoordinate.longitude + dest.longitude) * 0.5
+            )
+            let halfSpanKm = max(maxKm, Double(metersBetween(userCoordinate, dest)) / 2000.0 + 25.0)
+            let dMid = Double(metersBetween(mid, candidate)) / 1000.0
+            if dMid <= halfSpanKm { return true }
+        }
+        return false
+    }
+
     func lookupStationCoordinate(named rawName: String) -> CLLocationCoordinate2D? {
         let clean = rawName
             .components(separatedBy: " (")[0]
@@ -7665,52 +7748,59 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !clean.isEmpty else { return nil }
         
-        // 1. Check runtime dynamic Apple Maps MKLocalSearch station coordinate cache first!
+        // 1. Check runtime dynamic Apple Maps MKLocalSearch station coordinate cache first (100% genuine Apple Maps POI coordinates)!
         if let cached = dynamicStationCoordCache[rawName] ?? dynamicStationCoordCache[clean] {
-            return cached
+            if isCoordinateNearActiveCorridor(cached, maxKm: 80.0) {
+                return cached
+            }
         }
         for (k, v) in dynamicStationCoordCache {
-            if k.contains(clean) || clean.contains(k) {
+            if (k == clean || k.contains(clean) || clean.contains(k)) && isCoordinateNearActiveCorridor(v, maxKm: 80.0) {
                 return v
             }
         }
         
-        // 2. Check Universal Nationwide High-Speed Rail / Railway / Airport Hub Database (80+ cities across Mainland, HK, Macau, Taiwan)
+        // 2. Check city-specific station databases ONLY if within the active corridor (prevents cross-city同名站点 from creating huge lines!)
+        for s in AudioPlayerManager.gzStationsDatabase {
+            if clean == s.name || clean.contains(s.name) || s.name.contains(clean) {
+                let c = CLLocationCoordinate2D(latitude: s.lat, longitude: s.lon)
+                if isCoordinateNearActiveCorridor(c, maxKm: 65.0) { return c }
+            }
+        }
+        for s in AudioPlayerManager.szStationsDatabase {
+            if clean == s.name || clean.contains(s.name) || s.name.contains(clean) {
+                let c = CLLocationCoordinate2D(latitude: s.lat, longitude: s.lon)
+                if isCoordinateNearActiveCorridor(c, maxKm: 65.0) { return c }
+            }
+        }
+        for s in AudioPlayerManager.hkStationsDatabase {
+            let base = s.name.components(separatedBy: " ")[0]
+            if clean == base || clean.contains(base) || base.contains(clean) {
+                let c = CLLocationCoordinate2D(latitude: s.lat, longitude: s.lon)
+                if isCoordinateNearActiveCorridor(c, maxKm: 65.0) { return c }
+            }
+        }
+        
+        // 3. Check Universal Nationwide High-Speed Rail / Railway / Airport Hub Database
         for h in AudioPlayerManager.universalNationalHubsDatabase {
             let hsrClean = h.hsrStationName.replacingOccurrences(of: "站", with: "")
             if clean == h.hsrStationName || clean == hsrClean || (clean.count >= 2 && h.hsrStationName.contains(clean)) {
-                return CLLocationCoordinate2D(latitude: h.hsrLat, longitude: h.hsrLon)
+                let c = CLLocationCoordinate2D(latitude: h.hsrLat, longitude: h.hsrLon)
+                if isCoordinateNearActiveCorridor(c, maxKm: 2500.0) { return c }
             }
             let railClean = h.normalRailName.replacingOccurrences(of: "站", with: "")
             if clean == h.normalRailName || clean == railClean || (clean.count >= 2 && h.normalRailName.contains(clean)) {
-                return CLLocationCoordinate2D(latitude: h.normalRailLat, longitude: h.normalRailLon)
+                let c = CLLocationCoordinate2D(latitude: h.normalRailLat, longitude: h.normalRailLon)
+                if isCoordinateNearActiveCorridor(c, maxKm: 2500.0) { return c }
             }
             if clean.contains(h.airportName) || (clean.contains("机场") && clean.contains(h.cityName)) {
                 return CLLocationCoordinate2D(latitude: h.airportLat, longitude: h.airportLon)
             }
         }
-        
-        // 3. Check Guangzhou, Shenzhen, and Hong Kong Station Databases
-        for s in AudioPlayerManager.gzStationsDatabase {
-            if clean.contains(s.name) || s.name.contains(clean) {
-                return CLLocationCoordinate2D(latitude: s.lat, longitude: s.lon)
-            }
-        }
-        for s in AudioPlayerManager.szStationsDatabase {
-            if clean.contains(s.name) || s.name.contains(clean) {
-                return CLLocationCoordinate2D(latitude: s.lat, longitude: s.lon)
-            }
-        }
-        for s in AudioPlayerManager.hkStationsDatabase {
-            let base = s.name.components(separatedBy: " ")[0]
-            if clean.contains(base) || base.contains(clean) {
-                return CLLocationCoordinate2D(latitude: s.lat, longitude: s.lon)
-            }
-        }
         return nil
     }
     
-    /// Resolves the exact coordinate of a walking step's target station (never returns nil!)
+    /// Resolves the exact coordinate of a walking step's target station (prioritizing Apple Maps MKLocalSearch cache!)
     func resolveTransitWalkTargetCoord(plan: TransitPlanOption, stepIndex: Int, origin: CLLocationCoordinate2D, dest: CLLocationCoordinate2D) -> CLLocationCoordinate2D {
         guard stepIndex >= 0 && stepIndex < plan.steps.count else { return dest }
         let step = plan.steps[stepIndex]
@@ -7725,15 +7815,11 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             if let nextFrom = lookupStationCoordinate(named: nextStep.fromStation) {
                 return nextFrom
             }
-            if let firstPass = nextStep.passStations.first, let pCoord = lookupStationCoordinate(named: firstPass) {
-                return CLLocationCoordinate2D(
-                    latitude: origin.latitude + (pCoord.latitude - origin.latitude) * 0.35,
-                    longitude: origin.longitude + (pCoord.longitude - origin.longitude) * 0.35
-                )
-            }
         }
+        // Fallback: place target at exact `step.walkMeters` distance (typically 200m-800m, NEVER > 1200m!) along bearing toward next known station or dest
+        let walkMetersClamped = Double(min(1200, max(120, step.walkMeters)))
         let totalDist = Double(max(500, metersBetween(origin, dest)))
-        let walkFrac = min(0.28, max(0.05, Double(max(120, step.walkMeters)) / totalDist))
+        let walkFrac = min(0.15, walkMetersClamped / totalDist)
         return CLLocationCoordinate2D(
             latitude: origin.latitude + (dest.latitude - origin.latitude) * walkFrac,
             longitude: origin.longitude + (dest.longitude - origin.longitude) * walkFrac
@@ -7750,9 +7836,9 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         if isFirstStep {
             let startAddr = currentUserAddressText.isEmpty ? "当前位置" : currentUserAddressText
             return [
-                "1. 从【\(startAddr)】出发，沿当前道路步行 \(m1) 米",
-                "2. 在前方路口转入主干道人行步道，继续直行 \(m2) 米",
-                "3. 步行 \(m3) 米抵达【\(target)】乘车站台（耗时约 \(step.durationMins) 分钟）"
+                "1. 从【\(startAddr)】出发，沿当前街道向车站方向步行 \(m1) 米",
+                "2. 转入主干道人行道继续步行 \(m2) 米",
+                "3. 步行 \(m3) 米抵达 Apple 地图【\(target)】乘车站台（全程约 \(m) 米，\(step.durationMins) 分钟）"
             ]
         } else if isLastStep {
             return [
@@ -7761,7 +7847,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             ]
         } else {
             return [
-                "1. 从【\(step.fromStation.components(separatedBy: " (")[0])】下车后沿导向标识步行 \(m1 + m2) 米",
+                "1. 从【\(step.fromStation.components(separatedBy: " (")[0])】下车后沿换乘导向标识步行 \(m1 + m2) 米",
                 "2. 步行 \(m3) 米进入【\(target)】候车区"
             ]
         }
@@ -7770,6 +7856,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     /// Focuses the map camera directly onto a specific step (e.g. Step 1 walking leg to the boarding station!)
     func focusMapOnTransitStep(_ stepIndex: Int, in plan: TransitPlanOption) {
         guard let dest = destinationCoord, stepIndex >= 0, stepIndex < plan.steps.count else { return }
+        self.isFocusingSingleTransitStep = true
         let step = plan.steps[stepIndex]
         let c1: CLLocationCoordinate2D
         let c2: CLLocationCoordinate2D
@@ -7787,14 +7874,132 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         let p2 = MKMapPoint(c2)
         let minX = min(p1.x, p2.x)
         let minY = min(p1.y, p2.y)
-        let spanX = max(2200.0, abs(p1.x - p2.x) * 1.45)
-        let spanY = max(2200.0, abs(p1.y - p2.y) * 1.45)
-        self.customMapFocusRect = MKMapRect(x: minX - spanX * 0.22, y: minY - spanY * 0.22, width: spanX, height: spanY)
+        let rawW = abs(p1.x - p2.x)
+        let rawH = abs(p1.y - p2.y)
+        let padW = max(1400.0, rawW * 1.55)
+        let padH = max(1400.0, rawH * 1.55)
+        self.customMapFocusRect = MKMapRect(
+            x: (minX + rawW * 0.5) - padW * 0.5,
+            y: (minY + rawH * 0.5) - padH * 0.5,
+            width: padW,
+            height: padH
+        )
         self.customMapFocusTrigger += 1
     }
 
+    /// Queries Apple Maps MKLocalSearch for the exact real-world boarding station POI near `origin` and calculates the prioritized Step 1 walking route!
+    func calibrateFirstBoardingStationWithAppleMaps(plan: TransitPlanOption, origin: CLLocationCoordinate2D, dest: CLLocationCoordinate2D) {
+        guard !plan.steps.isEmpty else { return }
+        let firstWalkStep = plan.steps[0]
+        let firstVehicleStep = plan.steps.first(where: { $0.kind != .walk })
+        let rawStopName = (firstWalkStep.kind == .walk ? firstWalkStep.toStation : (firstVehicleStep?.fromStation ?? firstWalkStep.toStation))
+            .components(separatedBy: " (")[0]
+            .components(separatedBy: "(")[0]
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !rawStopName.isEmpty else { return }
+        
+        let isBusStop = (firstVehicleStep?.kind == .bus) || rawStopName.contains("巴士") || rawStopName.contains("公交")
+        let searchQuery: String = {
+            if rawStopName.contains("站") { return rawStopName }
+            return isBusStop ? "\(rawStopName) 公交站" : "\(rawStopName) 地铁站"
+        }()
+        
+        let searchReq = MKLocalSearch.Request()
+        searchReq.naturalLanguageQuery = searchQuery
+        searchReq.region = MKCoordinateRegion(center: origin, latitudinalMeters: 3500, longitudinalMeters: 3500)
+        
+        MKLocalSearch(request: searchReq).start { [weak self] resp, _ in
+            guard let self = self else { return }
+            let cleanKey = rawStopName
+                .replacingOccurrences(of: "地鐵站", with: "")
+                .replacingOccurrences(of: "地铁站", with: "")
+                .replacingOccurrences(of: "巴士站", with: "")
+                .replacingOccurrences(of: "公交站", with: "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            
+            var resolvedCoord: CLLocationCoordinate2D? = nil
+            if let items = resp?.mapItems, !items.isEmpty {
+                // Pick the closest matching Apple Maps station POI within 4.5 km of user's current position!
+                let originLoc = CLLocation(latitude: origin.latitude, longitude: origin.longitude)
+                let matchingItems = items.filter { item in
+                    let d = originLoc.distance(from: CLLocation(latitude: item.placemark.coordinate.latitude, longitude: item.placemark.coordinate.longitude))
+                    return d <= 4500.0
+                }
+                if let bestItem = (matchingItems.isEmpty ? items : matchingItems).min(by: {
+                    let n0 = ($0.name ?? "").contains(cleanKey) ? 0 : 1
+                    let n1 = ($1.name ?? "").contains(cleanKey) ? 0 : 1
+                    if n0 != n1 { return n0 < n1 }
+                    let d0 = originLoc.distance(from: CLLocation(latitude: $0.placemark.coordinate.latitude, longitude: $0.placemark.coordinate.longitude))
+                    let d1 = originLoc.distance(from: CLLocation(latitude: $1.placemark.coordinate.latitude, longitude: $1.placemark.coordinate.longitude))
+                    return d0 < d1
+                }) {
+                    let d = originLoc.distance(from: CLLocation(latitude: bestItem.placemark.coordinate.latitude, longitude: bestItem.placemark.coordinate.longitude))
+                    if d <= 5500.0 {
+                        resolvedCoord = bestItem.placemark.coordinate
+                    }
+                }
+            }
+            
+            DispatchQueue.main.async {
+                let targetCoord = resolvedCoord ?? self.resolveTransitWalkTargetCoord(plan: plan, stepIndex: 0, origin: origin, dest: dest)
+                self.dynamicStationCoordCache[rawStopName] = targetCoord
+                self.dynamicStationCoordCache[cleanKey] = targetCoord
+                self.transitBoardingStationCoord = targetCoord
+                
+                // Update boarding station pin coordinate if already in transitStopAnnotations
+                for pin in self.transitStopAnnotations {
+                    if let t = pin.title, t.contains(cleanKey) {
+                        pin.coordinate = targetCoord
+                    }
+                }
+                
+                // Prioritized single MKDirections .walking request from user's exact location to the Apple Maps boarding station!
+                let wReq = MKDirections.Request()
+                wReq.source = MKMapItem(placemark: MKPlacemark(coordinate: origin))
+                wReq.destination = MKMapItem(placemark: MKPlacemark(coordinate: targetCoord))
+                wReq.transportType = .walking
+                MKDirections(request: wReq).calculate { [weak self] walkResp, _ in
+                    DispatchQueue.main.async {
+                        guard let self = self, let r = walkResp?.routes.first else { return }
+                        r.polyline.title = "TRANSIT_WALK_DASHED"
+                        self.cachedFirstWalkRoute = r
+                        if !self.transitSegmentPolylines.isEmpty {
+                            self.transitSegmentPolylines[0] = r.polyline
+                        }
+                        let realTurns = r.steps.compactMap { s -> String? in
+                            let clean = s.instructions.trimmingCharacters(in: .whitespacesAndNewlines)
+                            guard !clean.isEmpty else { return nil }
+                            let d = Int(round(s.distance))
+                            return d > 0 ? "\(clean)（步行 \(d) 米）" : clean
+                        }
+                        if !realTurns.isEmpty {
+                            var numbered: [String] = []
+                            for (i, t) in realTurns.enumerated() {
+                                numbered.append("\(i + 1). \(t)")
+                            }
+                            numbered.append("\(numbered.count + 1). 抵达 Apple 地图【\(rawStopName)】乘车站台（共 \(Int(round(r.distance))) 米，约 \(max(1, Int(round(r.expectedTravelTime / 60.0)))) 分钟）")
+                            self.transitWalkStepDirections[0] = numbered
+                        }
+                        // If user is currently navigating Step 0 (walking to the boarding station), immediately apply this route!
+                        if self.isNavigatingFocused && self.travelMode == .transit && self.activeTransitStepIndex == 0 {
+                            let activeWalkCopy = r
+                            activeWalkCopy.polyline.title = "WALKING_BLUE"
+                            self.activeRoute = activeWalkCopy
+                            let firstRealIdx = r.steps.firstIndex(where: { !$0.instructions.isEmpty && $0.distance > 3.0 }) ?? (r.steps.count > 1 ? 1 : 0)
+                            self.currentStepIndex = firstRealIdx
+                            let firstTurn = r.steps[firstRealIdx].instructions.isEmpty ? "沿当前道路人行道步行" : r.steps[firstRealIdx].instructions
+                            self.currentStepInstruction = "🚶 步行至【\(rawStopName)】：\(firstTurn)（全程 \(Int(round(r.distance))) 米）"
+                            self.distanceToNextStepMeters = max(15.0, r.distance)
+                        }
+                        self.routeSelectionRenderTrigger += 1
+                    }
+                }
+            }
+        }
+    }
+
     func calculateTransitAppleMapsRoute(from: CLLocationCoordinate2D, to: CLLocationCoordinate2D, destTitle: String, plan: TransitPlanOption?, preserveNavigationFocus: Bool = false) {
-        // 1. Build per-step multi-segment polylines (Walking dashed blue + Bus road-hugging blue + Metro official line color!) and station pins
+        self.isFocusingSingleTransitStep = false
         var allStationCoords: [CLLocationCoordinate2D] = [from]
         var pins: [MKPointAnnotation] = []
         var segmentPolys: [MKPolyline] = []
@@ -7817,42 +8022,10 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                     var pts = [walkStart, walkTarget]
                     let walkPoly = MKPolyline(coordinates: &pts, count: pts.count)
                     walkPoly.title = "TRANSIT_WALK_DASHED"
-                    let polySlotIdx = segmentPolys.count
                     segmentPolys.append(walkPoly)
                     allStationCoords.append(walkTarget)
                     cursorCoord = walkTarget
-                    
-                    // Populate immediate readable walking steps, then refine with live Apple Maps MKDirections .walking street turns!
                     walkDirs[sIdx] = buildFallbackWalkDirections(step: st, isFirstStep: sIdx == 0, isLastStep: sIdx == p.steps.count - 1)
-                    
-                    let wReq = MKDirections.Request()
-                    wReq.source = MKMapItem(placemark: MKPlacemark(coordinate: walkStart))
-                    wReq.destination = MKMapItem(placemark: MKPlacemark(coordinate: walkTarget))
-                    wReq.transportType = .walking
-                    MKDirections(request: wReq).calculate { [weak self] resp, _ in
-                        DispatchQueue.main.async {
-                            guard let self = self, let r = resp?.routes.first else { return }
-                            r.polyline.title = "TRANSIT_WALK_DASHED"
-                            if polySlotIdx < self.transitSegmentPolylines.count {
-                                self.transitSegmentPolylines[polySlotIdx] = r.polyline
-                                self.routeSelectionRenderTrigger += 1
-                            }
-                            let realTurns = r.steps.compactMap { s -> String? in
-                                let clean = s.instructions.trimmingCharacters(in: .whitespacesAndNewlines)
-                                guard !clean.isEmpty else { return nil }
-                                let d = Int(round(s.distance))
-                                return d > 0 ? "\(clean)（步行 \(d) 米）" : clean
-                            }
-                            if !realTurns.isEmpty {
-                                var numbered: [String] = []
-                                for (i, t) in realTurns.enumerated() {
-                                    numbered.append("\(i + 1). \(t)")
-                                }
-                                numbered.append("\(numbered.count + 1). 抵达【\(st.toStation.components(separatedBy: " (")[0])】")
-                                self.transitWalkStepDirections[sIdx] = numbered
-                            }
-                        }
-                    }
                 } else {
                     var stepCoords: [CLLocationCoordinate2D] = []
                     if let fCoord = lookupStationCoordinate(named: st.fromStation) {
@@ -7889,7 +8062,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                     
                     if let tCoord = lookupStationCoordinate(named: st.toStation) {
                         if let lastC = stepCoords.last, abs(lastC.latitude - tCoord.latitude) < 1e-5 && abs(lastC.longitude - tCoord.longitude) < 1e-5 {
-                            // already appended via passStations
+                            // already appended
                         } else {
                             stepCoords.append(tCoord)
                         }
@@ -7913,29 +8086,13 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                         } else {
                             legPoly.title = "TRANSIT_HEX_\(st.colorHex)"
                         }
-                        let busPolySlot = segmentPolys.count
                         segmentPolys.append(legPoly)
-                        
-                        // If this is a surface Bus leg, also request road-following MKDirections so the bus line curves along actual streets!
-                        if st.kind == .bus, let bStart = stepCoords.first, let bEnd = stepCoords.last {
-                            let busRoadReq = MKDirections.Request()
-                            busRoadReq.source = MKMapItem(placemark: MKPlacemark(coordinate: bStart))
-                            busRoadReq.destination = MKMapItem(placemark: MKPlacemark(coordinate: bEnd))
-                            busRoadReq.transportType = .automobile
-                            MKDirections(request: busRoadReq).calculate { [weak self] resp, _ in
-                                DispatchQueue.main.async {
-                                    guard let self = self, let r = resp?.routes.first else { return }
-                                    r.polyline.title = "TRANSIT_BUS_BLUE"
-                                    if busPolySlot < self.transitSegmentPolylines.count {
-                                        self.transitSegmentPolylines[busPolySlot] = r.polyline
-                                        self.routeSelectionRenderTrigger += 1
-                                    }
-                                }
-                            }
-                        }
                     }
                 }
             }
+            
+            // Immediately calibrate Step 1's boarding station with Apple Maps MKLocalSearch + prioritized MKDirections .walking (Zero throttling!)
+            calibrateFirstBoardingStationWithAppleMaps(plan: p, origin: from, dest: to)
         }
         
         allStationCoords.append(to)
@@ -7948,7 +8105,6 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         self.transitWalkStepDirections = walkDirs
         self.transitSegmentPolylines = segmentPolys
         
-        // 2. If we resolved >= 3 coordinates along the corridor, set customTransitPolyline for bounding box fitting!
         if allStationCoords.count >= 3 {
             let poly = MKPolyline(coordinates: &allStationCoords, count: allStationCoords.count)
             poly.title = "TRANSIT_BUS_BLUE"
@@ -7967,7 +8123,6 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             return
         }
         
-        // 3. Otherwise use Apple Maps MKDirections corridor road/rail geometry so ANY city on Earth gets an authentic road-hugging route line!
         let roadReq = MKDirections.Request()
         roadReq.source = MKMapItem(placemark: MKPlacemark(coordinate: from))
         roadReq.destination = MKMapItem(placemark: MKPlacemark(coordinate: to))
@@ -7988,7 +8143,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                     if let p = plan {
                         self.remainingRouteMinutes = p.totalMinutes
                     } else {
-                        self.remainingRouteMinutes = max(1, Int(roadRoute.expectedTravelTime / 60.0))
+                        self.remainingRouteMinutes = max(1, Int(round(roadRoute.expectedTravelTime / 60.0)))
                     }
                     if !preserveNavigationFocus && !self.isNavigatingFocused {
                         self.candidateRoutes = [roadRoute]
@@ -7997,17 +8152,11 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                         self.routeOverviewFitTrigger += 1
                     }
                     self.routeSelectionRenderTrigger += 1
-                } else {
-                    var fallbackPts = allStationCoords
-                    let fallbackPoly = MKPolyline(coordinates: &fallbackPts, count: fallbackPts.count)
-                    fallbackPoly.title = "TRANSIT_BUS_BLUE"
-                    self.customTransitPolyline = fallbackPoly
-                    self.routeSelectionRenderTrigger += 1
                 }
             }
         }
     }
-    
+
     /// Universal Apple Maps Real-Time Corridor Station & Bus/Metro/Rail Line Discovery Engine:
     /// Queries Apple Maps (MKDirections corridor + MKLocalSearch at Origin, 33% Corridor, 66% Corridor, and Destination)
     /// so in ANY city in Mainland China, HK, Macau, Taiwan, or Worldwide, the app discovers real bus stops, metro stations,
@@ -8625,12 +8774,23 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             let stopCoord = resolveTransitWalkTargetCoord(plan: plan, stepIndex: stepIndex, origin: userCoordinate, dest: dest)
             self.transitBoardingStationCoord = stopCoord
             
-            // Immediately build a fallback 2-point walking polyline so activeRoute is non-nil at 0ms even before MKDirections returns!
-            var fallbackWalkPts = [startWalkCoord, stopCoord]
-            let immediateWalkPoly = MKPolyline(coordinates: &fallbackWalkPts, count: fallbackWalkPts.count)
-            immediateWalkPoly.title = "WALKING_BLUE"
+            // Immediately frame the map tightly onto this walking leg (startWalkCoord -> stopCoord) so the map NEVER shows a huge 25km line!
+            self.focusMapOnTransitStep(stepIndex, in: plan)
             let firstHint = (transitWalkStepDirections[stepIndex]?.first ?? "沿当前道路人行道直行").replacingOccurrences(of: "1. ", with: "")
             self.currentStepInstruction = "🚶 第\(stepIndex + 1)/\(plan.steps.count)步 步行导航：\(firstHint) ➔ 前往【\(targetStop)】"
+            
+            // If Step 0 already has a calibrated Apple Maps walking route cached, apply it immediately at 0ms!
+            if stepIndex == 0, let cachedR = self.cachedFirstWalkRoute {
+                cachedR.polyline.title = "WALKING_BLUE"
+                self.activeRoute = cachedR
+                let firstRealIdx = cachedR.steps.firstIndex(where: { !$0.instructions.isEmpty && $0.distance > 3.0 }) ?? (cachedR.steps.count > 1 ? 1 : 0)
+                self.currentStepIndex = firstRealIdx
+                let firstTurn = cachedR.steps[firstRealIdx].instructions.isEmpty ? "沿当前道路步行" : cachedR.steps[firstRealIdx].instructions
+                self.currentStepInstruction = "🚶 步行至【\(targetStop)】：\(firstTurn)（全程 \(Int(round(cachedR.distance))) 米）"
+                self.distanceToNextStepMeters = max(15.0, cachedR.distance)
+                self.customMapFocusRect = cachedR.polyline.boundingMapRect
+                self.customMapFocusTrigger += 1
+            }
             self.routeSelectionRenderTrigger += 1
             
             let walkReq = MKDirections.Request()
@@ -8643,12 +8803,13 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                     if let r = resp?.routes.first {
                         r.polyline.title = "WALKING_BLUE"
                         self.activeRoute = r
-                        // CRITICAL FIX: Skip MKRoute.steps[0] if it is the 0-meter starting vertex!
                         let firstRealIdx = r.steps.firstIndex(where: { !$0.instructions.isEmpty && $0.distance > 3.0 }) ?? (r.steps.count > 1 ? 1 : 0)
                         self.currentStepIndex = firstRealIdx
                         let firstTurn = r.steps[firstRealIdx].instructions.isEmpty ? "沿当前道路步行" : r.steps[firstRealIdx].instructions
-                        self.currentStepInstruction = "🚶 步行至【\(targetStop)】：\(firstTurn)"
-                        self.distanceToNextStepMeters = max(25.0, r.distance)
+                        self.currentStepInstruction = "🚶 步行至【\(targetStop)】：\(firstTurn)（全程 \(Int(round(r.distance))) 米）"
+                        self.distanceToNextStepMeters = max(15.0, r.distance)
+                        self.customMapFocusRect = r.polyline.boundingMapRect
+                        self.customMapFocusTrigger += 1
                         self.routeSelectionRenderTrigger += 1
                         
                         let realTurns = r.steps.compactMap { s -> String? in
@@ -9828,7 +9989,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             cellIndex = sectorToCell[clockSector]
         }
         
-        let useScooter = forceRidingScooter || (!forceDrivingCar && travelMode == .ebike)
+        let useScooter = forceRidingScooter || (!forceDrivingCar && travelMode == .ebike && cyclingVehicleType == .electricScooter)
         let useCar = forceDrivingCar || (!forceRidingScooter && travelMode == .driving)
         
         // DRIVING MODE (开车: 伦敦复古出租车) OR RIDING MODE (骑车: 红色复古小绵羊电动车)
@@ -10222,7 +10383,10 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         reqAuto.destination = dst
         reqAuto.transportType = .automobile
         reqAuto.requestsAlternateRoutes = true
-        reqAuto.departureDate = isCustomDepartureTime ? routeDepartureDate : Date()
+        if isCustomDepartureTime {
+            reqAuto.departureDate = routeDepartureDate
+            reqWalk.departureDate = routeDepartureDate
+        }
         if #available(iOS 16.0, *) {
             if travelMode == .driving {
                 reqAuto.tollPreference = drivingAvoidOptions.contains(.avoidTolls) ? .avoid : .any
@@ -10235,24 +10399,58 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         reqWalk.requestsAlternateRoutes = true
         
         if travelMode == .ebike {
-            let dir = MKDirections(request: reqAuto)
-            self.activeDirectionsRequest = dir
-            dir.calculate { [weak self] resp, err in
-                DispatchQueue.main.async {
-                    guard let self = self else { return }
-                    if let nsErr = err as NSError?, nsErr.code == MKError.Code.loadingThrottled.rawValue || nsErr.domain == NSURLErrorDomain && nsErr.code == NSURLErrorCancelled {
-                        return
+            // Dual-Mode Cycling Routing:
+            // 1) 🛵 电动车 (.electricScooter): Uses non-highway surface road centerlines (辅路/非机动车道, avoiding expressways)
+            // 2) 🚲 单车 (.bicycle): Uses Apple Maps .walking / greenway / cycleway paths (avoiding pedestrian stair overpasses & motor tunnels)
+            if cyclingVehicleType == .bicycle {
+                let dir = MKDirections(request: reqWalk)
+                self.activeDirectionsRequest = dir
+                dir.calculate { [weak self] resp, err in
+                    DispatchQueue.main.async {
+                        guard let self = self else { return }
+                        if let nsErr = err as NSError?, nsErr.domain == NSURLErrorDomain && nsErr.code == NSURLErrorCancelled {
+                            return
+                        }
+                        self.isRecalculatingRoute = false
+                        if let bikeRoutes = resp?.routes, !bikeRoutes.isEmpty {
+                            let flatCycleRoutes = bikeRoutes.sorted { a, b in
+                                let aOver = self.routeContainsOverpassOrHighway(a) ? 1 : 0
+                                let bOver = self.routeContainsOverpassOrHighway(b) ? 1 : 0
+                                if aOver != bOver { return aOver < bOver }
+                                return a.distance < b.distance
+                            }
+                            self.candidateRoutes = flatCycleRoutes
+                            self.selectedRouteIndex = 0
+                            self.applyCalculatedRoute(flatCycleRoutes[0], title: title, isReroute: isReroute, silentFilterUpdate: silentFilterUpdate)
+                        } else if !silentFilterUpdate {
+                            self.fallbackCoordRoute(to: destCoord, title: title, isReroute: isReroute)
+                        }
                     }
-                    self.isRecalculatingRoute = false
-                    if let autoRoutes = resp?.routes, !autoRoutes.isEmpty {
-                        let surfaceRoutes = autoRoutes.filter { !self.routeContainsHighway($0) }
-                        let candidates = surfaceRoutes.isEmpty ? autoRoutes : surfaceRoutes
-                        let sorted = candidates.sorted { $0.distance < $1.distance }
-                        self.candidateRoutes = sorted
-                        self.selectedRouteIndex = 0
-                        self.applyCalculatedRoute(sorted[0], title: title, isReroute: isReroute, silentFilterUpdate: silentFilterUpdate)
-                    } else if !silentFilterUpdate {
-                        self.fallbackCoordRoute(to: destCoord, title: title, isReroute: isReroute)
+                }
+            } else {
+                if #available(iOS 16.0, *) {
+                    reqAuto.highwayPreference = .avoid
+                    reqAuto.tollPreference = .avoid
+                }
+                let dir = MKDirections(request: reqAuto)
+                self.activeDirectionsRequest = dir
+                dir.calculate { [weak self] resp, err in
+                    DispatchQueue.main.async {
+                        guard let self = self else { return }
+                        if let nsErr = err as NSError?, nsErr.code == MKError.Code.loadingThrottled.rawValue || nsErr.domain == NSURLErrorDomain && nsErr.code == NSURLErrorCancelled {
+                            return
+                        }
+                        self.isRecalculatingRoute = false
+                        if let autoRoutes = resp?.routes, !autoRoutes.isEmpty {
+                            let surfaceRoutes = autoRoutes.filter { !self.routeContainsHighway($0) }
+                            let candidates = surfaceRoutes.isEmpty ? autoRoutes : surfaceRoutes
+                            let sorted = candidates.sorted { $0.distance < $1.distance }
+                            self.candidateRoutes = sorted
+                            self.selectedRouteIndex = 0
+                            self.applyCalculatedRoute(sorted[0], title: title, isReroute: isReroute, silentFilterUpdate: silentFilterUpdate)
+                        } else if !silentFilterUpdate {
+                            self.fallbackCoordRoute(to: destCoord, title: title, isReroute: isReroute)
+                        }
                     }
                 }
             }
@@ -10402,24 +10600,45 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     func estimatedMinutes(for route: MKRoute) -> Int {
         let distKm: Double = route.distance / 1000.0
         if travelMode == .ebike {
-            let hours: Double = distKm / 22.0
-            return max(1, Int(hours * 60.0))
+            let turnWaitMins = Double(max(0, route.steps.count - 1)) * (cyclingVehicleType == .electricScooter ? 0.28 : 0.22)
+            let rideMins = (distKm / cyclingVehicleType.cruisingSpeedKmh) * 60.0 + turnWaitMins
+            return max(1, Int(round(rideMins)))
         } else if travelMode == .walking {
-            let hours: Double = distKm / 4.8
-            return max(1, Int(hours * 60.0))
+            // 100% Apple Maps native walking expectedTravelTime!
+            if route.expectedTravelTime > 0 && route.distance > 0 {
+                let speedMps = route.distance / route.expectedTravelTime
+                // If route came from MKDirections .walking (speed ~1.1-1.6 m/s), use Apple Maps' exact expectedTravelTime!
+                if speedMps <= 2.5 {
+                    return max(1, Int(round(route.expectedTravelTime / 60.0)))
+                }
+            }
+            return max(1, Int(round((distKm / 4.5) * 60.0)))
         } else {
-            return max(1, Int(route.expectedTravelTime / 60.0))
+            // 100% Apple Maps native driving expectedTravelTime (rounded to nearest minute like Apple Maps UI)!
+            return max(1, Int(round(route.expectedTravelTime / 60.0)))
         }
     }
 
     func routeOptionBadgeTitle(for route: MKRoute, index: Int) -> String {
-        if travelMode == .ebike || travelMode == .walking {
-            if index == 0 {
-                return language == .zhHant ? "最快 · 推薦路線" : "最快 · 推荐路线"
-            } else if index == 1 {
-                return language == .zhHant ? "備選路線 · 少紅綠燈" : "备选路线 · 少红绿灯"
+        let distKm = route.distance / 1000.0
+        if travelMode == .ebike {
+            if cyclingVehicleType == .electricScooter {
+                let batteryPct = max(1, min(99, Int(round(distKm * 2.2))))
+                let prefix = index == 0 ? (language == .zhHant ? "🛵 電動車最快" : "🛵 电动车最快") : (language == .zhHant ? "🛵 輔路備選" : "🛵 辅路备选")
+                return language == .en ? "e-Scooter · ~\(batteryPct)% Bat · Max 25km/h" : "\(prefix) · 非机动车道 · 预计耗电\(batteryPct)%"
             } else {
-                return language == .zhHant ? "距離較短" : "距离较短"
+                let kcal = max(5, Int(round(distKm * 32.0)))
+                let prefix = index == 0 ? (language == .zhHant ? "🚲 單車推薦" : "🚲 单车推荐") : (language == .zhHant ? "🚲 綠道備選" : "🚲 绿道备选")
+                return language == .en ? "Bicycle · 🔥 \(kcal) kcal" : "\(prefix) · 少爬坡绿道 · 🔥消耗\(kcal)千卡"
+            }
+        }
+        if travelMode == .walking {
+            let kcal = max(3, Int(round(distKm * 48.0)))
+            let stepsEst = max(50, Int(round(route.distance * 1.32)))
+            if index == 0 {
+                return language == .en ? "Fastest Walk · ~\(stepsEst) steps" : (language == .zhHant ? "最快 · 約\(stepsEst)步 · 🔥\(kcal)千卡" : "最快 · 约\(stepsEst)步 · 🔥\(kcal)千卡")
+            } else {
+                return language == .en ? "Alt Walk · ~\(stepsEst) steps" : (language == .zhHant ? "備選步道 · 約\(stepsEst)步" : "备选步道 · 约\(stepsEst)步")
             }
         }
         // Apple Maps clean subtitle style (No "高德推荐"!)
@@ -10508,6 +10727,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         }
         
         if travelMode == .ebike {
+            if cyclingVehicleType == .bicycle { return 0 }
             let mainRoadKeywords = ["大道", "路", "街", "道", "公路", "辅路", "輔路", "干道", "幹道", "Road", "Rd", "Street", "St", "Avenue", "Ave", "Boulevard", "Blvd"]
             for kw in mainRoadKeywords {
                 if text.contains(kw) { return 25 }
@@ -10579,14 +10799,10 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         }
         self.remainingRouteDistanceKm = route.distance / 1000.0
         
-        if self.travelMode == .ebike {
-            self.remainingRouteMinutes = max(1, Int((route.distance / 1000.0) / 22.0 * 60.0))
-        } else if self.travelMode == .transit {
-            self.remainingRouteMinutes = max(1, Int((route.distance / 1000.0) / 30.0 * 60.0) + 4)
-        } else if self.travelMode == .walking {
-            self.remainingRouteMinutes = max(1, Int((route.distance / 1000.0) / 4.8 * 60.0))
+        if self.travelMode == .transit {
+            self.remainingRouteMinutes = max(1, Int(round((route.distance / 1000.0) / 30.0 * 60.0)) + 4)
         } else {
-            self.remainingRouteMinutes = max(1, Int(route.expectedTravelTime / 60.0))
+            self.remainingRouteMinutes = self.estimatedMinutes(for: route)
         }
         
         // Immediately snap user coordinate onto route start so e-bike/car starts dead-center on the route line!
@@ -10619,53 +10835,17 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             congestionStatusText = language == .en ? "Traffic Smooth" : (language == .zhHant ? "全線道路暢通" : "全线道路畅通")
         }
         
-        // 2. Place Route Traffic Light Positions (🚦) at real signalized intersections along the route
-        // Based on AutoNavi/GaoDe map step intersections in Mainland China and Apple Maps intersections Overseas!
-        var lastLightCoord: CLLocationCoordinate2D? = nil
+        // 2. Traffic Lights: Rely on Apple Maps' native MKStandardMapConfiguration (showsTraffic = true) vector tile traffic light icons!
+        // Only place an explicit RoadHazardAnnotation(.trafficLight) if Apple Maps' step instruction explicitly mentions a traffic light ("红绿灯" / "信号灯" / "traffic light")!
         for (idx, step) in route.steps.enumerated() {
             guard idx > 0, step.polyline.pointCount > 0 else { continue }
             let instr = step.instructions
-            let isHwyStep = instr.contains("高速") || instr.contains("高架") || instr.contains("匝道") || instr.contains("立交") || instr.contains("Expressway") || instr.contains("Ramp")
-            if isHwyStep { continue }
-            
-            let isSignalizedIntersection = instr.contains("左转") || instr.contains("右转") || instr.contains("调头") || instr.contains("掉头") ||
-                instr.contains("直行") || instr.contains("十字") || instr.contains("路口") || instr.contains("红绿灯") ||
-                instr.lowercased().contains("turn") || instr.lowercased().contains("onto") || instr.lowercased().contains("continue") ||
-                (step.distance >= 180.0 && idx < route.steps.count - 1)
-            
-            if isSignalizedIntersection {
+            if instr.contains("红绿灯") || instr.contains("紅綠燈") || instr.contains("信号灯") || instr.contains("信號燈") || instr.lowercased().contains("traffic light") {
                 let endIdx = max(0, step.polyline.pointCount - 1)
-                let interCoord = step.polyline.points()[endIdx].coordinate
-                if let prev = lastLightCoord {
-                    let d = CLLocation(latitude: prev.latitude, longitude: prev.longitude).distance(from: CLLocation(latitude: interCoord.latitude, longitude: interCoord.longitude))
-                    if d < 160.0 { continue }
-                }
                 let tlAnno = RoadHazardAnnotation()
-                tlAnno.coordinate = interCoord
+                tlAnno.coordinate = step.polyline.points()[endIdx].coordinate
                 tlAnno.kind = .trafficLight
-                if language == .en {
-                    tlAnno.title = isMainland ? "AutoNavi Traffic Light" : "Apple Maps Traffic Light"
-                } else if language == .zhHant {
-                    tlAnno.title = isMainland ? "高德數據紅綠燈路口" : "Apple Maps 紅綠燈路口"
-                } else {
-                    tlAnno.title = isMainland ? "高德数据红绿灯路口" : "Apple Maps 红绿灯路口"
-                }
-                hazards.append(tlAnno)
-                lastLightCoord = interCoord
-            }
-        }
-        
-        // Fallback if route has a single merged polyline with few steps on surface streets: place intersection traffic lights at road nodes
-        if lastLightCoord == nil && !hasHighway && ptCount > 6 && route.distance >= 400.0 {
-            let lightCount = min(6, max(1, Int(route.distance / 550.0)))
-            for i in 1...lightCount {
-                let pIdx = min(ptCount - 2, max(1, (ptCount * i) / (lightCount + 1)))
-                let tlAnno = RoadHazardAnnotation()
-                tlAnno.coordinate = pts[pIdx].coordinate
-                tlAnno.kind = .trafficLight
-                tlAnno.title = isMainland
-                    ? (language == .zhHant ? "高德數據紅綠燈路口" : "高德数据红绿灯路口")
-                    : (language == .en ? "Apple Maps Traffic Light" : "Apple Maps 紅綠燈路口")
+                tlAnno.title = instr
                 hazards.append(tlAnno)
             }
         }
@@ -10857,6 +11037,20 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     
     // Real-Time Turn-by-Turn GPS Step Evaluation
     private func updateNavigationProgress(location: CLLocation) {
+        if travelMode == .transit && transitPhase == .walkingToStation && activeRoute == nil {
+            if let bCoord = transitBoardingStationCoord {
+                let currentLoc = CLLocation(latitude: userCoordinate.latitude, longitude: userCoordinate.longitude)
+                let dToStop = currentLoc.distance(from: CLLocation(latitude: bCoord.latitude, longitude: bCoord.longitude))
+                self.distanceToNextStepMeters = dToStop
+                self.remainingRouteDistanceKm = max(0.05, dToStop / 1000.0)
+                let stopName = transitBoardingStationName.isEmpty ? "乘车站台" : transitBoardingStationName
+                self.currentStepInstruction = "🚶 步行前往【\(stopName)】（直线距离 \(Int(round(dToStop))) 米）"
+                if Date().timeIntervalSince(transitWalkStepStartedAt) > 8.0 && dToStop <= 35.0 {
+                    stepTransitNavigation(delta: 1)
+                }
+            }
+            return
+        }
         guard let route = activeRoute, !route.steps.isEmpty else { return }
         let steps = route.steps
         // CRITICAL FIX: Skip MKRoute.steps[0] when it is the 0-meter starting vertex so dist is never 0m at the start of walking/driving!
@@ -10893,11 +11087,11 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         if route.distance > 0 {
             let ratio = max(0.02, min(1.0, totalRemainMeters / route.distance))
             if self.travelMode == .ebike {
-                self.remainingRouteMinutes = max(1, Int((totalRemainMeters / 1000.0) / 22.0 * 60.0))
+                self.remainingRouteMinutes = max(1, Int(round((totalRemainMeters / 1000.0) / self.cyclingVehicleType.cruisingSpeedKmh * 60.0)))
             } else if self.travelMode == .walking {
-                self.remainingRouteMinutes = max(1, Int((totalRemainMeters / 1000.0) / 4.8 * 60.0))
+                self.remainingRouteMinutes = max(1, Int(round((route.expectedTravelTime * ratio) / 60.0)))
             } else if self.travelMode != .transit {
-                self.remainingRouteMinutes = max(1, Int((route.expectedTravelTime * ratio) / 60.0))
+                self.remainingRouteMinutes = max(1, Int(round((route.expectedTravelTime * ratio) / 60.0)))
             }
             let traveledM = max(0, Int(route.distance - totalRemainMeters))
             self.updateUpcomingServiceAreaAndToll(traveledMeters: traveledM)

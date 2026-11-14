@@ -195,15 +195,48 @@ struct HTTSmoothMapView: UIViewRepresentable {
             }
             
             if manager.travelMode == .transit {
-                // Always display all transit station pins AND multi-segment polylines (Walking dashed blue + Bus road blue + Colored Metro lines)!
-                mapView.addAnnotations(manager.transitStopAnnotations)
-                if !manager.transitSegmentPolylines.isEmpty {
-                    for segPoly in manager.transitSegmentPolylines {
-                        mapView.addOverlay(segPoly, level: .aboveRoads)
+                let isWalkingStepActive: Bool = {
+                    guard !manager.transitPlans.isEmpty else { return false }
+                    let pIdx = min(max(0, manager.selectedTransitPlanIndex), manager.transitPlans.count - 1)
+                    let plan = manager.transitPlans[pIdx]
+                    let sIdx = min(max(0, manager.activeTransitStepIndex), max(0, plan.steps.count - 1))
+                    return (manager.isNavigatingFocused || manager.isFocusingSingleTransitStep) && sIdx < plan.steps.count && plan.steps[sIdx].kind == .walk
+                }()
+                
+                if isWalkingStepActive {
+                    // Single-Step Walking Focus Mode: Draw ONLY the Step 1 walking route + Start Pin + Target Boarding Station Pin!
+                    // Eliminates the huge 25km cross-city polyline while the user is walking to the boarding station!
+                    if let walkR = manager.activeRoute ?? manager.cachedFirstWalkRoute {
+                        walkR.polyline.title = "WALKING_BLUE"
+                        mapView.addOverlay(walkR.polyline, level: .aboveRoads)
+                    } else if let firstSeg = manager.transitSegmentPolylines.first {
+                        firstSeg.title = "TRANSIT_WALK_DASHED"
+                        mapView.addOverlay(firstSeg, level: .aboveRoads)
                     }
-                } else if let transitPoly = manager.customTransitPolyline {
-                    transitPoly.title = "TRANSIT_BUS_BLUE"
-                    mapView.addOverlay(transitPoly, level: .aboveRoads)
+                    let startPin = MKPointAnnotation()
+                    startPin.coordinate = manager.userCoordinate
+                    startPin.title = manager.language == .en ? "My Location" : "我的位置"
+                    startPin.subtitle = "START_PIN"
+                    mapView.addAnnotation(startPin)
+                    
+                    if let bCoord = manager.transitBoardingStationCoord {
+                        let boardPin = MKPointAnnotation()
+                        boardPin.coordinate = bCoord
+                        boardPin.title = manager.transitBoardingStationName.isEmpty ? "乘车站台" : manager.transitBoardingStationName
+                        boardPin.subtitle = "BUS_STOP_PIN"
+                        mapView.addAnnotation(boardPin)
+                    }
+                } else {
+                    // Full Route Overview or In-Vehicle Mode: Display all transit station pins AND multi-segment polylines!
+                    mapView.addAnnotations(manager.transitStopAnnotations)
+                    if !manager.transitSegmentPolylines.isEmpty {
+                        for segPoly in manager.transitSegmentPolylines {
+                            mapView.addOverlay(segPoly, level: .aboveRoads)
+                        }
+                    } else if let transitPoly = manager.customTransitPolyline {
+                        transitPoly.title = "TRANSIT_BUS_BLUE"
+                        mapView.addOverlay(transitPoly, level: .aboveRoads)
+                    }
                 }
             } else {
                 // Draw alternate candidate routes first so active route renders on top (Apple Maps 1:1)
@@ -292,11 +325,16 @@ struct HTTSmoothMapView: UIViewRepresentable {
                 mapView.addAnnotation(tappedPin)
             }
             
-            if !manager.isNavigatingFocused && (overviewFitChanged || routeChanged) && (manager.activeRoute != nil || manager.customTransitPolyline != nil || !manager.candidateRoutes.isEmpty) {
+            if !manager.isNavigatingFocused && !manager.isFocusingSingleTransitStep && (overviewFitChanged || routeChanged) && (manager.activeRoute != nil || manager.customTransitPolyline != nil || !manager.candidateRoutes.isEmpty) {
                 context.coordinator.lastOverviewFitTrigger = manager.routeOverviewFitTrigger
                 var unionRect = MKMapRect.null
-                if manager.travelMode == .transit, let tPoly = manager.customTransitPolyline {
-                    unionRect = tPoly.boundingMapRect
+                if manager.travelMode == .transit {
+                    for seg in manager.transitSegmentPolylines {
+                        unionRect = unionRect.union(seg.boundingMapRect)
+                    }
+                    if unionRect.isNull, let tPoly = manager.customTransitPolyline {
+                        unionRect = tPoly.boundingMapRect
+                    }
                 } else {
                     for cand in manager.candidateRoutes {
                         unionRect = unionRect.union(cand.polyline.boundingMapRect)
@@ -306,11 +344,16 @@ struct HTTSmoothMapView: UIViewRepresentable {
                     }
                 }
                 if !unionRect.isNull {
-                    // Zoom out to show the ENTIRE route(s) in the upper map area above the bottom route selection sheet!
                     mapView.camera.pitch = 0
+                    let mapH = mapView.bounds.height
+                    // CRITICAL FIX: When mapView is embedded in the 210pt top header of InAppTransitPlanSheetView (or compact cockpit),
+                    // use compact padding so top + bottom never exceeds mapH (which previously caused negative viewport height and zoomed out to a huge scale!)
+                    let dynamicPadding: UIEdgeInsets = (mapH > 0 && mapH < 380)
+                        ? UIEdgeInsets(top: 24, left: 28, bottom: 24, right: 28)
+                        : UIEdgeInsets(top: 82, left: 44, bottom: 245, right: 44)
                     mapView.setVisibleMapRect(
                         unionRect,
-                        edgePadding: UIEdgeInsets(top: 95, left: 52, bottom: 325, right: 52),
+                        edgePadding: dynamicPadding,
                         animated: true
                     )
                 }
@@ -898,19 +941,17 @@ struct HTTSmoothMapView: UIViewRepresentable {
                     renderer.drawDirectionChevrons = false
                     renderer.mainFillColor = UIColor(red: 0.38, green: 0.68, blue: 0.98, alpha: 0.85)
                     renderer.outerBorderColor = UIColor(red: 0.18, green: 0.45, blue: 0.78, alpha: 0.85)
-                    renderer.lineWidth = 9.0
+                    renderer.lineWidth = 6.5
                 } else if tag == "DRIVING_ACTIVE_BLUE" || tag == "EBIKE_CYAN_BLUE" {
-                    // Driving & e-Bike Active Vehicle Guidance Line: Vivid GaoDe Cyan-Blue (#0099FF) with deep navy border & white chevrons!
-                    renderer.mainFillColor = UIColor(red: 0.0, green: 0.62, blue: 1.0, alpha: 0.98)
+                    renderer.mainFillColor = UIColor(red: 0.0, green: 0.52, blue: 1.0, alpha: 0.98)
                     renderer.outerBorderColor = UIColor(red: 0.0, green: 0.32, blue: 0.68, alpha: 1.0)
                     renderer.drawDirectionChevrons = true
-                    renderer.lineWidth = 11.0
+                    renderer.lineWidth = 8.0
                 } else if tag == "WALKING_BLUE" {
-                    // Walking Path: Clear Pedestrian Blue with white chevrons
-                    renderer.mainFillColor = UIColor(red: 0.05, green: 0.65, blue: 0.98, alpha: 0.96)
+                    renderer.mainFillColor = UIColor(red: 0.04, green: 0.52, blue: 1.0, alpha: 0.98)
                     renderer.outerBorderColor = UIColor(red: 0.0, green: 0.38, blue: 0.72, alpha: 1.0)
                     renderer.drawDirectionChevrons = true
-                    renderer.lineWidth = 9.5
+                    renderer.lineWidth = 7.0
                 } else if tag == "TRAFFIC_YELLOW" {
                     // GaoDe Slow Traffic Segment (黄色缓行路段)
                     renderer.mainFillColor = UIColor(red: 1.0, green: 0.74, blue: 0.08, alpha: 0.98)
@@ -936,23 +977,20 @@ struct HTTSmoothMapView: UIViewRepresentable {
                     renderer.drawDirectionChevrons = true
                     renderer.lineWidth = 11.0
                 } else if tag == "TRANSIT_BUS_BLUE" {
-                    // Bus Line (公交351路 宝蓝)
                     renderer.mainFillColor = UIColor(red: 0.12, green: 0.48, blue: 0.96, alpha: 0.98)
                     renderer.outerBorderColor = UIColor(red: 0.0, green: 0.28, blue: 0.68, alpha: 1.0)
                     renderer.drawDirectionChevrons = true
-                    renderer.lineWidth = 11.0
+                    renderer.lineWidth = 7.0
                 } else if tag == "TRANSIT_METRO_GREEN" {
-                    // Metro Line 1 (深圳地铁1号线 翡翠绿)
                     renderer.mainFillColor = UIColor(red: 0.05, green: 0.72, blue: 0.35, alpha: 0.98)
                     renderer.outerBorderColor = UIColor(red: 0.0, green: 0.45, blue: 0.20, alpha: 1.0)
                     renderer.drawDirectionChevrons = true
-                    renderer.lineWidth = 11.0
+                    renderer.lineWidth = 7.5
                 } else if tag == "TRANSIT_WALK_DASHED" || tag == "TRANSIT_WALK_BLUE" {
-                    // Apple Maps 1:1 Dashed Blue Pedestrian Walking Path to/from Transit Station!
                     renderer.mainFillColor = UIColor(red: 0.04, green: 0.52, blue: 1.0, alpha: 0.96)
                     renderer.outerBorderColor = UIColor(red: 0.0, green: 0.32, blue: 0.72, alpha: 1.0)
-                    renderer.lineDashPattern = [6, 8]
-                    renderer.lineWidth = 7.5
+                    renderer.lineDashPattern = [4, 6]
+                    renderer.lineWidth = 5.5
                 } else if tag.hasPrefix("TRANSIT_HEX_") {
                     let hexStr = tag.replacingOccurrences(of: "TRANSIT_HEX_", with: "").trimmingCharacters(in: CharacterSet.alphanumerics.inverted)
                     var intVal: UInt64 = 0
@@ -962,7 +1000,7 @@ struct HTTSmoothMapView: UIViewRepresentable {
                     let b = CGFloat(intVal & 0xFF) / 255.0
                     renderer.mainFillColor = (hexStr.count == 6) ? UIColor(red: r, green: g, blue: b, alpha: 0.98) : UIColor(red: 0.92, green: 0.63, blue: 0.33, alpha: 0.98)
                     renderer.lineDashPattern = nil
-                    renderer.lineWidth = 10.5
+                    renderer.lineWidth = 7.5
                 } else {
                     // Default / TRAFFIC_GREEN / TRANSIT_GREEN: GaoDe Smooth Traffic Green (#00C853) with forest green border & white chevrons!
                     renderer.mainFillColor = UIColor(red: 0.0, green: 0.78, blue: 0.33, alpha: 0.98)
@@ -1747,7 +1785,7 @@ struct ContentView: View {
     // Compact Landscape Pre-Navigation Card (Fits in bottom-right of Landscape screen without any vertical overflow!)
         private func landscapeRouteButton(route: MKRoute, index: Int) -> some View {
         let isSel = (manager.selectedRouteIndex == index)
-        let estMins = max(1, Int(route.expectedTravelTime / 60.0))
+        let estMins = manager.estimatedMinutes(for: route)
         let distStr = String(format: "%.1fkm", route.distance / 1000.0)
         let badge = manager.routeOptionBadgeTitle(for: route, index: index)
         return Button(action: {
@@ -2626,6 +2664,7 @@ struct ContentView: View {
                 
                 // Fit Entire Route on Map Button
                 Button(action: {
+                    manager.isFocusingSingleTransitStep = false
                     manager.mapTrackingUser = false
                     manager.routeOverviewFitTrigger += 1
                 }) {
@@ -2654,7 +2693,7 @@ struct ContentView: View {
             if manager.travelMode == .transit {
                 transitPreNavSection
             } else {
-                // 2. Apple Maps 4-Pill Filter Bar: [🚗 驾驶 ⌄] [现在/日期时间 ⌄] [避开 ⌄] [粤AF17987 ⌄]
+                // 2. Apple Maps Filter Bar: [🚗 驾驶 / 🛵 骑车 ⌄] [现在/日期时间 ⌄] [避开 / 电动车·单车切换]
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 7) {
                         drivingModeMenuPill
@@ -2664,6 +2703,9 @@ struct ContentView: View {
                             vehicleSettingsPillButton
                         }
                     }
+                }
+                if manager.travelMode == .ebike {
+                    cyclingSubModeSelectorStrip
                 }
                 
                 // 3. Live License Plate & Departure Time Traffic Restriction Recognition Banner (通过车牌及出行时间智能识别禁行区域!)
@@ -2821,8 +2863,43 @@ struct ContentView: View {
         }
     }
     
+    // Cycling Sub-Mode Selector Bar: [🛵 电动车] vs [🚲 单车]
+    private var cyclingSubModeSelectorStrip: some View {
+        HStack(spacing: 6) {
+            ForEach(CyclingVehicleType.allCases) { cType in
+                let isSel = (manager.cyclingVehicleType == cType)
+                Button(action: {
+                    withAnimation(.easeInOut(duration: 0.18)) {
+                        manager.cyclingVehicleType = cType
+                    }
+                }) {
+                    HStack(spacing: 5) {
+                        Image(systemName: cType.icon)
+                            .font(.system(size: 12, weight: .bold))
+                        Text(cType.title(manager.language))
+                            .font(.system(size: 12, weight: .black))
+                        Text(cType == .electricScooter ? tr("· 25km/h 辅路", "· 25km/h 輔路", "· 25km/h") : tr("· 13.5km/h 绿道", "· 13.5km/h 綠道", "· 13.5km/h"))
+                            .font(.system(size: 10, weight: .bold))
+                            .opacity(0.88)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 6)
+                    .background(isSel ? Color(red: 0.0, green: 0.52, blue: 1.0) : Color.black.opacity(0.78))
+                    .foregroundColor(isSel ? .white : httCream.opacity(0.85))
+                    .cornerRadius(8)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8)
+                            .stroke(isSel ? httGold : Color.white.opacity(0.22), lineWidth: isSel ? 1.5 : 1.0)
+                    )
+                }
+                .buttonStyle(PlainButtonStyle())
+            }
+        }
+    }
+
     // 4 Travel Modes + Camera Mode + Outfit Bar (Shown before pressing [开始导航])
     private var travelModeSelectorBar: some View {
+        VStack(spacing: 5) {
         HStack(spacing: 5) {
             ForEach(NavigationTravelMode.allCases) { mode in
                 let isSelected = (manager.travelMode == mode)
@@ -2856,6 +2933,10 @@ struct ContentView: View {
                 }
                 .buttonStyle(PlainButtonStyle())
             }
+        }
+        if manager.travelMode == .ebike {
+            cyclingSubModeSelectorStrip
+        }
         }
     }
     
@@ -4333,6 +4414,7 @@ struct ContentView: View {
     // MARK: - Portrait & Landscape Bottom RM-500HTT Quick Feature Dock
         // Row 1: 4 Travel Modes Direct Switcher (Car / e-Bike / Walk / Transit)
     private var travelModesRow: some View {
+        VStack(spacing: 5) {
         HStack(spacing: 5) {
             ForEach(NavigationTravelMode.allCases) { mode in
                 let isSelected = (manager.travelMode == mode)
@@ -4365,6 +4447,10 @@ struct ContentView: View {
                 }
                 .buttonStyle(PlainButtonStyle())
             }
+        }
+        if manager.travelMode == .ebike {
+            cyclingSubModeSelectorStrip
+        }
         }
     }
 
@@ -6085,6 +6171,7 @@ struct InAppTransitPlanSheetView: View {
                         // Right Floating Map Controls ([🚆] + [↗️]) matching Apple Maps
                         VStack(spacing: 0) {
                             Button(action: {
+                                manager.isFocusingSingleTransitStep = false
                                 manager.routeOverviewFitTrigger += 1
                             }) {
                                 Image(systemName: "tram.fill")
@@ -6345,6 +6432,52 @@ struct InAppTransitPlanSheetView: View {
                                                 withAnimation(.easeInOut(duration: 0.22)) {
                                                     detailPlanIndex = idx
                                                 }
+                                            }
+                                            
+                                            // 5. Direct Step 1 Walking Action Bar (`🚶 第一步：步行至[乘车站] · [查看步行图] [步行导航]`)
+                                            if let firstStep = plan.steps.first, firstStep.kind == .walk {
+                                                HStack(spacing: 8) {
+                                                    Image(systemName: "figure.walk.circle.fill")
+                                                        .font(.system(size: 15, weight: .bold))
+                                                        .foregroundColor(appleBlue)
+                                                    Text(tr("第一步：步行 \(firstStep.walkMeters)米 至【\(firstStep.toStation.components(separatedBy: " (")[0])】", "第一步：步行 \(firstStep.walkMeters)米 至【\(firstStep.toStation.components(separatedBy: " (")[0])】", "Step 1: Walk \(firstStep.walkMeters)m to \(firstStep.toStation)"))
+                                                        .font(.system(size: 13, weight: .semibold))
+                                                        .foregroundColor(.white.opacity(0.92))
+                                                        .lineLimit(1)
+                                                    Spacer()
+                                                    Button(action: {
+                                                        manager.selectTransitPlan(at: idx)
+                                                        manager.focusMapOnTransitStep(0, in: plan)
+                                                    }) {
+                                                        Text(tr("看步行线", "看步行線", "Map"))
+                                                            .font(.system(size: 12, weight: .bold))
+                                                            .foregroundColor(.white)
+                                                            .padding(.horizontal, 8)
+                                                            .padding(.vertical, 5)
+                                                            .background(appleBlue.opacity(0.85))
+                                                            .cornerRadius(7)
+                                                    }
+                                                    .buttonStyle(PlainButtonStyle())
+                                                    
+                                                    Button(action: {
+                                                        closeSheet()
+                                                        manager.startLiveTransitNavigation(forPlanAt: idx, initialStepIndex: 0)
+                                                    }) {
+                                                        Text(tr("步行导航", "步行導航", "Walk GO"))
+                                                            .font(.system(size: 12, weight: .bold))
+                                                            .foregroundColor(.white)
+                                                            .padding(.horizontal, 8)
+                                                            .padding(.vertical, 5)
+                                                            .background(appleGreen)
+                                                            .cornerRadius(7)
+                                                    }
+                                                    .buttonStyle(PlainButtonStyle())
+                                                }
+                                                .padding(.horizontal, 10)
+                                                .padding(.vertical, 7)
+                                                .background(Color.white.opacity(0.08))
+                                                .cornerRadius(9)
+                                                .padding(.top, 2)
                                             }
                                         }
                                         .padding(.horizontal, 16)
