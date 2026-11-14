@@ -273,8 +273,6 @@ class AudioPlayerManager(
     private var mediaPlayer: MediaPlayer? = null
     private val mainHandler = Handler(Looper.getMainLooper())
 
-    val doudizhuEngine = DoudizhuEngine(context, this)
-
     // App & Language State
     private val _language = MutableStateFlow(AppLanguage.ZH_HANS)
     val language: StateFlow<AppLanguage> = _language
@@ -474,6 +472,8 @@ class AudioPlayerManager(
     private val voiceQueue = ArrayList<Pair<Int, String>>()
     private var demoStepCounter = 0
     private var lastRealLoc: LatLng? = null
+
+    val doudizhuEngine: DoudizhuEngine by lazy { DoudizhuEngine(context, this) }
 
     val appVersion = "1.6.3"
 

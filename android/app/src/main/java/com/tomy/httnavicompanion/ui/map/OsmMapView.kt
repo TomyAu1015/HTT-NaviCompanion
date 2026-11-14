@@ -86,6 +86,8 @@ fun OsmMapView(
     AndroidView(
         modifier = modifier,
         factory = { ctx ->
+            Configuration.getInstance().load(ctx, ctx.getSharedPreferences("osmdroid", Context.MODE_PRIVATE))
+            Configuration.getInstance().userAgentValue = ctx.packageName
             MapView(ctx).apply {
                 setMultiTouchControls(true)
                 setBuiltInZoomControls(false)

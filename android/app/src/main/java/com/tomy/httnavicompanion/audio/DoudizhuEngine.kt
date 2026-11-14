@@ -355,13 +355,22 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
     fun setAllowCardCounter(allow: Boolean) { _allowCardCounter.value = allow }
     fun setAIDifficulty(diff: DoudizhuAIDifficulty) { _aiDifficulty.value = diff }
 
+    private fun currentLang(): AppLanguage {
+        return try {
+            currentLang()
+        } catch (_: Throwable) {
+            AppLanguage.ZH_HANS
+        }
+    }
+
     private fun rebuildLobbySeats() {
         if (_phase.value != DoudizhuGamePhase.LOBBY) return
+        val lang = currentLang()
         val aiPool = CharacterFilter.fiveIndividuals.filter { it != _myChar.value }
         val existingPeers = _seats.value.filter { !it.isAI && it.seatIndex != 0 }
-        val s0 = DoudizhuPlayerSeat(0, "${_myNickname.value} (${_myChar.value.displayName(audioMgr.language.value)})", _myChar.value, isAI = false, peerDisplayName = _myNickname.value)
-        val s1 = existingPeers.getOrNull(0) ?: DoudizhuPlayerSeat(1, "${aiPool[0].displayName(audioMgr.language.value)} (AI)", aiPool[0], isAI = true)
-        val s2 = existingPeers.getOrNull(1) ?: DoudizhuPlayerSeat(2, "${aiPool[1].displayName(audioMgr.language.value)} (AI)", aiPool[1], isAI = true)
+        val s0 = DoudizhuPlayerSeat(0, "${_myNickname.value} (${_myChar.value.displayName(lang)})", _myChar.value, isAI = false, peerDisplayName = _myNickname.value)
+        val s1 = existingPeers.getOrNull(0) ?: DoudizhuPlayerSeat(1, "${aiPool[0].displayName(lang)} (AI)", aiPool[0], isAI = true)
+        val s2 = existingPeers.getOrNull(1) ?: DoudizhuPlayerSeat(2, "${aiPool[1].displayName(lang)} (AI)", aiPool[1], isAI = true)
         _seats.value = listOf(s0, s1, s2)
     }
 
@@ -752,7 +761,7 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
                         val ch = CharacterFilter.fiveIndividuals.firstOrNull { it.charId == senderCid } ?: CharacterFilter.MIO
                         curSeats[aiSlot] = DoudizhuPlayerSeat(
                             seatIndex = aiSlot,
-                            name = "$senderName (${ch.displayName(audioMgr.language.value)})",
+                            name = "$senderName (${ch.displayName(currentLang())})",
                             character = ch,
                             isAI = false,
                             peerDisplayName = senderName
@@ -825,7 +834,7 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
 
         val cur = _seats.value
         val s0 = cur.getOrNull(0)?.copy(hand = p0, isLandlord = false, lastPlayed = emptyList(), lastActionText = "", passedLast = false)
-            ?: DoudizhuPlayerSeat(0, "${_myNickname.value} (${_myChar.value.displayName(audioMgr.language.value)})", _myChar.value, false, _myNickname.value, hand = p0)
+            ?: DoudizhuPlayerSeat(0, "${_myNickname.value} (${_myChar.value.displayName(currentLang())})", _myChar.value, false, _myNickname.value, hand = p0)
         val s1 = cur.getOrNull(1)?.copy(hand = p1, isLandlord = false, lastPlayed = emptyList(), lastActionText = "", passedLast = false)
             ?: DoudizhuPlayerSeat(1, "秋山澪 (AI)", CharacterFilter.MIO, true, hand = p1)
         val s2 = cur.getOrNull(2)?.copy(hand = p2, isLandlord = false, lastPlayed = emptyList(), lastActionText = "", passedLast = false)

@@ -1,6 +1,7 @@
 package com.tomy.httnavicompanion
 
 import android.app.Application
+import android.util.Log
 import com.tomy.httnavicompanion.data.AssetDecryptor
 import com.tomy.httnavicompanion.audio.AudioPlayerManager
 import com.tomy.httnavicompanion.audio.KOnMusicManager
@@ -21,10 +22,14 @@ class HTTNaviApp : Application() {
         audioPlayerManager = AudioPlayerManager(this, assetDecryptor)
         musicManager = KOnMusicManager(this)
 
-        // Initialize assets asynchronously
+        // Initialize assets asynchronously with crash guard
         Thread {
-            assetDecryptor.initAssets()
-            audioPlayerManager.initVoicePackage()
+            try {
+                assetDecryptor.initAssets()
+                audioPlayerManager.initVoicePackage()
+            } catch (t: Throwable) {
+                Log.e("HTTNaviApp", "Asset init error", t)
+            }
         }.start()
     }
 
