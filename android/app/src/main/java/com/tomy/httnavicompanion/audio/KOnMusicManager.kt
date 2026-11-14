@@ -153,15 +153,17 @@ class KOnMusicManager(private val context: Context) {
         } else {
             val pathsToTry = listOf("music_assets.dat", "Music/music_assets.dat")
             for (path in pathsToTry) {
+                var loadedFromAsset = false
                 try {
                     context.assets.open(path).use { stream ->
                         if (parseEncryptedContainerHeader(stream, updatedList)) {
                             containerAssetPath = path
                             containerLocalFile = null
-                            break
+                            loadedFromAsset = true
                         }
                     }
                 } catch (_: Exception) {}
+                if (loadedFromAsset) break
             }
         }
 
