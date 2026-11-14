@@ -1086,8 +1086,14 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     @Published var transitPlans: [TransitPlanOption] = []
     @Published var selectedTransitPlanIndex: Int = 0
     @Published var activeTransitStepIndex: Int = 0
+    @Published var transitSegmentPolylines: [MKPolyline] = []
+    @Published var transitWalkStepDirections: [Int: [String]] = [:]
+    @Published var customMapFocusRect: MKMapRect? = nil
+    @Published var customMapFocusTrigger: Int = 0
     var dynamicStationCoordCache: [String: CLLocationCoordinate2D] = [:]
     var latestCorridorRoadPolyline: MKPolyline? = nil
+    private var lastNetworkLocSyncTime: Date = .distantPast
+    private var transitWalkStepStartedAt: Date = .distantPast
     @Published var showTransitPlanSheet: Bool = false
     
     // Unseated Tea Party Members in 5-Member Stage Mode (Only reset when pressing [喝下午茶] or [位置归位]!)
@@ -2579,7 +2585,21 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     // MARK: - Authentic Guangzhou Metro & Panyu Bus Station Database (100% 同步 Apple Maps 广州地铁 + 番禺巴士路网)
     private static let gzStationsDatabase: [StationCoord] = [
         StationCoord(name: "沙头新村", exit: "巴士站", lat: 22.9548, lon: 113.3468, line: "番16"),
+        StationCoord(name: "康裕园", exit: "巴士站", lat: 22.9542, lon: 113.3502, line: "番16"),
+        StationCoord(name: "番禺实验中学", exit: "巴士站", lat: 22.9535, lon: 113.3538, line: "番16"),
+        StationCoord(name: "市桥中心小学", exit: "巴士站", lat: 22.9528, lon: 113.3572, line: "番16"),
         StationCoord(name: "光明北路", exit: "巴士站", lat: 22.9522, lon: 113.3595, line: "番16"),
+        StationCoord(name: "星海公园", exit: "巴士站", lat: 22.9465, lon: 113.3630, line: "番16/302"),
+        StationCoord(name: "大罗村", exit: "巴士站", lat: 22.9585, lon: 113.3490, line: "番9/番30"),
+        StationCoord(name: "康乐路", exit: "巴士站", lat: 22.9512, lon: 113.3520, line: "番30"),
+        StationCoord(name: "市桥医院", exit: "巴士站", lat: 22.9560, lon: 113.3410, line: "番30"),
+        StationCoord(name: "钟村市场", exit: "巴士站", lat: 22.9810, lon: 113.3110, line: "番30"),
+        StationCoord(name: "地铁钟村站", exit: "巴士站", lat: 22.9902, lon: 113.3028, line: "番30/7号线"),
+        StationCoord(name: "大石桥南", exit: "巴士站", lat: 23.0160, lon: 113.3190, line: "302/番129"),
+        StationCoord(name: "洛溪新城", exit: "巴士站", lat: 23.0435, lon: 113.3015, line: "302/番129"),
+        StationCoord(name: "上冲", exit: "巴士站", lat: 23.0760, lon: 113.3150, line: "302"),
+        StationCoord(name: "客村立交", exit: "巴士站", lat: 23.0955, lon: 113.3185, line: "302"),
+        StationCoord(name: "时代广场", exit: "巴士站", lat: 23.1405, lon: 113.3210, line: "302"),
         StationCoord(name: "市桥", exit: "3|02", lat: 22.9498, lon: 113.3618, line: "3号线"),
         StationCoord(name: "番禺广场", exit: "3|01", lat: 22.9356, lon: 113.3852, line: "3号线/18号线/22号线"),
         StationCoord(name: "汉溪长隆", exit: "3|03", lat: 22.9928, lon: 113.3302, line: "3号线/7号线"),
@@ -7690,10 +7710,95 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         return nil
     }
     
+    /// Resolves the exact coordinate of a walking step's target station (never returns nil!)
+    func resolveTransitWalkTargetCoord(plan: TransitPlanOption, stepIndex: Int, origin: CLLocationCoordinate2D, dest: CLLocationCoordinate2D) -> CLLocationCoordinate2D {
+        guard stepIndex >= 0 && stepIndex < plan.steps.count else { return dest }
+        let step = plan.steps[stepIndex]
+        if stepIndex == plan.steps.count - 1 {
+            return dest
+        }
+        if let c = lookupStationCoordinate(named: step.toStation) {
+            return c
+        }
+        if stepIndex + 1 < plan.steps.count {
+            let nextStep = plan.steps[stepIndex + 1]
+            if let nextFrom = lookupStationCoordinate(named: nextStep.fromStation) {
+                return nextFrom
+            }
+            if let firstPass = nextStep.passStations.first, let pCoord = lookupStationCoordinate(named: firstPass) {
+                return CLLocationCoordinate2D(
+                    latitude: origin.latitude + (pCoord.latitude - origin.latitude) * 0.35,
+                    longitude: origin.longitude + (pCoord.longitude - origin.longitude) * 0.35
+                )
+            }
+        }
+        let totalDist = Double(max(500, metersBetween(origin, dest)))
+        let walkFrac = min(0.28, max(0.05, Double(max(120, step.walkMeters)) / totalDist))
+        return CLLocationCoordinate2D(
+            latitude: origin.latitude + (dest.latitude - origin.latitude) * walkFrac,
+            longitude: origin.longitude + (dest.longitude - origin.longitude) * walkFrac
+        )
+    }
+
+    /// Generates default readable street-level walking directions before async MKDirections finishes
+    func buildFallbackWalkDirections(step: TransitStepItem, isFirstStep: Bool, isLastStep: Bool) -> [String] {
+        let m = max(50, step.walkMeters)
+        let m1 = max(20, Int(Double(m) * 0.25))
+        let m2 = max(20, Int(Double(m) * 0.50))
+        let m3 = max(10, m - m1 - m2)
+        let target = step.toStation.components(separatedBy: " (")[0]
+        if isFirstStep {
+            let startAddr = currentUserAddressText.isEmpty ? "当前位置" : currentUserAddressText
+            return [
+                "1. 从【\(startAddr)】出发，沿当前道路步行 \(m1) 米",
+                "2. 在前方路口转入主干道人行步道，继续直行 \(m2) 米",
+                "3. 步行 \(m3) 米抵达【\(target)】乘车站台（耗时约 \(step.durationMins) 分钟）"
+            ]
+        } else if isLastStep {
+            return [
+                "1. 从【\(step.fromStation.components(separatedBy: " (")[0])】出站口步行 \(m1 + m2) 米",
+                "2. 沿街区人行道步行 \(m3) 米抵达终点【\(target)】"
+            ]
+        } else {
+            return [
+                "1. 从【\(step.fromStation.components(separatedBy: " (")[0])】下车后沿导向标识步行 \(m1 + m2) 米",
+                "2. 步行 \(m3) 米进入【\(target)】候车区"
+            ]
+        }
+    }
+
+    /// Focuses the map camera directly onto a specific step (e.g. Step 1 walking leg to the boarding station!)
+    func focusMapOnTransitStep(_ stepIndex: Int, in plan: TransitPlanOption) {
+        guard let dest = destinationCoord, stepIndex >= 0, stepIndex < plan.steps.count else { return }
+        let step = plan.steps[stepIndex]
+        let c1: CLLocationCoordinate2D
+        let c2: CLLocationCoordinate2D
+        if stepIndex == 0 {
+            c1 = userCoordinate
+            c2 = resolveTransitWalkTargetCoord(plan: plan, stepIndex: 0, origin: userCoordinate, dest: dest)
+        } else if step.kind == .walk {
+            c1 = lookupStationCoordinate(named: step.fromStation) ?? (stepIndex > 0 ? (lookupStationCoordinate(named: plan.steps[stepIndex - 1].toStation) ?? userCoordinate) : userCoordinate)
+            c2 = resolveTransitWalkTargetCoord(plan: plan, stepIndex: stepIndex, origin: userCoordinate, dest: dest)
+        } else {
+            c1 = lookupStationCoordinate(named: step.fromStation) ?? userCoordinate
+            c2 = lookupStationCoordinate(named: step.toStation) ?? dest
+        }
+        let p1 = MKMapPoint(c1)
+        let p2 = MKMapPoint(c2)
+        let minX = min(p1.x, p2.x)
+        let minY = min(p1.y, p2.y)
+        let spanX = max(2200.0, abs(p1.x - p2.x) * 1.45)
+        let spanY = max(2200.0, abs(p1.y - p2.y) * 1.45)
+        self.customMapFocusRect = MKMapRect(x: minX - spanX * 0.22, y: minY - spanY * 0.22, width: spanX, height: spanY)
+        self.customMapFocusTrigger += 1
+    }
+
     func calculateTransitAppleMapsRoute(from: CLLocationCoordinate2D, to: CLLocationCoordinate2D, destTitle: String, plan: TransitPlanOption?, preserveNavigationFocus: Bool = false) {
-        // 1. Build station annotations and station-to-station polyline for all resolved stops along the plan
-        var stationCoords: [CLLocationCoordinate2D] = [from]
+        // 1. Build per-step multi-segment polylines (Walking dashed blue + Bus road-hugging blue + Metro official line color!) and station pins
+        var allStationCoords: [CLLocationCoordinate2D] = [from]
         var pins: [MKPointAnnotation] = []
+        var segmentPolys: [MKPolyline] = []
+        var walkDirs: [Int: [String]] = [:]
         
         let startPin = MKPointAnnotation()
         startPin.coordinate = from
@@ -7703,58 +7808,149 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         
         if let p = plan {
             var seenNames: Set<String> = []
-            for st in p.steps where st.kind != .walk {
-                if let fCoord = lookupStationCoordinate(named: st.fromStation) {
-                    stationCoords.append(fCoord)
-                    let cleanFrom = st.fromStation.components(separatedBy: " (")[0]
-                    if !seenNames.contains(cleanFrom) {
-                        seenNames.insert(cleanFrom)
-                        let pin = MKPointAnnotation()
-                        pin.coordinate = fCoord
-                        pin.title = "\(cleanFrom) (\(st.lineName))"
-                        pin.subtitle = st.kind == .bus ? "BUS_STOP_PIN" : "SUBWAY_STOP_PIN"
-                        pins.append(pin)
+            var cursorCoord: CLLocationCoordinate2D = from
+            
+            for (sIdx, st) in p.steps.enumerated() {
+                if st.kind == .walk {
+                    let walkTarget = resolveTransitWalkTargetCoord(plan: p, stepIndex: sIdx, origin: from, dest: to)
+                    let walkStart = cursorCoord
+                    var pts = [walkStart, walkTarget]
+                    let walkPoly = MKPolyline(coordinates: &pts, count: pts.count)
+                    walkPoly.title = "TRANSIT_WALK_DASHED"
+                    let polySlotIdx = segmentPolys.count
+                    segmentPolys.append(walkPoly)
+                    allStationCoords.append(walkTarget)
+                    cursorCoord = walkTarget
+                    
+                    // Populate immediate readable walking steps, then refine with live Apple Maps MKDirections .walking street turns!
+                    walkDirs[sIdx] = buildFallbackWalkDirections(step: st, isFirstStep: sIdx == 0, isLastStep: sIdx == p.steps.count - 1)
+                    
+                    let wReq = MKDirections.Request()
+                    wReq.source = MKMapItem(placemark: MKPlacemark(coordinate: walkStart))
+                    wReq.destination = MKMapItem(placemark: MKPlacemark(coordinate: walkTarget))
+                    wReq.transportType = .walking
+                    MKDirections(request: wReq).calculate { [weak self] resp, _ in
+                        DispatchQueue.main.async {
+                            guard let self = self, let r = resp?.routes.first else { return }
+                            r.polyline.title = "TRANSIT_WALK_DASHED"
+                            if polySlotIdx < self.transitSegmentPolylines.count {
+                                self.transitSegmentPolylines[polySlotIdx] = r.polyline
+                                self.routeSelectionRenderTrigger += 1
+                            }
+                            let realTurns = r.steps.compactMap { s -> String? in
+                                let clean = s.instructions.trimmingCharacters(in: .whitespacesAndNewlines)
+                                guard !clean.isEmpty else { return nil }
+                                let d = Int(round(s.distance))
+                                return d > 0 ? "\(clean)（步行 \(d) 米）" : clean
+                            }
+                            if !realTurns.isEmpty {
+                                var numbered: [String] = []
+                                for (i, t) in realTurns.enumerated() {
+                                    numbered.append("\(i + 1). \(t)")
+                                }
+                                numbered.append("\(numbered.count + 1). 抵达【\(st.toStation.components(separatedBy: " (")[0])】")
+                                self.transitWalkStepDirections[sIdx] = numbered
+                            }
+                        }
                     }
-                }
-                for passRaw in st.passStations {
-                    let cleanPass = passRaw.components(separatedBy: " (")[0]
-                    if let pCoord = lookupStationCoordinate(named: cleanPass) {
-                        stationCoords.append(pCoord)
-                        if !seenNames.contains(cleanPass) {
-                            seenNames.insert(cleanPass)
+                } else {
+                    var stepCoords: [CLLocationCoordinate2D] = []
+                    if let fCoord = lookupStationCoordinate(named: st.fromStation) {
+                        stepCoords.append(fCoord)
+                        allStationCoords.append(fCoord)
+                        let cleanFrom = st.fromStation.components(separatedBy: " (")[0]
+                        if !seenNames.contains(cleanFrom) {
+                            seenNames.insert(cleanFrom)
                             let pin = MKPointAnnotation()
-                            pin.coordinate = pCoord
-                            pin.title = cleanPass
-                            pin.subtitle = "SUBWAY_STOP_PIN"
+                            pin.coordinate = fCoord
+                            pin.title = "\(cleanFrom) (\(st.lineName))"
+                            pin.subtitle = st.kind == .bus ? "BUS_STOP_PIN" : "SUBWAY_STOP_PIN"
+                            pins.append(pin)
+                        }
+                    } else {
+                        stepCoords.append(cursorCoord)
+                    }
+                    
+                    for passRaw in st.passStations {
+                        let cleanPass = passRaw.components(separatedBy: " (")[0]
+                        if let pCoord = lookupStationCoordinate(named: cleanPass) {
+                            stepCoords.append(pCoord)
+                            allStationCoords.append(pCoord)
+                            if !seenNames.contains(cleanPass) {
+                                seenNames.insert(cleanPass)
+                                let pin = MKPointAnnotation()
+                                pin.coordinate = pCoord
+                                pin.title = cleanPass
+                                pin.subtitle = st.kind == .bus ? "BUS_STOP_PIN" : "SUBWAY_STOP_PIN"
+                                pins.append(pin)
+                            }
+                        }
+                    }
+                    
+                    if let tCoord = lookupStationCoordinate(named: st.toStation) {
+                        if let lastC = stepCoords.last, abs(lastC.latitude - tCoord.latitude) < 1e-5 && abs(lastC.longitude - tCoord.longitude) < 1e-5 {
+                            // already appended via passStations
+                        } else {
+                            stepCoords.append(tCoord)
+                        }
+                        allStationCoords.append(tCoord)
+                        cursorCoord = tCoord
+                        let cleanTo = st.toStation.components(separatedBy: " (")[0]
+                        if !seenNames.contains(cleanTo) {
+                            seenNames.insert(cleanTo)
+                            let pin = MKPointAnnotation()
+                            pin.coordinate = tCoord
+                            pin.title = cleanTo
+                            pin.subtitle = "TRANSFER_PIN"
                             pins.append(pin)
                         }
                     }
-                }
-                if let tCoord = lookupStationCoordinate(named: st.toStation) {
-                    stationCoords.append(tCoord)
-                    let cleanTo = st.toStation.components(separatedBy: " (")[0]
-                    if !seenNames.contains(cleanTo) {
-                        seenNames.insert(cleanTo)
-                        let pin = MKPointAnnotation()
-                        pin.coordinate = tCoord
-                        pin.title = cleanTo
-                        pin.subtitle = "TRANSFER_PIN"
-                        pins.append(pin)
+                    
+                    if stepCoords.count >= 2 {
+                        let legPoly = MKPolyline(coordinates: &stepCoords, count: stepCoords.count)
+                        if st.kind == .bus {
+                            legPoly.title = "TRANSIT_BUS_BLUE"
+                        } else {
+                            legPoly.title = "TRANSIT_HEX_\(st.colorHex)"
+                        }
+                        let busPolySlot = segmentPolys.count
+                        segmentPolys.append(legPoly)
+                        
+                        // If this is a surface Bus leg, also request road-following MKDirections so the bus line curves along actual streets!
+                        if st.kind == .bus, let bStart = stepCoords.first, let bEnd = stepCoords.last {
+                            let busRoadReq = MKDirections.Request()
+                            busRoadReq.source = MKMapItem(placemark: MKPlacemark(coordinate: bStart))
+                            busRoadReq.destination = MKMapItem(placemark: MKPlacemark(coordinate: bEnd))
+                            busRoadReq.transportType = .automobile
+                            MKDirections(request: busRoadReq).calculate { [weak self] resp, _ in
+                                DispatchQueue.main.async {
+                                    guard let self = self, let r = resp?.routes.first else { return }
+                                    r.polyline.title = "TRANSIT_BUS_BLUE"
+                                    if busPolySlot < self.transitSegmentPolylines.count {
+                                        self.transitSegmentPolylines[busPolySlot] = r.polyline
+                                        self.routeSelectionRenderTrigger += 1
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
         }
-        stationCoords.append(to)
+        
+        allStationCoords.append(to)
         let destPin = MKPointAnnotation()
         destPin.coordinate = to
         destPin.title = destTitle.isEmpty ? "目的地" : destTitle
         destPin.subtitle = "DEST_PIN"
         pins.append(destPin)
         self.transitStopAnnotations = pins
+        self.transitWalkStepDirections = walkDirs
+        self.transitSegmentPolylines = segmentPolys
         
-        // 2. If we resolved >= 4 station coordinates along the metro/bus/HSR corridor, draw the station-aligned polyline immediately!
-        if stationCoords.count >= 4 {
-            let poly = MKPolyline(coordinates: &stationCoords, count: stationCoords.count)
+        // 2. If we resolved >= 3 coordinates along the corridor, set customTransitPolyline for bounding box fitting!
+        if allStationCoords.count >= 3 {
+            let poly = MKPolyline(coordinates: &allStationCoords, count: allStationCoords.count)
             poly.title = "TRANSIT_BUS_BLUE"
             self.customTransitPolyline = poly
             if !preserveNavigationFocus && !self.isNavigatingFocused {
@@ -7785,15 +7981,16 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                     roadRoute.polyline.title = "TRANSIT_BUS_BLUE"
                     self.latestCorridorRoadPolyline = roadRoute.polyline
                     self.customTransitPolyline = roadRoute.polyline
+                    if self.transitSegmentPolylines.isEmpty {
+                        self.transitSegmentPolylines = [roadRoute.polyline]
+                    }
                     self.remainingRouteDistanceKm = roadRoute.distance / 1000.0
                     if let p = plan {
                         self.remainingRouteMinutes = p.totalMinutes
                     } else {
                         self.remainingRouteMinutes = max(1, Int(roadRoute.expectedTravelTime / 60.0))
                     }
-                    // CRITICAL FIX: NEVER reset isNavigatingFocused to false if user already tapped [开始] to start transit navigation!
                     if !preserveNavigationFocus && !self.isNavigatingFocused {
-                        self.activeRoute = roadRoute
                         self.candidateRoutes = [roadRoute]
                         self.selectedRouteIndex = 0
                         self.mapTrackingUser = false
@@ -7801,7 +7998,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                     }
                     self.routeSelectionRenderTrigger += 1
                 } else {
-                    var fallbackPts = stationCoords
+                    var fallbackPts = allStationCoords
                     let fallbackPoly = MKPolyline(coordinates: &fallbackPts, count: fallbackPts.count)
                     fallbackPoly.title = "TRANSIT_BUS_BLUE"
                     self.customTransitPolyline = fallbackPoly
@@ -8359,29 +8556,31 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     /// Atomic entry point when user taps green [开始 / 開始 / GO] on any Transit Route!
     /// Never gets overwritten by async route preview callbacks, immediately switches to Full-Screen Live Transit Navigation HUD,
     /// and synchronizes step-by-step instructions with Apple Maps!
-    func startLiveTransitNavigation(forPlanAt index: Int? = nil) {
+    func startLiveTransitNavigation(forPlanAt index: Int? = nil, initialStepIndex: Int = 0) {
         guard !transitPlans.isEmpty else { return }
         let targetIdx = index ?? selectedTransitPlanIndex
         let safeIdx = min(max(0, targetIdx), transitPlans.count - 1)
         selectedTransitPlanIndex = safeIdx
-        activeTransitStepIndex = 0
-        
         let plan = transitPlans[safeIdx]
+        let safeStep = min(max(0, initialStepIndex), max(0, plan.steps.count - 1))
+        activeTransitStepIndex = safeStep
+        
         // 1. Force full-screen map HUD mode and close transit sheet immediately
         showTransitPlanSheet = false
         showMapMode = true
         isMapEnlarged = true
         isNavigatingFocused = true
         mapTrackingUser = true
+        userZoomDistance = 420.0
         recenterTrigger += 1
         
-        // 2. Ensure transit polyline & station pins are drawn on the map with preserveNavigationFocus = true
+        // 2. Ensure multi-segment transit polylines & station pins are drawn on the map with preserveNavigationFocus = true
         if let dest = destinationCoord {
             calculateTransitAppleMapsRoute(from: userCoordinate, to: dest, destTitle: destinationName, plan: plan, preserveNavigationFocus: true)
         }
         
-        // 3. Synchronously apply Step 0 instruction so top navigation banner updates with 0ms latency
-        applyLiveTransitStepInstruction(for: plan, stepIndex: 0, announceVoice: true)
+        // 3. Synchronously apply target step instruction so top navigation banner & walking leg update with 0ms latency
+        applyLiveTransitStepInstruction(for: plan, stepIndex: safeStep, announceVoice: true)
     }
     
     func stepTransitNavigation(delta: Int) {
@@ -8409,31 +8608,62 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         let step = plan.steps[stepIndex]
         let remainingMins = plan.steps[stepIndex...].reduce(0) { $0 + max(1, $1.durationMins) }
         self.remainingRouteMinutes = max(1, remainingMins)
+        let dest = destinationCoord ?? userCoordinate
         
         if step.kind == .walk {
-            let targetStop = step.toStation
+            self.transitWalkStepStartedAt = Date()
+            let targetStop = step.toStation.components(separatedBy: " (")[0]
             let walkDist = max(50, step.walkMeters)
             self.distanceToNextStepMeters = Double(walkDist)
             self.remainingRouteDistanceKm = max(0.1, Double(walkDist) / 1000.0)
             self.transitPhase = (stepIndex == plan.steps.count - 1) ? .walkingToDestination : .walkingToStation
             self.transitBoardingStationName = targetStop
-            self.currentStepInstruction = "🚶 第\(stepIndex + 1)/\(plan.steps.count)步：步行 \(walkDist)米 前往【\(targetStop)】(\(step.durationMins)分钟)"
             
-            if let stopCoord = lookupStationCoordinate(named: targetStop) ?? (stepIndex == plan.steps.count - 1 ? destinationCoord : nil) {
-                self.transitBoardingStationCoord = stopCoord
-                let walkReq = MKDirections.Request()
-                walkReq.source = MKMapItem(placemark: MKPlacemark(coordinate: userCoordinate))
-                walkReq.destination = MKMapItem(placemark: MKPlacemark(coordinate: stopCoord))
-                walkReq.transportType = .walking
-                MKDirections(request: walkReq).calculate { [weak self] resp, _ in
-                    DispatchQueue.main.async {
-                        guard let self = self, self.isNavigatingFocused, self.activeTransitStepIndex == stepIndex else { return }
-                        if let r = resp?.routes.first {
-                            r.polyline.title = "WALKING_BLUE"
-                            self.activeRoute = r
-                            let firstTurn = r.steps.first(where: { !$0.instructions.isEmpty })?.instructions ?? "沿当前道路步行"
-                            self.currentStepInstruction = "🚶 步行前往【\(targetStop)】· \(firstTurn)"
-                            self.distanceToNextStepMeters = max(20.0, r.distance)
+            let startWalkCoord: CLLocationCoordinate2D = (stepIndex == 0)
+                ? userCoordinate
+                : (lookupStationCoordinate(named: step.fromStation) ?? userCoordinate)
+            let stopCoord = resolveTransitWalkTargetCoord(plan: plan, stepIndex: stepIndex, origin: userCoordinate, dest: dest)
+            self.transitBoardingStationCoord = stopCoord
+            
+            // Immediately build a fallback 2-point walking polyline so activeRoute is non-nil at 0ms even before MKDirections returns!
+            var fallbackWalkPts = [startWalkCoord, stopCoord]
+            let immediateWalkPoly = MKPolyline(coordinates: &fallbackWalkPts, count: fallbackWalkPts.count)
+            immediateWalkPoly.title = "WALKING_BLUE"
+            let firstHint = (transitWalkStepDirections[stepIndex]?.first ?? "沿当前道路人行道直行").replacingOccurrences(of: "1. ", with: "")
+            self.currentStepInstruction = "🚶 第\(stepIndex + 1)/\(plan.steps.count)步 步行导航：\(firstHint) ➔ 前往【\(targetStop)】"
+            self.routeSelectionRenderTrigger += 1
+            
+            let walkReq = MKDirections.Request()
+            walkReq.source = MKMapItem(placemark: MKPlacemark(coordinate: startWalkCoord))
+            walkReq.destination = MKMapItem(placemark: MKPlacemark(coordinate: stopCoord))
+            walkReq.transportType = .walking
+            MKDirections(request: walkReq).calculate { [weak self] resp, _ in
+                DispatchQueue.main.async {
+                    guard let self = self, self.isNavigatingFocused, self.activeTransitStepIndex == stepIndex else { return }
+                    if let r = resp?.routes.first {
+                        r.polyline.title = "WALKING_BLUE"
+                        self.activeRoute = r
+                        // CRITICAL FIX: Skip MKRoute.steps[0] if it is the 0-meter starting vertex!
+                        let firstRealIdx = r.steps.firstIndex(where: { !$0.instructions.isEmpty && $0.distance > 3.0 }) ?? (r.steps.count > 1 ? 1 : 0)
+                        self.currentStepIndex = firstRealIdx
+                        let firstTurn = r.steps[firstRealIdx].instructions.isEmpty ? "沿当前道路步行" : r.steps[firstRealIdx].instructions
+                        self.currentStepInstruction = "🚶 步行至【\(targetStop)】：\(firstTurn)"
+                        self.distanceToNextStepMeters = max(25.0, r.distance)
+                        self.routeSelectionRenderTrigger += 1
+                        
+                        let realTurns = r.steps.compactMap { s -> String? in
+                            let clean = s.instructions.trimmingCharacters(in: .whitespacesAndNewlines)
+                            guard !clean.isEmpty else { return nil }
+                            let d = Int(round(s.distance))
+                            return d > 0 ? "\(clean)（步行 \(d) 米）" : clean
+                        }
+                        if !realTurns.isEmpty {
+                            var numbered: [String] = []
+                            for (i, t) in realTurns.enumerated() {
+                                numbered.append("\(i + 1). \(t)")
+                            }
+                            numbered.append("\(numbered.count + 1). 抵达【\(targetStop)】")
+                            self.transitWalkStepDirections[stepIndex] = numbered
                         }
                     }
                 }
@@ -8441,13 +8671,14 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             if announceVoice {
                 let quote: String
                 switch language {
-                case .zhHans: quote = "🚶 [实时公共交通导航] 第 \(stepIndex + 1) 步：请步行 \(walkDist) 米前往【\(targetStop)】！"
-                case .zhHant: quote = "🚶 [實時公共交通導航] 第 \(stepIndex + 1) 步：請步行 \(walkDist) 米前往【\(targetStop)】！"
-                case .en: quote = "🚶 Step \(stepIndex + 1): Walk \(walkDist)m to [\(targetStop)]!"
+                case .zhHans: quote = "🚶 [步行实景导航已开启] 第 \(stepIndex + 1) 步：请沿蓝色步行路线走 \(walkDist) 米前往【\(targetStop)】乘车！"
+                case .zhHant: quote = "🚶 [步行實景導航已開啟] 第 \(stepIndex + 1) 步：請沿藍色步行路線走 \(walkDist) 米前往【\(targetStop)】乘車！"
+                case .en: quote = "🚶 Step \(stepIndex + 1): Follow the blue walking path \(walkDist)m to [\(targetStop)]!"
                 }
                 playVoice(id: activeBaseId() + 39, customQuote: quote, clearQueue: true)
             }
         } else {
+            self.activeRoute = nil
             self.transitPhase = .inTransitVehicle
             self.transitActiveLineName = step.lineName
             self.transitBoardingStationName = step.fromStation
@@ -8753,7 +8984,8 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     private func setupLocationManager() {
         locationManager.delegate = self
         locationManager.desiredAccuracy = kCLLocationAccuracyBestForNavigation
-        locationManager.distanceFilter = 1.5
+        locationManager.distanceFilter = kCLDistanceFilterNone // Zero distance filter delay for real-time GPS + Wi-Fi/Cellular updates!
+        locationManager.activityType = .otherNavigation
         locationManager.allowsBackgroundLocationUpdates = true
         locationManager.pausesLocationUpdatesAutomatically = false
         locationManager.requestWhenInUseAuthorization()
@@ -8762,22 +8994,73 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         let savedLon = UserDefaults.standard.double(forKey: "kon_last_valid_lon")
         if abs(savedLat) > 1.0 && abs(savedLon) > 1.0 {
             let savedCoord = CLLocationCoordinate2D(latitude: savedLat, longitude: savedLon)
-            // Do not restore a stale Shenzhen cache on launch before real GPS arrives!
             if !CoordinateConverter.isInShenzhen(savedCoord) {
                 self.userCoordinate = savedCoord
             }
         }
         locationManager.startUpdatingLocation()
+        locationManager.requestLocation()
         if let current = locationManager.location, current.horizontalAccuracy >= 0 {
             let aligned = CoordinateConverter.wgs84ToGCJ02(current.coordinate)
+            self.latestMapKitUserCoord = aligned
             self.userCoordinate = aligned
             UserDefaults.standard.set(aligned.latitude, forKey: "kon_last_valid_lat")
             UserDefaults.standard.set(aligned.longitude, forKey: "kon_last_valid_lon")
+            refreshCurrentUserAddressIfNeeded(for: aligned)
+        } else {
+            // Immediately fuse network data positioning if satellite/CoreLocation cache is not yet ready!
+            performNetworkAssistedLocationSync(force: true)
         }
         if CLLocationManager.headingAvailable() {
-            locationManager.headingFilter = 3.0
+            locationManager.headingFilter = 1.5
             locationManager.startUpdatingHeading()
         }
+    }
+
+    /// Multi-Source GPS + Cellular/Wi-Fi + Network IP Geolocation Fusion Engine:
+    /// Ensures instant positioning even indoors, in subway stations, or before GPS satellite lock!
+    func performNetworkAssistedLocationSync(force: Bool = false) {
+        guard !isDemoSimulating else { return }
+        // Always trigger immediate hardware + Wi-Fi/Cell fix from CoreLocation
+        locationManager.startUpdatingLocation()
+        if let liveLoc = locationManager.location, liveLoc.horizontalAccuracy >= 0 && liveLoc.horizontalAccuracy <= 120.0 && abs(liveLoc.timestamp.timeIntervalSinceNow) < 10.0 {
+            let aligned = CoordinateConverter.wgs84ToGCJ02(liveLoc.coordinate)
+            self.latestMapKitUserCoord = aligned
+            self.userCoordinate = self.snappedRouteCoordinate ?? aligned
+            refreshCurrentUserAddressIfNeeded(for: aligned)
+            if !force { return }
+        }
+        guard force || Date().timeIntervalSince(lastNetworkLocSyncTime) > 25.0 else { return }
+        lastNetworkLocSyncTime = Date()
+        
+        guard let url = URL(string: "http://ip-api.com/json/?lang=zh-CN&fields=status,lat,lon,city,regionName") else { return }
+        var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 3.5)
+        req.httpMethod = "GET"
+        URLSession.shared.dataTask(with: req) { [weak self] data, _, _ in
+            guard let self = self, let data = data,
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let status = json["status"] as? String, status == "success",
+                  let lat = json["lat"] as? Double, let lon = json["lon"] as? Double,
+                  abs(lat) > 1.0 && abs(lon) > 1.0 else { return }
+            DispatchQueue.main.async {
+                guard !self.isDemoSimulating else { return }
+                // Only apply network IP coordinate if hardware GPS hasn't locked within 250m accuracy yet, or if cached userCoordinate is > 25km away from current network city!
+                let netRaw = CLLocationCoordinate2D(latitude: lat, longitude: lon)
+                let netAligned = CoordinateConverter.wgs84ToGCJ02(netRaw)
+                let distFromCurrent = self.metersBetween(self.userCoordinate, netAligned)
+                let hasRecentHighAccuracyGPS = (self.locationManager.location != nil && self.locationManager.location!.horizontalAccuracy >= 0 && self.locationManager.location!.horizontalAccuracy <= 250.0 && abs(self.locationManager.location!.timestamp.timeIntervalSinceNow) < 20.0)
+                if !hasRecentHighAccuracyGPS && distFromCurrent > 15000 {
+                    self.userCoordinate = netAligned
+                    self.latestMapKitUserCoord = netAligned
+                    UserDefaults.standard.set(netAligned.latitude, forKey: "kon_last_valid_lat")
+                    UserDefaults.standard.set(netAligned.longitude, forKey: "kon_last_valid_lon")
+                    self.refreshCurrentUserAddressIfNeeded(for: netAligned)
+                    if self.travelMode == .transit && self.destinationCoord != nil {
+                        self.refreshTransitPlansForCurrentLocation(force: true)
+                    }
+                }
+            }
+        }.resume()
     }
     
 
@@ -9925,6 +10208,8 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         // When driving / e-bike / walking, ensure transit states are cleared!
         transitPlans = []
         customTransitPolyline = nil
+        transitSegmentPolylines = []
+        transitWalkStepDirections = [:]
         transitStopAnnotations = []
         
         // Request both automobile and walking routes in parallel so Driving, e-Bike, and Walking each get distinct, authentic paths!
@@ -10545,6 +10830,8 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         stopDemoSimulation()
         activeRoute = nil
         customTransitPolyline = nil
+        transitSegmentPolylines = []
+        transitWalkStepDirections = [:]
         transitStopAnnotations = []
         isNavigatingFocused = false
         candidateRoutes = []
@@ -10572,24 +10859,36 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     private func updateNavigationProgress(location: CLLocation) {
         guard let route = activeRoute, !route.steps.isEmpty else { return }
         let steps = route.steps
+        // CRITICAL FIX: Skip MKRoute.steps[0] when it is the 0-meter starting vertex so dist is never 0m at the start of walking/driving!
+        if currentStepIndex == 0 && steps.count > 1 && steps[0].distance < 6.0 && steps[0].instructions.isEmpty {
+            currentStepIndex = 1
+        }
         guard currentStepIndex < steps.count else { return }
         
         let step = steps[currentStepIndex]
         let stepEndCoord = step.polyline.points()[max(0, step.polyline.pointCount - 1)].coordinate
         let stepEndLoc = CLLocation(latitude: stepEndCoord.latitude, longitude: stepEndCoord.longitude)
-        // Compare GCJ-02 userCoordinate with GCJ-02 step coordinates for accurate distance
         let currentLoc = CLLocation(latitude: userCoordinate.latitude, longitude: userCoordinate.longitude)
         let dist = currentLoc.distance(from: stepEndLoc)
-        
-        self.distanceToNextStepMeters = dist
-        if !step.instructions.isEmpty && self.currentStepInstruction != step.instructions {
-            self.currentStepInstruction = step.instructions
-            self.evaluateRoadSpeedLimitAndNotify(for: step.instructions)
-        }
         
         // Dynamically update remaining route distance, ETA minutes, camera distance, and highway SA/Toll distances!
         let futureStepsDist = steps.dropFirst(currentStepIndex + 1).reduce(0.0) { $0 + $1.distance }
         let totalRemainMeters = max(0.0, dist + futureStepsDist)
+        
+        if self.travelMode == .transit {
+            self.distanceToNextStepMeters = max(dist, totalRemainMeters)
+            if !step.instructions.isEmpty {
+                let targetStop = self.transitBoardingStationName.isEmpty ? "乘车站台" : self.transitBoardingStationName
+                self.currentStepInstruction = "🚶 步行至【\(targetStop)】：\(step.instructions)（剩余 \(Int(totalRemainMeters)) 米）"
+            }
+        } else {
+            self.distanceToNextStepMeters = dist
+            if !step.instructions.isEmpty && self.currentStepInstruction != step.instructions {
+                self.currentStepInstruction = step.instructions
+                self.evaluateRoadSpeedLimitAndNotify(for: step.instructions)
+            }
+        }
+        
         self.remainingRouteDistanceKm = totalRemainMeters / 1000.0
         if route.distance > 0 {
             let ratio = max(0.02, min(1.0, totalRemainMeters / route.distance))
@@ -10604,36 +10903,19 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             self.updateUpcomingServiceAreaAndToll(traveledMeters: traveledM)
         }
         
-        // 1. TRANSIT MULTI-PHASE STATE MACHINE (GaoDe 1:1 Lifecycle!)
+        // 1. TRANSIT MULTI-PHASE STATE MACHINE (Apple Maps 1:1 Lifecycle - Never prematurely skips Step 1 walking or overwrites transit polyline!)
         if self.travelMode == .transit {
             if self.transitPhase == .walkingToStation {
-                // Reached boarding station: Auto-transition to In-Vehicle Mode!
-                if dist <= 45.0 {
-                    self.transitPhase = .inTransitVehicle
-                    self.customTransitPolyline = nil
-                    self.currentStepIndex = 0
-                    if let dest = self.destinationCoord, let boardCoord = self.transitBoardingStationCoord {
-                        let busReq = MKDirections.Request()
-                        busReq.source = MKMapItem(placemark: MKPlacemark(coordinate: boardCoord))
-                        busReq.destination = MKMapItem(placemark: MKPlacemark(coordinate: dest))
-                        busReq.transportType = .automobile
-                        MKDirections(request: busReq).calculate { [weak self] resp, _ in
-                            DispatchQueue.main.async {
-                                guard let self = self else { return }
-                                if let r = resp?.routes.first {
-                                    self.activeRoute = r
-                                    self.customTransitPolyline = nil
-                                }
-                            }
-                        }
+                let elapsedWalkSecs = Date().timeIntervalSince(self.transitWalkStepStartedAt)
+                let distToBoarding: Double = {
+                    if let bCoord = self.transitBoardingStationCoord {
+                        return currentLoc.distance(from: CLLocation(latitude: bCoord.latitude, longitude: bCoord.longitude))
                     }
-                    let line = self.transitActiveLineName.isEmpty ? "公交/地铁" : self.transitActiveLineName
-                    let nextSt = self.transitPassStationsList.first ?? self.transitAlightStationName
-                    let remStops = max(1, self.transitPassStationsList.count)
-                    self.currentStepInstruction = "乘坐 \(line) · 下一站: \(nextSt) (还有 \(remStops) 站)"
-                    
-                    let boardMsg = "🎉 已到达 [\(self.transitBoardingStationName)]！请上车乘坐 [\(line)]！"
-                    self.playVoice(id: self.activeBaseId() + 39, customQuote: boardMsg, clearQueue: true)
+                    return totalRemainMeters
+                }()
+                // Only advance to In-Vehicle step when user has actually walked to within 32m of the boarding station (and at least 8s after starting)!
+                if elapsedWalkSecs > 8.0 && totalRemainMeters <= 32.0 && distToBoarding <= 35.0 {
+                    self.stepTransitNavigation(delta: 1)
                     return
                 }
             } else if self.transitPhase == .walkingToDestination {
@@ -10860,23 +11142,22 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         }
     }
     
-    // MARK: - CLLocationManagerDelegate
+    // MARK: - CLLocationManagerDelegate (Zero-Latency GPS + Wi-Fi + Cellular Network Fusion!)
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
-        guard let loc = locations.last else { return }
+        guard let loc = locations.last, loc.horizontalAccuracy >= 0 else { return }
+        // Ignore stale cached locations older than 15 seconds
+        guard abs(loc.timestamp.timeIntervalSinceNow) <= 15.0 else { return }
         
         DispatchQueue.main.async {
+            let alignedLoc = CoordinateConverter.wgs84ToGCJ02(loc.coordinate)
             if !self.isDemoSimulating {
-                // If MKMapView has not yet provided its map-aligned userLocation, align via wgs84ToGCJ02 (no-op Overseas/HK/Macau, GCJ-02 in Mainland).
-                // Once MKMapView is active (hasMapUserLocation == true), MKMapView.didUpdateUserLocation keeps userCoordinate 100% locked to the map tiles!
-                if loc.horizontalAccuracy >= 0 {
-                    let alignedLoc = CoordinateConverter.wgs84ToGCJ02(loc.coordinate)
-                    UserDefaults.standard.set(alignedLoc.latitude, forKey: "kon_last_valid_lat")
-                    UserDefaults.standard.set(alignedLoc.longitude, forKey: "kon_last_valid_lon")
-                    self.refreshCurrentUserAddressIfNeeded(for: alignedLoc)
-                    if self.snappedRouteCoordinate == nil {
-                        self.userCoordinate = self.latestMapKitUserCoord ?? alignedLoc
-                    }
-                }
+                // Immediately update latestMapKitUserCoord & userCoordinate from fresh GPS / Wi-Fi / Cellular network fix (0ms latency!)
+                self.latestMapKitUserCoord = alignedLoc
+                UserDefaults.standard.set(alignedLoc.latitude, forKey: "kon_last_valid_lat")
+                UserDefaults.standard.set(alignedLoc.longitude, forKey: "kon_last_valid_lon")
+                self.refreshCurrentUserAddressIfNeeded(for: alignedLoc)
+                self.updateSnappedRouteCoordinate(for: alignedLoc)
+                self.userCoordinate = self.snappedRouteCoordinate ?? alignedLoc
                 
                 // Auto-refresh transit plans if user moved to a new station location!
                 if self.travelMode == .transit {
@@ -10885,10 +11166,10 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             }
             self.gpsAccuracyMeters = loc.horizontalAccuracy
             
-            if loc.horizontalAccuracy < 0 || loc.horizontalAccuracy > 165.0 {
+            // Accept both satellite GPS (<65m) and Wi-Fi / Cellular network positioning (up to 2500m) so indoor/subway navigation never freezes!
+            if loc.horizontalAccuracy > 2500.0 {
                 if !self.isGPSSignalPoor {
                     self.isGPSSignalPoor = true
-                    // Only auto-announce GPS lost when actively navigating!
                     if (self.isNavigatingFocused || self.hasActiveNavigation) && Date().timeIntervalSince(self.lastGPSAlertTime) > 45.0 {
                         self.lastGPSAlertTime = Date()
                         self.triggerGPSSignalPoorAlert()
@@ -10925,17 +11206,10 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                     let distToStation = loc.distance(from: CLLocation(latitude: bCoord.latitude, longitude: bCoord.longitude))
                     self.distanceToNextStepMeters = distToStation
                     
-                    // Arrived at station (< 55m) or boarded vehicle (speed > 16 km/h) -> Auto-switch to In-Vehicle Mode!
-                    if distToStation <= 55.0 || self.currentSpeedKmh > 16.0 {
-                        self.transitPhase = .inTransitVehicle
-                        self.transitCurrentStationIndex = 0
-                        let line = self.transitActiveLineName.isEmpty ? "公交/地铁" : self.transitActiveLineName
-                        let nextSt = self.transitPassStationsList.first ?? self.transitAlightStationName
-                        let remStops = max(1, self.transitPassStationsList.count)
-                        self.currentStepInstruction = "乘坐 \(line) · 下一站: \(nextSt) (还有 \(remStops) 站)"
-                        
-                        let boardMsg = "🎉 已到达 [\(self.transitBoardingStationName)]！请上车乘坐 [\(line)]！"
-                        self.playVoice(id: self.activeBaseId() + 39, customQuote: boardMsg, clearQueue: true)
+                    // Arrived at station (< 35m after walking) or boarded vehicle (speed > 18 km/h) -> Advance to next step in plan!
+                    let walkElapsed = Date().timeIntervalSince(self.transitWalkStepStartedAt)
+                    if walkElapsed > 8.0 && (distToStation <= 35.0 || self.currentSpeedKmh > 18.0) {
+                        self.stepTransitNavigation(delta: 1)
                     }
                 } else if self.transitPhase == .inTransitVehicle {
                     // In transit vehicle: Track stations along the line!
@@ -10992,7 +11266,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                 if let snapH = self.snappedRouteHeading, self.currentSpeedKmh > 2.0 {
                     self.headingDegrees = snapH
                 }
-            } else if !self.hasMapUserLocation {
+            } else {
                 self.userCoordinate = rawMapCoord
             }
             self.updateNavigationProgress(location: loc)

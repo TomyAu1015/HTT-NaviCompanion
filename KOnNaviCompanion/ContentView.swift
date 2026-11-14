@@ -194,10 +194,17 @@ struct HTTSmoothMapView: UIViewRepresentable {
                 mapView.addAnnotation(context.coordinator.vehicleAnnotation)
             }
             
-            if manager.travelMode == .transit, manager.activeRoute == nil, let transitPoly = manager.customTransitPolyline {
+            if manager.travelMode == .transit {
+                // Always display all transit station pins AND multi-segment polylines (Walking dashed blue + Bus road blue + Colored Metro lines)!
                 mapView.addAnnotations(manager.transitStopAnnotations)
-                transitPoly.title = "TRANSIT_BUS_BLUE"
-                mapView.addOverlay(transitPoly, level: .aboveRoads)
+                if !manager.transitSegmentPolylines.isEmpty {
+                    for segPoly in manager.transitSegmentPolylines {
+                        mapView.addOverlay(segPoly, level: .aboveRoads)
+                    }
+                } else if let transitPoly = manager.customTransitPolyline {
+                    transitPoly.title = "TRANSIT_BUS_BLUE"
+                    mapView.addOverlay(transitPoly, level: .aboveRoads)
+                }
             } else {
                 // Draw alternate candidate routes first so active route renders on top (Apple Maps 1:1)
                 for (idx, cand) in manager.candidateRoutes.enumerated() {
@@ -219,19 +226,9 @@ struct HTTSmoothMapView: UIViewRepresentable {
                     route.polyline.title = "WALKING_BLUE"
                     mapView.addOverlay(route.polyline, level: .aboveRoads)
                 } else {
-                    // Transit Mode on Map: 100% Genuine Apple Maps Road Polyline!
-                    // Perfectly follows the actual road centerlines (沙湾路 -> 沿河路 -> 罗湖口岸), never cutting across lakes or buildings!
-                    route.polyline.title = "TRANSIT_BUS_BLUE"
+                    // Active Walking Leg during Transit Navigation: draw active pedestrian walking route on top of the transit network!
+                    route.polyline.title = "WALKING_BLUE"
                     mapView.addOverlay(route.polyline, level: .aboveRoads)
-                    
-                    // Add Boarding Station Marker
-                    if let boardCoord = manager.transitBoardingStationCoord {
-                        let boardPin = MKPointAnnotation()
-                        boardPin.coordinate = boardCoord
-                        boardPin.title = manager.transitBoardingStationName.isEmpty ? "乘车站台" : manager.transitBoardingStationName
-                        boardPin.subtitle = "BUS_STOP_PIN"
-                        mapView.addAnnotation(boardPin)
-                    }
                 }
                 
                 // Add Start Point (起) and Destination Point (終) Annotations like GaoDe!
@@ -395,7 +392,21 @@ struct HTTSmoothMapView: UIViewRepresentable {
             return
         }
         
-        // 4. Instant Zero-Lag Recenter & Non-Blocking Throttled Camera Follow
+        // 3.5 Dedicated Step Focus Zoom (e.g. Tapping [查看此步行段] in Transit Plan Sheet zooms directly to Step 1 walking path!)
+        if context.coordinator.lastCustomFocusTrigger != manager.customMapFocusTrigger {
+            context.coordinator.lastCustomFocusTrigger = manager.customMapFocusTrigger
+            if let focusRect = manager.customMapFocusRect, !focusRect.isNull {
+                mapView.camera.pitch = 0
+                mapView.setVisibleMapRect(
+                    focusRect,
+                    edgePadding: UIEdgeInsets(top: 50, left: 45, bottom: 50, right: 45),
+                    animated: true
+                )
+                return
+            }
+        }
+
+        // 4. Instant Zero-Lag Recenter & Real-Time 60fps GPS+Network Camera Follow
         if context.coordinator.lastRecenterTrigger != manager.recenterTrigger {
             context.coordinator.lastRecenterTrigger = manager.recenterTrigger
             context.coordinator.isUserInteracting = false
@@ -414,7 +425,7 @@ struct HTTSmoothMapView: UIViewRepresentable {
             
         } else if manager.mapTrackingUser && !context.coordinator.isUserInteracting && (manager.isNavigatingFocused || (manager.activeRoute == nil && manager.customTransitPolyline == nil && manager.candidateRoutes.isEmpty)) {
             let nowTs = CACurrentMediaTime()
-            guard nowTs - context.coordinator.lastCameraUpdateTimestamp >= 0.35 else { return }
+            guard nowTs - context.coordinator.lastCameraUpdateTimestamp >= 0.06 else { return }
             let targetCoord = manager.userCoordinate
             
             var hDiff = abs(mapView.camera.heading - camHeading).truncatingRemainder(dividingBy: 360.0)
@@ -424,7 +435,7 @@ struct HTTSmoothMapView: UIViewRepresentable {
             let usrLoc = CLLocation(latitude: targetCoord.latitude, longitude: targetCoord.longitude)
             let distDelta = camLoc.distance(from: usrLoc)
             
-            if distDelta > 4.5 || hDiff > 3.5 {
+            if distDelta > 0.5 || hDiff > 1.8 {
                 context.coordinator.lastCameraUpdateTimestamp = nowTs
                 let camera = MKMapCamera(
                     lookingAtCenter: targetCoord,
@@ -450,6 +461,7 @@ struct HTTSmoothMapView: UIViewRepresentable {
         var lastZoomTrigger: Int = 0
         var lastOverviewFitTrigger: Int = 0
         var lastSelectionRenderTrigger: Int = 0
+        var lastCustomFocusTrigger: Int = 0
         var lastAppliedArrowImage: UIImage? = nil
         var lastCameraUpdateTimestamp: CFTimeInterval = 0
         
@@ -935,12 +947,22 @@ struct HTTSmoothMapView: UIViewRepresentable {
                     renderer.outerBorderColor = UIColor(red: 0.0, green: 0.45, blue: 0.20, alpha: 1.0)
                     renderer.drawDirectionChevrons = true
                     renderer.lineWidth = 11.0
-                } else if tag == "TRANSIT_WALK_BLUE" {
-                    // Transit Pedestrian Walk / Customs link
-                    renderer.mainFillColor = UIColor(red: 0.05, green: 0.65, blue: 0.98, alpha: 0.96)
-                    renderer.outerBorderColor = UIColor(red: 0.0, green: 0.38, blue: 0.72, alpha: 1.0)
-                    renderer.drawDirectionChevrons = true
-                    renderer.lineWidth = 10.0
+                } else if tag == "TRANSIT_WALK_DASHED" || tag == "TRANSIT_WALK_BLUE" {
+                    // Apple Maps 1:1 Dashed Blue Pedestrian Walking Path to/from Transit Station!
+                    renderer.mainFillColor = UIColor(red: 0.04, green: 0.52, blue: 1.0, alpha: 0.96)
+                    renderer.outerBorderColor = UIColor(red: 0.0, green: 0.32, blue: 0.72, alpha: 1.0)
+                    renderer.lineDashPattern = [6, 8]
+                    renderer.lineWidth = 7.5
+                } else if tag.hasPrefix("TRANSIT_HEX_") {
+                    let hexStr = tag.replacingOccurrences(of: "TRANSIT_HEX_", with: "").trimmingCharacters(in: CharacterSet.alphanumerics.inverted)
+                    var intVal: UInt64 = 0
+                    Scanner(string: hexStr).scanHexInt64(&intVal)
+                    let r = CGFloat((intVal >> 16) & 0xFF) / 255.0
+                    let g = CGFloat((intVal >> 8) & 0xFF) / 255.0
+                    let b = CGFloat(intVal & 0xFF) / 255.0
+                    renderer.mainFillColor = (hexStr.count == 6) ? UIColor(red: r, green: g, blue: b, alpha: 0.98) : UIColor(red: 0.92, green: 0.63, blue: 0.33, alpha: 0.98)
+                    renderer.lineDashPattern = nil
+                    renderer.lineWidth = 10.5
                 } else {
                     // Default / TRAFFIC_GREEN / TRANSIT_GREEN: GaoDe Smooth Traffic Green (#00C853) with forest green border & white chevrons!
                     renderer.mainFillColor = UIColor(red: 0.0, green: 0.78, blue: 0.33, alpha: 0.98)
@@ -1257,6 +1279,7 @@ struct ContentView: View {
                 manager.draggedMemberId = nil
                 uiInteractionRecoveryTick += 1
                 restoreRootWindowTouchInteractions()
+                manager.performNetworkAssistedLocationSync(force: false)
             }
             .onChange(of: activeModalSheet) { newSheet in
                 if newSheet == nil {
@@ -2028,6 +2051,21 @@ struct ContentView: View {
                             .buttonStyle(PlainButtonStyle())
                         }
                     }
+                }
+                
+                // When on a Walking Step (e.g. Step 1 walking to the bus/metro station), display the live street-by-street walking guide right on the HUD!
+                if safeStepIdx < activePlan.steps.count, activePlan.steps[safeStepIdx].kind == .walk {
+                    let curWalkStep = activePlan.steps[safeStepIdx]
+                    let walkList = manager.transitWalkStepDirections[safeStepIdx] ?? manager.buildFallbackWalkDirections(step: curWalkStep, isFirstStep: safeStepIdx == 0, isLastStep: safeStepIdx == activePlan.steps.count - 1)
+                    VStack(alignment: .leading, spacing: 3) {
+                        ForEach(Array(walkList.prefix(3).enumerated()), id: \.offset) { _, lineStr in
+                            Text("• \(lineStr)")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundColor(httCream)
+                                .lineLimit(1)
+                        }
+                    }
+                    .padding(.top, 2)
                 }
             }
             .padding(.horizontal, 10)
@@ -6381,25 +6419,117 @@ struct InAppTransitPlanSheetView: View {
                     let isMetroTransferWalk = (prevStep?.kind == .subway && nextStep?.kind == .subway)
                     
                     if !isMetroTransferWalk {
-                        HStack(alignment: .center, spacing: 14) {
-                            Image(systemName: "figure.walk")
-                                .font(.system(size: 24, weight: .semibold))
-                                .foregroundColor(.white)
+                        let isWalkCollapsed = collapsedStepIds.contains(step.id)
+                        let walkDirections = manager.transitWalkStepDirections[stepIdx] ?? manager.buildFallbackWalkDirections(step: step, isFirstStep: stepIdx == 0, isLastStep: stepIdx == plan.steps.count - 1)
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack(alignment: .center, spacing: 14) {
+                                ZStack {
+                                    Circle()
+                                        .fill(appleBlue.opacity(0.22))
+                                        .frame(width: 38, height: 38)
+                                    Image(systemName: "figure.walk")
+                                        .font(.system(size: 20, weight: .bold))
+                                        .foregroundColor(appleBlue)
+                                }
                                 .frame(width: 44)
-                            
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(stepIdx == plan.steps.count - 1
-                                     ? tr("步行至目的地", "步行至目的地", "Walk to Destination")
-                                     : (step.lineName.hasPrefix("步行") ? step.lineName : "\(tr("步行至", "步行至", "Walk to "))\(step.toStation)"))
-                                    .font(.system(size: 18, weight: .bold))
-                                    .foregroundColor(.white)
-                                Text(step.walkMeters <= 50
-                                     ? "\(step.walkMeters)\(tr("米，步行少于1分钟", "米，步行少於1分鐘", "m, less than 1 min walk"))"
-                                     : "\(step.walkMeters)\(tr("米，步行约", "米，步行約", "m, about "))\(step.durationMins)\(tr("分钟", "分鐘", " min"))")
-                                    .font(.system(size: 14, weight: .regular))
-                                    .foregroundColor(Color.white.opacity(0.6))
+                                
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(stepIdx == plan.steps.count - 1
+                                         ? tr("步行至目的地", "步行至目的地", "Walk to Destination")
+                                         : (step.lineName.hasPrefix("步行") ? step.lineName : "\(tr("步行至", "步行至", "Walk to "))\(step.toStation)"))
+                                        .font(.system(size: 18, weight: .bold))
+                                        .foregroundColor(.white)
+                                    Text(step.walkMeters <= 50
+                                         ? "\(step.walkMeters)\(tr("米，步行少于1分钟", "米，步行少於1分鐘", "m, less than 1 min walk"))"
+                                         : "\(step.walkMeters)\(tr("米，步行约", "米，步行約", "m, about "))\(step.durationMins)\(tr("分钟", "分鐘", " min"))")
+                                        .font(.system(size: 14, weight: .regular))
+                                        .foregroundColor(Color.white.opacity(0.65))
+                                }
+                                Spacer()
+                                
+                                // Action Buttons: [🗺️ 查看路线] + [🚶 步行导航]
+                                HStack(spacing: 6) {
+                                    Button(action: {
+                                        manager.focusMapOnTransitStep(stepIdx, in: plan)
+                                    }) {
+                                        HStack(spacing: 3) {
+                                            Image(systemName: "map.fill")
+                                                .font(.system(size: 11, weight: .bold))
+                                            Text(tr("查看路线", "查看路線", "Map"))
+                                                .font(.system(size: 12, weight: .bold))
+                                        }
+                                        .foregroundColor(.white)
+                                        .padding(.horizontal, 9)
+                                        .padding(.vertical, 7)
+                                        .background(appleBlue.opacity(0.85))
+                                        .cornerRadius(8)
+                                    }
+                                    .buttonStyle(PlainButtonStyle())
+                                    
+                                    Button(action: {
+                                        closeSheet()
+                                        manager.startLiveTransitNavigation(forPlanAt: planIndex, initialStepIndex: stepIdx)
+                                    }) {
+                                        HStack(spacing: 3) {
+                                            Image(systemName: "figure.walk.motion")
+                                                .font(.system(size: 12, weight: .bold))
+                                            Text(tr("步行导航", "步行導航", "Walk GO"))
+                                                .font(.system(size: 12, weight: .bold))
+                                        }
+                                        .foregroundColor(.white)
+                                        .padding(.horizontal, 10)
+                                        .padding(.vertical, 7)
+                                        .background(appleGreen)
+                                        .cornerRadius(8)
+                                    }
+                                    .buttonStyle(PlainButtonStyle())
+                                }
                             }
-                            Spacer()
+                            
+                            // Expandable Turn-by-Turn Pedestrian Street Directions (Expanded by default for Step 1!)
+                            VStack(alignment: .leading, spacing: 6) {
+                                Button(action: {
+                                    withAnimation(.easeInOut(duration: 0.2)) {
+                                        if collapsedStepIds.contains(step.id) {
+                                            collapsedStepIds.remove(step.id)
+                                        } else {
+                                            collapsedStepIds.insert(step.id)
+                                        }
+                                    }
+                                }) {
+                                    HStack(spacing: 5) {
+                                        Image(systemName: isWalkCollapsed ? "chevron.down.circle.fill" : "chevron.up.circle.fill")
+                                            .font(.system(size: 13, weight: .bold))
+                                        Text(isWalkCollapsed
+                                             ? tr("展开分步步行街道指引 (\(walkDirections.count)步)", "展開分步步行街道指引 (\(walkDirections.count)步)", "Show Walking Directions (\(walkDirections.count) steps)")
+                                             : tr("收起步行街道指引", "收起步行街道指引", "Hide Walking Directions"))
+                                            .font(.system(size: 13, weight: .semibold))
+                                    }
+                                    .foregroundColor(appleBlue)
+                                }
+                                .buttonStyle(PlainButtonStyle())
+                                
+                                if !isWalkCollapsed {
+                                    VStack(alignment: .leading, spacing: 6) {
+                                        ForEach(Array(walkDirections.enumerated()), id: \.offset) { wIdx, wLine in
+                                            HStack(alignment: .top, spacing: 8) {
+                                                Circle()
+                                                    .fill(appleBlue)
+                                                    .frame(width: 6, height: 6)
+                                                    .padding(.top, 6)
+                                                Text(wLine)
+                                                    .font(.system(size: 13, weight: .medium))
+                                                    .foregroundColor(Color.white.opacity(0.88))
+                                                    .fixedSize(horizontal: false, vertical: true)
+                                            }
+                                        }
+                                    }
+                                    .padding(10)
+                                    .background(Color.white.opacity(0.06))
+                                    .cornerRadius(8)
+                                }
+                            }
+                            .padding(.leading, 58)
                         }
                         .padding(.vertical, 14)
                         
