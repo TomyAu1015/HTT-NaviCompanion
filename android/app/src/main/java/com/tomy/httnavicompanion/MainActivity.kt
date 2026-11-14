@@ -36,12 +36,16 @@ class MainActivity : ComponentActivity() {
 
         fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
 
-        requestLocationPermission.launch(
-            arrayOf(
-                android.Manifest.permission.ACCESS_FINE_LOCATION,
-                android.Manifest.permission.ACCESS_COARSE_LOCATION
-            )
+        val perms = mutableListOf(
+            android.Manifest.permission.ACCESS_FINE_LOCATION,
+            android.Manifest.permission.ACCESS_COARSE_LOCATION
         )
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            perms.add(android.Manifest.permission.BLUETOOTH_SCAN)
+            perms.add(android.Manifest.permission.BLUETOOTH_CONNECT)
+            perms.add(android.Manifest.permission.BLUETOOTH_ADVERTISE)
+        }
+        requestLocationPermission.launch(perms.toTypedArray())
 
         setContent {
             HTTNaviCompanionTheme {

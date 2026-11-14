@@ -55,6 +55,7 @@ class AssetDecryptor(private val context: Context) {
         loadVoicePackageIndex()
         loadMascotPackageIndex()
         loadVehicleSpritesArchive()
+        loadDoudizhuCardsArchive()
 
         // Preload desk sprite frame
         getSpriteBitmap("desk00")?.let { deskSheet ->
@@ -158,7 +159,8 @@ class AssetDecryptor(private val context: Context) {
         }
     }
 
-    private fun loadVehicleSpritesArchive() {
+    private fun loadVehicleSpritesArchive()
+        loadDoudizhuCardsArchive() {
         try {
             context.assets.open("vehicle_sprites.zip").use { rawStream ->
                 ZipInputStream(rawStream).use { zis ->

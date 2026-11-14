@@ -273,7 +273,7 @@ class AudioPlayerManager(
     private var mediaPlayer: MediaPlayer? = null
     private val mainHandler = Handler(Looper.getMainLooper())
 
-    val doudizhuEngine = DoudizhuEngine(this)
+    val doudizhuEngine = DoudizhuEngine(context, this)
 
     // App & Language State
     private val _language = MutableStateFlow(AppLanguage.ZH_HANS)
