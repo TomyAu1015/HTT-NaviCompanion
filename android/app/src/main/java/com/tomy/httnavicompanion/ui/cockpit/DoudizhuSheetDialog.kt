@@ -655,10 +655,9 @@ fun KOnDoudizhuSheetDialog(onDismiss: () -> Unit) {
                             horizontalArrangement = Arrangement.SpaceEvenly
                         ) {
                             (17 downTo 3).forEach { r ->
-                                val total = if (r >= 16) 1 else 4
-                                val played = playedHistory.count { it.rank == r }
-                                val mine = myHand.count { it.rank == r }
-                                val rem = (total - played - mine).coerceAtLeast(0)
+                                val otherHandsCount = seats.filterIndexed { idx, _ -> idx != mySeatIdx }.sumOf { s -> s.hand.count { it.rank == r } }
+                                val holeCount = if (phase == DoudizhuGamePhase.BIDDING) holeCards.count { it.rank == r } else 0
+                                val rem = (otherHandsCount + holeCount).coerceAtLeast(0)
                                 val lbl = when (r) {
                                     17 -> "大王"; 16 -> "小王"; 15 -> "2"; 14 -> "A"; 13 -> "K"; 12 -> "Q"; 11 -> "J"; else -> r.toString()
                                 }
@@ -859,17 +858,35 @@ fun KOnDoudizhuSheetDialog(onDismiss: () -> Unit) {
                                 }
                             }
                             DoudizhuGamePhase.FINISHED -> {
+                                val inRoom = isServerConn || isHosting || connectedPeers.isNotEmpty()
+                                val isGuestWaiting = inRoom && !isRoomAuthority
                                 Button(
-                                    onClick = { engine.startNewGame() },
-                                    colors = ButtonDefaults.buttonColors(containerColor = DdzRed),
+                                    onClick = { if (!isGuestWaiting) engine.startNewGame() },
+                                    enabled = !isGuestWaiting,
+                                    colors = ButtonDefaults.buttonColors(containerColor = if (isGuestWaiting) Color.DarkGray else DdzRed),
                                     shape = RoundedCornerShape(10.dp),
                                     modifier = Modifier.weight(1f)
-                                ) { Text("▶ 再来一局", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Black) }
-                                Button(
-                                    onClick = { engine.leaveRoomAndResetLobby() },
-                                    colors = ButtonDefaults.buttonColors(containerColor = DdzCardGreen),
-                                    shape = RoundedCornerShape(10.dp)
-                                ) { Text("返回大厅", color = DdzGold, fontSize = 13.sp, fontWeight = FontWeight.Bold) }
+                                ) {
+                                    Text(
+                                        if (isGuestWaiting) "⏳ 等待1号房主开启下一局..." else "▶ 再来一局",
+                                        color = Color.White,
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.Black
+                                    )
+                                }
+                                if (inRoom && isRoomAuthority) {
+                                    Button(
+                                        onClick = { engine.returnRoomToLobby() },
+                                        colors = ButtonDefaults.buttonColors(containerColor = DdzCardGreen),
+                                        shape = RoundedCornerShape(10.dp)
+                                    ) { Text("房间设置", color = DdzGold, fontSize = 12.sp, fontWeight = FontWeight.Bold) }
+                                } else {
+                                    Button(
+                                        onClick = { engine.leaveRoomAndResetLobby() },
+                                        colors = ButtonDefaults.buttonColors(containerColor = DdzCardGreen),
+                                        shape = RoundedCornerShape(10.dp)
+                                    ) { Text("退出房间", color = DdzGold, fontSize = 12.sp, fontWeight = FontWeight.Bold) }
+                                }
                             }
                             else -> {}
                         }

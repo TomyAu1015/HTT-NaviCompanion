@@ -540,6 +540,10 @@ class AudioPlayerManager(
         }
     }
 
+    private var currentRouteStepIdx: Int = 0
+    private var offRouteStrikeCount: Int = 0
+    private var lastRerouteMillis: Long = 0L
+
     fun updateRealLocation(lat: Double, lon: Double, speedMps: Float, bearingDeg: Float) {
         val newCoord = LatLng(lat, lon)
         if (!_isDemoSimulating.value) {
@@ -556,6 +560,75 @@ class AudioPlayerManager(
             if (kmh > _maxSpeedKmh.value) _maxSpeedKmh.value = kmh
             if (bearingDeg > 0f) _headingDegrees.value = bearingDeg.toDouble()
             _isGPSSignalPoor.value = false
+            updateAndroidNavigationProgress(newCoord)
+        }
+    }
+
+    private fun pointToSegmentMeters(p: LatLng, a: LatLng, b: LatLng): Double {
+        val ax = a.longitude
+        val ay = a.latitude
+        val bx = b.longitude
+        val by = b.latitude
+        val px = p.longitude
+        val py = p.latitude
+        val dx = bx - ax
+        val dy = by - ay
+        val lenSq = dx * dx + dy * dy
+        val t = if (lenSq > 1e-12) (((px - ax) * dx + (py - ay) * dy) / lenSq).coerceIn(0.0, 1.0) else 0.0
+        val proj = LatLng(ay + t * dy, ax + t * dx)
+        return CoordinateConverter.distanceMeters(p, proj)
+    }
+
+    private fun updateAndroidNavigationProgress(coord: LatLng) {
+        if (!_hasActiveNavigation.value) return
+        val routes = _candidateRoutes.value
+        val rIdx = _selectedRouteIndex.value
+        val route = routes.getOrNull(rIdx) ?: return
+        val pts = route.points
+        if (pts.isEmpty()) return
+
+        val dest = _destinationCoord.value
+        if (dest != null && CoordinateConverter.distanceMeters(coord, dest) <= 40.0) {
+            _distanceToNextStepMeters.value = 0
+            _remainingRouteDistanceKm.value = 0.0
+            _currentStepInstruction.value = "🎉 已到达目的地：${_destinationName.value}"
+            _hasActiveNavigation.value = false
+            return
+        }
+
+        var minSegDist = Double.MAX_VALUE
+        if (pts.size >= 2) {
+            for (i in 0 until pts.size - 1) {
+                val d = pointToSegmentMeters(coord, pts[i], pts[i + 1])
+                if (d < minSegDist) minSegDist = d
+            }
+        } else {
+            minSegDist = CoordinateConverter.distanceMeters(coord, pts[0])
+        }
+
+        if (minSegDist > 95.0) {
+            offRouteStrikeCount += 1
+            val now = System.currentTimeMillis()
+            if (offRouteStrikeCount >= 3 && dest != null && now - lastRerouteMillis > 20000L) {
+                offRouteStrikeCount = 0
+                lastRerouteMillis = now
+                startRouteToPlace(_destinationName.value, dest)
+                return
+            }
+        } else {
+            offRouteStrikeCount = 0
+        }
+
+        val steps = route.steps
+        if (steps.isNotEmpty()) {
+            if (currentRouteStepIdx >= steps.size) currentRouteStepIdx = steps.lastIndex
+            val step = steps[currentRouteStepIdx]
+            val distToManeuver = CoordinateConverter.distanceMeters(coord, step.maneuverLocation).toInt()
+            _distanceToNextStepMeters.value = distToManeuver
+            _currentStepInstruction.value = step.instruction
+            if (distToManeuver <= 15 && currentRouteStepIdx < steps.lastIndex) {
+                currentRouteStepIdx += 1
+            }
         }
     }
 
@@ -626,10 +699,10 @@ class AudioPlayerManager(
         _activeRoutePoints.value = r.points
         _remainingRouteDistanceKm.value = r.totalDistanceMeters / 1000.0
         _remainingRouteMinutes.value = (r.durationSeconds / 60.0).toInt().coerceAtLeast(1)
-        val firstStep = r.steps.firstOrNull()
-        val upcomingStep = if (r.steps.size > 1 && (firstStep?.instruction?.contains("出发") == true)) r.steps[1] else firstStep
-        _currentStepInstruction.value = upcomingStep?.instruction ?: "沿规划路线前往 ${_destinationName.value}"
-        _distanceToNextStepMeters.value = firstStep?.distanceMeters?.toInt() ?: r.totalDistanceMeters.toInt()
+        currentRouteStepIdx = if (r.steps.size > 1 && (r.steps[0].instruction.contains("出发"))) 1 else 0
+        val activeStep = r.steps.getOrNull(currentRouteStepIdx) ?: r.steps.firstOrNull()
+        _currentStepInstruction.value = activeStep?.instruction ?: "沿规划路线前往 ${_destinationName.value}"
+        _distanceToNextStepMeters.value = activeStep?.distanceMeters?.toInt() ?: r.totalDistanceMeters.toInt()
     }
 
     fun triggerFastRecenter() {

@@ -1800,7 +1800,13 @@ fun EnlargedNavigationHUDView(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    Icon(Icons.Default.TurnRight, contentDescription = null, tint = HTTGold, modifier = Modifier.size(30.dp))
+                    val turnIcon = when {
+                        stepInstruction.contains("调头") || stepInstruction.contains("掉头") -> Icons.Default.UTurnLeft
+                        stepInstruction.contains("左") && !stepInstruction.contains("右") -> Icons.Default.TurnLeft
+                        stepInstruction.contains("右") && !stepInstruction.contains("左") -> Icons.Default.TurnRight
+                        else -> Icons.Default.ArrowUpward
+                    }
+                    Icon(turnIcon, contentDescription = null, tint = HTTGold, modifier = Modifier.size(30.dp))
                     Column(modifier = Modifier.weight(1f)) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -1834,16 +1840,22 @@ fun EnlargedNavigationHUDView(
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    listOf(Icons.Default.ArrowUpward, Icons.Default.ArrowUpward, Icons.Default.TurnRight, Icons.Default.TurnLeft).forEachIndexed { idx, ic ->
+                    val activeLaneIdx = when {
+                        stepInstruction.contains("左") && !stepInstruction.contains("右") -> 0
+                        stepInstruction.contains("右") && !stepInstruction.contains("左") -> 2
+                        else -> 1
+                    }
+                    listOf(Icons.Default.TurnLeft, Icons.Default.ArrowUpward, Icons.Default.TurnRight).forEachIndexed { idx, ic ->
+                        val isRec = (idx == activeLaneIdx)
                         Box(
                             modifier = Modifier
                                 .size(26.dp)
                                 .clip(RoundedCornerShape(4.dp))
-                                .background(if (idx == 2) Color(0xFF00E5FF).copy(alpha = 0.28f) else Color.White.copy(alpha = 0.08f))
-                                .border(1.dp, if (idx == 2) Color(0xFF00E5FF) else Color.White.copy(alpha = 0.2f), RoundedCornerShape(4.dp)),
+                                .background(if (isRec) HTTCrimson.copy(alpha = 0.85f) else Color.White.copy(alpha = 0.08f))
+                                .border(1.dp, if (isRec) HTTGold else Color.White.copy(alpha = 0.2f), RoundedCornerShape(4.dp)),
                             contentAlignment = Alignment.Center
                         ) {
-                            Icon(ic, contentDescription = null, tint = if (idx == 2) Color(0xFF00E5FF) else Color.White, modifier = Modifier.size(15.dp))
+                            Icon(ic, contentDescription = null, tint = if (isRec) Color.White else Color.Gray, modifier = Modifier.size(15.dp))
                         }
                     }
                 }

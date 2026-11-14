@@ -353,12 +353,32 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
     private var nsdRegListener: NsdManager.RegistrationListener? = null
     private var nsdDiscListener: NsdManager.DiscoveryListener? = null
     private var webSocket: WebSocket? = null
-    private val okHttpClient = OkHttpClient()
+    private val okHttpClient = OkHttpClient.Builder()
+        .pingInterval(15, java.util.concurrent.TimeUnit.SECONDS)
+        .build()
     private var timerRunnable: Runnable? = null
 
+    private val deviceShortTag: String by lazy {
+        val prefs = context.getSharedPreferences("kon_ddz_prefs", Context.MODE_PRIVATE)
+        val saved = prefs.getString("device_tag", null)
+        if (!saved.isNullOrBlank()) {
+            saved
+        } else {
+            val gen = (100..999).random().toString()
+            prefs.edit().putString("device_tag", gen).apply()
+            gen
+        }
+    }
     private var activeConnectedRoomCode: String = ""
     private val peerCharMap = mutableMapOf<String, CharacterFilter>()
     private val orderedRoomPeers = mutableListOf<Pair<String, Int>>()
+
+    private fun cleanNickname(): String = _myNickname.value.trim().ifBlank { "轻音车友" }
+    private fun myPeerKey(): String = "${cleanNickname()}#$deviceShortTag"
+    private fun cleanPeerLabel(rawName: String): String {
+        val idx = rawName.lastIndexOf("#")
+        return if (idx > 0) rawName.substring(0, idx).trim().ifBlank { rawName } else rawName
+    }
 
     init {
         refreshLocalIpAddress()
@@ -473,10 +493,32 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
         }
         _roomCode.value = code
     }
-    fun setMyNickname(name: String) { _myNickname.value = name; rebuildLobbySeats() }
+    fun setMyNickname(name: String) {
+        val oldKey = myPeerKey()
+        _myNickname.value = name
+        val newKey = myPeerKey()
+        val idx = orderedRoomPeers.indexOfFirst { it.first == oldKey || it.first == newKey }
+        if (idx >= 0) {
+            orderedRoomPeers[idx] = newKey to _myChar.value.charId
+        }
+        rebuildLobbySeats()
+        if (_phase.value == DoudizhuGamePhase.LOBBY) {
+            if (_isServerConnected.value) sendJoinRequestPacket()
+            else if (_isHostingRoom.value && isRoomAuthorityVal) broadcastFullStateSync()
+        }
+    }
     fun setMyCharacter(char: CharacterFilter) {
         _myChar.value = if (char == CharacterFilter.ALL) CharacterFilter.YUI else char
+        val key = myPeerKey()
+        val idx = orderedRoomPeers.indexOfFirst { it.first == key }
+        if (idx >= 0) {
+            orderedRoomPeers[idx] = key to _myChar.value.charId
+        }
         rebuildLobbySeats()
+        if (_phase.value == DoudizhuGamePhase.LOBBY) {
+            if (_isServerConnected.value) sendJoinRequestPacket()
+            else if (_isHostingRoom.value && isRoomAuthorityVal) broadcastFullStateSync()
+        }
     }
     fun setTotalRounds(rounds: Int) { _totalRounds.value = rounds ; syncRulesIfHost() }
     fun setBaseScore(score: Int) { _baseScore.value = score ; syncRulesIfHost() }
@@ -493,16 +535,19 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
         }
     }
 
-    private fun rebuildLobbySeats() {
-        if (_phase.value != DoudizhuGamePhase.LOBBY) return
+    private fun rebuildLobbySeats(forceRebuild: Boolean = false) {
+        if (!forceRebuild && _phase.value != DoudizhuGamePhase.LOBBY && _phase.value != DoudizhuGamePhase.FINISHED) return
         val lang = currentLang()
+        val myKey = myPeerKey()
         val aiPool = CharacterFilter.fiveIndividuals.filter { it != _myChar.value }
+        val prevScores = _seats.value.associate { it.peerDisplayName to it.score }
+
         if (hasUnmodifiedIosWsPeer) {
             val iosChar = aiPool.firstOrNull() ?: CharacterFilter.MIO
             val aiChar = aiPool.getOrNull(1) ?: CharacterFilter.RITSU
-            val s0 = DoudizhuPlayerSeat(0, "iOS 玩家 (${iosChar.displayName(lang)})", iosChar, isAI = false, peerDisplayName = "iOS_Host")
-            val s1 = DoudizhuPlayerSeat(1, "${_myNickname.value} (${_myChar.value.displayName(lang)})", _myChar.value, isAI = false, peerDisplayName = _myNickname.value)
-            val s2 = DoudizhuPlayerSeat(2, "${aiChar.displayName(lang)} (AI)", aiChar, isAI = true, peerDisplayName = "AI_2")
+            val s0 = DoudizhuPlayerSeat(0, "iOS 玩家 (${iosChar.displayName(lang)})", iosChar, isAI = false, peerDisplayName = "iOS_Host", score = prevScores["iOS_Host"] ?: 1000)
+            val s1 = DoudizhuPlayerSeat(1, "${cleanNickname()} (${_myChar.value.displayName(lang)})", _myChar.value, isAI = false, peerDisplayName = myKey, score = prevScores[myKey] ?: 1000)
+            val s2 = DoudizhuPlayerSeat(2, "${aiChar.displayName(lang)} (AI)", aiChar, isAI = true, peerDisplayName = "AI_2", score = prevScores["AI_2"] ?: 1000)
             _mySeatIndex.value = 1
             _seats.value = listOf(s0, s1, s2)
             return
@@ -510,7 +555,7 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
         val roster = if (orderedRoomPeers.isNotEmpty()) {
             orderedRoomPeers.toList()
         } else {
-            val list = mutableListOf(_myNickname.value to _myChar.value.charId)
+            val list = mutableListOf(myKey to _myChar.value.charId)
             _connectedPeerNames.value.forEach { p ->
                 if (list.none { it.first == p } && list.size < 3) {
                     list.add(p to (peerCharMap[p]?.charId ?: 2))
@@ -521,27 +566,31 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
         val built = (0..2).map { slot ->
             val rp = roster.getOrNull(slot)
             if (rp != null) {
-                val isMe = (rp.first == _myNickname.value)
+                val isMe = (rp.first == myKey || rp.first == _myNickname.value)
                 val ch = if (isMe) _myChar.value else (CharacterFilter.fiveIndividuals.firstOrNull { it.charId == rp.second } ?: aiPool[slot % aiPool.size])
                 val roleTag = if (slot == 0) "🏠房主" else "🎮${slot + 1}号"
+                val disp = cleanPeerLabel(rp.first)
                 if (isMe) _mySeatIndex.value = slot
+                val savedScore = prevScores[rp.first] ?: (_seats.value.getOrNull(slot)?.score ?: 1000)
                 DoudizhuPlayerSeat(
                     seatIndex = slot,
-                    name = "$roleTag ${rp.first} (${ch.displayName(lang)})",
+                    name = "$roleTag $disp (${ch.displayName(lang)})",
                     character = ch,
                     isAI = false,
                     peerDisplayName = rp.first,
-                    score = _seats.value.getOrNull(slot)?.score ?: 1000
+                    score = savedScore
                 )
             } else {
                 val aiChar = aiPool[slot % aiPool.size]
+                val aiKey = "AI_$slot"
+                val savedScore = prevScores[aiKey] ?: (_seats.value.getOrNull(slot)?.score ?: 1000)
                 DoudizhuPlayerSeat(
                     seatIndex = slot,
                     name = "${aiChar.displayName(lang)} (AI)",
                     character = aiChar,
                     isAI = true,
-                    peerDisplayName = "AI_$slot",
-                    score = _seats.value.getOrNull(slot)?.score ?: 1000
+                    peerDisplayName = aiKey,
+                    score = savedScore
                 )
             }
         }
@@ -564,8 +613,9 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
         val ip = refreshLocalIpAddress()
         _isHostingRoom.value = true
         _isRoomAuthority.value = true
+        _currentRound.value = 1
         orderedRoomPeers.clear()
-        orderedRoomPeers.add(_myNickname.value to _myChar.value.charId)
+        orderedRoomPeers.add(myPeerKey() to _myChar.value.charId)
         _isScanningRooms.value = false
         _mySeatIndex.value = 0
         rebuildLobbySeats()
@@ -1161,15 +1211,7 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
 
             // Unmodified iOS KOnDoudizhuManager connects via WebSocket without sending joinRequest.
             // Register iOS peer immediately so iOS <-> Android works with zero iOS modifications!
-            mainHandler.postDelayed({
-                if (_isHostingRoom.value && _connectedPeerNames.value.isEmpty()) {
-                    hasUnmodifiedIosWsPeer = true
-                    _connectedPeerNames.value = listOf("iOS 玩家")
-                    rebuildLobbySeats()
-                    _statusBanner.value = "🎉 iOS 玩家已连入房间！点击下方【立即开始牌局】即可与 iOS 端同步对战"
-                    broadcastFullStateSync()
-                }
-            }, 400L)
+            // Wait for standard joinRequest from iOS/Android client
 
             // Read incoming RFC-6455 frames from iOS / Android WebSocket client
             while (!sock.isClosed) {
@@ -1245,7 +1287,11 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
             return
         }
         stopNetworking()
-        _isRoomAuthority.value = true
+        activeConnectedRoomCode = code
+        _currentRound.value = 1
+        orderedRoomPeers.clear()
+        orderedRoomPeers.add(myPeerKey() to _myChar.value.charId)
+        _isRoomAuthority.value = false
         _statusBanner.value = "🌐 正在连接服务器 ($url) 房间 [${_roomCode.value}]..."
 
         val req = Request.Builder().url(url).build()
@@ -1293,11 +1339,24 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
         } catch (_: Exception) {}
     }
 
+    fun returnRoomToLobby() {
+        val inRoom = _isHostingRoom.value || _isServerConnected.value || _connectedPeerNames.value.isNotEmpty() || orderedRoomPeers.size > 1
+        if (inRoom && isRoomAuthorityVal) {
+            _phase.value = DoudizhuGamePhase.LOBBY
+            rebuildLobbySeats(forceRebuild = true)
+            _statusBanner.value = "⚙️ 房主已带领大家返回房间设置，可调整规则后开启下一局"
+            broadcastFullStateSync()
+        } else {
+            leaveRoomAndResetLobby()
+        }
+    }
+
     fun leaveRoomAndResetLobby() {
         stopNetworking()
         _phase.value = DoudizhuGamePhase.LOBBY
+        _currentRound.value = 1
         _mySeatIndex.value = 0
-        rebuildLobbySeats()
+        rebuildLobbySeats(forceRebuild = true)
         _statusBanner.value = "✨ 🏠 您已离开并关闭当前房间，返回房间大厅"
     }
 
@@ -1307,7 +1366,7 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
             val leaveRaw = JSONObject().apply {
                 put("kind", "leaveRoom")
                 put("roomCode", activeConnectedRoomCode)
-                put("senderPeerName", _myNickname.value)
+                put("senderPeerName", myPeerKey())
                 put("senderCharId", _myChar.value.charId)
             }.toString()
             try { webSocket?.send(leaveRaw) } catch (_: Exception) {}
@@ -1383,7 +1442,7 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
         val pkt = JSONObject().apply {
             put("kind", "joinRequest")
             put("roomCode", _roomCode.value)
-            put("senderPeerName", _myNickname.value)
+            put("senderPeerName", myPeerKey())
             put("senderCharId", _myChar.value.charId)
         }
         sendPacketJson(pkt)
@@ -1397,19 +1456,20 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
 
     private fun broadcastFullStateSync() {
         if (!isRoomAuthorityVal && !hasUnmodifiedIosWsPeer) return
+        val myKey = myPeerKey()
         val pkt = JSONObject().apply {
             put("kind", "stateSync")
             put("roomCode", _roomCode.value)
-            put("senderPeerName", _myNickname.value)
+            put("senderPeerName", myKey)
             put("senderCharId", _myChar.value.charId)
-            put("hostPeerName", _myNickname.value)
+            put("hostPeerName", myKey)
             if (orderedRoomPeers.isNotEmpty()) {
                 put("roomPeers", JSONArray().apply {
                     orderedRoomPeers.forEach { (n, cid) ->
                         put(JSONObject().apply {
                             put("name", n)
                             put("charId", cid)
-                            put("displayName", n)
+                            put("displayName", cleanPeerLabel(n))
                         })
                     }
                 })
@@ -1438,8 +1498,12 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
 
     private fun promoteAuthorityIfNeededAndResumeAI() {
         val prevAuth = isRoomAuthorityVal
+        val myKey = myPeerKey()
         val newAuth = when {
-            orderedRoomPeers.isNotEmpty() -> orderedRoomPeers.first().first == _myNickname.value
+            orderedRoomPeers.isNotEmpty() -> {
+                val first = orderedRoomPeers.first().first
+                first == myKey || first == _myNickname.value
+            }
             _seats.value.any { !it.isAI } -> _seats.value.indexOfFirst { !it.isAI } == _mySeatIndex.value
             else -> true
         }
@@ -1451,8 +1515,10 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
             if (_phase.value == DoudizhuGamePhase.BIDDING || _phase.value == DoudizhuGamePhase.PLAYING) {
                 broadcastFullStateSync()
                 runAITurnsIfNeeded()
-            } else if (_phase.value == DoudizhuGamePhase.LOBBY) {
-                rebuildLobbySeats()
+            } else if (_phase.value == DoudizhuGamePhase.LOBBY || _phase.value == DoudizhuGamePhase.FINISHED) {
+                if (_phase.value == DoudizhuGamePhase.LOBBY) {
+                    rebuildLobbySeats(forceRebuild = true)
+                }
                 broadcastFullStateSync()
             }
         }
@@ -1467,6 +1533,7 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
             val kind = obj.optString("kind")
             val senderName = obj.optString("senderPeerName", "玩家")
             val senderCid = obj.optInt("senderCharId", 1)
+            val myKey = myPeerKey()
 
             when (kind) {
                 "roomFull" -> {
@@ -1487,20 +1554,23 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
                         val ch = CharacterFilter.fiveIndividuals.firstOrNull { it.charId == pCid } ?: CharacterFilter.MIO
                         peerCharMap[pName] = ch
                     }
-                    _connectedPeerNames.value = orderedRoomPeers.map { it.first }.filter { it != _myNickname.value }
+                    _connectedPeerNames.value = orderedRoomPeers.map { it.first }.filter { it != myKey && it != _myNickname.value }
                     val prevAuth = isRoomAuthorityVal
-                    val newAuth = orderedRoomPeers.first().first == _myNickname.value
+                    val firstKey = orderedRoomPeers.first().first
+                    val newAuth = (firstKey == myKey || firstKey == _myNickname.value)
                     _isRoomAuthority.value = newAuth
 
-                    if (_phase.value == DoudizhuGamePhase.LOBBY) {
-                        rebuildLobbySeats()
+                    if (_phase.value == DoudizhuGamePhase.LOBBY || _phase.value == DoudizhuGamePhase.FINISHED) {
+                        if (_phase.value == DoudizhuGamePhase.LOBBY) {
+                            rebuildLobbySeats(forceRebuild = true)
+                        }
                         if (newAuth) {
                             _statusBanner.value = "👑 您是房间 [$myCode] 的房主 (当前 ${orderedRoomPeers.size}/3 人)，可设置规则并开始牌局"
                             if (!prevAuth || orderedRoomPeers.size > 1) {
                                 broadcastFullStateSync()
                             }
                         } else {
-                            val hostName = orderedRoomPeers.first().first
+                            val hostName = cleanPeerLabel(orderedRoomPeers.first().first)
                             _statusBanner.value = "✅ 已进入房间 [$myCode] (当前 ${orderedRoomPeers.size}/3 人)，房主: [$hostName]"
                         }
                     } else {
@@ -1518,27 +1588,30 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
                     }
                 }
                 "leaveRoom" -> {
+                    val cleanLeft = cleanPeerLabel(senderName)
                     val peers = _connectedPeerNames.value.toMutableList()
-                    peers.removeAll { it == senderName }
+                    peers.removeAll { it == senderName || cleanPeerLabel(it) == cleanLeft }
                     _connectedPeerNames.value = peers
                     orderedRoomPeers.removeAll { it.first == senderName }
                     peerCharMap.remove(senderName)
-                    if (_phase.value == DoudizhuGamePhase.LOBBY) {
+                    if (_phase.value == DoudizhuGamePhase.LOBBY || _phase.value == DoudizhuGamePhase.FINISHED) {
                         promoteAuthorityIfNeededAndResumeAI()
-                        rebuildLobbySeats()
-                        _statusBanner.value = "ℹ️ 玩家 [$senderName] 已离开房间 $myCode${if (isRoomAuthorityVal) "，您当前为房主" else ""}"
+                        if (_phase.value == DoudizhuGamePhase.LOBBY) {
+                            rebuildLobbySeats(forceRebuild = true)
+                        }
+                        _statusBanner.value = "ℹ️ 玩家 [$cleanLeft] 已离开房间 $myCode${if (isRoomAuthorityVal) "，您当前为房主" else ""}"
                     } else {
                         _seats.value = _seats.value.map { s ->
                             if (s.peerDisplayName == senderName) {
                                 s.copy(isAI = true, name = "${s.character.displayName(currentLang())} (AI接管)")
                             } else s
                         }
-                        _statusBanner.value = "ℹ️ 玩家 [$senderName] 已离开，由轻音AI自动接管继续对局"
+                        _statusBanner.value = "ℹ️ 玩家 [$cleanLeft] 已离开，由轻音AI自动接管继续对局"
                         promoteAuthorityIfNeededAndResumeAI()
                     }
                 }
                 "joinRequest" -> {
-                    if (senderName == _myNickname.value) return
+                    if (senderName == myKey) return
                     hasUnmodifiedIosWsPeer = false
                     if (_isHostingRoom.value && isRoomAuthorityVal) {
                         val alreadyIn = orderedRoomPeers.any { it.first == senderName }
@@ -1546,7 +1619,7 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
                             sendPacketJson(JSONObject().apply {
                                 put("kind", "roomFull")
                                 put("roomCode", myCode)
-                                put("senderPeerName", _myNickname.value)
+                                put("senderPeerName", myKey)
                                 put("senderCharId", _myChar.value.charId)
                                 put("statusBanner", "⚠️ 房间 [$myCode] 人数已满 (3/3人)，无法加入！")
                             })
@@ -1556,26 +1629,30 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
                         peerCharMap[senderName] = ch
                         if (!alreadyIn) {
                             orderedRoomPeers.add(senderName to senderCid)
+                        } else {
+                            val idx = orderedRoomPeers.indexOfFirst { it.first == senderName }
+                            if (idx >= 0) orderedRoomPeers[idx] = senderName to senderCid
                         }
                         val peers = _connectedPeerNames.value.toMutableList()
+                        peers.removeAll { it == "iOS 玩家" }
                         if (!peers.contains(senderName)) {
                             peers.add(senderName)
-                            _connectedPeerNames.value = peers
                         }
-                        rebuildLobbySeats()
-                        _statusBanner.value = "🎉 [$senderName] 已加入房间 $myCode！(当前 ${orderedRoomPeers.size}/3 人)"
+                        _connectedPeerNames.value = peers
+                        rebuildLobbySeats(forceRebuild = true)
+                        _statusBanner.value = "🎉 [${cleanPeerLabel(senderName)}] 已加入房间 $myCode！(当前 ${orderedRoomPeers.size}/3 人)"
                         sendPacketJson(JSONObject().apply {
                             put("kind", "roomRoster")
                             put("roomCode", myCode)
-                            put("senderPeerName", _myNickname.value)
+                            put("senderPeerName", myKey)
                             put("senderCharId", _myChar.value.charId)
-                            put("hostPeerName", _myNickname.value)
+                            put("hostPeerName", myKey)
                             put("roomPeers", JSONArray().apply {
                                 orderedRoomPeers.forEach { (n, cid) ->
                                     put(JSONObject().apply {
                                         put("name", n)
                                         put("charId", cid)
-                                        put("displayName", n)
+                                        put("displayName", cleanPeerLabel(n))
                                     })
                                 }
                             })
@@ -1584,7 +1661,7 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
                     }
                 }
                 "stateSync" -> {
-                    if (senderName == _myNickname.value && !hasUnmodifiedIosWsPeer) return
+                    if (senderName == myKey && !hasUnmodifiedIosWsPeer) return
                     val rArr = obj.optJSONArray("roomPeers")
                     if (rArr != null && rArr.length() > 0) {
                         orderedRoomPeers.clear()
@@ -1592,10 +1669,10 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
                             val item = rArr.getJSONObject(i)
                             orderedRoomPeers.add(item.optString("name") to item.optInt("charId", 1))
                         }
-                        _connectedPeerNames.value = orderedRoomPeers.map { it.first }.filter { it != _myNickname.value }
+                        _connectedPeerNames.value = orderedRoomPeers.map { it.first }.filter { it != myKey && it != _myNickname.value }
                     }
                     val hostName = obj.optString("hostPeerName")
-                    _isRoomAuthority.value = if (hostName.isNotEmpty()) (hostName == _myNickname.value) else false
+                    _isRoomAuthority.value = if (hostName.isNotEmpty()) (hostName == myKey || hostName == _myNickname.value) else false
 
                     val sArr = obj.optJSONArray("seats")
                     var parsedSeats: List<DoudizhuPlayerSeat> = emptyList()
@@ -1631,35 +1708,27 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
                         DoudizhuAIDifficulty.values().firstOrNull { it.label == lbl }?.let { _aiDifficulty.value = it }
                     }
 
-                    if (hasUnmodifiedIosWsPeer && parsedSeats.size == 3) {
-                        val mut = parsedSeats.toMutableList()
-                        val wasAndroidOverwrittenByIosLobbyRebuild = mut[1].isAI
-                        if (wasAndroidOverwrittenByIosLobbyRebuild) {
-                            mut[1] = mut[1].copy(
-                                name = "${_myNickname.value} (${_myChar.value.displayName(currentLang())})",
-                                character = _myChar.value,
-                                isAI = false,
-                                peerDisplayName = _myNickname.value
-                            )
-                            if (newTurn == 1 && newPhase == DoudizhuGamePhase.BIDDING) {
-                                newTurn = 0
-                            }
-                        }
-                        _mySeatIndex.value = 1
-                        _seats.value = mut
-                        _phase.value = newPhase
-                        _currentTurnSeat.value = newTurn
-                        _turnRemainingSeconds.value = _turnTimeLimit.value
-                        if (wasAndroidOverwrittenByIosLobbyRebuild) {
-                            broadcastFullStateSync()
-                        }
-                        return
-                    }
-
                     if (parsedSeats.isNotEmpty()) {
                         _seats.value = parsedSeats
-                        val myIdx = parsedSeats.indexOfFirst { it.peerDisplayName == _myNickname.value }
-                        if (myIdx >= 0) _mySeatIndex.value = myIdx
+                        val exactIdx = parsedSeats.indexOfFirst { it.peerDisplayName == myKey }
+                        if (exactIdx >= 0) {
+                            _mySeatIndex.value = exactIdx
+                        } else if (!isRoomAuthorityVal) {
+                            val guestIdx = (1 until parsedSeats.size).firstOrNull { idx ->
+                                !parsedSeats[idx].isAI && cleanPeerLabel(parsedSeats[idx].peerDisplayName) == cleanNickname()
+                            } ?: orderedRoomPeers.indexOfFirst { it.first == myKey || cleanPeerLabel(it.first) == cleanNickname() }
+                            if (guestIdx >= 0 && guestIdx < parsedSeats.size) {
+                                _mySeatIndex.value = guestIdx
+                            }
+                        } else {
+                            val fallbackIdx = parsedSeats.indexOfFirst { cleanPeerLabel(it.peerDisplayName) == cleanNickname() }
+                            if (fallbackIdx >= 0) _mySeatIndex.value = fallbackIdx
+                        }
+                    }
+                    if (newPhase == DoudizhuGamePhase.BIDDING && _phase.value != DoudizhuGamePhase.BIDDING) {
+                        _selectedCardIds.value = emptySet()
+                        _playedCardsHistory.value = emptyList()
+                        hintIndex = 0
                     }
                     _phase.value = newPhase
                     _currentTurnSeat.value = newTurn
@@ -1667,13 +1736,13 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
                 }
                 "bidAction" -> {
                     if (isRoomAuthorityVal) {
-                        val seatIdx = _seats.value.indexOfFirst { it.peerDisplayName == senderName }
+                        val seatIdx = _seats.value.indexOfFirst { it.peerDisplayName == senderName || cleanPeerLabel(it.peerDisplayName) == cleanPeerLabel(senderName) }
                         if (seatIdx >= 0) processBid(seatIdx, obj.optInt("bidScore", 0))
                     }
                 }
                 "playCardsAction" -> {
                     if (isRoomAuthorityVal) {
-                        val seatIdx = _seats.value.indexOfFirst { it.peerDisplayName == senderName }
+                        val seatIdx = _seats.value.indexOfFirst { it.peerDisplayName == senderName || cleanPeerLabel(it.peerDisplayName) == cleanPeerLabel(senderName) }
                         val cArr = obj.optJSONArray("playedCards")
                         if (seatIdx >= 0 && cArr != null) {
                             val cards = (0 until cArr.length()).map { DoudizhuCard.fromJson(cArr.getJSONObject(it)) }
@@ -1683,7 +1752,7 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
                 }
                 "passAction" -> {
                     if (isRoomAuthorityVal) {
-                        val seatIdx = _seats.value.indexOfFirst { it.peerDisplayName == senderName }
+                        val seatIdx = _seats.value.indexOfFirst { it.peerDisplayName == senderName || cleanPeerLabel(it.peerDisplayName) == cleanPeerLabel(senderName) }
                         if (seatIdx >= 0) executePass(seatIdx)
                     }
                 }
@@ -1719,7 +1788,26 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
     }
 
     fun startNewGame() {
-        _isRoomAuthority.value = true
+        val inRoom = _isHostingRoom.value || _isServerConnected.value || _connectedPeerNames.value.isNotEmpty() || orderedRoomPeers.size > 1
+        if (inRoom && !isRoomAuthorityVal) {
+            _statusBanner.value = "⏳ 只有1号房主可以开启下一局，请等待房主发牌..."
+            return
+        }
+        if (!inRoom) {
+            _isRoomAuthority.value = true
+            _mySeatIndex.value = 0
+        }
+        if (_phase.value == DoudizhuGamePhase.FINISHED) {
+            if (_totalRounds.value > 0 && _currentRound.value >= _totalRounds.value) {
+                _currentRound.value = 1
+                _seats.value = _seats.value.map { it.copy(score = 1000) }
+            } else {
+                _currentRound.value += 1
+            }
+        }
+        // Rebuild seats from orderedRoomPeers so connected human players never get replaced by AI on Round 2+!
+        rebuildLobbySeats(forceRebuild = true)
+
         val deck = createShuffledDeck()
         val p0 = deck.subList(0, 17).sortedWith(compareByDescending<DoudizhuCard> { it.rank }.thenBy { it.suit.ordinal })
         val p1 = deck.subList(17, 34).sortedWith(compareByDescending<DoudizhuCard> { it.rank }.thenBy { it.suit.ordinal })
@@ -1728,7 +1816,7 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
 
         val cur = _seats.value
         val s0 = cur.getOrNull(0)?.copy(hand = p0, isLandlord = false, lastPlayed = emptyList(), lastActionText = "", passedLast = false)
-            ?: DoudizhuPlayerSeat(0, "${_myNickname.value} (${_myChar.value.displayName(currentLang())})", _myChar.value, false, _myNickname.value, hand = p0)
+            ?: DoudizhuPlayerSeat(0, "${cleanNickname()} (${_myChar.value.displayName(currentLang())})", _myChar.value, false, myPeerKey(), hand = p0)
         val s1 = cur.getOrNull(1)?.copy(hand = p1, isLandlord = false, lastPlayed = emptyList(), lastActionText = "", passedLast = false)
             ?: DoudizhuPlayerSeat(1, "秋山澪 (AI)", CharacterFilter.MIO, true, hand = p1)
         val s2 = cur.getOrNull(2)?.copy(hand = p2, isLandlord = false, lastPlayed = emptyList(), lastActionText = "", passedLast = false)
@@ -1769,7 +1857,7 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
             sendPacketJson(JSONObject().apply {
                 put("kind", "bidAction")
                 put("roomCode", _roomCode.value)
-                put("senderPeerName", _myNickname.value)
+                put("senderPeerName", myPeerKey())
                 put("senderCharId", _myChar.value.charId)
                 put("bidScore", bid)
             })
@@ -1873,7 +1961,7 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
             sendPacketJson(JSONObject().apply {
                 put("kind", "playCardsAction")
                 put("roomCode", _roomCode.value)
-                put("senderPeerName", _myNickname.value)
+                put("senderPeerName", myPeerKey())
                 put("senderCharId", _myChar.value.charId)
                 put("playedCards", JSONArray().apply { chosen.forEach { put(it.toJson()) } })
             })
@@ -1894,7 +1982,7 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
             sendPacketJson(JSONObject().apply {
                 put("kind", "passAction")
                 put("roomCode", _roomCode.value)
-                put("senderPeerName", _myNickname.value)
+                put("senderPeerName", myPeerKey())
                 put("senderCharId", _myChar.value.charId)
             })
             return
