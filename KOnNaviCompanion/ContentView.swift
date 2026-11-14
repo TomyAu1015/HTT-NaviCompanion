@@ -8054,9 +8054,11 @@ struct KOnDoudizhuSheetView: View {
         }
     }
     
-    // MARK: - 1. Single-Page Fixed Lobby View (No Vertical Scroll, Fits 100% on One Screen)
+    // MARK: - 1. Scrollable Lobby View (Fixed Sheet + Scrollable Cards)
     private var lobbyContentView: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(spacing: 6) {
+            ScrollView(.vertical, showsIndicators: true) {
+                VStack(alignment: .leading, spacing: 8) {
             // Network Mode Selector: Face-to-Face P2P vs Online Server
             HStack(spacing: 8) {
                 Button(action: {
@@ -8400,8 +8402,9 @@ struct KOnDoudizhuSheetView: View {
             .padding(8)
             .background(Color.black.opacity(0.45))
             .cornerRadius(10)
-            
-            Spacer(minLength: 0)
+                }
+                .padding(.bottom, 6)
+            }
             
             // Prominent Start Game Button (Guest waits for Host)
             let isGuestWaiting = !ddz.isRoomAuthority && (ddz.isOnlineConnected || !ddz.connectedPeerNames.isEmpty)
