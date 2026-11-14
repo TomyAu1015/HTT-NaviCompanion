@@ -1,0 +1,2 @@
+-keep class com.tomy.httnavicompanion.data.** { *; }
+-keep class com.tomy.httnavicompanion.audio.** { *; }
