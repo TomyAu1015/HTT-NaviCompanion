@@ -625,8 +625,11 @@ class AudioPlayerManager(
 
         if (dest != null && CoordinateConverter.distanceMeters(coord, dest) <= 25.0) {
             _distanceToNextStepMeters.value = 0
-            _currentStepInstruction.value = "已抵达目的地：${_destinationName.value}"
-            stopNavigation()
+            _currentStepInstruction.value = "🎉 已抵达目的地：${_destinationName.value}"
+            _activeRoutePoints.value = emptyList()
+            _candidateRoutes.value = emptyList()
+            _destinationCoord.value = null
+            _isDemoSimulating.value = false
             return
         }
         val steps = route.steps
