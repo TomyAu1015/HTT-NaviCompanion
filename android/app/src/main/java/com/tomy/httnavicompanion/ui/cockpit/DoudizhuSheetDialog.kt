@@ -172,8 +172,10 @@ fun KOnDoudizhuSheetDialog(onDismiss: () -> Unit) {
                     // LOBBY VIEW (1:1 match with iOS + iOS Cross-Play Helper)
                     // =====================================================
                     Column(
-                        modifier = Modifier.weight(1f),
-                        verticalArrangement = Arrangement.SpaceBetween
+                        modifier = Modifier
+                            .weight(1f)
+                            .verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         // Mode Switcher Tabs
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
