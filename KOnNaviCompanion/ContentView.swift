@@ -9828,6 +9828,9 @@ struct KOnGameRoomSheetView: View {
             .ignoresSafeArea()
 
             let isInLobby = (selectedGame == 0 && ddz.phase == .lobby) || (selectedGame == 1 && mj.phase == .lobby)
+            let isInJoinedRoom = !isInLobby
+                || (selectedGame == 0 && (ddz.isHostingRoom || ddz.isOnlineConnected || !ddz.connectedPeerNames.isEmpty))
+                || (selectedGame == 1 && (mj.isHostingRoom || mj.isOnlineConnected || !mj.connectedPeerNames.isEmpty))
             VStack(spacing: 4) {
                 // Unified Top Bar
                 HStack {
@@ -9891,8 +9894,8 @@ struct KOnGameRoomSheetView: View {
                 .padding(.horizontal, 10)
                 .padding(.top, 6)
 
-                // Game Switcher Bar (Auto-collapses during active game to free vertical space for cards/tiles)
-                if isInLobby {
+                // Game Switcher Bar (Hidden once user enters/hosts a room or starts an active game)
+                if !isInJoinedRoom {
                     HStack(spacing: 8) {
                         Button(action: {
                             if selectedGame != 0 {
