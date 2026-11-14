@@ -9859,7 +9859,7 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
     }
     
     // Room & Lobby State
-    @Published var roomCode: String = "8888"
+    @Published var roomCode: String = ""
     @Published var myNickname: String = UserDefaults.standard.string(forKey: "kon_ddz_nickname") ?? "轻音车友" {
         didSet {
             UserDefaults.standard.set(myNickname, forKey: "kon_ddz_nickname")
@@ -9928,6 +9928,12 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
     
     // MARK: - Face-to-Face P2P Room Creation & Discovery
     func startHostingFaceToFaceRoom() {
+        let code = roomCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !code.isEmpty else {
+            statusBanner = "⚠️ 请先填写房号，未填写无法创建房间！"
+            return
+        }
+        roomCode = code
         stopNetworking()
         isHostingRoom = true
         isRoomAuthority = true
@@ -9955,6 +9961,12 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
     }
     
     func startScanningFaceToFaceRooms() {
+        let code = roomCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !code.isEmpty else {
+            statusBanner = "⚠️ 请先填写房号，未填写无法扫描加入房间！"
+            return
+        }
+        roomCode = code
         stopNetworking()
         isHostingRoom = false
         isBrowsingRooms = true
@@ -9974,6 +9986,15 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
     }
     
     func joinDiscoveredRoom(_ room: DoudizhuDiscoveredRoom) {
+        let code = roomCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !code.isEmpty else {
+            statusBanner = "⚠️ 请先填写房号再加入房间！"
+            return
+        }
+        guard room.roomCode == code else {
+            statusBanner = "⚠️ 房号不匹配（您填写的是 \(code)，该房间房号为 \(room.roomCode)）！"
+            return
+        }
         guard let brw = browser, let session = mcSession else { return }
         statusBanner = "🔗 正在加入 [\(room.hostName)] 的房间 (\(room.roomCode))..."
         let contextData = try? JSONEncoder().encode([
@@ -9985,6 +10006,12 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
     }
     
     func connectOnlineServerRoom() {
+        let code = roomCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !code.isEmpty else {
+            statusBanner = "⚠️ 请先填写房间号，不填写无法进入在线房间！"
+            return
+        }
+        roomCode = code
         let trimmed = customServerURL.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let url = URL(string: trimmed), trimmed.hasPrefix("ws://") || trimmed.hasPrefix("wss://") else {
             statusBanner = "⚠️ 服务器地址格式无效，请检查 ws:// 或 wss:// 地址"
