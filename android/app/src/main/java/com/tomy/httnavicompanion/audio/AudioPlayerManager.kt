@@ -495,7 +495,8 @@ class AudioPlayerManager(
 
     val doudizhuEngine: DoudizhuEngine by lazy { DoudizhuEngine(context, this) }
 
-    val appVersion = "1.6.3"
+    @Volatile var isAppInForeground: Boolean = true
+    val appVersion = "1.7.1"
 
     fun appAuthorLabel(): String = when (_language.value) {
         AppLanguage.ZH_HANS -> "制作作者: 君殇"
@@ -547,15 +548,17 @@ class AudioPlayerManager(
     fun updateRealLocation(lat: Double, lon: Double, speedMps: Float, bearingDeg: Float) {
         val newCoord = LatLng(lat, lon)
         if (!_isDemoSimulating.value) {
+            var movedMeters = 0.0
             lastRealLoc?.let { prev ->
                 val moved = CoordinateConverter.distanceMeters(prev, newCoord)
-                if (moved in 2.0..1500.0) {
+                movedMeters = moved
+                if (_hasActiveNavigation.value && moved in 2.5..1500.0) {
                     _tripDistanceKm.value += moved / 1000.0
                 }
             }
             lastRealLoc = newCoord
             _userCoordinate.value = newCoord
-            val kmh = (speedMps * 3.6f).toInt().coerceAtLeast(0)
+            val kmh = if (speedMps >= 0.8f && movedMeters >= 2.5) (speedMps * 3.6f).toInt().coerceAtLeast(0) else 0
             _currentSpeedKmh.value = kmh
             if (kmh > _maxSpeedKmh.value) _maxSpeedKmh.value = kmh
             if (bearingDeg > 0f) _headingDegrees.value = bearingDeg.toDouble()
@@ -755,7 +758,9 @@ class AudioPlayerManager(
     private fun startMasterClockLoop() {
         val runnable = object : Runnable {
             override fun run() {
-                _drivingSeconds.value += 1
+                if (_hasActiveNavigation.value && _currentSpeedKmh.value > 3) {
+                    _drivingSeconds.value += 1
+                }
 
                 if (_trafficLightCountdown.value > 1) {
                     _trafficLightCountdown.value -= 1
@@ -1187,6 +1192,7 @@ class AudioPlayerManager(
     }
 
     fun playVoice(id: Int, customQuote: String? = null, clearQueue: Boolean = true) {
+        if (!isAppInForeground && !_hasActiveNavigation.value && !_isCruiseModeActive.value) return
         if (clearQueue) voiceQueue.clear()
         val safeId = if (id < 157) (157 + (id % 144)) else id
         val audioBytes = assetDecryptor.decryptVoiceChunk(safeId) ?: return
@@ -1203,6 +1209,7 @@ class AudioPlayerManager(
     }
 
     fun playMascotVoice(character: CharacterFilter? = null) {
+        if (!isAppInForeground && !_hasActiveNavigation.value && !_isCruiseModeActive.value) return
         voiceQueue.clear()
         val target = character ?: if (_selectedCharacter.value == CharacterFilter.ALL) _activeAllMemberChar.value else _selectedCharacter.value
         val entries = if (target == CharacterFilter.ALL) {

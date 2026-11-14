@@ -138,6 +138,16 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        try { HTTNaviApp.instance.audioPlayerManager.isAppInForeground = true } catch (_: Throwable) {}
+    }
+
+    override fun onPause() {
+        super.onPause()
+        try { HTTNaviApp.instance.audioPlayerManager.isAppInForeground = false } catch (_: Throwable) {}
+    }
+
     override fun onDestroy() {
         super.onDestroy()
         locationCallback?.let {

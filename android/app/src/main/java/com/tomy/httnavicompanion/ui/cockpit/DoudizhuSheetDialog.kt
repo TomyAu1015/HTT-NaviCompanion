@@ -94,6 +94,12 @@ fun KOnDoudizhuSheetDialog(onDismiss: () -> Unit) {
         engine.refreshLocalIpAddress()
     }
 
+    DisposableEffect(Unit) {
+        onDispose {
+            engine.leaveRoomAndResetLobby()
+        }
+    }
+
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false)
@@ -144,7 +150,10 @@ fun KOnDoudizhuSheetDialog(onDismiss: () -> Unit) {
                         modifier = Modifier
                             .clip(RoundedCornerShape(16.dp))
                             .background(DdzCardGreen)
-                            .clickable { onDismiss() }
+                            .clickable {
+                                engine.leaveRoomAndResetLobby()
+                                onDismiss()
+                            }
                             .padding(horizontal = 10.dp, vertical = 5.dp)
                     ) {
                         Text("✕ 关闭", color = DdzGold, fontSize = 12.sp, fontWeight = FontWeight.Bold)
