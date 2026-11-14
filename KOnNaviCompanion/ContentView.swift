@@ -8640,63 +8640,55 @@ struct KOnDoudizhuSheetView: View {
                     }
                 }
                 
-                // Action Control Bar (Bidding / Playing / Round Over)
-                playerActionControlBar
-                    .padding(.horizontal, 12)
-                
-                // Bottom Player Hand & Info Bar (竖屏自适应双排全显，绝不截断右侧手牌)
+                // Bottom Player Hand & Compact Landscape Footer Bar (100% visible above Home Indicator)
                 if ddz.mySeatIndex < ddz.seats.count {
                     let me = ddz.seats[ddz.mySeatIndex]
-                    VStack(spacing: 6) {
-                        adaptivePlayerHandView(hand: me.hand, usableWidth: usableWidth, isLandscape: isLandscape, isCompact: isCompact)
-                            .padding(.horizontal, 12)
-                        
-                        // My Seat Footer Bar
+                    VStack(spacing: isLandscape ? 3 : 6) {
                         HStack(spacing: 10) {
-                            if let sprite = manager.allMemberFrames[me.characterId] {
-                                Image(uiImage: sprite)
-                                    .interpolation(.none)
-                                    .resizable()
-                                    .scaledToFit()
-                                    .frame(width: 36, height: 42)
-                            }
-                            VStack(alignment: .leading, spacing: 2) {
-                                HStack(spacing: 6) {
-                                    Text(me.name)
-                                        .font(.system(size: 13, weight: .black))
-                                        .foregroundColor(.white)
-                                    if ddz.phase != .bidding {
-                                        Text(me.isLandlord ? "🎩 地主" : "🌾 农民")
-                                            .font(.system(size: 10, weight: .black))
-                                            .padding(.horizontal, 6)
-                                            .padding(.vertical, 2)
-                                            .background(me.isLandlord ? httGold : Color.green.opacity(0.8))
-                                            .foregroundColor(me.isLandlord ? .black : .white)
-                                            .cornerRadius(4)
-                                    }
+                            // Compact My Seat Badge on Left
+                            HStack(spacing: 6) {
+                                if let sprite = manager.allMemberFrames[me.characterId] {
+                                    Image(uiImage: sprite)
+                                        .interpolation(.none)
+                                        .resizable()
+                                        .scaledToFit()
+                                        .frame(width: 26, height: 30)
                                 }
-                                Text("手牌: \(me.hand.count) 张 · 积分: \(me.score)")
-                                    .font(.system(size: 11, weight: .bold, design: .monospaced))
-                                    .foregroundColor(httGold)
+                                VStack(alignment: .leading, spacing: 1) {
+                                    HStack(spacing: 4) {
+                                        Text(me.name)
+                                            .font(.system(size: 11, weight: .black))
+                                            .foregroundColor(.white)
+                                            .lineLimit(1)
+                                        if ddz.phase != .bidding {
+                                            Text(me.isLandlord ? "🎩地主" : "🌾农民")
+                                                .font(.system(size: 9, weight: .black))
+                                                .padding(.horizontal, 4)
+                                                .padding(.vertical, 1)
+                                                .background(me.isLandlord ? httGold : Color.green.opacity(0.8))
+                                                .foregroundColor(me.isLandlord ? .black : .white)
+                                                .cornerRadius(3)
+                                        }
+                                    }
+                                    Text("手牌:\(me.hand.count) · 积分:\(me.score)")
+                                        .font(.system(size: 9, weight: .bold, design: .monospaced))
+                                        .foregroundColor(httGold)
+                                }
                             }
-                            Spacer()
-                            if ddz.currentTurnSeat == ddz.mySeatIndex && ddz.phase != .roundOver {
-                                Text(tr("👉 轮到你操作", "👉 輪到你操作", "👉 Your Turn"))
-                                    .font(.system(size: 11, weight: .black))
-                                    .padding(.horizontal, 8)
-                                    .padding(.vertical, 4)
-                                    .background(Color.green)
-                                    .foregroundColor(.white)
-                                    .cornerRadius(6)
-                            }
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(Color.black.opacity(0.60))
+                            .cornerRadius(8)
+                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(ddz.currentTurnSeat == ddz.mySeatIndex ? httGold : Color.white.opacity(0.2), lineWidth: 1))
+
+                            // Action Control Bar inline next to player badge
+                            playerActionControlBar
                         }
                         .padding(.horizontal, 12)
-                        .padding(.vertical, 6)
-                        .background(Color.black.opacity(0.60))
-                        .cornerRadius(12)
-                        .overlay(RoundedRectangle(cornerRadius: 12).stroke(ddz.currentTurnSeat == ddz.mySeatIndex ? httGold : Color.white.opacity(0.2), lineWidth: 1.5))
-                        .padding(.horizontal, 12)
-                        .padding(.bottom, 8)
+
+                        adaptivePlayerHandView(hand: me.hand, usableWidth: usableWidth, isLandscape: isLandscape, isCompact: isCompact)
+                            .padding(.horizontal, 12)
+                            .padding(.bottom, isLandscape ? 10 : 6)
                     }
                 }
             }
@@ -8707,8 +8699,8 @@ struct KOnDoudizhuSheetView: View {
     @ViewBuilder
     private func adaptivePlayerHandView(hand: [DoudizhuCard], usableWidth: CGFloat, isLandscape: Bool, isCompact: Bool) -> some View {
         let count = hand.count
-        let cardW: CGFloat = isCompact ? 50 : 62
-        let cardH: CGFloat = isCompact ? 74 : 90
+        let cardW: CGFloat = isLandscape ? 54 : (isCompact ? 50 : 62)
+        let cardH: CGFloat = isLandscape ? 76 : (isCompact ? 74 : 90)
         if count == 0 {
             EmptyView()
         } else if !isLandscape && count > 10 {
@@ -8725,7 +8717,7 @@ struct KOnDoudizhuSheetView: View {
             .padding(.bottom, 2)
         } else {
             fittedCardRowView(cards: hand, usableWidth: usableWidth, cardW: cardW, cardH: cardH)
-                .padding(.top, isCompact ? 10 : 14)
+                .padding(.top, isLandscape ? 4 : (isCompact ? 10 : 14))
                 .padding(.bottom, 2)
         }
     }
@@ -9511,7 +9503,7 @@ struct KOnMahjongSheetView: View {
                             }
                         }
                     }
-                    .frame(maxWidth: .infinity, minHeight: 82)
+                    .frame(maxWidth: .infinity, minHeight: 56)
                     .padding(.horizontal, 6)
                     .background(Color.black.opacity(0.32)).cornerRadius(12)
                     .overlay(RoundedRectangle(cornerRadius: 12).stroke(httGold.opacity(0.45), lineWidth: 1.2))
@@ -9537,49 +9529,50 @@ struct KOnMahjongSheetView: View {
 
                 Spacer(minLength: 2)
 
-                // Action Bar (Hu / Kong / Pong / Pass / Discard / RoundOver)
-                mjActionBar
-                    .padding(.horizontal, 8)
-
-                // My Melds + Hand Tiles + Footer
+                // My Badge + Action Bar in One Compact Row, followed by Melds + Hand Tiles in One Row
                 if mj.mySeatIndex < mj.seats.count {
                     let me = mj.seats[mj.mySeatIndex]
-                    if !me.melds.isEmpty {
-                        ScrollView(.horizontal, showsIndicators: false) {
-                            HStack(spacing: 6) {
+                    HStack(spacing: 8) {
+                        HStack(spacing: 5) {
+                            if let sprite = manager.allMemberFrames[me.characterId] {
+                                Image(uiImage: sprite).interpolation(.none).resizable().scaledToFit().frame(width: 24, height: 28)
+                            }
+                            Text("\(me.name) · \(me.score)分").font(.system(size: 11, weight: .black)).foregroundColor(.white).lineLimit(1)
+                            if me.isDealer {
+                                Text("庄").font(.system(size: 9, weight: .black)).padding(.horizontal, 4).padding(.vertical, 1).background(httCrimson).foregroundColor(.white).cornerRadius(3)
+                            }
+                        }
+                        .padding(.horizontal, 8).padding(.vertical, 4)
+                        .background(Color.black.opacity(0.55)).cornerRadius(8)
+
+                        mjActionBar
+
+                        Spacer()
+                        if mj.currentTurnSeat == mj.mySeatIndex && mj.phase == .playing {
+                            Text("👉 请出牌").font(.system(size: 10, weight: .black)).padding(.horizontal, 7).padding(.vertical, 3).background(Color.green).foregroundColor(.white).cornerRadius(6)
+                        }
+                    }
+                    .padding(.horizontal, 8)
+
+                    // Melds + Hand Tiles side-by-side on the bottom row so all tile faces are 100% visible!
+                    HStack(alignment: .bottom, spacing: 8) {
+                        if !me.melds.isEmpty {
+                            HStack(spacing: 4) {
                                 ForEach(me.melds) { m in
                                     HStack(spacing: 1) {
                                         ForEach(0..<(m.kind == .pong ? 3 : 4), id: \.self) { _ in
-                                            mjTileView(tile: m.tile, width: 22, height: 32, isSelected: false, isHighlight: false)
+                                            mjTileView(tile: m.tile, width: 26, height: 36, isSelected: false, isHighlight: false)
                                         }
                                     }
-                                    .padding(2).background(Color.black.opacity(0.35)).cornerRadius(5)
+                                    .padding(2).background(Color.black.opacity(0.38)).cornerRadius(5)
                                 }
                             }
                         }
-                        .padding(.horizontal, 8)
+                        mjMyHandView(hand: me.hand, usableWidth: usableW - CGFloat(me.melds.count * 95))
                     }
-
-                    // My Hand (2 rows on compact portrait if > 8 tiles, or single row fitted)
-                    mjMyHandView(hand: me.hand, usableWidth: usableW)
-                        .padding(.horizontal, 8)
-
-                    HStack(spacing: 8) {
-                        if let sprite = manager.allMemberFrames[me.characterId] {
-                            Image(uiImage: sprite).interpolation(.none).resizable().scaledToFit().frame(width: 30, height: 34)
-                        }
-                        Text("\(me.name) · \(me.score)分").font(.system(size: 12, weight: .black)).foregroundColor(.white)
-                        if me.isDealer {
-                            Text("庄").font(.system(size: 10, weight: .black)).padding(.horizontal, 5).padding(.vertical, 2).background(httCrimson).foregroundColor(.white).cornerRadius(4)
-                        }
-                        Spacer()
-                        if mj.currentTurnSeat == mj.mySeatIndex && mj.phase == .playing {
-                            Text("👉 请出牌").font(.system(size: 11, weight: .black)).padding(.horizontal, 8).padding(.vertical, 3).background(Color.green).foregroundColor(.white).cornerRadius(6)
-                        }
-                    }
-                    .padding(.horizontal, 10).padding(.vertical, 5)
-                    .background(Color.black.opacity(0.55)).cornerRadius(10)
-                    .padding(.horizontal, 8).padding(.bottom, 6)
+                    .padding(.horizontal, 8)
+                    .padding(.top, 4)
+                    .padding(.bottom, 10)
                 }
             }
         }
@@ -9702,22 +9695,10 @@ struct KOnMahjongSheetView: View {
     }
 
     private func mjMyHandView(hand: [MahjongTile], usableWidth: CGFloat) -> some View {
-        let needTwoRows = hand.count > 9 && usableWidth < 500
-        if needTwoRows {
-            let split = (hand.count + 1) / 2
-            let top = Array(hand.prefix(split))
-            let bot = Array(hand.dropFirst(split))
-            let tileW = min(38.0, (usableWidth - 16) / CGFloat(max(1, split)))
-            let tileH = tileW * 1.38
-            return AnyView(VStack(spacing: 4) {
-                mjTileRow(tiles: top, tileW: tileW, tileH: tileH)
-                mjTileRow(tiles: bot, tileW: tileW, tileH: tileH)
-            })
-        } else {
-            let tileW = min(40.0, (usableWidth - 18) / CGFloat(max(1, hand.count)))
-            let tileH = tileW * 1.4
-            return AnyView(mjTileRow(tiles: hand, tileW: tileW, tileH: tileH))
-        }
+        let safeW = max(240.0, usableWidth)
+        let tileW = min(44.0, max(28.0, (safeW - 24) / CGFloat(max(1, hand.count))))
+        let tileH = tileW * 1.4
+        return AnyView(mjTileRow(tiles: hand, tileW: tileW, tileH: tileH))
     }
 
     private func mjTileRow(tiles: [MahjongTile], tileW: CGFloat, tileH: CGFloat) -> some View {
@@ -9749,33 +9730,31 @@ struct KOnMahjongSheetView: View {
     }
 
     private func mjTileView(tile: MahjongTile, width: CGFloat, height: CGFloat, isSelected: Bool, isHighlight: Bool) -> some View {
-        let mainColor: Color = {
-            switch tile.suit {
-            case .wan, .zhong: return Color(red: 0.78, green: 0.10, blue: 0.14)
-            case .tiao: return Color(red: 0.08, green: 0.48, blue: 0.20)
-            case .tong: return Color(red: 0.08, green: 0.30, blue: 0.68)
-            case .honor:
-                if tile.rank == 5 { return Color(red: 0.06, green: 0.52, blue: 0.24) } // 发财
-                if tile.rank == 6 { return Color(red: 0.18, green: 0.34, blue: 0.62) } // 白板
-                return Color(red: 0.12, green: 0.16, blue: 0.32) // 东南西北
-            }
-        }()
+        let tileImg = mj.tileImage(for: tile)
         return ZStack(alignment: .topTrailing) {
-            VStack(spacing: 0) {
-                Text(tile.shortLabel)
-                    .font(.system(size: max(10, width * (tile.suit == .honor || tile.suit == .zhong ? 0.48 : 0.42)), weight: .black))
-                    .foregroundColor(mainColor)
-                if tile.suit != .zhong && tile.suit != .honor {
-                    Text(tile.suit.chineseUnit)
-                        .font(.system(size: max(7, width * 0.28), weight: .bold))
-                        .foregroundColor(mainColor)
+            Group {
+                if let img = tileImg {
+                    Image(uiImage: img)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: width, height: height)
+                        .clipped()
+                } else {
+                    VStack(spacing: 0) {
+                        Text(tile.shortLabel)
+                            .font(.system(size: max(10, width * 0.42), weight: .black))
+                            .foregroundColor(.black)
+                    }
+                    .frame(width: width, height: height)
+                    .background(Color.white)
                 }
             }
-            .frame(width: width, height: height)
-            .background(Color(red: 0.98, green: 0.97, blue: 0.93))
             .cornerRadius(4)
-            .overlay(RoundedRectangle(cornerRadius: 4).stroke(isSelected ? httGold : (isHighlight ? Color.green : Color(red: 0.75, green: 0.70, blue: 0.60)), lineWidth: isSelected ? 2.2 : 1))
-            .offset(y: isSelected ? -8 : 0)
+            .overlay(
+                RoundedRectangle(cornerRadius: 4)
+                    .stroke(isSelected ? httGold : (isHighlight ? Color.green : Color(red: 0.75, green: 0.70, blue: 0.60)), lineWidth: isSelected ? 2.2 : 1)
+            )
+            .offset(y: isSelected ? -7 : 0)
 
             if tile.isLaizi {
                 Text("赖")
@@ -9784,7 +9763,7 @@ struct KOnMahjongSheetView: View {
                     .padding(.horizontal, 2)
                     .background(httGold)
                     .cornerRadius(2)
-                    .offset(x: 1, y: isSelected ? -9 : -1)
+                    .offset(x: 1, y: isSelected ? -8 : -1)
             }
         }
     }
@@ -9875,48 +9854,51 @@ struct KOnGameRoomSheetView: View {
                 .padding(.horizontal, 10)
                 .padding(.top, 6)
 
-                // Game Switcher Bar
-                HStack(spacing: 8) {
-                    Button(action: {
-                        if selectedGame != 0 {
-                            mj.leaveCurrentRoomAndReset()
-                            selectedGame = 0
+                // Game Switcher Bar (Auto-collapses during active game to free vertical space for cards/tiles)
+                let isInLobby = (selectedGame == 0 && ddz.phase == .lobby) || (selectedGame == 1 && mj.phase == .lobby)
+                if isInLobby {
+                    HStack(spacing: 8) {
+                        Button(action: {
+                            if selectedGame != 0 {
+                                mj.leaveCurrentRoomAndReset()
+                                selectedGame = 0
+                            }
+                        }) {
+                            HStack(spacing: 4) {
+                                Text("🃏")
+                                Text(tr("放课后斗地主 (3人)", "放課後鬥地主 (3人)", "Doudizhu (3P)"))
+                                    .font(.system(size: 12, weight: .black))
+                            }
+                            .frame(maxWidth: .infinity, minHeight: 28)
+                            .background(selectedGame == 0 ? Color(red: 0.78, green: 0.18, blue: 0.22) : Color.black.opacity(0.42))
+                            .foregroundColor(.white)
+                            .cornerRadius(9)
+                            .overlay(RoundedRectangle(cornerRadius: 9).stroke(selectedGame == 0 ? httGold : httGold.opacity(0.35), lineWidth: selectedGame == 0 ? 1.5 : 1))
                         }
-                    }) {
-                        HStack(spacing: 4) {
-                            Text("🃏")
-                            Text(tr("放课后斗地主 (3人)", "放課後鬥地主 (3人)", "Doudizhu (3P)"))
-                                .font(.system(size: 12, weight: .black))
-                        }
-                        .frame(maxWidth: .infinity, minHeight: 28)
-                        .background(selectedGame == 0 ? Color(red: 0.78, green: 0.18, blue: 0.22) : Color.black.opacity(0.42))
-                        .foregroundColor(.white)
-                        .cornerRadius(9)
-                        .overlay(RoundedRectangle(cornerRadius: 9).stroke(selectedGame == 0 ? httGold : httGold.opacity(0.35), lineWidth: selectedGame == 0 ? 1.5 : 1))
-                    }
-                    .buttonStyle(PlainButtonStyle())
+                        .buttonStyle(PlainButtonStyle())
 
-                    Button(action: {
-                        if selectedGame != 1 {
-                            ddz.leaveCurrentRoomAndReset()
-                            selectedGame = 1
+                        Button(action: {
+                            if selectedGame != 1 {
+                                ddz.leaveCurrentRoomAndReset()
+                                selectedGame = 1
+                            }
+                        }) {
+                            HStack(spacing: 4) {
+                                Text("🀄")
+                                Text(tr("广东红中麻将 (4人)", "廣東紅中麻將 (4人)", "Mahjong (4P)"))
+                                    .font(.system(size: 12, weight: .black))
+                            }
+                            .frame(maxWidth: .infinity, minHeight: 28)
+                            .background(selectedGame == 1 ? Color(red: 0.08, green: 0.45, blue: 0.25) : Color.black.opacity(0.42))
+                            .foregroundColor(.white)
+                            .cornerRadius(9)
+                            .overlay(RoundedRectangle(cornerRadius: 9).stroke(selectedGame == 1 ? httGold : httGold.opacity(0.35), lineWidth: selectedGame == 1 ? 1.5 : 1))
                         }
-                    }) {
-                        HStack(spacing: 4) {
-                            Text("🀄")
-                            Text(tr("广东红中麻将 (4人)", "廣東紅中麻將 (4人)", "Mahjong (4P)"))
-                                .font(.system(size: 12, weight: .black))
-                        }
-                        .frame(maxWidth: .infinity, minHeight: 28)
-                        .background(selectedGame == 1 ? Color(red: 0.08, green: 0.45, blue: 0.25) : Color.black.opacity(0.42))
-                        .foregroundColor(.white)
-                        .cornerRadius(9)
-                        .overlay(RoundedRectangle(cornerRadius: 9).stroke(selectedGame == 1 ? httGold : httGold.opacity(0.35), lineWidth: selectedGame == 1 ? 1.5 : 1))
+                        .buttonStyle(PlainButtonStyle())
                     }
-                    .buttonStyle(PlainButtonStyle())
+                    .padding(.horizontal, 10)
+                    .padding(.bottom, 2)
                 }
-                .padding(.horizontal, 10)
-                .padding(.bottom, 2)
 
                 if selectedGame == 0 {
                     KOnDoudizhuSheetView(manager: manager, embeddedInGameRoom: true)
