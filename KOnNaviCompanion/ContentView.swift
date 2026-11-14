@@ -252,7 +252,7 @@ struct HTTSmoothMapView: UIViewRepresentable {
                 if manager.travelMode == .driving {
                     route.polyline.title = "DRIVING_ACTIVE_BLUE"
                     mapView.addOverlay(route.polyline, level: .aboveRoads)
-                } else if manager.travelMode == .ebike {
+                } else if manager.travelMode == .ebike || manager.travelMode == .bicycle {
                     route.polyline.title = "EBIKE_CYAN_BLUE"
                     mapView.addOverlay(route.polyline, level: .aboveRoads)
                 } else if manager.travelMode == .walking {
@@ -2704,7 +2704,7 @@ struct ContentView: View {
                         }
                     }
                 }
-                if manager.travelMode == .ebike {
+                if manager.travelMode == .ebike || manager.travelMode == .bicycle {
                     cyclingSubModeSelectorStrip
                 }
                 
@@ -2867,10 +2867,11 @@ struct ContentView: View {
     private var cyclingSubModeSelectorStrip: some View {
         HStack(spacing: 6) {
             ForEach(CyclingVehicleType.allCases) { cType in
-                let isSel = (manager.cyclingVehicleType == cType)
+                let targetMode: NavigationTravelMode = (cType == .electricScooter) ? .ebike : .bicycle
+                let isSel = (manager.travelMode == targetMode)
                 Button(action: {
                     withAnimation(.easeInOut(duration: 0.18)) {
-                        manager.cyclingVehicleType = cType
+                        manager.travelMode = targetMode
                     }
                 }) {
                     HStack(spacing: 5) {
@@ -2933,9 +2934,6 @@ struct ContentView: View {
                 }
                 .buttonStyle(PlainButtonStyle())
             }
-        }
-        if manager.travelMode == .ebike {
-            cyclingSubModeSelectorStrip
         }
         }
     }
@@ -4227,7 +4225,32 @@ struct ContentView: View {
             
             Divider().background(Color.white.opacity(0.15))
             
-            // Row 6: Bottom Action Bar matching GaoDe Screenshot 5 (搜周边 · 顺风车 · 打车[红包] · 导航 · 路线)
+            // Row 5.5: Direct 5-Mode Selector on Tapped Map Point Card (🚗 开车 · 🛵 电动车 · 🚲 单车 · 🚶 步行 · 🚌 公交/地铁)
+            HStack(spacing: 4) {
+                ForEach(NavigationTravelMode.allCases) { mode in
+                    let isSel = (manager.travelMode == mode)
+                    Button(action: {
+                        manager.travelMode = mode
+                    }) {
+                        HStack(spacing: 3) {
+                            Image(systemName: mode.icon)
+                                .font(.system(size: 10, weight: .bold))
+                            Text(mode.title(manager.language))
+                                .font(.system(size: 10, weight: .heavy))
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.75)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 6)
+                        .background(isSel ? Color(red: 0.0, green: 0.48, blue: 1.0) : Color.white.opacity(0.10))
+                        .foregroundColor(isSel ? .white : httCream.opacity(0.85))
+                        .cornerRadius(7)
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                }
+            }
+            
+            // Row 6: Bottom Action Bar (路线 · 导航)
             HStack(spacing: 10) {
                 // 1. 路线 (View Multi-Mode Route & Transit Sheet)
                 Button(action: {
@@ -4251,7 +4274,6 @@ struct ContentView: View {
                 // 2. 导航 (Start Immediate Turn-by-Turn Navigation)
                 Button(action: {
                     manager.startNavigationToTappedPoint()
-                    manager.startFocusedNavigation()
                 }) {
                     HStack(spacing: 5) {
                         Image(systemName: "location.north.fill")
@@ -4448,9 +4470,6 @@ struct ContentView: View {
                 .buttonStyle(PlainButtonStyle())
             }
         }
-        if manager.travelMode == .ebike {
-            cyclingSubModeSelectorStrip
-        }
         }
     }
 
@@ -4610,19 +4629,22 @@ struct DestinationSearchSheetView: View {
     var body: some View {
         NavigationView {
             VStack(spacing: 8) {
-                // 4 Travel Modes Switcher at Top of Search Sheet
-                HStack(spacing: 8) {
+                // 5 Travel Modes Switcher at Top of Search Sheet (开车 / 电动车 / 单车 / 步行 / 公交)
+                HStack(spacing: 5) {
                     ForEach(NavigationTravelMode.allCases) { mode in
                         Button(action: {
                             selectedMode = mode
                             manager.travelMode = mode
                         }) {
-                            HStack(spacing: 4) {
+                            HStack(spacing: 3) {
                                 Image(systemName: mode.icon)
+                                    .font(.system(size: 11, weight: .bold))
                                 Text(mode.title(manager.language))
+                                    .font(.system(size: 11, weight: .bold))
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.75)
                             }
-                            .font(.system(size: 12, weight: .bold))
-                            .padding(.horizontal, 10)
+                            .frame(maxWidth: .infinity)
                             .padding(.vertical, 7)
                             .background(selectedMode == mode ? Color.red : Color(UIColor.tertiarySystemFill))
                             .foregroundColor(selectedMode == mode ? .white : .primary)
@@ -4744,7 +4766,7 @@ struct DestinationSearchSheetView: View {
                                     let chosenMode = selectedMode
                                     dismiss()
                                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
-                                        manager.travelMode = chosenMode
+                                        manager.setTravelModeWithoutAutoReroute(chosenMode)
                                         manager.isMapEnlarged = true
                                         manager.showMapMode = true
                                         manager.startRouteGuidance(to: item)
@@ -4800,16 +4822,8 @@ struct DestinationSearchSheetView: View {
                                 Button(action: {
                                     UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
                                     let chosenMode = selectedMode
-                                    searchEngine.resolveAndStartNavigation(for: comp, manager: manager) {
+                                    searchEngine.resolveAndStartNavigation(for: comp, chosenMode: chosenMode, manager: manager) {
                                         dismiss()
-                                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
-                                            manager.travelMode = chosenMode
-                                            manager.isMapEnlarged = true
-                                            manager.showMapMode = true
-                                            if chosenMode == .transit {
-                                                manager.showTransitPlanSheet = true
-                                            }
-                                        }
                                     }
                                 }) {
                                     HStack(spacing: 10) {
@@ -7998,7 +8012,7 @@ struct AboutAndFeedbackContentView: View {
                     
                     HStack(spacing: 8) {
                         // Version 1.0 Badge
-                        Text(manager.language == .en ? "Version 1.0 (v\(manager.appVersion))" : "版本 1.0 (v\(manager.appVersion))")
+                        Text(manager.language == .en ? "Version 2.0 (v\(manager.appVersion))" : "版本 2.0 (v\(manager.appVersion))")
                             .font(.system(size: 11, weight: .bold, design: .monospaced))
                             .padding(.horizontal, 8)
                             .padding(.vertical, 3)

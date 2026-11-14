@@ -91,7 +91,7 @@
 	<key>NSHumanReadableCopyright</key>
 	<string>Copyright © 2026 君殇 / Tomy. All rights reserved.</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.0</string>
+	<string>2.0.0</string>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>

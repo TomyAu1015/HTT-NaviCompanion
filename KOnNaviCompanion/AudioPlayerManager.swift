@@ -501,10 +501,11 @@ struct TransitStepItem: Identifiable {
     }
 }
 
-// 4 Travel Modes: Driving, e-Bike, Walking, Transit
+// 5 First-Class Travel Modes: Driving (开车), Electric Scooter (电动车), Bicycle (单车), Walking (步行), Transit (公交/地铁)
 enum NavigationTravelMode: String, CaseIterable, Identifiable {
     case driving = "driving"
     case ebike = "ebike"
+    case bicycle = "bicycle"
     case walking = "walking"
     case transit = "transit"
     
@@ -515,9 +516,12 @@ enum NavigationTravelMode: String, CaseIterable, Identifiable {
         case (.driving, .zhHans): return "开车"
         case (.driving, .zhHant): return "開車"
         case (.driving, .en): return "Drive"
-        case (.ebike, .zhHans): return "骑车"
-        case (.ebike, .zhHant): return "騎車"
-        case (.ebike, .en): return "Ride"
+        case (.ebike, .zhHans): return "电动车"
+        case (.ebike, .zhHant): return "電動車"
+        case (.ebike, .en): return "e-Bike"
+        case (.bicycle, .zhHans): return "单车"
+        case (.bicycle, .zhHant): return "單車"
+        case (.bicycle, .en): return "Bike"
         case (.walking, .zhHans): return "步行"
         case (.walking, .zhHant): return "步行"
         case (.walking, .en): return "Walk"
@@ -530,7 +534,8 @@ enum NavigationTravelMode: String, CaseIterable, Identifiable {
     var icon: String {
         switch self {
         case .driving: return "car.fill"
-        case .ebike: return "bicycle"
+        case .ebike: return "scooter"
+        case .bicycle: return "bicycle"
         case .walking: return "figure.walk"
         case .transit: return "bus.fill"
         }
@@ -539,7 +544,8 @@ enum NavigationTravelMode: String, CaseIterable, Identifiable {
     var mkTransportType: MKDirectionsTransportType {
         switch self {
         case .driving: return .automobile
-        case .ebike: return .automobile // Uses real road centerline (avoiding highways) so e-bike never drifts onto left/right sidewalks!
+        case .ebike: return .automobile // Uses non-highway surface road centerline (辅路/非机动车道)
+        case .bicycle: return .walking  // Uses greenway / cycleway / non-motorized paths
         case .walking: return .walking
         case .transit: return .transit
         }
@@ -548,14 +554,19 @@ enum NavigationTravelMode: String, CaseIterable, Identifiable {
     var defaultSpeedLimit: Double {
         switch self {
         case .driving: return 60.0
-        case .ebike: return 25.0
-        case .walking: return 0.0 // No speed limit for walking
-        case .transit: return 0.0 // No speed limit for transit
+        case .ebike: return 25.0   // New National Standard 25 km/h for Electric Scooter
+        case .bicycle: return 0.0  // No motor speed limit for pedal bicycle
+        case .walking: return 0.0  // No speed limit for walking
+        case .transit: return 0.0  // No speed limit for transit
         }
     }
     
     var supportsSpeedLimit: Bool {
         return self == .driving || self == .ebike
+    }
+    
+    var isCyclingFamily: Bool {
+        return self == .ebike || self == .bicycle
     }
 }
 
@@ -800,15 +811,12 @@ class PlaceSearchEngine: NSObject, ObservableObject, MKLocalSearchCompleterDeleg
     
     func completerDidUpdateResults(_ completer: MKLocalSearchCompleter) {
         DispatchQueue.main.async {
-            // Demote out-of-province distant completions so local Shenzhen/Dongguan/HK places ALWAYS appear first!
+            let curCity = AudioPlayerManager.shared.findNearestCityHub(to: AudioPlayerManager.shared.userCoordinate).cityName
             let results = completer.results
             let sorted = results.sorted { a, b in
-                let aSub = a.subtitle
-                let bSub = b.subtitle
-                let aIsDistant = (aSub.contains("浙江") || aSub.contains("四川") || aSub.contains("广西") || aSub.contains("湖南") || aSub.contains("湖北") || aSub.contains("北京") || aSub.contains("上海") || aSub.contains("江苏"))
-                let bIsDistant = (bSub.contains("浙江") || bSub.contains("四川") || bSub.contains("广西") || bSub.contains("湖南") || bSub.contains("湖北") || bSub.contains("北京") || bSub.contains("上海") || bSub.contains("江苏"))
-                if !aIsDistant && bIsDistant { return true }
-                if aIsDistant && !bIsDistant { return false }
+                let aLocal = a.subtitle.contains(curCity) || a.title.contains(curCity)
+                let bLocal = b.subtitle.contains(curCity) || b.title.contains(curCity)
+                if aLocal != bLocal { return aLocal && !bLocal }
                 return false
             }
             self.completions = Array(sorted.prefix(25))
@@ -854,7 +862,7 @@ class PlaceSearchEngine: NSObject, ObservableObject, MKLocalSearchCompleterDeleg
         }
     }
     
-    func resolveAndStartNavigation(for completion: MKLocalSearchCompletion, manager: AudioPlayerManager, onComplete: @escaping () -> Void) {
+    func resolveAndStartNavigation(for completion: MKLocalSearchCompletion, chosenMode: NavigationTravelMode? = nil, manager: AudioPlayerManager, onComplete: @escaping () -> Void) {
         activeSearch?.cancel()
         isSearching = true
         let req = MKLocalSearch.Request(completion: completion)
@@ -864,22 +872,31 @@ class PlaceSearchEngine: NSObject, ObservableObject, MKLocalSearchCompleterDeleg
             DispatchQueue.main.async {
                 self?.isSearching = false
                 if let item = response?.mapItems.first {
-                    manager.isMapEnlarged = true
-                    manager.showMapMode = true
-                    manager.startRouteGuidance(to: item)
                     onComplete()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+                        if let m = chosenMode, manager.travelMode != m {
+                            manager.setTravelModeWithoutAutoReroute(m)
+                        }
+                        manager.isMapEnlarged = true
+                        manager.showMapMode = true
+                        manager.startRouteGuidance(to: item)
+                    }
                 } else {
-                    // Fallback by natural language query of title + subtitle
                     let fallbackReq = MKLocalSearch.Request()
                     fallbackReq.naturalLanguageQuery = completion.title + " " + completion.subtitle
                     MKLocalSearch(request: fallbackReq).start { resp, _ in
                         DispatchQueue.main.async {
-                            if let fbItem = resp?.mapItems.first {
-                                manager.isMapEnlarged = true
-                                manager.showMapMode = true
-                                manager.startRouteGuidance(to: fbItem)
-                            }
                             onComplete()
+                            if let fbItem = resp?.mapItems.first {
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+                                    if let m = chosenMode, manager.travelMode != m {
+                                        manager.setTravelModeWithoutAutoReroute(m)
+                                    }
+                                    manager.isMapEnlarged = true
+                                    manager.showMapMode = true
+                                    manager.startRouteGuidance(to: fbItem)
+                                }
+                            }
                         }
                     }
                 }
@@ -904,7 +921,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     }
 
     // MARK: - App Metadata & Author Information (多语言制作作者与版本)
-    var appVersion: String { "1.0" }
+    var appVersion: String { "2.0" }
     
     var appAuthorName: String {
         switch language {
@@ -1013,10 +1030,34 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             UserDefaults.standard.set(isMapEnlarged, forKey: "kon_is_map_enlarged")
         }
     } // Auto-enlarges on active navigation!
-    @Published var travelMode: NavigationTravelMode = .driving {
+    private var isSuppressingTravelModeAutoRecalc: Bool = false
+
+    func setTravelModeWithoutAutoReroute(_ mode: NavigationTravelMode) {
+        isSuppressingTravelModeAutoRecalc = true
+        travelMode = mode
+        isSuppressingTravelModeAutoRecalc = false
+    }
+
+    @Published var travelMode: NavigationTravelMode = {
+        if let raw = UserDefaults.standard.string(forKey: "kon_selected_travel_mode"),
+           let saved = NavigationTravelMode(rawValue: raw) {
+            return saved
+        }
+        return .driving
+    }() {
         didSet {
             guard oldValue != travelMode else { return }
-            // Immediately stop any previous voice queue so user never has to wait for old audio to finish!
+            UserDefaults.standard.set(travelMode.rawValue, forKey: "kon_selected_travel_mode")
+            // Keep cyclingVehicleType 100% synchronized with .ebike (电动车) and .bicycle (单车)!
+            if travelMode == .ebike && cyclingVehicleType != .electricScooter {
+                isSyncingCyclingType = true
+                cyclingVehicleType = .electricScooter
+                isSyncingCyclingType = false
+            } else if travelMode == .bicycle && cyclingVehicleType != .bicycle {
+                isSyncingCyclingType = true
+                cyclingVehicleType = .bicycle
+                isSyncingCyclingType = false
+            }
             stop()
             let newLimit = travelMode.defaultSpeedLimit
             speedLimitKmh = newLimit
@@ -1026,11 +1067,9 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             } else {
                 upcomingCameraLimit = Int(newLimit)
             }
+            guard !isSuppressingTravelModeAutoRecalc else { return }
             if let dest = destinationCoord, !destinationName.isEmpty {
-                if travelMode == .transit {
-                    generateBuiltInTransitPlans(from: userCoordinate, to: dest, destTitle: destinationName)
-                }
-                calculateAndStartRoute(to: dest, title: destinationName, isReroute: true)
+                calculateAndStartRoute(to: dest, title: destinationName, isReroute: self.isNavigatingFocused)
             } else {
                 announceTravelModeSwitch()
             }
@@ -1124,6 +1163,8 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     private var trafficLightCalibrationOffset: Int = 0
     @Published var rawTransitPlans: [TransitPlanOption] = []
     @Published var transitPlans: [TransitPlanOption] = []
+    private var isSyncingCyclingType: Bool = false
+
     @Published var cyclingVehicleType: CyclingVehicleType = {
         if let raw = UserDefaults.standard.string(forKey: "kon_cycling_vehicle_type"),
            let saved = CyclingVehicleType(rawValue: raw) {
@@ -1133,15 +1174,12 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     }() {
         didSet {
             UserDefaults.standard.set(cyclingVehicleType.rawValue, forKey: "kon_cycling_vehicle_type")
-            if travelMode == .ebike {
-                speedLimitKmh = cyclingVehicleType.maxSpeedLimitKmh
-                if cyclingVehicleType == .bicycle {
-                    upcomingCameraLimit = 0
-                    isOverspeeding = false
-                }
-                if let dest = destinationCoord {
-                    calculateAndStartRoute(to: dest, title: destinationName, isReroute: false, silentFilterUpdate: false)
-                }
+            guard !isSyncingCyclingType else { return }
+            let targetMode: NavigationTravelMode = (cyclingVehicleType == .electricScooter) ? .ebike : .bicycle
+            if travelMode != targetMode {
+                travelMode = targetMode
+            } else if let dest = destinationCoord {
+                calculateAndStartRoute(to: dest, title: destinationName, isReroute: self.isNavigatingFocused, silentFilterUpdate: false)
             }
         }
     }
@@ -2476,7 +2514,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         let title = tappedMapTitle.isEmpty ? "地图选点" : tappedMapTitle
         tappedMapCoord = nil
         stopDemoSimulation()
-        calculateAndStartRoute(to: coord, title: title)
+        calculateAndStartRoute(to: coord, title: title, isReroute: false, silentFilterUpdate: false, autoStartFocusedNav: true)
     }
     
     func dismissTappedPoint() {
@@ -9286,7 +9324,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         }
         
         // Corridor tolerance: within 68 meters of road centerline so urban e-bike/car multipath never drifts to the left/right of the route line!
-        let maxCorridorMeters: Double = (travelMode == .ebike) ? 68.0 : 55.0
+        let maxCorridorMeters: Double = (travelMode == .ebike || travelMode == .bicycle) ? 68.0 : 55.0
         if minDistance <= maxCorridorMeters, let snapped = bestSnappedCoord {
             self.snappedRouteCoordinate = snapped
             if let h = bestHeading {
@@ -10339,7 +10377,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         calculateAndStartRoute(to: destCoord, title: destTitle)
     }
     
-    func calculateAndStartRoute(to destCoord: CLLocationCoordinate2D, title: String, isReroute: Bool = false, silentFilterUpdate: Bool = false) {
+    func calculateAndStartRoute(to destCoord: CLLocationCoordinate2D, title: String, isReroute: Bool = false, silentFilterUpdate: Bool = false, autoStartFocusedNav: Bool = false) {
         syncLatestRealUserLocationBeforeRouting(targetDestCoord: destCoord)
         drivingRecalcDebounceWorkItem?.cancel()
         activeDirectionsRequest?.cancel()
@@ -10357,9 +10395,11 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             if !transitPlans.isEmpty {
                 selectedTransitPlanIndex = planIndex
             }
-            calculateTransitAppleMapsRoute(from: userCoordinate, to: destCoord, destTitle: title, plan: (!transitPlans.isEmpty ? transitPlans[selectedTransitPlanIndex] : nil))
-            if !isReroute {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+            calculateTransitAppleMapsRoute(from: userCoordinate, to: destCoord, destTitle: title, plan: (!transitPlans.isEmpty ? transitPlans[selectedTransitPlanIndex] : nil), preserveNavigationFocus: autoStartFocusedNav)
+            if autoStartFocusedNav {
+                startLiveTransitNavigation(forPlanAt: selectedTransitPlanIndex, initialStepIndex: 0)
+            } else if !isReroute {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
                     self?.showTransitPlanSheet = true
                 }
             }
@@ -10398,11 +10438,11 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         reqWalk.transportType = .walking
         reqWalk.requestsAlternateRoutes = true
         
-        if travelMode == .ebike {
+        if travelMode == .ebike || travelMode == .bicycle {
             // Dual-Mode Cycling Routing:
-            // 1) 🛵 电动车 (.electricScooter): Uses non-highway surface road centerlines (辅路/非机动车道, avoiding expressways)
+            // 1) 🛵 电动车 (.ebike / .electricScooter): Uses non-highway surface road centerlines (辅路/非机动车道, avoiding expressways)
             // 2) 🚲 单车 (.bicycle): Uses Apple Maps .walking / greenway / cycleway paths (avoiding pedestrian stair overpasses & motor tunnels)
-            if cyclingVehicleType == .bicycle {
+            if travelMode == .bicycle || cyclingVehicleType == .bicycle {
                 let dir = MKDirections(request: reqWalk)
                 self.activeDirectionsRequest = dir
                 dir.calculate { [weak self] resp, err in
@@ -10421,7 +10461,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                             }
                             self.candidateRoutes = flatCycleRoutes
                             self.selectedRouteIndex = 0
-                            self.applyCalculatedRoute(flatCycleRoutes[0], title: title, isReroute: isReroute, silentFilterUpdate: silentFilterUpdate)
+                            self.applyCalculatedRoute(flatCycleRoutes[0], title: title, isReroute: isReroute, silentFilterUpdate: silentFilterUpdate, autoStartFocusedNav: autoStartFocusedNav)
                         } else if !silentFilterUpdate {
                             self.fallbackCoordRoute(to: destCoord, title: title, isReroute: isReroute)
                         }
@@ -10447,7 +10487,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                             let sorted = candidates.sorted { $0.distance < $1.distance }
                             self.candidateRoutes = sorted
                             self.selectedRouteIndex = 0
-                            self.applyCalculatedRoute(sorted[0], title: title, isReroute: isReroute, silentFilterUpdate: silentFilterUpdate)
+                            self.applyCalculatedRoute(sorted[0], title: title, isReroute: isReroute, silentFilterUpdate: silentFilterUpdate, autoStartFocusedNav: autoStartFocusedNav)
                         } else if !silentFilterUpdate {
                             self.fallbackCoordRoute(to: destCoord, title: title, isReroute: isReroute)
                         }
@@ -10473,7 +10513,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                         }
                         self.candidateRoutes = safeSurfaceRoutes
                         self.selectedRouteIndex = 0
-                        self.applyCalculatedRoute(safeSurfaceRoutes[0], title: title, isReroute: isReroute, silentFilterUpdate: silentFilterUpdate)
+                        self.applyCalculatedRoute(safeSurfaceRoutes[0], title: title, isReroute: isReroute, silentFilterUpdate: silentFilterUpdate, autoStartFocusedNav: autoStartFocusedNav)
                     } else if !silentFilterUpdate {
                         self.fallbackCoordRoute(to: destCoord, title: title, isReroute: isReroute)
                     }
@@ -10493,7 +10533,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                         let sorted = self.sortRoutes(autoRoutes, by: self.routePreference)
                         self.candidateRoutes = sorted
                         self.selectedRouteIndex = 0
-                        self.applyCalculatedRoute(sorted[0], title: title, isReroute: isReroute, silentFilterUpdate: silentFilterUpdate)
+                        self.applyCalculatedRoute(sorted[0], title: title, isReroute: isReroute, silentFilterUpdate: silentFilterUpdate, autoStartFocusedNav: autoStartFocusedNav)
                     } else if !silentFilterUpdate {
                         self.fallbackCoordRoute(to: destCoord, title: title, isReroute: isReroute)
                     }
@@ -10506,13 +10546,13 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         let fbReq = MKDirections.Request()
         fbReq.source = MKMapItem(placemark: MKPlacemark(coordinate: self.userCoordinate))
         fbReq.destination = MKMapItem(placemark: MKPlacemark(coordinate: destCoord))
-        fbReq.transportType = (travelMode == .walking || travelMode == .ebike) ? .walking : .automobile
+        fbReq.transportType = (travelMode == .walking || travelMode == .bicycle || travelMode == .ebike) ? .walking : .automobile
         fbReq.requestsAlternateRoutes = true
         MKDirections(request: fbReq).calculate { [weak self] fbResp, _ in
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 if let routes = fbResp?.routes, !routes.isEmpty {
-                    let sorted = (self.travelMode == .walking || self.travelMode == .ebike)
+                    let sorted = (self.travelMode == .walking || self.travelMode == .bicycle || self.travelMode == .ebike)
                         ? routes.sorted { (self.routeContainsOverpassOrHighway($0) ? 1 : 0) < (self.routeContainsOverpassOrHighway($1) ? 1 : 0) }
                         : self.sortRoutes(routes, by: self.routePreference)
                     self.candidateRoutes = sorted
@@ -10600,8 +10640,12 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     func estimatedMinutes(for route: MKRoute) -> Int {
         let distKm: Double = route.distance / 1000.0
         if travelMode == .ebike {
-            let turnWaitMins = Double(max(0, route.steps.count - 1)) * (cyclingVehicleType == .electricScooter ? 0.28 : 0.22)
-            let rideMins = (distKm / cyclingVehicleType.cruisingSpeedKmh) * 60.0 + turnWaitMins
+            let turnWaitMins = Double(max(0, route.steps.count - 1)) * 0.28
+            let rideMins = (distKm / 20.5) * 60.0 + turnWaitMins
+            return max(1, Int(round(rideMins)))
+        } else if travelMode == .bicycle {
+            let turnWaitMins = Double(max(0, route.steps.count - 1)) * 0.22
+            let rideMins = (distKm / 13.5) * 60.0 + turnWaitMins
             return max(1, Int(round(rideMins)))
         } else if travelMode == .walking {
             // 100% Apple Maps native walking expectedTravelTime!
@@ -10622,15 +10666,14 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     func routeOptionBadgeTitle(for route: MKRoute, index: Int) -> String {
         let distKm = route.distance / 1000.0
         if travelMode == .ebike {
-            if cyclingVehicleType == .electricScooter {
-                let batteryPct = max(1, min(99, Int(round(distKm * 2.2))))
-                let prefix = index == 0 ? (language == .zhHant ? "🛵 電動車最快" : "🛵 电动车最快") : (language == .zhHant ? "🛵 輔路備選" : "🛵 辅路备选")
-                return language == .en ? "e-Scooter · ~\(batteryPct)% Bat · Max 25km/h" : "\(prefix) · 非机动车道 · 预计耗电\(batteryPct)%"
-            } else {
-                let kcal = max(5, Int(round(distKm * 32.0)))
-                let prefix = index == 0 ? (language == .zhHant ? "🚲 單車推薦" : "🚲 单车推荐") : (language == .zhHant ? "🚲 綠道備選" : "🚲 绿道备选")
-                return language == .en ? "Bicycle · 🔥 \(kcal) kcal" : "\(prefix) · 少爬坡绿道 · 🔥消耗\(kcal)千卡"
-            }
+            let batteryPct = max(1, min(99, Int(round(distKm * 2.2))))
+            let prefix = index == 0 ? (language == .zhHant ? "🛵 電動車最快" : "🛵 电动车最快") : (language == .zhHant ? "🛵 輔路備選" : "🛵 辅路备选")
+            return language == .en ? "e-Bike · ~\(batteryPct)% Bat · Max 25km/h" : "\(prefix) · 非机动车道 · 预计耗电\(batteryPct)%"
+        }
+        if travelMode == .bicycle {
+            let kcal = max(5, Int(round(distKm * 32.0)))
+            let prefix = index == 0 ? (language == .zhHant ? "🚲 單車推薦" : "🚲 单车推荐") : (language == .zhHant ? "🚲 綠道備選" : "🚲 绿道备选")
+            return language == .en ? "Bicycle · 🔥 \(kcal) kcal" : "\(prefix) · 少爬坡绿道 · 🔥消耗\(kcal)千卡"
         }
         if travelMode == .walking {
             let kcal = max(3, Int(round(distKm * 48.0)))
@@ -10771,19 +10814,26 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         }
     }
 
-    private func applyCalculatedRoute(_ route: MKRoute, title: String, isReroute: Bool, silentFilterUpdate: Bool = false) {
+    private func applyCalculatedRoute(_ route: MKRoute, title: String, isReroute: Bool, silentFilterUpdate: Bool = false, autoStartFocusedNav: Bool = false) {
         self.activeRoute = route
         self.isMapEnlarged = true
-        self.userZoomDistance = (self.travelMode == .walking) ? 350.0 : 480.0
+        self.userZoomDistance = (self.travelMode == .walking || self.travelMode == .bicycle) ? 350.0 : 480.0
         self.announcedStepThresholds.removeAll()
         self.keepAlivePlayer?.play()
         
-        if !isReroute {
+        if autoStartFocusedNav {
+            self.isNavigatingFocused = true
+            self.mapTrackingUser = true
+            self.recenterTrigger += 1
+            self.routeSelectionRenderTrigger += 1
+        } else if !isReroute {
             self.isNavigatingFocused = false // Show route overview & [开始] button first!
             self.mapTrackingUser = false     // Zoom out to full route overview instead of locking to car!
             if !silentFilterUpdate {
                 self.routeOverviewFitTrigger += 1
             }
+            self.routeSelectionRenderTrigger += 1
+        } else {
             self.routeSelectionRenderTrigger += 1
         }
         let steps = route.steps
@@ -10993,7 +11043,9 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             case .driving:
                 quote = "🚗 [\(modeName)·\(routePreference.title(language))] ルート案内開始！目的地: \(destText)"
             case .ebike:
-                quote = "🛵 [\(modeName)·非机动车道优先] 安全運転で出発！目的地: \(destText)"
+                quote = "🛵 [\(modeName)·25km/h新国标辅路] 安全運転で出発！目的地: \(destText)"
+            case .bicycle:
+                quote = "🚲 [\(modeName)·绿道单车骑行] 楽しくサイクリング出発！目的地: \(destText)"
             case .walking:
                 quote = "🚶 [\(modeName)·人行步道] のんびり歩いて行こう！目的地: \(destText)"
             case .transit:
@@ -11087,7 +11139,9 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         if route.distance > 0 {
             let ratio = max(0.02, min(1.0, totalRemainMeters / route.distance))
             if self.travelMode == .ebike {
-                self.remainingRouteMinutes = max(1, Int(round((totalRemainMeters / 1000.0) / self.cyclingVehicleType.cruisingSpeedKmh * 60.0)))
+                self.remainingRouteMinutes = max(1, Int(round((totalRemainMeters / 1000.0) / 20.5 * 60.0)))
+            } else if self.travelMode == .bicycle {
+                self.remainingRouteMinutes = max(1, Int(round((totalRemainMeters / 1000.0) / 13.5 * 60.0)))
             } else if self.travelMode == .walking {
                 self.remainingRouteMinutes = max(1, Int(round((route.expectedTravelTime * ratio) / 60.0)))
             } else if self.travelMode != .transit {
