@@ -8911,7 +8911,7 @@ struct KOnDoudizhuSheetView: View {
                     .font(.system(size: 10, weight: .black))
                     .padding(.horizontal, 6).padding(.vertical, 2)
                     .background(Color.black.opacity(0.55))
-                    .foregroundColor(seat.lastActionText.contains("不出") ? .lightGray : httGold)
+                    .foregroundColor(seat.lastActionText.contains("不出") ? Color(UIColor.lightGray) : httGold)
                     .cornerRadius(5)
             }
         }
