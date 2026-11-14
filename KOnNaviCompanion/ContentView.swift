@@ -8001,6 +8001,7 @@ struct KOnDoudizhuSheetView: View {
                     Spacer()
                     
                     Button(action: {
+                        ddz.leaveCurrentRoomAndReset()
                         dismiss()
                     }) {
                         HStack(spacing: 3) {
@@ -8051,6 +8052,9 @@ struct KOnDoudizhuSheetView: View {
             if ddz.phase == .lobby {
                 ddz.rebuildLobbySeats()
             }
+        }
+        .onDisappear {
+            ddz.leaveCurrentRoomAndReset()
         }
     }
     

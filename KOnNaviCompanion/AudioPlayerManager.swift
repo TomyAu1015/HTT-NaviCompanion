@@ -6558,8 +6558,8 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         locationManager.delegate = self
         locationManager.desiredAccuracy = kCLLocationAccuracyBestForNavigation
         locationManager.distanceFilter = 1.5
-        locationManager.allowsBackgroundLocationUpdates = true
-        locationManager.pausesLocationUpdatesAutomatically = false
+        locationManager.allowsBackgroundLocationUpdates = false
+        locationManager.pausesLocationUpdatesAutomatically = true
         locationManager.requestWhenInUseAuthorization()
         locationManager.requestAlwaysAuthorization()
         locationManager.startUpdatingLocation()
@@ -6711,17 +6711,24 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             if !UIApplication.shared.isIdleTimerDisabled {
                 UIApplication.shared.isIdleTimerDisabled = true
             }
-            self.drivingSeconds += 1
-            
-            // Top traffic light countdown removed per user request (intersection lights are now shown directly on the route map)
-            
-            if self.drivingSeconds > 0 && self.drivingSeconds % 2700 == 0 {
-                self.triggerTeaTimeReminder()
+            let shouldStayAliveInBg = self.hasActiveNavigation || self.isCruiseModeActive || KOnMusicManager.shared.isPlaying
+            if self.locationManager.allowsBackgroundLocationUpdates != shouldStayAliveInBg {
+                self.locationManager.allowsBackgroundLocationUpdates = shouldStayAliveInBg
             }
-            
-            if self.isCruiseModeActive || self.activeRoute != nil || KOnMusicManager.shared.isPlaying {
+            if shouldStayAliveInBg {
                 if self.keepAlivePlayer?.isPlaying == false {
                     self.keepAlivePlayer?.play()
+                }
+            } else {
+                if self.keepAlivePlayer?.isPlaying == true {
+                    self.keepAlivePlayer?.stop()
+                }
+            }
+
+            if self.hasActiveNavigation && self.currentSpeedKmh > 3.0 {
+                self.drivingSeconds += 1
+                if self.drivingSeconds > 0 && self.drivingSeconds % 2700 == 0 {
+                    self.triggerTeaTimeReminder()
                 }
             }
             
@@ -6731,17 +6738,6 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                 } else {
                     self.cruiseRemainingSeconds = max(10, Int(self.cruiseIntervalMinutes * 60.0))
                     self.playRandomCruiseVoice()
-                }
-            }
-            
-            if Date().timeIntervalSince(self.lastValidGPSTime) > 18.0 && !self.isDemoSimulating {
-                if !self.isGPSSignalPoor {
-                    self.isGPSSignalPoor = true
-                    // Only auto-announce GPS lost when actively navigating!
-                    if (self.isNavigatingFocused || self.hasActiveNavigation) && Date().timeIntervalSince(self.lastGPSAlertTime) > 60.0 {
-                        self.lastGPSAlertTime = Date()
-                        self.triggerGPSSignalPoorAlert()
-                    }
                 }
             }
         }
@@ -8824,11 +8820,10 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             }
             self.gpsAccuracyMeters = loc.horizontalAccuracy
             
-            if loc.horizontalAccuracy < 0 || loc.horizontalAccuracy > 65.0 {
+            if loc.horizontalAccuracy < 0 || loc.horizontalAccuracy > 85.0 {
                 if !self.isGPSSignalPoor {
                     self.isGPSSignalPoor = true
-                    // Only auto-announce GPS lost when actively navigating!
-                    if (self.isNavigatingFocused || self.hasActiveNavigation) && Date().timeIntervalSince(self.lastGPSAlertTime) > 45.0 {
+                    if self.hasActiveNavigation && self.currentSpeedKmh > 3.0 && Date().timeIntervalSince(self.lastGPSAlertTime) > 120.0 {
                         self.lastGPSAlertTime = Date()
                         self.triggerGPSSignalPoorAlert()
                     }
@@ -8837,23 +8832,26 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             } else {
                 if self.isGPSSignalPoor {
                     self.isGPSSignalPoor = false
-                    // Only auto-announce GPS recovered when actively navigating!
-                    if (self.isNavigatingFocused || self.hasActiveNavigation) {
+                    if self.hasActiveNavigation && self.currentSpeedKmh > 3.0 {
                         self.triggerGPSSignalRecovered()
                     }
                 }
                 self.lastValidGPSTime = Date()
             }
             
+            var movedDelta: Double = 0.0
             if let prev = self.lastLocation, prev.horizontalAccuracy >= 0 && prev.horizontalAccuracy <= 50 {
                 let delta = loc.distance(from: prev)
-                if delta > 0.5 && delta < 500 {
+                movedDelta = delta
+                if self.hasActiveNavigation && delta > 1.5 && delta < 500 {
                     self.tripDistanceKm += delta / 1000.0
                 }
             }
             self.lastLocation = loc
             
-            let rawSpeed = max(0.0, loc.speed * 3.6)
+            // Filter out indoor Wi-Fi/cell coordinate jump speed spikes when stationary
+            let isReliableMovingFix = (loc.horizontalAccuracy > 0 && loc.horizontalAccuracy <= 30.0 && loc.speed >= 0.8 && movedDelta >= 2.5)
+            let rawSpeed = isReliableMovingFix ? max(0.0, loc.speed * 3.6) : 0.0
             if !self.isDemoSimulating {
                 self.currentSpeedKmh = rawSpeed
             }
@@ -8914,9 +8912,9 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                 self.maxSpeedKmh = rawSpeed
             }
             
-            if self.travelMode.supportsSpeedLimit && self.speedLimitKmh > 0 && rawSpeed > self.speedLimitKmh {
+            if self.hasActiveNavigation && self.travelMode.supportsSpeedLimit && self.speedLimitKmh > 0 && rawSpeed > self.speedLimitKmh {
                 self.isOverspeeding = true
-                if Date().timeIntervalSince(self.lastOverspeedAlertTime) > 20.0 {
+                if Date().timeIntervalSince(self.lastOverspeedAlertTime) > 25.0 {
                     self.lastOverspeedAlertTime = Date()
                     self.triggerOverspeedAlert()
                 }
@@ -8942,8 +8940,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         DispatchQueue.main.async {
             if !self.isGPSSignalPoor && !self.isDemoSimulating {
                 self.isGPSSignalPoor = true
-                // Only auto-announce GPS lost when actively navigating!
-                if (self.isNavigatingFocused || self.hasActiveNavigation) && Date().timeIntervalSince(self.lastGPSAlertTime) > 45.0 {
+                if self.hasActiveNavigation && self.currentSpeedKmh > 3.0 && Date().timeIntervalSince(self.lastGPSAlertTime) > 120.0 {
                     self.lastGPSAlertTime = Date()
                     self.triggerGPSSignalPoorAlert()
                 }
@@ -8978,6 +8975,9 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     }
     
     func playVoice(id: Int, customQuote: String? = nil, clearQueue: Bool = true) {
+        if UIApplication.shared.applicationState != .active && !hasActiveNavigation && !isCruiseModeActive {
+            return
+        }
         if clearQueue { voiceQueue.removeAll() }
         let safeId = (id < 157) ? (157 + (id % 144)) : id
         guard safeId >= 1 && safeId <= navIndexTable.count else { return }
@@ -9018,6 +9018,9 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     }
     
     func playMascotVoice(for character: CharacterFilter? = nil, customQuote: String? = nil) {
+        if UIApplication.shared.applicationState != .active && !hasActiveNavigation && !isCruiseModeActive {
+            return
+        }
         voiceQueue.removeAll()
         guard let handle = mascotFileHandle, !mascotVoices.isEmpty else { return }
         let targetChar = character ?? selectedCharacter
