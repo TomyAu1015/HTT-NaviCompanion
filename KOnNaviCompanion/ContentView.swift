@@ -8273,9 +8273,75 @@ struct KOnDoudizhuSheetView: View {
                     .cornerRadius(12)
                 }
                 
+                // 3. Host Room Rules Settings (局数 / 底分 / 封顶 / 倒计时 / AI难度)
+                let canEditRules = ddz.isRoomAuthority || (!ddz.isHostingRoom && !ddz.isOnlineConnected && ddz.connectedPeerNames.isEmpty)
+                VStack(alignment: .leading, spacing: 7) {
+                    HStack {
+                        Text(tr("3. 房主房间规则设置 (局数/底分/封顶/倒计时)", "3. 房主房間規則設置 (局數/底分/封頂/倒計時)", "3. Host Room Rules"))
+                            .font(.system(size: 12, weight: .black))
+                            .foregroundColor(httGold)
+                        Spacer()
+                        Text(canEditRules ? "第 \(ddz.currentRound)/\(ddz.totalRounds == 0 ? "∞" : "\(ddz.totalRounds)") 局" : "🔒 仅房主可改")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundColor(canEditRules ? .green : .orange)
+                    }
+                    
+                    ddzRuleRow(label: "对局局数:", options: [(3, "3局"), (5, "5局"), (10, "10局"), (0, "无限局")], selected: ddz.totalRounds, activeColor: httCrimson, enabled: canEditRules) {
+                        ddz.totalRounds = $0; ddz.syncRulesIfHost()
+                    }
+                    ddzRuleRow(label: "每局底分:", options: [(50, "50分"), (100, "100分"), (200, "200分"), (500, "500分")], selected: ddz.baseScore, activeColor: Color(red: 0.85, green: 0.58, blue: 0.15), enabled: canEditRules) {
+                        ddz.baseScore = $0; ddz.syncRulesIfHost()
+                    }
+                    ddzRuleRow(label: "倍数封顶:", options: [(16, "16倍"), (32, "32倍"), (64, "64倍"), (0, "不封顶")], selected: ddz.maxMultiplier, activeColor: .purple, enabled: canEditRules) {
+                        ddz.maxMultiplier = $0; ddz.syncRulesIfHost()
+                    }
+                    ddzRuleRow(label: "出牌限时:", options: [(15, "15秒"), (25, "25秒"), (30, "30秒"), (0, "不限时")], selected: ddz.turnTimeLimit, activeColor: .blue, enabled: canEditRules) {
+                        ddz.turnTimeLimit = $0; ddz.turnRemainingSeconds = $0; ddz.syncRulesIfHost()
+                    }
+                    
+                    HStack(spacing: 5) {
+                        Text("辅助与AI:")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundColor(.gray)
+                            .frame(width: 54, alignment: .leading)
+                        Button(action: {
+                            if canEditRules { ddz.allowCardCounter.toggle(); ddz.syncRulesIfHost() }
+                        }) {
+                            Text(ddz.allowCardCounter ? "✓ 记牌器" : "记牌器")
+                                .font(.system(size: 10, weight: .bold))
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 5)
+                                .background(ddz.allowCardCounter ? Color.green.opacity(0.85) : Color.white.opacity(0.12))
+                                .foregroundColor(.white)
+                                .cornerRadius(6)
+                        }
+                        .buttonStyle(PlainButtonStyle())
+                        .disabled(!canEditRules)
+                        
+                        ForEach(["休闲 AI", "标准 AI", "大师 AI"], id: \.self) { diff in
+                            Button(action: {
+                                if canEditRules { ddz.aiDifficulty = diff; ddz.syncRulesIfHost() }
+                            }) {
+                                Text(diff)
+                                    .font(.system(size: 10, weight: .bold))
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 5)
+                                    .background(ddz.aiDifficulty == diff ? Color(red: 0.85, green: 0.58, blue: 0.15) : Color.white.opacity(0.12))
+                                    .foregroundColor(.white)
+                                    .cornerRadius(6)
+                            }
+                            .buttonStyle(PlainButtonStyle())
+                            .disabled(!canEditRules)
+                        }
+                    }
+                }
+                .padding(12)
+                .background(Color.black.opacity(0.45))
+                .cornerRadius(12)
+                
                 // Current 3-Seat Room Preview (Shows Real Connected Friends + HTT AI Auto-Fill)
                 VStack(alignment: .leading, spacing: 8) {
-                    Text(tr("3. 当前牌桌座位预览 (不足3人将由轻音少女AI自动补位陪打)", "3. 當前牌桌座位預覽 (不足3人將由輕音少女AI自動補位陪打)", "3. Table Seats Preview (AI Auto-Fill)"))
+                    Text(tr("4. 当前牌桌座位预览 (不足3人将由轻音少女AI自动补位陪打)", "4. 當前牌桌座位預覽 (不足3人將由輕音少女AI自動補位陪打)", "4. Table Seats Preview (AI Auto-Fill)"))
                         .font(.system(size: 13, weight: .black))
                         .foregroundColor(httGold)
                     
@@ -8355,16 +8421,19 @@ struct KOnDoudizhuSheetView: View {
                 .background(Color.black.opacity(0.45))
                 .cornerRadius(12)
                 
-                // Prominent Start Game Button
+                // Prominent Start Game Button (Guest waits for Host)
+                let isGuestWaiting = !ddz.isRoomAuthority && (ddz.isOnlineConnected || !ddz.connectedPeerNames.isEmpty)
                 Button(action: {
-                    ddz.startNewRound()
+                    if !isGuestWaiting { ddz.startNewRound() }
                 }) {
                     HStack(spacing: 8) {
-                        Image(systemName: "play.fill")
+                        Image(systemName: isGuestWaiting ? "hourglass" : "play.fill")
                             .font(.headline)
-                        Text(ddz.connectedPeerNames.isEmpty
-                             ? tr("立即开始牌局 (与轻音少女AI练手 / 单机畅玩)", "立即開始牌局 (與輕音少女AI練手 / 單機暢玩)", "Start Game Now (With HTT AI)")
-                             : tr("房主开始发牌 (当前已连 \(ddz.connectedPeerNames.count + 1) 人)", "房主開始發牌 (當前已連 \(ddz.connectedPeerNames.count + 1) 人)", "Deal Cards Now"))
+                        Text(isGuestWaiting
+                             ? tr("等待房主开始牌局...", "等待房主開始牌局...", "Waiting for Host...")
+                             : (ddz.connectedPeerNames.isEmpty
+                                ? tr("立即开始牌局 (\(ddz.totalRounds == 0 ? "无限局" : "\(ddz.totalRounds)局制") · 底分 \(ddz.baseScore))", "立即開始牌局", "Start Game Now")
+                                : tr("房主开始发牌 (当前已连 \(ddz.connectedPeerNames.count + 1) 人)", "房主開始發牌", "Deal Cards Now")))
                             .font(.system(size: 15, weight: .black))
                     }
                     .frame(maxWidth: .infinity, minHeight: 48)
@@ -8972,5 +9041,29 @@ struct KOnDoudizhuSheetView: View {
         .frame(width: 28, height: 40)
         .clipShape(RoundedRectangle(cornerRadius: 4))
         .overlay(RoundedRectangle(cornerRadius: 4).stroke(httGold, lineWidth: 1))
+    }
+    
+    private func ddzRuleRow(label: String, options: [(Int, String)], selected: Int, activeColor: Color, enabled: Bool, onSelect: @escaping (Int) -> Void) -> some View {
+        HStack(spacing: 5) {
+            Text(label)
+                .font(.system(size: 10, weight: .bold))
+                .foregroundColor(.gray)
+                .frame(width: 54, alignment: .leading)
+            ForEach(options, id: \.0) { val, title in
+                Button(action: {
+                    if enabled { onSelect(val) }
+                }) {
+                    Text(title)
+                        .font(.system(size: 10, weight: .bold))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 5)
+                        .background(selected == val ? activeColor : Color.white.opacity(0.12))
+                        .foregroundColor(.white)
+                        .cornerRadius(6)
+                }
+                .buttonStyle(PlainButtonStyle())
+                .disabled(!enabled)
+            }
+        }
     }
 }

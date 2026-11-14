@@ -9740,6 +9740,13 @@ struct DoudizhuNetPacket: Codable {
     var lastPlaySeat: Int?
     var winnerSeat: Int?
     var statusBanner: String?
+    var totalRounds: Int?
+    var currentRound: Int?
+    var baseScore: Int?
+    var maxMultiplier: Int?
+    var turnTimeLimit: Int?
+    var allowCardCounter: Bool?
+    var aiDifficulty: String?
 }
 
 // Abstract Transport Protocol: Supports Face-to-Face P2P Now & Online WebSocket Server Later!
@@ -9872,7 +9879,15 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
     @Published var discoveredRooms: [DoudizhuDiscoveredRoom] = []
     @Published var mySeatIndex: Int = 0
     @Published var isRoomAuthority: Bool = true
+    @Published var isOnlineConnected: Bool = false
+    @Published var totalRounds: Int = 3
+    @Published var currentRound: Int = 1
+    @Published var baseScore: Int = 100
+    @Published var maxMultiplier: Int = 32
+    @Published var turnTimeLimit: Int = 25
     @Published var turnRemainingSeconds: Int = 25
+    @Published var allowCardCounter: Bool = true
+    @Published var aiDifficulty: String = "标准 AI"
     @Published var statusBanner: String = "欢迎来到放课后茶会斗地主！可面对面建房联机或与轻音少女AI对局"
     
     // Game Table State
@@ -9912,6 +9927,12 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
         self.myPeerID = MCPeerID(displayName: "\(myNickname)-\(Int.random(in: 100...999))")
         if myNickname == "轻音车友" && !devName.isEmpty {
             self.myNickname = devName
+        }
+    }
+    
+    func syncRulesIfHost() {
+        if isRoomAuthority && (isHostingRoom || isOnlineConnected) {
+            broadcastFullState()
         }
     }
     
@@ -9986,6 +10007,7 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
     }
     
     func joinDiscoveredRoom(_ room: DoudizhuDiscoveredRoom) {
+        isRoomAuthority = false
         let code = roomCode.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !code.isEmpty else {
             statusBanner = "⚠️ 请先填写房号再加入房间！"
@@ -10018,7 +10040,8 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
             return
         }
         stopNetworking()
-        isRoomAuthority = false
+        isRoomAuthority = true
+        isOnlineConnected = true
         let task = URLSession.shared.webSocketTask(with: url)
         self.webSocketTask = task
         task.resume()
@@ -10079,6 +10102,8 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
         webSocketTask = nil
         isHostingRoom = false
         isBrowsingRooms = false
+        isOnlineConnected = false
+        isRoomAuthority = true
         connectedPeerNames.removeAll()
         discoveredRooms.removeAll()
     }
@@ -10196,10 +10221,11 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
     
     private func startTurnCountdownTimer() {
         turnCountdownTimer?.invalidate()
-        turnRemainingSeconds = 25
+        turnRemainingSeconds = turnTimeLimit
         turnCountdownTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             guard let self = self else { return }
             guard self.phase == .bidding || self.phase == .playing else { return }
+            guard self.turnTimeLimit > 0 else { return }
             if self.turnRemainingSeconds > 0 {
                 self.turnRemainingSeconds -= 1
             } else if self.isRoomAuthority {
@@ -10259,7 +10285,7 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
             finalizeLandlord(seatIdx: landlordIdx)
         } else {
             currentTurnSeat = (currentTurnSeat + 1) % 3
-            turnRemainingSeconds = 25
+            turnRemainingSeconds = turnTimeLimit
             statusBanner = "轮到 [\(seats[currentTurnSeat].name)] 叫分 (当前最高: \(highestBid)分)"
             broadcastFullState()
             scheduleAITurnIfNeeded()
@@ -10276,7 +10302,7 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
         
         phase = .playing
         currentTurnSeat = seatIdx
-        turnRemainingSeconds = 25
+        turnRemainingSeconds = turnTimeLimit
         lastValidHand = nil
         lastPlaySeat = seatIdx
         statusBanner = "🎩 [\(seats[seatIdx].name)] 成为地主！获得三张底牌并优先出牌"
@@ -10372,7 +10398,7 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
         seats[actor].lastActionText = "不出"
         seats[actor].lastPlayedCards = []
         currentTurnSeat = (currentTurnSeat + 1) % 3
-        turnRemainingSeconds = 25
+        turnRemainingSeconds = turnTimeLimit
         if currentTurnSeat == lastPlaySeat {
             // Everyone else passed -> new free lead!
             lastValidHand = nil
@@ -10389,7 +10415,8 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
         seats[actor].lastActionText = eval.category.localizedName(AudioPlayerManager.shared.language)
         
         if eval.category == .bomb || eval.category == .rocket {
-            multiplier *= 2
+            let nextM = multiplier * 2
+            multiplier = maxMultiplier > 0 ? min(nextM, maxMultiplier) : nextM
         }
         
         lastValidHand = eval
@@ -10403,7 +10430,7 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
             winnerSeat = actor
             phase = .roundOver
             let landlordWon = seats[actor].isLandlord
-            let delta = 100 * multiplier
+            let delta = baseScore * multiplier
             for i in 0..<3 {
                 if seats[i].isLandlord {
                     seats[i].score += landlordWon ? (delta * 2) : (-delta * 2)
@@ -10418,7 +10445,7 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
         }
         
         currentTurnSeat = (currentTurnSeat + 1) % 3
-        turnRemainingSeconds = 25
+        turnRemainingSeconds = turnTimeLimit
         statusBanner = "[\(seats[actor].name)] 打出 \(eval.category.localizedName(AudioPlayerManager.shared.language))，轮到 [\(seats[currentTurnSeat].name)]"
         broadcastFullState()
         scheduleAITurnIfNeeded()
@@ -10507,7 +10534,14 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
             lastValidHand: lastValidHand,
             lastPlaySeat: lastPlaySeat,
             winnerSeat: winnerSeat,
-            statusBanner: statusBanner
+            statusBanner: statusBanner,
+            totalRounds: totalRounds,
+            currentRound: currentRound,
+            baseScore: baseScore,
+            maxMultiplier: maxMultiplier,
+            turnTimeLimit: turnTimeLimit,
+            allowCardCounter: allowCardCounter,
+            aiDifficulty: aiDifficulty
         )
         sendPacketToPeers(pkt)
     }
@@ -10542,6 +10576,11 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
                     senderCharId: myCharacter.charId
                 )
                 sendPacketToPeers(ack)
+                if isRoomAuthority {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+                        self?.broadcastFullState()
+                    }
+                }
             }
             
         case .stateSync:
@@ -10563,7 +10602,7 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
             }
             if let t = pkt.currentTurnSeat {
                 self.currentTurnSeat = t
-                self.turnRemainingSeconds = 25
+                self.turnRemainingSeconds = turnTimeLimit
             }
             if let hb = pkt.highestBid { self.highestBid = hb }
             if let hbs = pkt.highestBidderSeat { self.highestBidderSeat = hbs }
@@ -10572,6 +10611,16 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
             if let lp = pkt.lastPlaySeat { self.lastPlaySeat = lp }
             self.winnerSeat = pkt.winnerSeat
             if let sb = pkt.statusBanner { self.statusBanner = sb }
+            if let tr = pkt.totalRounds { self.totalRounds = tr }
+            if let cr = pkt.currentRound { self.currentRound = cr }
+            if let bs = pkt.baseScore { self.baseScore = bs }
+            if let mm = pkt.maxMultiplier { self.maxMultiplier = mm }
+            if let ttl = pkt.turnTimeLimit {
+                self.turnTimeLimit = ttl
+                self.turnRemainingSeconds = ttl
+            }
+            if let acc = pkt.allowCardCounter { self.allowCardCounter = acc }
+            if let aid = pkt.aiDifficulty { self.aiDifficulty = aid }
             
         case .bidAction:
             if isRoomAuthority, let score = pkt.bidScore,
