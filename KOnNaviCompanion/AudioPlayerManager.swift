@@ -9714,10 +9714,18 @@ enum DoudizhuGamePhase: String, Codable {
     case roundOver      // 本局结算阶段
 }
 
+struct DoudizhuRoomPeer: Codable, Equatable {
+    var name: String
+    var charId: Int
+    var displayName: String?
+}
+
 struct DoudizhuNetPacket: Codable {
     enum PacketKind: String, Codable {
         case joinRequest
         case leaveRoom
+        case roomFull
+        case roomRoster
         case stateSync
         case bidAction
         case playCardsAction
@@ -9728,6 +9736,8 @@ struct DoudizhuNetPacket: Codable {
     var roomCode: String
     var senderPeerName: String
     var senderCharId: Int
+    var hostPeerName: String?
+    var roomPeers: [DoudizhuRoomPeer]?
     var bidScore: Int?
     var playedCards: [DoudizhuCard]?
     var seats: [DoudizhuPlayerSeat]?
@@ -9935,6 +9945,7 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
     private var aiTurnWorkItem: DispatchWorkItem?
     private var turnCountdownTimer: Timer?
     private var peerCharIds: [String: Int] = [:]
+    private var orderedRoomPeers: [DoudizhuRoomPeer] = []
     
     override init() {
         super.init()
@@ -9978,6 +9989,7 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
         mySeatIndex = 0
         
         myPeerID = MCPeerID(displayName: myNickname.isEmpty ? "房主" : myNickname)
+        orderedRoomPeers = [DoudizhuRoomPeer(name: myPeerID.displayName, charId: myCharacter.charId, displayName: myNickname)]
         let session = MCSession(peer: myPeerID, securityIdentity: nil, encryptionPreference: .optional)
         session.delegate = self
         self.mcSession = session
@@ -10050,14 +10062,18 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
             statusBanner = "⚠️ 请先填写房间号，不填写无法进入在线房间！"
             return
         }
-        roomCode = code
         let trimmed = customServerURL.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let url = URL(string: trimmed), trimmed.hasPrefix("ws://") || trimmed.hasPrefix("wss://") else {
             statusBanner = "⚠️ 服务器地址格式无效，请检查 ws:// 或 wss:// 地址"
             return
         }
         stopNetworking()
-        isRoomAuthority = true
+        activeConnectedRoomCode = code
+        roomCode = code
+        let cleanNick = myNickname.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? UIDevice.current.name : myNickname.trimmingCharacters(in: .whitespacesAndNewlines)
+        myPeerID = MCPeerID(displayName: cleanNick)
+        orderedRoomPeers = [DoudizhuRoomPeer(name: myPeerID.displayName, charId: myCharacter.charId, displayName: cleanNick)]
+        isRoomAuthority = false
         isOnlineConnected = true
         let task = URLSession.shared.webSocketTask(with: url)
         self.webSocketTask = task
@@ -10134,6 +10150,7 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
         }
         activeConnectedRoomCode = ""
         peerCharIds.removeAll()
+        orderedRoomPeers.removeAll()
         advertiser?.stopAdvertisingPeer()
         browser?.stopBrowsingForPeers()
         mcSession?.disconnect()
@@ -10153,46 +10170,45 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
     }
     
     func rebuildLobbySeats() {
+        let lang = AudioPlayerManager.shared.language
         let aiCandidates: [AudioPlayerManager.CharacterFilter] = [.mio, .ritsu, .mugi, .azusa, .yui].filter { $0 != myCharacter }
         var newSeats: [DoudizhuPlayerSeat] = []
         
-        // Seat 0: Host / Local Player
-        newSeats.append(DoudizhuPlayerSeat(
-            id: 0,
-            name: "\(myNickname) (\(myCharacter.displayName(AudioPlayerManager.shared.language)))",
-            characterId: myCharacter.charId,
-            isAI: false,
-            peerDisplayName: myPeerID.displayName,
-            hand: [],
-            isLandlord: false,
-            lastActionText: "已准备",
-            lastPlayedCards: [],
-            score: seats.first?.score ?? 1000
-        ))
+        var roster = orderedRoomPeers
+        if roster.isEmpty {
+            roster.append(DoudizhuRoomPeer(name: myPeerID.displayName, charId: myCharacter.charId, displayName: myNickname))
+            for pName in connectedPeerNames where !roster.contains(where: { $0.name == pName }) && roster.count < 3 {
+                roster.append(DoudizhuRoomPeer(name: pName, charId: peerCharIds[pName] ?? 2, displayName: pName))
+            }
+        }
         
-        // Seat 1 & Seat 2: Connected real peers first, otherwise K-ON! AI members!
-        for slot in 1...2 {
-            let peerIdx = slot - 1
-            if peerIdx < connectedPeerNames.count {
-                let pName = connectedPeerNames[peerIdx]
-                let charPick = characterFilter(for: peerCharIds[pName] ?? aiCandidates[slot % aiCandidates.count].charId)
+        for slot in 0..<3 {
+            if slot < roster.count {
+                let rp = roster[slot]
+                let isMe = (rp.name == myPeerID.displayName)
+                let ch = isMe ? myCharacter : characterFilter(for: rp.charId)
+                let roleTag = (slot == 0) ? "🏠房主" : "🎮\(slot + 1)号"
+                let disp = (rp.displayName ?? rp.name)
+                if isMe {
+                    mySeatIndex = slot
+                }
                 newSeats.append(DoudizhuPlayerSeat(
                     id: slot,
-                    name: "🎮 \(pName)",
-                    characterId: charPick.charId,
+                    name: "\(roleTag) \(disp) (\(ch.displayName(lang)))",
+                    characterId: ch.charId,
                     isAI: false,
-                    peerDisplayName: pName,
+                    peerDisplayName: rp.name,
                     hand: [],
                     isLandlord: false,
-                    lastActionText: "已联机",
+                    lastActionText: slot == 0 ? "房主" : "已准备",
                     lastPlayedCards: [],
                     score: seats.count > slot ? seats[slot].score : 1000
                 ))
             } else {
-                let aiChar = aiCandidates[(slot - 1) % aiCandidates.count]
+                let aiChar = aiCandidates[slot % aiCandidates.count]
                 newSeats.append(DoudizhuPlayerSeat(
                     id: slot,
-                    name: "\(aiChar.displayName(AudioPlayerManager.shared.language)) (AI)",
+                    name: "\(aiChar.displayName(lang)) (AI)",
                     characterId: aiChar.charId,
                     isAI: true,
                     peerDisplayName: "AI_\(slot)",
@@ -10265,25 +10281,60 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
     
     private func startTurnCountdownTimer() {
         turnCountdownTimer?.invalidate()
-        turnRemainingSeconds = turnTimeLimit
-        turnCountdownTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+        turnRemainingSeconds = turnTimeLimit > 0 ? turnTimeLimit : 25
+        let t = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
             guard let self = self else { return }
             guard self.phase == .bidding || self.phase == .playing else { return }
             guard self.turnTimeLimit > 0 else { return }
             if self.turnRemainingSeconds > 0 {
                 self.turnRemainingSeconds -= 1
-            } else if self.isRoomAuthority {
-                self.handleTurnTimeout()
+                if self.isRoomAuthority && self.currentTurnSeat >= 0 && self.currentTurnSeat < self.seats.count && self.seats[self.currentTurnSeat].isAI && self.aiTurnWorkItem == nil {
+                    self.scheduleAITurnIfNeeded()
+                }
+            } else {
+                if !self.isRoomAuthority, let firstHuman = self.seats.firstIndex(where: { !$0.isAI }), firstHuman == self.mySeatIndex {
+                    self.isRoomAuthority = true
+                }
+                if self.isRoomAuthority {
+                    self.turnRemainingSeconds = self.turnTimeLimit > 0 ? self.turnTimeLimit : 25
+                    self.handleTurnTimeout()
+                } else if self.currentTurnSeat == self.mySeatIndex {
+                    self.turnRemainingSeconds = self.turnTimeLimit > 0 ? self.turnTimeLimit : 25
+                    if self.phase == .bidding {
+                        self.submitBid(0)
+                    } else if self.phase == .playing {
+                        if self.lastPlaySeat == self.mySeatIndex || self.lastPlaySeat == -1 {
+                            if let c = self.seats[self.mySeatIndex].hand.last {
+                                self.selectedCardIds = [c.id]
+                                self.playSelectedCards()
+                            }
+                        } else {
+                            self.passTurn()
+                        }
+                    }
+                }
             }
         }
+        RunLoop.main.add(t, forMode: .common)
+        turnCountdownTimer = t
     }
     
     private func handleTurnTimeout() {
         let actor = currentTurnSeat
         guard actor >= 0 && actor < seats.count else { return }
+        aiTurnWorkItem?.cancel()
+        aiTurnWorkItem = nil
         if phase == .bidding {
             submitBid(0, fromSeat: actor)
         } else if phase == .playing {
+            let effectiveTarget = (lastPlaySeat == actor || lastPlaySeat == -1) ? nil : lastValidHand
+            if seats[actor].isAI, let hint = DoudizhuHandEvaluator.findHints(in: seats[actor].hand, beating: effectiveTarget).first {
+                let ev = DoudizhuHandEvaluator.evaluate(hint)
+                if ev.category != .invalid {
+                    executePlayCards(hint, Evaluated: ev, fromSeat: actor)
+                    return
+                }
+            }
             if lastPlaySeat == actor || lastPlaySeat == -1 {
                 if let firstCard = seats[actor].hand.last {
                     let ev = DoudizhuHandEvaluator.evaluate([firstCard])
@@ -10505,7 +10556,11 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
         
         let seatToAct = currentTurnSeat
         let work = DispatchWorkItem { [weak self] in
-            guard let self = self, self.currentTurnSeat == seatToAct else { return }
+            guard let self = self else { return }
+            self.aiTurnWorkItem = nil
+            guard self.currentTurnSeat == seatToAct, seatToAct < self.seats.count else { return }
+            let activePlayer = self.seats[seatToAct]
+            guard activePlayer.isAI else { return }
             if self.phase == .bidding {
                 let highCards = activePlayer.hand.filter { $0.rank >= 15 }.count
                 let desiredBid: Int
@@ -10563,11 +10618,14 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
     
     // MARK: - Network Packet Sync
     private func broadcastFullState() {
+        guard isRoomAuthority else { return }
         let pkt = DoudizhuNetPacket(
             kind: .stateSync,
             roomCode: roomCode,
             senderPeerName: myPeerID.displayName,
             senderCharId: myCharacter.charId,
+            hostPeerName: myPeerID.displayName,
+            roomPeers: orderedRoomPeers,
             seats: seats,
             holeCards: holeCards,
             phase: phase,
@@ -10600,61 +10658,146 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
         }
     }
     
+    private func promoteAuthorityIfNeededAndResumeAI() {
+        let prevAuth = isRoomAuthority
+        if let firstPeer = orderedRoomPeers.first {
+            isRoomAuthority = (firstPeer.name == myPeerID.displayName)
+        } else if let firstHumanIdx = seats.firstIndex(where: { !$0.isAI }) {
+            isRoomAuthority = (firstHumanIdx == mySeatIndex)
+        } else {
+            isRoomAuthority = true
+        }
+        if isRoomAuthority {
+            if !prevAuth {
+                statusBanner = "👑 原房主已离开，您已自动接任 [\(roomCode)] 房主！"
+            }
+            if phase == .bidding || phase == .playing {
+                if turnCountdownTimer == nil {
+                    startTurnCountdownTimer()
+                }
+                broadcastFullState()
+                scheduleAITurnIfNeeded()
+            } else if phase == .lobby {
+                rebuildLobbySeats()
+                broadcastFullState()
+            }
+        }
+    }
+
     private func handleIncomingPacket(_ pkt: DoudizhuNetPacket) {
         let myCode = roomCode.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !myCode.isEmpty && pkt.roomCode == myCode else { return }
         switch pkt.kind {
+        case .roomFull:
+            let msg = pkt.statusBanner ?? "⚠️ 房间 [\(myCode)] 人数已满 (3/3人)，无法进入！请更换其他房号"
+            stopNetworking()
+            phase = .lobby
+            statusBanner = msg
+            
+        case .roomRoster:
+            guard let peers = pkt.roomPeers, !peers.isEmpty else { return }
+            orderedRoomPeers = peers
+            for rp in peers {
+                peerCharIds[rp.name] = rp.charId
+            }
+            connectedPeerNames = peers.map { $0.name }.filter { $0 != myPeerID.displayName }
+            let prevAuth = isRoomAuthority
+            isRoomAuthority = (peers.first?.name == myPeerID.displayName)
+            
+            if phase == .lobby {
+                rebuildLobbySeats()
+                if isRoomAuthority {
+                    statusBanner = "👑 您是房间 [\(myCode)] 的房主 (当前 \(peers.count)/3 人)，可设置规则并开始牌局"
+                    if !prevAuth || peers.count > 1 {
+                        broadcastFullState()
+                    }
+                } else {
+                    let hostDisp = peers.first?.displayName ?? peers.first?.name ?? "1号玩家"
+                    statusBanner = "✅ 已进入房间 [\(myCode)] (当前 \(peers.count)/3 人)，房主: [\(hostDisp)]"
+                }
+            } else {
+                let activeNames = Set(peers.map { $0.name })
+                var anyTurnedAI = false
+                for i in 0..<seats.count where !seats[i].isAI && !activeNames.contains(seats[i].peerDisplayName) {
+                    seats[i].isAI = true
+                    seats[i].name = "\(characterFilter(for: seats[i].characterId).displayName(AudioPlayerManager.shared.language)) (AI接管)"
+                    anyTurnedAI = true
+                }
+                if anyTurnedAI || (!prevAuth && isRoomAuthority) {
+                    promoteAuthorityIfNeededAndResumeAI()
+                }
+            }
+            
         case .leaveRoom:
             let pName = pkt.senderPeerName
             connectedPeerNames.removeAll { $0 == pName }
+            orderedRoomPeers.removeAll { $0.name == pName }
             peerCharIds.removeValue(forKey: pName)
             if phase == .lobby {
-                if connectedPeerNames.isEmpty {
-                    isRoomAuthority = true
-                    mySeatIndex = 0
-                }
+                promoteAuthorityIfNeededAndResumeAI()
                 rebuildLobbySeats()
-                statusBanner = "ℹ️ 玩家 [\(pName)] 已离开房间 \(myCode)"
+                statusBanner = "ℹ️ 玩家 [\(pName)] 已离开房间 \(myCode)\(isRoomAuthority ? "，您当前为房主" : "")"
             } else {
                 for i in 0..<seats.count where seats[i].peerDisplayName == pName {
                     seats[i].isAI = true
                     seats[i].name = "\(characterFilter(for: seats[i].characterId).displayName(AudioPlayerManager.shared.language)) (AI接管)"
                 }
                 statusBanner = "ℹ️ 玩家 [\(pName)] 已离开，由轻音AI自动接管继续对局"
-                if isRoomAuthority {
-                    broadcastFullState()
-                    scheduleAITurnIfNeeded()
-                }
+                promoteAuthorityIfNeededAndResumeAI()
             }
             
         case .joinRequest:
             let pName = pkt.senderPeerName
             guard pName != myPeerID.displayName else { return }
-            let isNewPeer = !connectedPeerNames.contains(pName)
-            peerCharIds[pName] = pkt.senderCharId
-            if isNewPeer {
-                connectedPeerNames.append(pName)
-                rebuildLobbySeats()
-                statusBanner = "🎉 好友 [\(pName)] 已进入房间 \(roomCode)！(当前真机: \(connectedPeerNames.count + 1)人)"
-                // Echo our own joinRequest so the newcomer also sees us in their lobby
-                let ack = DoudizhuNetPacket(
-                    kind: .joinRequest,
-                    roomCode: roomCode,
-                    senderPeerName: myPeerID.displayName,
-                    senderCharId: myCharacter.charId
-                )
-                sendPacketToPeers(ack)
-                if isRoomAuthority {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
-                        self?.broadcastFullState()
-                    }
+            if isHostingRoom && isRoomAuthority {
+                let alreadyIn = orderedRoomPeers.contains(where: { $0.name == pName })
+                if !alreadyIn && orderedRoomPeers.count >= 3 {
+                    let fullPkt = DoudizhuNetPacket(
+                        kind: .roomFull,
+                        roomCode: myCode,
+                        senderPeerName: myPeerID.displayName,
+                        senderCharId: myCharacter.charId,
+                        statusBanner: "⚠️ 房间 [\(myCode)] 人数已满 (3/3人)，无法加入！"
+                    )
+                    sendPacketToPeers(fullPkt)
+                    return
                 }
+                peerCharIds[pName] = pkt.senderCharId
+                if !alreadyIn {
+                    orderedRoomPeers.append(DoudizhuRoomPeer(name: pName, charId: pkt.senderCharId, displayName: pName))
+                }
+                if !connectedPeerNames.contains(pName) {
+                    connectedPeerNames.append(pName)
+                }
+                rebuildLobbySeats()
+                statusBanner = "🎉 好友 [\(pName)] 已加入房间 \(myCode)！(当前 \(orderedRoomPeers.count)/3 人)"
+                let rosterPkt = DoudizhuNetPacket(
+                    kind: .roomRoster,
+                    roomCode: myCode,
+                    senderPeerName: myPeerID.displayName,
+                    senderCharId: myCharacter.charId,
+                    hostPeerName: myPeerID.displayName,
+                    roomPeers: orderedRoomPeers
+                )
+                sendPacketToPeers(rosterPkt)
+                broadcastFullState()
             }
             
         case .stateSync:
             guard pkt.senderPeerName != myPeerID.displayName else { return }
-            self.isRoomAuthority = false
-            self.aiTurnWorkItem?.cancel()
+            if let rPeers = pkt.roomPeers, !rPeers.isEmpty {
+                self.orderedRoomPeers = rPeers
+                self.connectedPeerNames = rPeers.map { $0.name }.filter { $0 != self.myPeerID.displayName }
+            }
+            if let hName = pkt.hostPeerName, !hName.isEmpty {
+                self.isRoomAuthority = (hName == self.myPeerID.displayName)
+            } else {
+                self.isRoomAuthority = false
+            }
+            if !self.isRoomAuthority {
+                self.aiTurnWorkItem?.cancel()
+                self.aiTurnWorkItem = nil
+            }
             if let s = pkt.seats {
                 self.seats = s
                 if let myIdx = s.firstIndex(where: { $0.peerDisplayName == self.myPeerID.displayName }) {
@@ -10662,6 +10805,13 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
                 }
             }
             if let h = pkt.holeCards { self.holeCards = h }
+            if let tr = pkt.totalRounds { self.totalRounds = tr }
+            if let cr = pkt.currentRound { self.currentRound = cr }
+            if let bs = pkt.baseScore { self.baseScore = bs }
+            if let mm = pkt.maxMultiplier { self.maxMultiplier = mm }
+            if let ttl = pkt.turnTimeLimit { self.turnTimeLimit = ttl }
+            if let acc = pkt.allowCardCounter { self.allowCardCounter = acc }
+            if let aid = pkt.aiDifficulty { self.aiDifficulty = aid }
             if let p = pkt.phase {
                 self.phase = p
                 if p == .bidding || p == .playing {
@@ -10670,7 +10820,7 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
             }
             if let t = pkt.currentTurnSeat {
                 self.currentTurnSeat = t
-                self.turnRemainingSeconds = turnTimeLimit
+                self.turnRemainingSeconds = self.turnTimeLimit > 0 ? self.turnTimeLimit : 25
             }
             if let hb = pkt.highestBid { self.highestBid = hb }
             if let hbs = pkt.highestBidderSeat { self.highestBidderSeat = hbs }
@@ -10679,16 +10829,6 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
             if let lp = pkt.lastPlaySeat { self.lastPlaySeat = lp }
             self.winnerSeat = pkt.winnerSeat
             if let sb = pkt.statusBanner { self.statusBanner = sb }
-            if let tr = pkt.totalRounds { self.totalRounds = tr }
-            if let cr = pkt.currentRound { self.currentRound = cr }
-            if let bs = pkt.baseScore { self.baseScore = bs }
-            if let mm = pkt.maxMultiplier { self.maxMultiplier = mm }
-            if let ttl = pkt.turnTimeLimit {
-                self.turnTimeLimit = ttl
-                self.turnRemainingSeconds = ttl
-            }
-            if let acc = pkt.allowCardCounter { self.allowCardCounter = acc }
-            if let aid = pkt.aiDifficulty { self.aiDifficulty = aid }
             
         case .bidAction:
             if isRoomAuthority, let score = pkt.bidScore,
@@ -10719,20 +10859,46 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
     // MARK: - MCSessionDelegate & MCNearbyService Delegates
     func session(_ session: MCSession, peer peerID: MCPeerID, didChange state: MCSessionState) {
         DispatchQueue.main.async {
-            self.connectedPeerNames = session.connectedPeers.map { $0.displayName }
-            if self.isHostingRoom {
-                self.rebuildLobbySeats()
-                self.statusBanner = "✅ 玩家 [\(peerID.displayName)] 已连接！(当前真机玩家: \(self.connectedPeerNames.count + 1) 人)"
-                self.broadcastFullState()
-            } else if state == .connected {
-                self.statusBanner = "✅ 已成功连入房主 [\(peerID.displayName)] 的面对面牌桌！等待房主发牌..."
+            if state == .connected {
+                if !self.connectedPeerNames.contains(peerID.displayName) {
+                    self.connectedPeerNames.append(peerID.displayName)
+                }
+                if self.isHostingRoom {
+                    if !self.orderedRoomPeers.contains(where: { $0.name == peerID.displayName }) && self.orderedRoomPeers.count < 3 {
+                        self.orderedRoomPeers.append(DoudizhuRoomPeer(name: peerID.displayName, charId: self.peerCharIds[peerID.displayName] ?? 2, displayName: peerID.displayName))
+                    }
+                    self.rebuildLobbySeats()
+                    self.statusBanner = "✅ 玩家 [\(peerID.displayName)] 已连接！(当前真机玩家: \(self.orderedRoomPeers.count)/3 人)"
+                    let rosterPkt = DoudizhuNetPacket(
+                        kind: .roomRoster,
+                        roomCode: self.roomCode,
+                        senderPeerName: self.myPeerID.displayName,
+                        senderCharId: self.myCharacter.charId,
+                        hostPeerName: self.myPeerID.displayName,
+                        roomPeers: self.orderedRoomPeers
+                    )
+                    self.sendPacketToPeers(rosterPkt)
+                    self.broadcastFullState()
+                } else {
+                    self.statusBanner = "✅ 已成功连入房主 [\(peerID.displayName)] 的面对面牌桌！"
+                    self.sendJoinRequestToRoom()
+                }
             } else if state == .notConnected {
                 self.connectedPeerNames.removeAll { $0 == peerID.displayName }
+                self.orderedRoomPeers.removeAll { $0.name == peerID.displayName }
                 self.peerCharIds.removeValue(forKey: peerID.displayName)
                 if self.phase == .lobby {
+                    self.promoteAuthorityIfNeededAndResumeAI()
                     self.rebuildLobbySeats()
+                    self.statusBanner = "ℹ️ 与 [\(peerID.displayName)] 的连接已断开"
+                } else {
+                    for i in 0..<self.seats.count where self.seats[i].peerDisplayName == peerID.displayName {
+                        self.seats[i].isAI = true
+                        self.seats[i].name = "\(self.characterFilter(for: self.seats[i].characterId).displayName(AudioPlayerManager.shared.language)) (AI接管)"
+                    }
+                    self.statusBanner = "ℹ️ 玩家 [\(peerID.displayName)] 已离开，由轻音AI自动接管继续对局"
+                    self.promoteAuthorityIfNeededAndResumeAI()
                 }
-                self.statusBanner = "ℹ️ 与 [\(peerID.displayName)] 的连接已断开"
             }
         }
     }

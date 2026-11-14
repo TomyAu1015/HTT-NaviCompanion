@@ -118,9 +118,7 @@ fun KOnDoudizhuSheetDialog(onDismiss: () -> Unit) {
                             .clip(RoundedCornerShape(16.dp))
                             .background(DdzCardGreen)
                             .clickable {
-                                if (phase != DoudizhuGamePhase.LOBBY || isHosting || isServerConn || connectedPeers.isNotEmpty()) {
-                                    engine.leaveRoomAndResetLobby()
-                                }
+                                engine.leaveRoomAndResetLobby()
                             }
                             .padding(horizontal = 10.dp, vertical = 5.dp)
                     ) {
@@ -174,10 +172,8 @@ fun KOnDoudizhuSheetDialog(onDismiss: () -> Unit) {
                     // LOBBY VIEW (1:1 match with iOS + iOS Cross-Play Helper)
                     // =====================================================
                     Column(
-                        modifier = Modifier
-                            .weight(1f)
-                            .verticalScroll(rememberScrollState()),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.SpaceBetween
                     ) {
                         // Mode Switcher Tabs
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {

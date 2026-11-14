@@ -1372,6 +1372,7 @@ struct ContentView: View {
                 VehicleAndPlateSettingsSheetView(manager: manager)
             case .doudizhu:
                 KOnDoudizhuSheetView(manager: manager)
+                    .interactiveDismissDisabled(true)
             }
         }
     }
@@ -7959,515 +7960,479 @@ struct KOnDoudizhuSheetView: View {
     }
     
     var body: some View {
-        NavigationView {
-            ZStack {
-                LinearGradient(
-                    colors: [tableFeltDark, tableFeltLight, Color(red: 0.07, green: 0.20, blue: 0.14)],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                )
-                .ignoresSafeArea()
-                
-                VStack(spacing: 8) {
-                    // Status Notice Bar
-                    HStack(spacing: 6) {
-                        Image(systemName: "sparkles")
-                            .foregroundColor(httGold)
-                            .font(.system(size: 12, weight: .bold))
-                        Text(ddz.statusBanner)
-                            .font(.system(size: 12, weight: .bold))
-                            .foregroundColor(httCream)
-                            .lineLimit(2)
-                        Spacer()
-                    }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 7)
-                    .background(Color.black.opacity(0.55))
-                    .cornerRadius(10)
-                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(httGold.opacity(0.6), lineWidth: 1))
-                    .padding(.horizontal, 12)
-                    .padding(.top, 4)
-                    
-                    if ddz.phase == .lobby {
-                        lobbyContentView
-                    } else {
-                        gameTableContentView
-                    }
-                }
-            }
-            .navigationTitle(tr("放课后茶会 · 面对面斗地主", "放課後茶會 · 面對面鬥地主", "HTT · Multiplayer Doudizhu"))
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) {
-                    let canLeave = (ddz.phase != .lobby || ddz.isHostingRoom || ddz.isOnlineConnected || !ddz.connectedPeerNames.isEmpty)
+        ZStack {
+            LinearGradient(
+                colors: [tableFeltDark, tableFeltLight, Color(red: 0.07, green: 0.20, blue: 0.14)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            .ignoresSafeArea()
+            
+            VStack(spacing: 5) {
+                // Top Bar: Always-clickable 房间大厅 / 退出房间 + Title + 关闭
+                let canLeave = (ddz.phase != .lobby || ddz.isHostingRoom || ddz.isOnlineConnected || !ddz.connectedPeerNames.isEmpty)
+                HStack {
                     Button(action: {
-                        if canLeave {
-                            ddz.leaveCurrentRoomAndReset()
+                        ddz.leaveCurrentRoomAndReset()
+                    }) {
+                        HStack(spacing: 4) {
+                            Image(systemName: canLeave ? "chevron.left" : "suit.spade.fill")
+                            Text(canLeave ? tr("房间大厅", "房間大廳", "Lobby") : tr("房间大厅", "房間大廳", "Lobby"))
                         }
+                        .font(.system(size: 12, weight: .black))
+                        .foregroundColor(httGold)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(Color.black.opacity(0.48))
+                        .cornerRadius(14)
+                        .overlay(RoundedRectangle(cornerRadius: 14).stroke(httGold.opacity(0.55), lineWidth: 1))
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                    
+                    Spacer()
+                    
+                    Text(tr("放课后茶会 · 面对面斗地主", "放課後茶會 · 面對面鬥地主", "HTT · Doudizhu"))
+                        .font(.system(size: 15, weight: .black))
+                        .foregroundColor(.white)
+                        .lineLimit(1)
+                    
+                    Spacer()
+                    
+                    Button(action: {
+                        dismiss()
                     }) {
                         HStack(spacing: 3) {
-                            Image(systemName: canLeave ? "chevron.left" : "suit.spade.fill")
-                            Text(canLeave ? tr("退出房间", "退出房間", "Leave Room") : tr("房间大厅", "房間大廳", "Lobby"))
+                            Image(systemName: "xmark.circle.fill")
+                            Text(tr("关闭", "關閉", "Close"))
                         }
-                        .font(.system(size: 13, weight: .bold))
+                        .font(.system(size: 12, weight: .black))
                         .foregroundColor(httGold)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(Color.black.opacity(0.48))
+                        .cornerRadius(14)
+                        .overlay(RoundedRectangle(cornerRadius: 14).stroke(httGold.opacity(0.55), lineWidth: 1))
                     }
+                    .buttonStyle(PlainButtonStyle())
                 }
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button(tr("关闭", "關閉", "Close")) {
-                        dismiss()
-                    }
-                    .font(.system(size: 14, weight: .bold))
-                    .foregroundColor(httGold)
+                .padding(.horizontal, 10)
+                .padding(.top, 6)
+                .zIndex(100)
+                
+                // Status Notice Bar
+                HStack(spacing: 6) {
+                    Image(systemName: "sparkles")
+                        .foregroundColor(httGold)
+                        .font(.system(size: 11, weight: .bold))
+                    Text(ddz.statusBanner)
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundColor(httCream)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                    Spacer()
                 }
-            }
-            .onAppear {
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(Color.black.opacity(0.50))
+                .cornerRadius(8)
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold.opacity(0.6), lineWidth: 1))
+                .padding(.horizontal, 10)
+                
                 if ddz.phase == .lobby {
-                    ddz.rebuildLobbySeats()
+                    lobbyContentView
+                } else {
+                    gameTableContentView
                 }
             }
         }
-        .navigationViewStyle(StackNavigationViewStyle())
+        .onAppear {
+            if ddz.phase == .lobby {
+                ddz.rebuildLobbySeats()
+            }
+        }
     }
     
-    // MARK: - 1. Face-to-Face Room Creation & Joining Lobby View
+    // MARK: - 1. Single-Page Fixed Lobby View (No Vertical Scroll, Fits 100% on One Screen)
     private var lobbyContentView: some View {
-        ScrollView(.vertical, showsIndicators: true) {
-            VStack(alignment: .leading, spacing: 12) {
-                // Network Mode Selector: Face-to-Face P2P vs Online Server (Reserved)
+        VStack(alignment: .leading, spacing: 6) {
+            // Network Mode Selector: Face-to-Face P2P vs Online Server
+            HStack(spacing: 8) {
+                Button(action: {
+                    ddz.networkMode = .faceToFaceP2P
+                }) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "antenna.radiowaves.left.and.right")
+                        Text(tr("面对面开房联机 (免流量)", "面對面開房聯機 (免流量)", "Face-to-Face P2P"))
+                            .font(.system(size: 11, weight: .black))
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 32)
+                    .background(ddz.networkMode == .faceToFaceP2P ? httCrimson : Color.black.opacity(0.45))
+                    .foregroundColor(.white)
+                    .cornerRadius(8)
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(ddz.networkMode == .faceToFaceP2P ? httGold : Color.clear, lineWidth: 1.5))
+                }
+                .buttonStyle(PlainButtonStyle())
+                
+                Button(action: {
+                    ddz.networkMode = .onlineServer
+                }) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "icloud.and.arrow.up.fill")
+                        Text(tr("在线服务器联机", "在線伺服器聯機", "Online Server"))
+                            .font(.system(size: 11, weight: .black))
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 32)
+                    .background(ddz.networkMode == .onlineServer ? Color.blue : Color.black.opacity(0.45))
+                    .foregroundColor(.white)
+                    .cornerRadius(8)
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(ddz.networkMode == .onlineServer ? httGold : Color.clear, lineWidth: 1.5))
+                }
+                .buttonStyle(PlainButtonStyle())
+            }
+            
+            // 1. Player Nickname & K-ON! Character Avatar Selection
+            VStack(alignment: .leading, spacing: 5) {
                 HStack(spacing: 8) {
-                    Button(action: {
-                        ddz.networkMode = .faceToFaceP2P
-                    }) {
-                        HStack(spacing: 5) {
-                            Image(systemName: "antenna.radiowaves.left.and.right")
-                            Text(tr("面对面开房联机 (免流量)", "面對面開房聯機 (免流量)", "Face-to-Face P2P"))
-                                .font(.system(size: 12, weight: .black))
-                        }
-                        .frame(maxWidth: .infinity, minHeight: 36)
-                        .background(ddz.networkMode == .faceToFaceP2P ? httCrimson : Color.black.opacity(0.45))
+                    Text(tr("1. 昵称与角色", "1. 暱稱與角色", "1. Profile"))
+                        .font(.system(size: 12, weight: .black))
+                        .foregroundColor(httGold)
+                    TextField(tr("输入你的房间昵称", "輸入你的房間暱稱", "Nickname"), text: $ddz.myNickname)
+                        .font(.system(size: 12, weight: .bold))
                         .foregroundColor(.white)
-                        .cornerRadius(10)
-                        .overlay(RoundedRectangle(cornerRadius: 10).stroke(ddz.networkMode == .faceToFaceP2P ? httGold : Color.clear, lineWidth: 1.5))
-                    }
-                    .buttonStyle(PlainButtonStyle())
-                    
-                    Button(action: {
-                        ddz.networkMode = .onlineServer
-                    }) {
-                        HStack(spacing: 5) {
-                            Image(systemName: "icloud.and.arrow.up.fill")
-                            Text(tr("在线服务器联机 (预留)", "在線伺服器聯機 (預留)", "Online Server"))
-                                .font(.system(size: 12, weight: .black))
-                        }
-                        .frame(maxWidth: .infinity, minHeight: 36)
-                        .background(ddz.networkMode == .onlineServer ? Color.blue : Color.black.opacity(0.45))
-                        .foregroundColor(.white)
-                        .cornerRadius(10)
-                        .overlay(RoundedRectangle(cornerRadius: 10).stroke(ddz.networkMode == .onlineServer ? httGold : Color.clear, lineWidth: 1.5))
-                    }
-                    .buttonStyle(PlainButtonStyle())
+                        .padding(.horizontal, 8)
+                        .frame(height: 28)
+                        .background(Color.white.opacity(0.14))
+                        .cornerRadius(6)
                 }
                 
-                // Player Nickname & K-ON! Character Avatar Selection
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(tr("1. 个人昵称与出战轻音角色选择", "1. 個人暱稱與出戰輕音角色選擇", "1. Your Nickname & HTT Character"))
-                        .font(.system(size: 13, weight: .black))
-                        .foregroundColor(httGold)
+                HStack(spacing: 6) {
+                    ForEach(AudioPlayerManager.CharacterFilter.fiveIndividuals) { char in
+                        let isSel = (ddz.myCharacter == char)
+                        Button(action: {
+                            ddz.myCharacter = char
+                            ddz.rebuildLobbySeats()
+                            manager.playMascotVoice(for: char)
+                        }) {
+                            VStack(spacing: 2) {
+                                if let frame = manager.allMemberFrames[char.charId] {
+                                    Image(uiImage: frame)
+                                        .interpolation(.none)
+                                        .resizable()
+                                        .scaledToFit()
+                                        .frame(width: 34, height: 38)
+                                }
+                                Text(char.displayName(manager.language))
+                                    .font(.system(size: 10, weight: .black))
+                                    .foregroundColor(.white)
+                                    .lineLimit(1)
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 4)
+                            .background(isSel ? httCrimson : Color.white.opacity(0.10))
+                            .cornerRadius(8)
+                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(isSel ? httGold : Color.clear, lineWidth: 1.2))
+                        }
+                        .buttonStyle(PlainButtonStyle())
+                    }
+                }
+            }
+            .padding(8)
+            .background(Color.black.opacity(0.45))
+            .cornerRadius(10)
+            
+            // 2. Face-to-Face Room Code & Host / Join Buttons (OR Online Server Config)
+            if ddz.networkMode == .faceToFaceP2P {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Text(tr("2. 面对面开房联机 (蓝牙 + P2P Wi-Fi)", "2. 面對面開房聯機 (藍牙 + P2P Wi-Fi)", "2. Face-to-Face P2P"))
+                            .font(.system(size: 12, weight: .black))
+                            .foregroundColor(httGold)
+                        Spacer()
+                        Text(tr("房号:", "房號:", "Code:"))
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundColor(httCream)
+                        TextField("必填房号", text: $ddz.roomCode)
+                            .font(.system(size: 12, weight: .black, design: .monospaced))
+                            .foregroundColor(httGold)
+                            .multilineTextAlignment(.center)
+                            .frame(width: 68, height: 26)
+                            .background(Color.white.opacity(0.14))
+                            .cornerRadius(6)
+                    }
                     
                     HStack(spacing: 8) {
-                        Text(tr("昵称:", "暱稱:", "Name:"))
-                            .font(.system(size: 12, weight: .bold))
-                            .foregroundColor(httCream)
-                        TextField(tr("输入你的房间昵称", "輸入你的房間暱稱", "Nickname"), text: $ddz.myNickname)
-                            .font(.system(size: 13, weight: .bold))
+                        Button(action: {
+                            ddz.startHostingFaceToFaceRoom()
+                        }) {
+                            HStack(spacing: 4) {
+                                Image(systemName: ddz.isHostingRoom ? "checkmark.circle.fill" : "house.fill")
+                                Text(ddz.isHostingRoom
+                                     ? tr("已建房(\(ddz.roomCode))", "已建房(\(ddz.roomCode))", "Hosting")
+                                     : tr("创建面对面房间(房主)", "創建面對面房間(房主)", "Create Room"))
+                                    .font(.system(size: 11, weight: .black))
+                            }
+                            .frame(maxWidth: .infinity, minHeight: 34)
+                            .background(ddz.isHostingRoom ? Color.green.opacity(0.85) : httCrimson)
                             .foregroundColor(.white)
-                            .padding(.horizontal, 10)
-                            .frame(height: 34)
-                            .background(Color.white.opacity(0.14))
                             .cornerRadius(8)
+                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold, lineWidth: 1))
+                        }
+                        .buttonStyle(PlainButtonStyle())
+                        
+                        Button(action: {
+                            ddz.startScanningFaceToFaceRooms()
+                        }) {
+                            HStack(spacing: 4) {
+                                Image(systemName: "dot.radiowaves.left.and.right")
+                                Text(ddz.isBrowsingRooms
+                                     ? tr("正在扫描中...", "正在掃描中...", "Scanning...")
+                                     : tr("扫描并加入房间", "掃描並加入房間", "Scan & Join"))
+                                    .font(.system(size: 11, weight: .black))
+                            }
+                            .frame(maxWidth: .infinity, minHeight: 34)
+                            .background(ddz.isBrowsingRooms ? Color.blue : Color.white.opacity(0.16))
+                            .foregroundColor(.white)
+                            .cornerRadius(8)
+                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold.opacity(0.75), lineWidth: 1))
+                        }
+                        .buttonStyle(PlainButtonStyle())
                     }
                     
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 8) {
-                            ForEach(AudioPlayerManager.CharacterFilter.fiveIndividuals) { char in
-                                let isSel = (ddz.myCharacter == char)
-                                Button(action: {
-                                    ddz.myCharacter = char
-                                    ddz.rebuildLobbySeats()
-                                    manager.playMascotVoice(for: char)
-                                }) {
-                                    VStack(spacing: 3) {
-                                        if let frame = manager.allMemberFrames[char.charId] {
-                                            Image(uiImage: frame)
-                                                .interpolation(.none)
-                                                .resizable()
-                                                .scaledToFit()
-                                                .frame(width: 42, height: 48)
-                                        }
-                                        Text(char.displayName(manager.language))
-                                            .font(.system(size: 11, weight: .black))
-                                            .foregroundColor(.white)
-                                    }
-                                    .padding(.horizontal, 10)
-                                    .padding(.vertical, 6)
-                                    .background(isSel ? httCrimson : Color.white.opacity(0.10))
-                                    .cornerRadius(10)
-                                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(isSel ? httGold : Color.clear, lineWidth: 1.5))
+                    if !ddz.discoveredRooms.isEmpty {
+                        ForEach(ddz.discoveredRooms.prefix(2)) { rm in
+                            Button(action: {
+                                ddz.joinDiscoveredRoom(rm)
+                            }) {
+                                HStack {
+                                    Image(systemName: "person.2.wave.2.fill")
+                                        .foregroundColor(httGold)
+                                    Text("房主: \(rm.hostName) · 房号: \(rm.roomCode)")
+                                        .font(.system(size: 11, weight: .black))
+                                        .foregroundColor(.white)
+                                    Spacer()
+                                    Text(tr("点击加入", "點擊加入", "Join"))
+                                        .font(.system(size: 10, weight: .black))
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 3)
+                                        .background(Color.green)
+                                        .foregroundColor(.white)
+                                        .cornerRadius(5)
                                 }
-                                .buttonStyle(PlainButtonStyle())
+                                .padding(6)
+                                .background(Color.white.opacity(0.12))
+                                .cornerRadius(6)
                             }
+                            .buttonStyle(PlainButtonStyle())
                         }
                     }
                 }
-                .padding(12)
+                .padding(8)
                 .background(Color.black.opacity(0.45))
-                .cornerRadius(12)
-                
-                // Face-to-Face Room Code & Host / Join Buttons (OR Online Server Config)
-                if ddz.networkMode == .faceToFaceP2P {
-                    VStack(alignment: .leading, spacing: 10) {
-                        HStack {
-                            Text(tr("2. 面对面开房联机 (蓝牙 + P2P Wi-Fi 直连)", "2. 面對面開房聯機 (藍牙 + P2P Wi-Fi 直連)", "2. Face-to-Face Room Setup"))
-                                .font(.system(size: 13, weight: .black))
-                                .foregroundColor(httGold)
-                            Spacer()
-                            Text(tr("房号:", "房號:", "Code:"))
-                                .font(.system(size: 12, weight: .bold))
+                .cornerRadius(10)
+            } else {
+                // Online Server Configuration Card (with Room Code input)
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Text(tr("2. 在线服务器联机配置 (每房限3人)", "2. 在線伺服器聯機配置 (每房限3人)", "2. Online Server (Max 3)"))
+                            .font(.system(size: 12, weight: .black))
+                            .foregroundColor(httGold)
+                        Spacer()
+                        HStack(spacing: 4) {
+                            Text(tr("房号:", "房號:", "Room:"))
+                                .font(.system(size: 11, weight: .bold))
                                 .foregroundColor(httCream)
                             TextField("必填房号", text: $ddz.roomCode)
-                                .font(.system(size: 14, weight: .black, design: .monospaced))
+                                .font(.system(size: 12, weight: .black, design: .monospaced))
                                 .foregroundColor(httGold)
                                 .multilineTextAlignment(.center)
-                                .frame(width: 68, height: 30)
-                                .background(Color.white.opacity(0.14))
-                                .cornerRadius(7)
-                        }
-                        
-                        HStack(spacing: 10) {
-                            Button(action: {
-                                ddz.startHostingFaceToFaceRoom()
-                            }) {
-                                HStack(spacing: 5) {
-                                    Image(systemName: ddz.isHostingRoom ? "checkmark.R.circle.fill" : "house.fill")
-                                    Text(ddz.isHostingRoom
-                                         ? tr("已建房(\(ddz.roomCode)) · 等待加入", "已建房(\(ddz.roomCode)) · 等待加入", "Hosting (\(ddz.roomCode))")
-                                         : tr("创建面对面房间 (当房主)", "創建面對面房間 (當房主)", "Create Room (Host)"))
-                                        .font(.system(size: 12, weight: .black))
-                                }
-                                .frame(maxWidth: .infinity, minHeight: 40)
-                                .background(ddz.isHostingRoom ? Color.green.opacity(0.85) : httCrimson)
-                                .foregroundColor(.white)
-                                .cornerRadius(10)
-                                .overlay(RoundedRectangle(cornerRadius: 10).stroke(httGold, lineWidth: 1.2))
-                            }
-                            .buttonStyle(PlainButtonStyle())
-                            
-                            Button(action: {
-                                ddz.startScanningFaceToFaceRooms()
-                            }) {
-                                HStack(spacing: 5) {
-                                    Image(systemName: "dot.radiowaves.left.and.right")
-                                    Text(ddz.isBrowsingRooms
-                                         ? tr("正在扫描附近房间...", "正在掃描附近房間...", "Scanning...")
-                                         : tr("扫描并加入附近房间", "掃描並加入附近房間", "Join Nearby Room"))
-                                        .font(.system(size: 12, weight: .black))
-                                }
-                                .frame(maxWidth: .infinity, minHeight: 40)
-                                .background(ddz.isBrowsingRooms ? Color.blue : Color.white.opacity(0.16))
-                                .foregroundColor(.white)
-                                .cornerRadius(10)
-                                .overlay(RoundedRectangle(cornerRadius: 10).stroke(httGold.opacity(0.75), lineWidth: 1))
-                            }
-                            .buttonStyle(PlainButtonStyle())
-                        }
-                        
-                        // Discovered Nearby Rooms List
-                        if !ddz.discoveredRooms.isEmpty {
-                            VStack(alignment: .leading, spacing: 6) {
-                                Text(tr("发现附近的面对面房间（点击立即加入）：", "發現附近的面對面房間（點擊立即加入）：", "Nearby Rooms (Tap to Join):"))
-                                    .font(.system(size: 11, weight: .bold))
-                                    .foregroundColor(.green)
-                                
-                                ForEach(ddz.discoveredRooms) { rm in
-                                    Button(action: {
-                                        ddz.joinDiscoveredRoom(rm)
-                                    }) {
-                                        HStack {
-                                            Image(systemName: "person.2.wave.2.fill")
-                                                .foregroundColor(httGold)
-                                            Text("房主: \(rm.hostName) · 房号: \(rm.roomCode)")
-                                                .font(.system(size: 13, weight: .black))
-                                                .foregroundColor(.white)
-                                            Spacer()
-                                            Text(tr("点击加入", "點擊加入", "Join"))
-                                                .font(.system(size: 11, weight: .black))
-                                                .padding(.horizontal, 10)
-                                                .padding(.vertical, 5)
-                                                .background(Color.green)
-                                                .foregroundColor(.white)
-                                                .cornerRadius(6)
-                                        }
-                                        .padding(10)
-                                        .background(Color.white.opacity(0.12))
-                                        .cornerRadius(8)
-                                    }
-                                    .buttonStyle(PlainButtonStyle())
-                                }
-                            }
+                                .frame(width: 68, height: 26)
+                                .background(Color.white.opacity(0.15))
+                                .cornerRadius(6)
                         }
                     }
-                    .padding(12)
-                    .background(Color.black.opacity(0.45))
-                    .cornerRadius(12)
-                } else {
-                    // Online Server Configuration Card (with Room Code input)
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            Text(tr("2. 在线服务器联机配置", "2. 在線伺服器聯機配置", "2. Online Server Endpoint"))
-                                .font(.system(size: 13, weight: .black))
-                                .foregroundColor(httGold)
-                            Spacer()
-                            HStack(spacing: 4) {
-                                Text(tr("房号:", "房號:", "Room:"))
-                                    .font(.system(size: 11, weight: .bold))
-                                    .foregroundColor(httCream)
-                                TextField("必填房号", text: $ddz.roomCode)
-                                    .font(.system(size: 13, weight: .black, design: .monospaced))
-                                    .foregroundColor(httGold)
-                                    .multilineTextAlignment(.center)
-                                    .frame(width: 68, height: 28)
-                                    .background(Color.white.opacity(0.15))
-                                    .cornerRadius(6)
-                            }
-                        }
+                    
+                    HStack(spacing: 6) {
+                        TextField("wss://azusa.online/ddz", text: $ddz.customServerURL)
+                            .font(.system(size: 11, weight: .bold, design: .monospaced))
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 8)
+                            .frame(height: 32)
+                            .background(Color.white.opacity(0.14))
+                            .cornerRadius(8)
                         
-                        Text(tr("底层已封装统一 DoudizhuNetPacket 状态同步协议，后续部署 WebSocket 房间服务后填入地址即可直接在线跨网匹配：", "底層已封裝統一 DoudizhuNetPacket 狀態同步協議，後續部署 WebSocket 房間服務後填入地址即可直接在線跨網匹配：", "WebSocket room server URL:"))
-                            .font(.system(size: 11))
-                            .foregroundColor(.gray)
-                        
-                        HStack(spacing: 8) {
-                            TextField("wss://psp.azusa.online/ddz", text: $ddz.customServerURL)
-                                .font(.system(size: 12, weight: .bold, design: .monospaced))
-                                .foregroundColor(.white)
+                        Button(action: {
+                            ddz.connectOnlineServerRoom()
+                        }) {
+                            Text(ddz.isOnlineConnected ? tr("已连(\(ddz.roomCode))", "已連(\(ddz.roomCode))", "Connected") : tr("连接服务器", "連接伺服器", "Connect"))
+                                .font(.system(size: 11, weight: .black))
                                 .padding(.horizontal, 10)
-                                .frame(height: 36)
-                                .background(Color.white.opacity(0.14))
+                                .frame(height: 32)
+                                .background(ddz.isOnlineConnected ? Color.green.opacity(0.85) : Color.blue)
+                                .foregroundColor(.white)
                                 .cornerRadius(8)
-                            
+                        }
+                        .buttonStyle(PlainButtonStyle())
+                        
+                        if ddz.isOnlineConnected || !ddz.connectedPeerNames.isEmpty {
                             Button(action: {
-                                ddz.connectOnlineServerRoom()
+                                ddz.leaveCurrentRoomAndReset()
                             }) {
-                                Text(ddz.isOnlineConnected ? tr("已连(\(ddz.roomCode))", "已連(\(ddz.roomCode))", "Connected") : tr("连接服务器", "連接伺服器", "Connect"))
-                                    .font(.system(size: 12, weight: .black))
-                                    .padding(.horizontal, 10)
-                                    .frame(height: 36)
-                                    .background(ddz.isOnlineConnected ? Color.green.opacity(0.85) : Color.blue)
+                                Text(tr("退出", "退出", "Leave"))
+                                    .font(.system(size: 11, weight: .black))
+                                    .padding(.horizontal, 8)
+                                    .frame(height: 32)
+                                    .background(httCrimson)
                                     .foregroundColor(.white)
                                     .cornerRadius(8)
                             }
                             .buttonStyle(PlainButtonStyle())
-                            
-                            if ddz.isOnlineConnected || !ddz.connectedPeerNames.isEmpty {
-                                Button(action: {
-                                    ddz.leaveCurrentRoomAndReset()
-                                }) {
-                                    Text(tr("取消/退出", "取消/退出", "Leave"))
-                                        .font(.system(size: 12, weight: .black))
-                                        .padding(.horizontal, 10)
-                                        .frame(height: 36)
-                                        .background(httCrimson)
-                                        .foregroundColor(.white)
-                                        .cornerRadius(8)
-                                }
-                                .buttonStyle(PlainButtonStyle())
-                            }
                         }
                     }
-                    .padding(12)
-                    .background(Color.black.opacity(0.45))
-                    .cornerRadius(12)
+                }
+                .padding(8)
+                .background(Color.black.opacity(0.45))
+                .cornerRadius(10)
+            }
+            
+            // 3. Host Room Rules Settings (局数 / 底分 / 封顶 / 倒计时 / AI难度)
+            let canEditRules = ddz.isRoomAuthority || (!ddz.isHostingRoom && !ddz.isOnlineConnected && ddz.connectedPeerNames.isEmpty)
+            VStack(alignment: .leading, spacing: 5) {
+                HStack {
+                    Text(tr("3. 房主房间规则设置 (局数/底分/封顶/倒计时)", "3. 房主房間規則設置 (局數/底分/封頂/倒計時)", "3. Host Room Rules"))
+                        .font(.system(size: 11, weight: .black))
+                        .foregroundColor(httGold)
+                    Spacer()
+                    Text(canEditRules ? "👑 房主可改 · 第 \(ddz.currentRound)/\(ddz.totalRounds == 0 ? "∞" : "\(ddz.totalRounds)") 局" : "🔒 仅1号房主可改")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundColor(canEditRules ? .green : .orange)
                 }
                 
-                // 3. Host Room Rules Settings (局数 / 底分 / 封顶 / 倒计时 / AI难度)
-                let canEditRules = ddz.isRoomAuthority || (!ddz.isHostingRoom && !ddz.isOnlineConnected && ddz.connectedPeerNames.isEmpty)
-                VStack(alignment: .leading, spacing: 7) {
-                    HStack {
-                        Text(tr("3. 房主房间规则设置 (局数/底分/封顶/倒计时)", "3. 房主房間規則設置 (局數/底分/封頂/倒計時)", "3. Host Room Rules"))
-                            .font(.system(size: 12, weight: .black))
-                            .foregroundColor(httGold)
-                        Spacer()
-                        Text(canEditRules ? "第 \(ddz.currentRound)/\(ddz.totalRounds == 0 ? "∞" : "\(ddz.totalRounds)") 局" : "🔒 仅房主可改")
+                ddzRuleRow(label: "对局局数:", options: [(3, "3局"), (5, "5局"), (10, "10局"), (0, "无限局")], selected: ddz.totalRounds, activeColor: httCrimson, enabled: canEditRules) {
+                    ddz.totalRounds = $0; ddz.syncRulesIfHost()
+                }
+                ddzRuleRow(label: "每局底分:", options: [(50, "50分"), (100, "100分"), (200, "200分"), (500, "500分")], selected: ddz.baseScore, activeColor: Color(red: 0.85, green: 0.58, blue: 0.15), enabled: canEditRules) {
+                    ddz.baseScore = $0; ddz.syncRulesIfHost()
+                }
+                ddzRuleRow(label: "倍数封顶:", options: [(16, "16倍"), (32, "32倍"), (64, "64倍"), (0, "不封顶")], selected: ddz.maxMultiplier, activeColor: .purple, enabled: canEditRules) {
+                    ddz.maxMultiplier = $0; ddz.syncRulesIfHost()
+                }
+                ddzRuleRow(label: "出牌限时:", options: [(15, "15秒"), (25, "25秒"), (30, "30秒"), (0, "不限时")], selected: ddz.turnTimeLimit, activeColor: .blue, enabled: canEditRules) {
+                    ddz.turnTimeLimit = $0; ddz.turnRemainingSeconds = $0; ddz.syncRulesIfHost()
+                }
+                
+                HStack(spacing: 5) {
+                    Text("辅助与AI:")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundColor(.gray)
+                        .frame(width: 54, alignment: .leading)
+                    Button(action: {
+                        if canEditRules { ddz.allowCardCounter.toggle(); ddz.syncRulesIfHost() }
+                    }) {
+                        Text(ddz.allowCardCounter ? "✓ 记牌器" : "记牌器")
                             .font(.system(size: 10, weight: .bold))
-                            .foregroundColor(canEditRules ? .green : .orange)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 4)
+                            .background(ddz.allowCardCounter ? Color.green.opacity(0.85) : Color.white.opacity(0.12))
+                            .foregroundColor(.white)
+                            .cornerRadius(6)
                     }
+                    .buttonStyle(PlainButtonStyle())
+                    .disabled(!canEditRules)
                     
-                    ddzRuleRow(label: "对局局数:", options: [(3, "3局"), (5, "5局"), (10, "10局"), (0, "无限局")], selected: ddz.totalRounds, activeColor: httCrimson, enabled: canEditRules) {
-                        ddz.totalRounds = $0; ddz.syncRulesIfHost()
-                    }
-                    ddzRuleRow(label: "每局底分:", options: [(50, "50分"), (100, "100分"), (200, "200分"), (500, "500分")], selected: ddz.baseScore, activeColor: Color(red: 0.85, green: 0.58, blue: 0.15), enabled: canEditRules) {
-                        ddz.baseScore = $0; ddz.syncRulesIfHost()
-                    }
-                    ddzRuleRow(label: "倍数封顶:", options: [(16, "16倍"), (32, "32倍"), (64, "64倍"), (0, "不封顶")], selected: ddz.maxMultiplier, activeColor: .purple, enabled: canEditRules) {
-                        ddz.maxMultiplier = $0; ddz.syncRulesIfHost()
-                    }
-                    ddzRuleRow(label: "出牌限时:", options: [(15, "15秒"), (25, "25秒"), (30, "30秒"), (0, "不限时")], selected: ddz.turnTimeLimit, activeColor: .blue, enabled: canEditRules) {
-                        ddz.turnTimeLimit = $0; ddz.turnRemainingSeconds = $0; ddz.syncRulesIfHost()
-                    }
-                    
-                    HStack(spacing: 5) {
-                        Text("辅助与AI:")
-                            .font(.system(size: 10, weight: .bold))
-                            .foregroundColor(.gray)
-                            .frame(width: 54, alignment: .leading)
+                    ForEach(["休闲 AI", "标准 AI", "大师 AI"], id: \.self) { diff in
                         Button(action: {
-                            if canEditRules { ddz.allowCardCounter.toggle(); ddz.syncRulesIfHost() }
+                            if canEditRules { ddz.aiDifficulty = diff; ddz.syncRulesIfHost() }
                         }) {
-                            Text(ddz.allowCardCounter ? "✓ 记牌器" : "记牌器")
+                            Text(diff)
                                 .font(.system(size: 10, weight: .bold))
-                                .padding(.horizontal, 7)
-                                .padding(.vertical, 5)
-                                .background(ddz.allowCardCounter ? Color.green.opacity(0.85) : Color.white.opacity(0.12))
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 4)
+                                .background(ddz.aiDifficulty == diff ? Color(red: 0.85, green: 0.58, blue: 0.15) : Color.white.opacity(0.12))
                                 .foregroundColor(.white)
                                 .cornerRadius(6)
                         }
                         .buttonStyle(PlainButtonStyle())
                         .disabled(!canEditRules)
-                        
-                        ForEach(["休闲 AI", "标准 AI", "大师 AI"], id: \.self) { diff in
-                            Button(action: {
-                                if canEditRules { ddz.aiDifficulty = diff; ddz.syncRulesIfHost() }
-                            }) {
-                                Text(diff)
-                                    .font(.system(size: 10, weight: .bold))
-                                    .frame(maxWidth: .infinity)
-                                    .padding(.vertical, 5)
-                                    .background(ddz.aiDifficulty == diff ? Color(red: 0.85, green: 0.58, blue: 0.15) : Color.white.opacity(0.12))
-                                    .foregroundColor(.white)
-                                    .cornerRadius(6)
-                            }
-                            .buttonStyle(PlainButtonStyle())
-                            .disabled(!canEditRules)
-                        }
                     }
                 }
-                .padding(12)
-                .background(Color.black.opacity(0.45))
-                .cornerRadius(12)
-                
-                // Current 3-Seat Room Preview (Shows Real Connected Friends + HTT AI Auto-Fill)
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(tr("4. 当前牌桌座位预览 (不足3人将由轻音少女AI自动补位陪打)", "4. 當前牌桌座位預覽 (不足3人將由輕音少女AI自動補位陪打)", "4. Table Seats Preview (AI Auto-Fill)"))
-                        .font(.system(size: 13, weight: .black))
-                        .foregroundColor(httGold)
-                    
-                    HStack(spacing: 8) {
-                        ForEach(ddz.seats) { seat in
-                            VStack(spacing: 4) {
-                                if let sprite = manager.allMemberFrames[seat.characterId] {
-                                    Image(uiImage: sprite)
-                                        .interpolation(.none)
-                                        .resizable()
-                                        .scaledToFit()
-                                        .frame(width: 46, height: 54)
-                                }
-                                Text(seat.name)
-                                    .font(.system(size: 11, weight: .black))
-                                    .foregroundColor(.white)
-                                    .lineLimit(1)
-                                Text(seat.isAI ? tr("🤖 轻音AI补位", "🤖 輕音AI補位", "HTT AI") : tr("📱 真机玩家", "📱 真機玩家", "Human Player"))
-                                    .font(.system(size: 10, weight: .bold))
-                                    .foregroundColor(seat.isAI ? httGold : .green)
-                                Text("积分: \(seat.score)")
-                                    .font(.system(size: 10, weight: .medium, design: .monospaced))
-                                    .foregroundColor(httCream.opacity(0.85))
-                            }
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 8)
-                            .background(Color.white.opacity(0.10))
-                            .cornerRadius(10)
-                            .overlay(RoundedRectangle(cornerRadius: 10).stroke(seat.isAI ? Color.white.opacity(0.2) : Color.green, lineWidth: 1))
-                        }
-                    }
-                }
-                .padding(12)
-                .background(Color.black.opacity(0.45))
-                .cornerRadius(12)
-                
-                // 4. Official K-ON! Poker Deck & Card Back Preview Strip (轻音少女专属扑克牌面与背板预览)
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(tr("4. 轻音少女专属扑克牌面与背板预览", "4. 輕音少女專屬撲克牌面與背板預覽", "4. K-ON! Custom Poker Deck Preview"))
-                        .font(.system(size: 13, weight: .black))
-                        .foregroundColor(httGold)
-                    
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 8) {
-                            if let backImg = ddz.cardBackImage() {
-                                VStack(spacing: 3) {
-                                    Image(uiImage: backImg)
-                                        .resizable()
-                                        .scaledToFill()
-                                        .frame(width: 48, height: 68)
-                                        .clipShape(RoundedRectangle(cornerRadius: 6))
-                                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(httGold, lineWidth: 1.2))
-                                    Text(tr("专属背板", "專屬背板", "Back"))
-                                        .font(.system(size: 9, weight: .bold))
-                                        .foregroundColor(httGold)
-                                }
-                            }
-                            ForEach([("joker_17", "大王·澪"), ("joker_16", "小王·唯"), ("♥_14", "红桃A·唯"), ("♠_14", "黑桃A·梓"), ("♣_14", "梅花A·紬"), ("♦_14", "方块A·律")], id: \.0) { item in
-                                if let cImg = ddz.cardImage(for: item.0) {
-                                    VStack(spacing: 3) {
-                                        Image(uiImage: cImg)
-                                            .resizable()
-                                            .scaledToFill()
-                                            .frame(width: 48, height: 68)
-                                            .clipShape(RoundedRectangle(cornerRadius: 6))
-                                            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.white.opacity(0.6), lineWidth: 1))
-                                        Text(item.1)
-                                            .font(.system(size: 9, weight: .bold))
-                                            .foregroundColor(httCream)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                .padding(12)
-                .background(Color.black.opacity(0.45))
-                .cornerRadius(12)
-                
-                // Prominent Start Game Button (Guest waits for Host)
-                let isGuestWaiting = !ddz.isRoomAuthority && (ddz.isOnlineConnected || !ddz.connectedPeerNames.isEmpty)
-                Button(action: {
-                    if !isGuestWaiting { ddz.startNewRound() }
-                }) {
-                    HStack(spacing: 8) {
-                        Image(systemName: isGuestWaiting ? "hourglass" : "play.fill")
-                            .font(.headline)
-                        Text(isGuestWaiting
-                             ? tr("等待房主开始牌局...", "等待房主開始牌局...", "Waiting for Host...")
-                             : (ddz.connectedPeerNames.isEmpty
-                                ? tr("立即开始牌局 (\(ddz.totalRounds == 0 ? "无限局" : "\(ddz.totalRounds)局制") · 底分 \(ddz.baseScore))", "立即開始牌局", "Start Game Now")
-                                : tr("房主开始发牌 (当前已连 \(ddz.connectedPeerNames.count + 1) 人)", "房主開始發牌", "Deal Cards Now")))
-                            .font(.system(size: 15, weight: .black))
-                    }
-                    .frame(maxWidth: .infinity, minHeight: 48)
-                    .background(
-                        LinearGradient(
-                            colors: [httCrimson, Color(red: 0.90, green: 0.30, blue: 0.18)],
-                            startPoint: .leading,
-                            endPoint: .trailing
-                        )
-                    )
-                    .foregroundColor(.white)
-                    .cornerRadius(12)
-                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(httGold, lineWidth: 1.8))
-                }
-                .buttonStyle(PlainButtonStyle())
             }
-            .padding(12)
+            .padding(8)
+            .background(Color.black.opacity(0.45))
+            .cornerRadius(10)
+            
+            // 4. Current 3-Seat Room Preview
+            VStack(alignment: .leading, spacing: 5) {
+                Text(tr("4. 当前牌桌座位预览 (1号为房主，离开则由2号顺延接任)", "4. 當前牌桌座位預覽 (1號為房主，離開則由2號順延接任)", "4. Table Seats Preview (Ordered Host)"))
+                    .font(.system(size: 11, weight: .black))
+                    .foregroundColor(httGold)
+                
+                HStack(spacing: 6) {
+                    ForEach(ddz.seats) { seat in
+                        VStack(spacing: 2) {
+                            if let sprite = manager.allMemberFrames[seat.characterId] {
+                                Image(uiImage: sprite)
+                                    .interpolation(.none)
+                                    .resizable()
+                                    .scaledToFit()
+                                    .frame(width: 36, height: 42)
+                            }
+                            Text(seat.name)
+                                .font(.system(size: 10, weight: .black))
+                                .foregroundColor(.white)
+                                .lineLimit(1)
+                            Text(seat.isAI ? tr("🤖 轻音AI补位", "🤖 輕音AI補位", "HTT AI") : (seat.id == 0 ? tr("👑 1号房主", "👑 1號房主", "Host") : tr("📱 真机玩家", "📱 真機玩家", "Player")))
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundColor(seat.isAI ? httGold : .green)
+                            Text("积分: \(seat.score)")
+                                .font(.system(size: 9, weight: .medium, design: .monospaced))
+                                .foregroundColor(httCream.opacity(0.85))
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 5)
+                        .background(Color.white.opacity(0.10))
+                        .cornerRadius(8)
+                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(seat.isAI ? Color.white.opacity(0.2) : Color.green, lineWidth: 1))
+                    }
+                }
+            }
+            .padding(8)
+            .background(Color.black.opacity(0.45))
+            .cornerRadius(10)
+            
+            Spacer(minLength: 0)
+            
+            // Prominent Start Game Button (Guest waits for Host)
+            let isGuestWaiting = !ddz.isRoomAuthority && (ddz.isOnlineConnected || !ddz.connectedPeerNames.isEmpty)
+            Button(action: {
+                if !isGuestWaiting { ddz.startNewRound() }
+            }) {
+                HStack(spacing: 6) {
+                    Image(systemName: isGuestWaiting ? "hourglass" : "play.fill")
+                        .font(.subheadline)
+                    Text(isGuestWaiting
+                         ? tr("⏳ 等待1号房主开始牌局...", "⏳ 等待1號房主開始牌局...", "Waiting for Host...")
+                         : (ddz.connectedPeerNames.isEmpty
+                            ? tr("立即开始牌局 (\(ddz.totalRounds == 0 ? "无限局" : "\(ddz.totalRounds)局制") · 底分 \(ddz.baseScore))", "立即開始牌局", "Start Game Now")
+                            : tr("👑 房主开始发牌 (已连 \(ddz.connectedPeerNames.count + 1)/3 人)", "👑 房主開始發牌", "Deal Cards Now")))
+                        .font(.system(size: 14, weight: .black))
+                }
+                .frame(maxWidth: .infinity, minHeight: 42)
+                .background(
+                    LinearGradient(
+                        colors: isGuestWaiting ? [Color.gray, Color.gray.opacity(0.7)] : [httCrimson, Color(red: 0.90, green: 0.30, blue: 0.18)],
+                        startPoint: .leading,
+                        endPoint: .trailing
+                    )
+                )
+                .foregroundColor(.white)
+                .cornerRadius(10)
+                .overlay(RoundedRectangle(cornerRadius: 10).stroke(httGold, lineWidth: 1.5))
+            }
+            .buttonStyle(PlainButtonStyle())
+            .disabled(isGuestWaiting)
         }
+        .padding(.horizontal, 10)
+        .padding(.bottom, 6)
     }
     
     // MARK: - 2. Active Doudizhu Game Table View
