@@ -627,7 +627,8 @@ class AudioPlayerManager(
         _remainingRouteDistanceKm.value = r.totalDistanceMeters / 1000.0
         _remainingRouteMinutes.value = (r.durationSeconds / 60.0).toInt().coerceAtLeast(1)
         val firstStep = r.steps.firstOrNull()
-        _currentStepInstruction.value = firstStep?.instruction ?: "沿规划路线前往 ${_destinationName.value}"
+        val upcomingStep = if (r.steps.size > 1 && (firstStep?.instruction?.contains("出发") == true)) r.steps[1] else firstStep
+        _currentStepInstruction.value = upcomingStep?.instruction ?: "沿规划路线前往 ${_destinationName.value}"
         _distanceToNextStepMeters.value = firstStep?.distanceMeters?.toInt() ?: r.totalDistanceMeters.toInt()
     }
 

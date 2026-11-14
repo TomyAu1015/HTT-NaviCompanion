@@ -995,6 +995,9 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     @Published var destinationName: String = ""
     @Published var destinationCoord: CLLocationCoordinate2D? = nil
     @Published var lastRerouteTime: Date = Date.distantPast
+    @Published var lastRoutePerpendicularDistance: Double = 0.0
+    @Published var initialRouteOriginCoordinate: CLLocationCoordinate2D? = nil
+    private var consecutiveOffRouteCount: Int = 0
     private var activeGeocodeWorkItem: DispatchWorkItem? = nil
     private var currentTapRequestId: Int = 0
     private var currentTapResolvedByPOI: Bool = false
@@ -6626,6 +6629,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             }
         }
         
+        self.lastRoutePerpendicularDistance = minDistance
         // Corridor tolerance: within 68 meters of road centerline so urban e-bike/car multipath never drifts to the left/right of the route line!
         let maxCorridorMeters: Double = (travelMode == .ebike) ? 68.0 : 55.0
         if minDistance <= maxCorridorMeters, let snapped = bestSnappedCoord {
@@ -7681,6 +7685,10 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         tappedMapCoord = nil
         destinationCoord = destCoord
         destinationName = title
+        if !isReroute {
+            initialRouteOriginCoordinate = userCoordinate
+        }
+        consecutiveOffRouteCount = 0
         isRecalculatingRoute = true
         isMapEnlarged = true
         showMapMode = true
@@ -7964,14 +7972,14 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                 RoadLaneItem(iconName: "arrow.up", label: "直行", isRecommended: false),
                 RoadLaneItem(iconName: "arrow.up", label: "直行", isRecommended: false)
             ]
-        } else if lower.contains("右") || lower.contains("right") {
+        } else if lower.contains("右转") || lower.contains("右轉") || lower.contains("转右") || lower.contains("轉右") || lower.contains("向右") || lower.contains("turn right") || (lower.contains("right") && !lower.contains("left")) || (lower.contains("右") && !lower.contains("左")) {
             // 3 lanes: Left (Gray), Straight (Gray), Right (White Highlighted!)
             currentRoadLanes = [
                 RoadLaneItem(iconName: "arrow.turn.up.left", label: "左转", isRecommended: false),
                 RoadLaneItem(iconName: "arrow.up", label: "直行", isRecommended: false),
                 RoadLaneItem(iconName: "arrow.turn.up.right", label: "右转", isRecommended: true)
             ]
-        } else if lower.contains("左") || lower.contains("left") {
+        } else if lower.contains("左转") || lower.contains("左轉") || lower.contains("转左") || lower.contains("轉左") || lower.contains("向左") || lower.contains("turn left") || lower.contains("left") || lower.contains("左") {
             // 3 lanes: Left (White Highlighted!), Straight (Gray), Right (Gray)
             currentRoadLanes = [
                 RoadLaneItem(iconName: "arrow.turn.up.left", label: "左转", isRecommended: true),
@@ -8063,9 +8071,11 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         let steps = route.steps
         self.currentStepIndex = steps.count > 1 ? 1 : 0
         if self.currentStepIndex < steps.count {
-            let step = steps[self.currentStepIndex]
-            self.currentStepInstruction = step.instructions.isEmpty ? title : step.instructions
-            self.distanceToNextStepMeters = step.distance
+            let curStep = steps[self.currentStepIndex]
+            let nextStep = (self.currentStepIndex + 1 < steps.count) ? steps[self.currentStepIndex + 1] : nil
+            let rawInstr = (nextStep != nil && !(nextStep!.instructions.isEmpty)) ? nextStep!.instructions : (curStep.instructions.isEmpty ? title : curStep.instructions)
+            self.currentStepInstruction = self.verifiedTurnInstruction(raw: rawInstr, prevStep: curStep, nextStep: nextStep)
+            self.distanceToNextStepMeters = curStep.distance
             self.updateRoadLanes(for: self.currentStepInstruction)
             if !silentFilterUpdate {
                 self.evaluateRoadSpeedLimitAndNotify(for: self.currentStepInstruction.isEmpty ? route.name : self.currentStepInstruction)
@@ -8332,6 +8342,9 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         upcomingServiceAreaDist = 0
         destinationCoord = nil
         destinationName = ""
+        initialRouteOriginCoordinate = nil
+        consecutiveOffRouteCount = 0
+        lastRoutePerpendicularDistance = 0.0
         currentStepInstruction = ""
         distanceToNextStepMeters = 0.0
         remainingRouteDistanceKm = 0.0
@@ -8347,23 +8360,172 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         playVoice(id: base + modeOff + 38, customQuote: "🏁 これで音声案内は終了だよ！運転お疲れ様♪")
     }
     
+    // MARK: - Geometric Turn Verification & Segment-Aware Step Tracking
+    private func bearingDegrees(from a: CLLocationCoordinate2D, to b: CLLocationCoordinate2D) -> Double {
+        let lat1 = a.latitude * .pi / 180.0
+        let lat2 = b.latitude * .pi / 180.0
+        let dLon = (b.longitude - a.longitude) * .pi / 180.0
+        let y = sin(dLon) * cos(lat2)
+        let x = cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(dLon)
+        let deg = atan2(y, x) * 180.0 / .pi
+        return (deg + 360.0).truncatingRemainder(dividingBy: 360.0)
+    }
+
+    private func normalizedAngleDelta(_ delta: Double) -> Double {
+        var d = delta.truncatingRemainder(dividingBy: 360.0)
+        if d > 180.0 { d -= 360.0 }
+        if d < -180.0 { d += 360.0 }
+        return d
+    }
+
+    private func geometricTurnAngle(from prevStep: MKRoute.Step?, to nextStep: MKRoute.Step?) -> Double? {
+        guard let pStep = prevStep, let nStep = nextStep else { return nil }
+        let pPts = pStep.polyline.points()
+        let pCount = pStep.polyline.pointCount
+        let nPts = nStep.polyline.points()
+        let nCount = nStep.polyline.pointCount
+        guard pCount >= 2, nCount >= 2 else { return nil }
+
+        let junction = pPts[pCount - 1].coordinate
+        var inStart = pPts[pCount - 2].coordinate
+        for i in stride(from: pCount - 2, through: 0, by: -1) {
+            let c = pPts[i].coordinate
+            let d = CLLocation(latitude: c.latitude, longitude: c.longitude).distance(from: CLLocation(latitude: junction.latitude, longitude: junction.longitude))
+            inStart = c
+            if d >= 12.0 { break }
+        }
+
+        let outStart = nPts[0].coordinate
+        var outEnd = nPts[1].coordinate
+        for i in 1..<nCount {
+            let c = nPts[i].coordinate
+            let d = CLLocation(latitude: outStart.latitude, longitude: outStart.longitude).distance(from: CLLocation(latitude: c.latitude, longitude: c.longitude))
+            outEnd = c
+            if d >= 12.0 { break }
+        }
+
+        let inB = bearingDegrees(from: inStart, to: junction)
+        let outB = bearingDegrees(from: outStart, to: outEnd)
+        return normalizedAngleDelta(outB - inB)
+    }
+
+    private func verifiedTurnInstruction(raw: String, prevStep: MKRoute.Step?, nextStep: MKRoute.Step?) -> String {
+        var text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let angle = geometricTurnAngle(from: prevStep, to: nextStep) else {
+            return text
+        }
+        let lower = text.lowercased()
+        let saysRight = lower.contains("右") || lower.contains("right")
+        let saysLeft = lower.contains("左") || lower.contains("left")
+
+        if angle <= -35.0 && angle > -150.0 {
+            if saysRight && !saysLeft {
+                text = text
+                    .replacingOccurrences(of: "轉右", with: "轉左")
+                    .replacingOccurrences(of: "转右", with: "转左")
+                    .replacingOccurrences(of: "右轉", with: "左轉")
+                    .replacingOccurrences(of: "右转", with: "左转")
+                    .replacingOccurrences(of: "向右", with: "向左")
+                    .replacingOccurrences(of: "Right", with: "Left")
+                    .replacingOccurrences(of: "right", with: "left")
+            } else if !saysLeft && !lower.contains("掉头") && !lower.contains("调头") && !lower.contains("u-turn") {
+                let prefix = (language == .en) ? "Turn Left · " : (language == .zhHant ? "左轉 · " : "左转 · ")
+                text = text.isEmpty ? (language == .en ? "Turn Left" : (language == .zhHant ? "前方左轉" : "前方左转")) : (prefix + text)
+            }
+        } else if angle >= 35.0 && angle < 150.0 {
+            if saysLeft && !saysRight {
+                text = text
+                    .replacingOccurrences(of: "轉左", with: "轉右")
+                    .replacingOccurrences(of: "转左", with: "转右")
+                    .replacingOccurrences(of: "左轉", with: "右轉")
+                    .replacingOccurrences(of: "左转", with: "右转")
+                    .replacingOccurrences(of: "向左", with: "向右")
+                    .replacingOccurrences(of: "Left", with: "Right")
+                    .replacingOccurrences(of: "left", with: "right")
+            } else if !saysRight && !lower.contains("掉头") && !lower.contains("调头") && !lower.contains("u-turn") {
+                let prefix = (language == .en) ? "Turn Right · " : (language == .zhHant ? "右轉 · " : "右转 · ")
+                text = text.isEmpty ? (language == .en ? "Turn Right" : (language == .zhHant ? "前方右轉" : "前方右转")) : (prefix + text)
+            }
+        }
+        return text
+    }
+
+    private func distanceAlongStepPolyline(_ step: MKRoute.Step, from coord: CLLocationCoordinate2D) -> (perpDist: Double, remainDist: Double) {
+        let pts = step.polyline.points()
+        let ptCount = step.polyline.pointCount
+        guard ptCount >= 2 else {
+            if ptCount == 1 {
+                let p = pts[0].coordinate
+                let d = CLLocation(latitude: coord.latitude, longitude: coord.longitude).distance(from: CLLocation(latitude: p.latitude, longitude: p.longitude))
+                return (d, d)
+            }
+            return (999999.0, 0.0)
+        }
+        var bestDist: Double = 999999.0
+        var bestSegIdx: Int = 0
+        var bestProj: CLLocationCoordinate2D = pts[0].coordinate
+        for i in 0..<(ptCount - 1) {
+            let a = pts[i].coordinate
+            let b = pts[i + 1].coordinate
+            let (proj, d, _) = projectPointOntoSegment(p: coord, a: a, b: b)
+            if d < bestDist {
+                bestDist = d
+                bestSegIdx = i
+                bestProj = proj
+            }
+        }
+        var remain = CLLocation(latitude: bestProj.latitude, longitude: bestProj.longitude)
+            .distance(from: CLLocation(latitude: pts[bestSegIdx + 1].coordinate.latitude, longitude: pts[bestSegIdx + 1].coordinate.longitude))
+        for i in (bestSegIdx + 1)..<(ptCount - 1) {
+            let a = pts[i].coordinate
+            let b = pts[i + 1].coordinate
+            remain += CLLocation(latitude: a.latitude, longitude: a.longitude).distance(from: CLLocation(latitude: b.latitude, longitude: b.longitude))
+        }
+        return (bestDist, remain)
+    }
+
     // Real-Time Turn-by-Turn GPS Step Evaluation
     private func updateNavigationProgress(location: CLLocation) {
         guard let route = activeRoute, !route.steps.isEmpty else { return }
         let steps = route.steps
         guard currentStepIndex < steps.count else { return }
-        
-        let step = steps[currentStepIndex]
-        let stepEndCoord = step.polyline.points()[max(0, step.polyline.pointCount - 1)].coordinate
-        let stepEndLoc = CLLocation(latitude: stepEndCoord.latitude, longitude: stepEndCoord.longitude)
-        // Compare GCJ-02 userCoordinate with GCJ-02 step coordinates for accurate distance
+
         let currentLoc = CLLocation(latitude: userCoordinate.latitude, longitude: userCoordinate.longitude)
-        let dist = currentLoc.distance(from: stepEndLoc)
-        
+
+        // Find the actual step segment the user is currently riding on (with forward bias so we never jump prematurely before the turn!)
+        var activeSeg = currentStepIndex
+        var activeEval = distanceAlongStepPolyline(steps[activeSeg], from: userCoordinate)
+        let searchUpper = min(steps.count - 1, currentStepIndex + 3)
+        if activeSeg < searchUpper {
+            for candIdx in (activeSeg + 1)...searchUpper {
+                let candEval = distanceAlongStepPolyline(steps[candIdx], from: userCoordinate)
+                // Advance to next step only when user is clearly closer to the next step polyline (or has passed the junction)
+                if candEval.perpDist + 6.0 < activeEval.perpDist || (activeEval.remainDist < 10.0 && candEval.perpDist < 28.0) {
+                    activeSeg = candIdx
+                    activeEval = candEval
+                    break
+                }
+            }
+        }
+        if activeSeg > currentStepIndex {
+            currentStepIndex = activeSeg
+        }
+
+        let step = steps[currentStepIndex]
+        let dist = activeEval.remainDist
         self.distanceToNextStepMeters = dist
-        if !step.instructions.isEmpty && self.currentStepInstruction != step.instructions {
-            self.currentStepInstruction = step.instructions
-            self.evaluateRoadSpeedLimitAndNotify(for: step.instructions)
+
+        let nextStep = (currentStepIndex + 1 < steps.count) ? steps[currentStepIndex + 1] : nil
+        let rawUpcoming = (nextStep != nil && !(nextStep!.instructions.isEmpty))
+            ? nextStep!.instructions
+            : (currentStepIndex == steps.count - 1
+               ? (language == .en ? "Arrive at \(destinationName)" : (language == .zhHant ? "即將到達目的地：\(destinationName)" : "即将到达目的地：\(destinationName)"))
+               : step.instructions)
+        let verifiedInstr = verifiedTurnInstruction(raw: rawUpcoming, prevStep: step, nextStep: nextStep)
+        if !verifiedInstr.isEmpty && self.currentStepInstruction != verifiedInstr {
+            self.currentStepInstruction = verifiedInstr
+            self.updateRoadLanes(for: verifiedInstr)
+            self.evaluateRoadSpeedLimitAndNotify(for: verifiedInstr)
         }
         
         // Dynamically update remaining route distance, ETA minutes, camera distance, and highway SA/Toll distances!
@@ -8451,20 +8613,29 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             return
         }
         
-        // 3. OFF-ROUTE DYNAMIC REROUTING (偏航重新规划 - 100% 对齐高德)
+        // 3. OFF-ROUTE DYNAMIC REROUTING (使用折线垂直距离 + 连续偏航确认，杜绝直路误判偏航!)
         if isNavigatingFocused && !isRecalculatingRoute && travelMode != .transit, let dest = destinationCoord {
+            let rawMapCoord = CoordinateConverter.wgs84ToGCJ02(location.coordinate)
             let pts = route.polyline.points()
             let ptCount = route.polyline.pointCount
-            var minD: Double = 999999.0
-            let stepStride = max(1, ptCount / 80)
-            var i = 0
-            while i < ptCount {
-                let pCoord = pts[i].coordinate
-                let d = currentLoc.distance(from: CLLocation(latitude: pCoord.latitude, longitude: pCoord.longitude))
-                if d < minD { minD = d }
-                i += stepStride
+            var minSegDist: Double = 999999.0
+            if ptCount >= 2 {
+                for i in 0..<(ptCount - 1) {
+                    let (_, d, _) = projectPointOntoSegment(p: rawMapCoord, a: pts[i].coordinate, b: pts[i + 1].coordinate)
+                    if d < minSegDist { minSegDist = d }
+                }
+            } else {
+                minSegDist = lastRoutePerpendicularDistance
             }
-            if minD > 70.0 && Date().timeIntervalSince(lastRerouteTime) > 15.0 {
+
+            if location.horizontalAccuracy >= 0 && location.horizontalAccuracy <= 40.0 && minSegDist > 85.0 {
+                consecutiveOffRouteCount += 1
+            } else {
+                consecutiveOffRouteCount = 0
+            }
+
+            if consecutiveOffRouteCount >= 3 && Date().timeIntervalSince(lastRerouteTime) > 20.0 {
+                consecutiveOffRouteCount = 0
                 lastRerouteTime = Date()
                 let rerouteMsg = "🔄 你已偏离路线，正在为您重新规划路线..."
                 playVoice(id: activeBaseId() + 43, customQuote: rerouteMsg, clearQueue: false)
@@ -8485,26 +8656,19 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             let key = "\(currentStepIndex)_\(th.distM)"
             if abs(dist - th.limit) <= th.tol && !announcedStepThresholds.contains(key) {
                 announcedStepThresholds.insert(key)
-                let turnM = classifyTurnOffsetM(from: step.instructions)
+                let voiceInstr = verifiedInstr.isEmpty ? step.instructions : verifiedInstr
+                let turnM = classifyTurnOffsetM(from: voiceInstr)
                 let base = activeBaseId()
                 let modeOff = activeModeOffset()
                 enqueueVoiceCombo([
                     (base + th.distM, "📍 \(th.label) (\(Int(dist))m)"),
-                    (base + modeOff + turnM, "↪️ \(step.instructions)")
+                    (base + modeOff + turnM, "↪️ \(voiceInstr)")
                 ])
                 break
             }
         }
         
-        if dist <= 25.0 && currentStepIndex < steps.count - 1 {
-            currentStepIndex += 1
-            let nextStep = steps[currentStepIndex]
-            if !nextStep.instructions.isEmpty {
-                currentStepInstruction = nextStep.instructions
-            }
-            updateRoadLanes(for: currentStepInstruction)
-            evaluateRoadSpeedLimitAndNotify(for: currentStepInstruction)
-        }
+        // Step advancement is handled by segment projection above so banner never jumps past the upcoming turn prematurely.
     }
     
     private func classifyTurnOffsetM(from text: String) -> Int {

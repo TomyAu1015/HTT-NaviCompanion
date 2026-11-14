@@ -381,7 +381,7 @@ struct HTTSmoothMapView: UIViewRepresentable {
                 
                 // Add Start Point (起) and Destination Point (終) Annotations like GaoDe!
                 if route.polyline.pointCount > 0 {
-                    let firstCoord = route.polyline.points()[0].coordinate
+                    let firstCoord = manager.initialRouteOriginCoordinate ?? route.polyline.points()[0].coordinate
                     let startPin = MKPointAnnotation()
                     startPin.coordinate = firstCoord
                     startPin.title = "我的位置"
@@ -2732,10 +2732,12 @@ struct ContentView: View {
     private func turnIconName(for text: String) -> String {
         let lower = text.lowercased()
         if lower.contains("调头") || lower.contains("掉头") || lower.contains("u-turn") { return "arrow.uturn.left" }
-        if lower.contains("稍向右") || lower.contains("右前方") { return "arrow.up.right" }
-        if lower.contains("稍向左") || lower.contains("左前方") { return "arrow.up.left" }
-        if lower.contains("右") { return "arrow.turn.up.right" }
-        if lower.contains("左") { return "arrow.turn.up.left" }
+        if lower.contains("稍向右") || lower.contains("右前方") || lower.contains("keep right") || lower.contains("slight right") { return "arrow.up.right" }
+        if lower.contains("稍向左") || lower.contains("左前方") || lower.contains("keep left") || lower.contains("slight left") { return "arrow.up.left" }
+        if lower.contains("右转") || lower.contains("右轉") || lower.contains("转右") || lower.contains("轉右") || lower.contains("向右") || lower.contains("turn right") { return "arrow.turn.up.right" }
+        if lower.contains("左转") || lower.contains("左轉") || lower.contains("转左") || lower.contains("轉左") || lower.contains("向左") || lower.contains("turn left") { return "arrow.turn.up.left" }
+        if lower.contains("右") && !lower.contains("左") { return "arrow.turn.up.right" }
+        if lower.contains("左") && !lower.contains("右") { return "arrow.turn.up.left" }
         if lower.contains("出口") { return "arrow.right.to.line" }
         return "arrow.up"
     }
