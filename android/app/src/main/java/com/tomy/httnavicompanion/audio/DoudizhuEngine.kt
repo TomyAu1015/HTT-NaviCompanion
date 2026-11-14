@@ -356,6 +356,10 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
     private val okHttpClient = OkHttpClient()
     private var timerRunnable: Runnable? = null
 
+    private var activeConnectedRoomCode: String = ""
+    private val peerCharMap = mutableMapOf<String, CharacterFilter>()
+    private val orderedRoomPeers = mutableListOf<Pair<String, Int>>()
+
     init {
         refreshLocalIpAddress()
         rebuildLobbySeats()
@@ -449,9 +453,6 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
         return list
     }
 
-    private var activeConnectedRoomCode: String = ""
-    private val peerCharMap = mutableMapOf<String, CharacterFilter>()
-    private val orderedRoomPeers = mutableListOf<Pair<String, Int>>()
 
     fun setNetworkMode(mode: DoudizhuNetworkMode) {
         if (_networkMode.value != mode) {
