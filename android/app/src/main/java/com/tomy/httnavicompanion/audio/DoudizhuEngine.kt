@@ -1,26 +1,30 @@
 package com.tomy.httnavicompanion.audio
 
 import android.annotation.SuppressLint
-import android.bluetooth.BluetoothAdapter
-import android.bluetooth.BluetoothManager
-import android.bluetooth.BluetoothServerSocket
-import android.bluetooth.BluetoothSocket
+import android.bluetooth.*
+import android.bluetooth.le.*
 import android.content.Context
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
+import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.ParcelUuid
+import android.util.Base64
 import android.util.Log
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import okhttp3.*
 import org.json.JSONArray
 import org.json.JSONObject
-import java.io.BufferedReader
-import java.io.InputStreamReader
-import java.io.PrintWriter
+import java.io.BufferedInputStream
+import java.io.BufferedOutputStream
+import java.io.ByteArrayOutputStream
+import java.io.InputStream
+import java.io.OutputStream
 import java.net.*
+import java.security.MessageDigest
 import java.util.UUID
 import java.util.concurrent.CopyOnWriteArrayList
 
@@ -71,11 +75,13 @@ data class DoudizhuCard(
 
     companion object {
         fun fromJson(obj: JSONObject): DoudizhuCard {
-            val id = obj.optString("id")
             val rank = obj.optInt("rank")
             val sSym = obj.optString("suit", "♠")
-            val suit = CardSuit.values().firstOrNull { it.symbol == sSym } ?: CardSuit.SPADE
-            return DoudizhuCard(id, rank, suit)
+            val suit = CardSuit.values().firstOrNull { it.symbol == sSym }
+                ?: if (rank >= 16) CardSuit.JOKER else CardSuit.SPADE
+            val defaultId = if (rank >= 16) "joker_$rank" else "${suit.symbol}_$rank"
+            val rawId = obj.optString("id").ifBlank { defaultId }
+            return DoudizhuCard(rawId, rank, suit)
         }
     }
 }
@@ -148,7 +154,9 @@ data class DiscoveredP2PRoom(
     val hostCharId: Int,
     val hostAddress: String,
     val port: Int,
-    val isBluetooth: Boolean = false
+    val isBluetooth: Boolean = false,
+    val isBle: Boolean = false,
+    val bleDevice: BluetoothDevice? = null
 )
 
 data class DoudizhuPlayerSeat(
@@ -201,15 +209,24 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
     private val TAG = "DoudizhuEngine"
     private val mainHandler = Handler(Looper.getMainLooper())
     private val btSppUuid: UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
+    private val bleServiceUuid: UUID = UUID.fromString("E0B86100-3510-4B2C-9000-4B4F4E44445A")
+    private val bleCharUuid: UUID = UUID.fromString("E0B86101-3510-4B2C-9000-4B4F4E44445A")
     private val tcpPort = 47789
+    private val wsPort = 47790
     private val udpBroadcastPort = 47788
 
     // Network Mode & Server Settings (matches iOS v1.6.3)
     private val _networkMode = MutableStateFlow(DoudizhuNetworkMode.FACE_TO_FACE_P2P)
     val networkMode: StateFlow<DoudizhuNetworkMode> = _networkMode
 
-    private val _serverUrl = MutableStateFlow("ws://psp.azusa.online")
+    private val _serverUrl = MutableStateFlow("wss://psp.azusa.online/ddz")
     val serverUrl: StateFlow<String> = _serverUrl
+
+    private val _directConnectIp = MutableStateFlow("")
+    val directConnectIp: StateFlow<String> = _directConnectIp
+
+    private val _localIpAddress = MutableStateFlow("127.0.0.1")
+    val localIpAddress: StateFlow<String> = _localIpAddress
 
     private val _roomCode = MutableStateFlow("8888")
     val roomCode: StateFlow<String> = _roomCode
@@ -300,19 +317,35 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
     private val _winnerSeat = MutableStateFlow<Int?>(null)
     val winnerSeat: StateFlow<Int?> = _winnerSeat
 
-    private val _statusBanner = MutableStateFlow("欢迎来到放课后茶会斗地主！可面对面蓝牙/Wi-Fi开房或连在线服务器")
+    private val _statusBanner = MutableStateFlow("欢迎来到放课后茶会斗地主！支持与 iOS / 安卓面对面或局域网联机")
     val statusBanner: StateFlow<String> = _statusBanner
 
     private val _playedCardsHistory = MutableStateFlow<List<DoudizhuCard>>(emptyList())
     val playedCardsHistory: StateFlow<List<DoudizhuCard>> = _playedCardsHistory
 
+    private var hintIndex = 0
+    private var hasUnmodifiedIosWsPeer = false
+
     // Transport handles
+    private interface PeerChannel {
+        fun sendJson(raw: String)
+        fun close()
+    }
+
+    private val activeChannels = CopyOnWriteArrayList<PeerChannel>()
     private var tcpServerSocket: ServerSocket? = null
-    private val clientWriters = CopyOnWriteArrayList<PrintWriter>()
+    private var wsServerSocket: ServerSocket? = null
     private var clientSocket: Socket? = null
     private var udpSocket: DatagramSocket? = null
     private var btServerSocket: BluetoothServerSocket? = null
     private var btClientSocket: BluetoothSocket? = null
+    private var gattServer: BluetoothGattServer? = null
+    private var bleAdvertiser: BluetoothLeAdvertiser? = null
+    private var bleScanner: BluetoothLeScanner? = null
+    private var bleClientGatt: BluetoothGatt? = null
+    private val bleConnectedDevices = CopyOnWriteArrayList<BluetoothDevice>()
+    private var bleCharacteristic: BluetoothGattCharacteristic? = null
+    private var multicastLock: WifiManager.MulticastLock? = null
     private var nsdManager: NsdManager? = null
     private var nsdRegListener: NsdManager.RegistrationListener? = null
     private var nsdDiscListener: NsdManager.DiscoveryListener? = null
@@ -321,6 +354,7 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
     private var timerRunnable: Runnable? = null
 
     init {
+        refreshLocalIpAddress()
         rebuildLobbySeats()
         startTurnTimerLoop()
     }
@@ -340,8 +374,54 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
         mainHandler.postDelayed(r, 1000L)
     }
 
+    fun refreshLocalIpAddress(): String {
+        var bestIp = "127.0.0.1"
+        try {
+            val interfaces = NetworkInterface.getNetworkInterfaces()
+            while (interfaces != null && interfaces.hasMoreElements()) {
+                val nif = interfaces.nextElement()
+                if (!nif.isUp || nif.isLoopback) continue
+                val addrs = nif.inetAddresses
+                while (addrs.hasMoreElements()) {
+                    val addr = addrs.nextElement()
+                    if (addr is Inet4Address && !addr.isLoopbackAddress) {
+                        val ip = addr.hostAddress ?: continue
+                        if (ip.startsWith("192.168.") || ip.startsWith("172.20.") || ip.startsWith("10.")) {
+                            bestIp = ip
+                            break
+                        } else if (bestIp == "127.0.0.1") {
+                            bestIp = ip
+                        }
+                    }
+                }
+            }
+        } catch (_: Exception) {}
+        _localIpAddress.value = bestIp
+        return bestIp
+    }
+
+    private fun getAllBroadcastAddresses(): List<InetAddress> {
+        val list = mutableListOf<InetAddress>()
+        try {
+            list.add(InetAddress.getByName("255.255.255.255"))
+            val interfaces = NetworkInterface.getNetworkInterfaces()
+            while (interfaces != null && interfaces.hasMoreElements()) {
+                val nif = interfaces.nextElement()
+                if (!nif.isUp || nif.isLoopback) continue
+                for (ia in nif.interfaceAddresses) {
+                    val bcast = ia.broadcast
+                    if (bcast != null && !list.contains(bcast)) {
+                        list.add(bcast)
+                    }
+                }
+            }
+        } catch (_: Exception) {}
+        return list
+    }
+
     fun setNetworkMode(mode: DoudizhuNetworkMode) { _networkMode.value = mode }
     fun setServerUrl(url: String) { _serverUrl.value = url }
+    fun setDirectConnectIp(ip: String) { _directConnectIp.value = ip }
     fun setRoomCode(code: String) { _roomCode.value = code }
     fun setMyNickname(name: String) { _myNickname.value = name; rebuildLobbySeats() }
     fun setMyCharacter(char: CharacterFilter) {
@@ -357,7 +437,7 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
 
     private fun currentLang(): AppLanguage {
         return try {
-            currentLang()
+            audioMgr.language.value
         } catch (_: Throwable) {
             AppLanguage.ZH_HANS
         }
@@ -367,57 +447,96 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
         if (_phase.value != DoudizhuGamePhase.LOBBY) return
         val lang = currentLang()
         val aiPool = CharacterFilter.fiveIndividuals.filter { it != _myChar.value }
+        if (hasUnmodifiedIosWsPeer) {
+            val iosChar = aiPool.firstOrNull() ?: CharacterFilter.MIO
+            val aiChar = aiPool.getOrNull(1) ?: CharacterFilter.RITSU
+            val s0 = DoudizhuPlayerSeat(0, "iOS 玩家 (${iosChar.displayName(lang)})", iosChar, isAI = false, peerDisplayName = "iOS_Host")
+            val s1 = DoudizhuPlayerSeat(1, "${_myNickname.value} (${_myChar.value.displayName(lang)})", _myChar.value, isAI = false, peerDisplayName = _myNickname.value)
+            val s2 = DoudizhuPlayerSeat(2, "${aiChar.displayName(lang)} (AI)", aiChar, isAI = true, peerDisplayName = "AI_2")
+            _mySeatIndex.value = 1
+            _seats.value = listOf(s0, s1, s2)
+            return
+        }
         val existingPeers = _seats.value.filter { !it.isAI && it.seatIndex != 0 }
         val s0 = DoudizhuPlayerSeat(0, "${_myNickname.value} (${_myChar.value.displayName(lang)})", _myChar.value, isAI = false, peerDisplayName = _myNickname.value)
-        val s1 = existingPeers.getOrNull(0) ?: DoudizhuPlayerSeat(1, "${aiPool[0].displayName(lang)} (AI)", aiPool[0], isAI = true)
-        val s2 = existingPeers.getOrNull(1) ?: DoudizhuPlayerSeat(2, "${aiPool[1].displayName(lang)} (AI)", aiPool[1], isAI = true)
+        val s1 = existingPeers.getOrNull(0)?.copy(seatIndex = 1)
+            ?: DoudizhuPlayerSeat(1, "${aiPool[0].displayName(lang)} (AI)", aiPool[0], isAI = true, peerDisplayName = "AI_1")
+        val s2 = existingPeers.getOrNull(1)?.copy(seatIndex = 2)
+            ?: DoudizhuPlayerSeat(2, "${aiPool[1].displayName(lang)} (AI)", aiPool[1], isAI = true, peerDisplayName = "AI_2")
+        _mySeatIndex.value = 0
         _seats.value = listOf(s0, s1, s2)
     }
 
     // =========================================================================
-    // 1. Face-to-Face P2P (Bluetooth RFCOMM + Wi-Fi Direct / LAN NSD + UDP/TCP)
+    // 1. Face-to-Face P2P (BLE + Bluetooth RFCOMM + Wi-Fi UDP/TCP + Embedded iOS WS)
     // =========================================================================
     @SuppressLint("MissingPermission")
     fun startHostingFaceToFaceRoom() {
         stopNetworking()
+        val ip = refreshLocalIpAddress()
         _isHostingRoom.value = true
         _isScanningRooms.value = false
         _mySeatIndex.value = 0
         rebuildLobbySeats()
+        acquireWifiMulticastLock()
 
-        // A. Start TCP Server for Wi-Fi / Hotspot / P2P Wi-Fi Direct
+        // A1. Start Dual-Protocol Server on tcpPort (47789) - accepts both raw JSON lines AND WebSocket upgrades!
         Thread {
             try {
-                val srv = ServerSocket(tcpPort)
+                val srv = ServerSocket()
+                srv.reuseAddress = true
+                srv.bind(InetSocketAddress(tcpPort))
                 tcpServerSocket = srv
                 while (_isHostingRoom.value && !srv.isClosed) {
                     val sock = srv.accept()
-                    handleIncomingSocket(sock)
+                    handleAcceptedSocket(sock)
                 }
             } catch (e: Exception) {
-                Log.w(TAG, "TCP Server stopped: ${e.message}")
+                Log.w(TAG, "TCP Server 47789 stopped: ${e.message}")
             }
         }.start()
 
-        // B. Start UDP Broadcast Advertiser (every 1.5s so Android & iOS on same Wi-Fi/Hotspot discover instantly)
+        // A2. Start Dedicated Embedded WebSocket Server on wsPort (47790) for unmodified iOS App compatibility
+        Thread {
+            try {
+                val wsSrv = ServerSocket()
+                wsSrv.reuseAddress = true
+                wsSrv.bind(InetSocketAddress(wsPort))
+                wsServerSocket = wsSrv
+                while (_isHostingRoom.value && !wsSrv.isClosed) {
+                    val sock = wsSrv.accept()
+                    handleAcceptedSocket(sock)
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "WS Server 47790 stopped: ${e.message}")
+            }
+        }.start()
+
+        // B. Start UDP Broadcast Advertiser (every 1.2s across 255.255.255.255 + all subnet broadcast IPs)
         Thread {
             try {
                 val ds = DatagramSocket()
                 ds.broadcast = true
                 udpSocket = ds
-                val payload = JSONObject().apply {
-                    put("type", "kon_ddz_room")
-                    put("code", _roomCode.value)
-                    put("host", _myNickname.value)
-                    put("char", _myChar.value.charId)
-                    put("port", tcpPort)
-                }.toString().toByteArray(Charsets.UTF_8)
-                val bcastAddr = InetAddress.getByName("255.255.255.255")
                 while (_isHostingRoom.value && !ds.isClosed) {
                     try {
-                        ds.send(DatagramPacket(payload, payload.size, bcastAddr, udpBroadcastPort))
+                        val curIp = refreshLocalIpAddress()
+                        val payload = JSONObject().apply {
+                            put("type", "kon_ddz_room")
+                            put("code", _roomCode.value)
+                            put("host", _myNickname.value)
+                            put("char", _myChar.value.charId)
+                            put("ip", curIp)
+                            put("port", tcpPort)
+                            put("wsPort", wsPort)
+                        }.toString().toByteArray(Charsets.UTF_8)
+                        for (bcastAddr in getAllBroadcastAddresses()) {
+                            try {
+                                ds.send(DatagramPacket(payload, payload.size, bcastAddr, udpBroadcastPort))
+                            } catch (_: Exception) {}
+                        }
                     } catch (_: Exception) {}
-                    Thread.sleep(1500)
+                    Thread.sleep(1200)
                 }
             } catch (_: Exception) {}
         }.start()
@@ -433,6 +552,7 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
                 setAttribute("code", _roomCode.value)
                 setAttribute("host", _myNickname.value)
                 setAttribute("char", "${_myChar.value.charId}")
+                setAttribute("wsPort", "$wsPort")
             }
             val regL = object : NsdManager.RegistrationListener {
                 override fun onServiceRegistered(NsdServiceInfo: NsdServiceInfo) {}
@@ -444,7 +564,7 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
             nsd.registerService(info, NsdManager.PROTOCOL_DNS_SD, regL)
         } catch (_: Exception) {}
 
-        // D. Start Bluetooth RFCOMM Server for pure Bluetooth face-to-face play
+        // D. Start Bluetooth RFCOMM Server + BLE GATT Server for pure Bluetooth face-to-face play
         Thread {
             try {
                 val btMgr = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
@@ -458,40 +578,127 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
                     }
                 }
             } catch (e: Exception) {
-                Log.w(TAG, "Bluetooth server note: ${e.message}")
+                Log.w(TAG, "Bluetooth RFCOMM server note: ${e.message}")
             }
         }.start()
 
-        _statusBanner.value = "📡 房间 [${_roomCode.value}] 已创建！附近好友通过蓝牙或 P2P Wi-Fi 即可加入"
+        startBleGattServerAndAdvertising()
+
+        _statusBanner.value = "📡 房间 [${_roomCode.value}] 已创建！本机IP: $ip | iOS免重装联机可填 ws://$ip:$wsPort"
         audioMgr.playMascotVoice(_myChar.value)
     }
 
     @SuppressLint("MissingPermission")
+    private fun startBleGattServerAndAdvertising() {
+        try {
+            val btMgr = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager ?: return
+            val adapter = btMgr.adapter ?: return
+            if (!adapter.isEnabled) return
+
+            val rxBuffers = mutableMapOf<String, ByteArrayOutputStream>()
+            val gattCallback = object : BluetoothGattServerCallback() {
+                override fun onConnectionStateChange(device: BluetoothDevice, status: Int, newState: Int) {
+                    if (newState == BluetoothProfile.STATE_CONNECTED) {
+                        if (!bleConnectedDevices.contains(device)) bleConnectedDevices.add(device)
+                    } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+                        bleConnectedDevices.remove(device)
+                    }
+                }
+
+                override fun onCharacteristicWriteRequest(
+                    device: BluetoothDevice,
+                    requestId: Int,
+                    characteristic: BluetoothGattCharacteristic,
+                    preparedWrite: Boolean,
+                    responseNeeded: Boolean,
+                    offset: Int,
+                    value: ByteArray?
+                ) {
+                    if (responseNeeded) {
+                        try { gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, 0, null) } catch (_: Exception) {}
+                    }
+                    if (value != null && characteristic.uuid == bleCharUuid) {
+                        val buf = rxBuffers.getOrPut(device.address) { ByteArrayOutputStream() }
+                        for (b in value) {
+                            if (b == '\n'.code.toByte()) {
+                                val line = buf.toString("UTF-8").trim()
+                                buf.reset()
+                                if (line.isNotEmpty()) {
+                                    mainHandler.post { handleReceivedPacketJson(line) }
+                                }
+                            } else {
+                                buf.write(b.toInt())
+                            }
+                        }
+                    }
+                }
+            }
+
+            val server = btMgr.openGattServer(context, gattCallback) ?: return
+            val service = BluetoothGattService(bleServiceUuid, BluetoothGattService.SERVICE_TYPE_PRIMARY)
+            val char = BluetoothGattCharacteristic(
+                bleCharUuid,
+                BluetoothGattCharacteristic.PROPERTY_READ or
+                    BluetoothGattCharacteristic.PROPERTY_WRITE or
+                    BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE or
+                    BluetoothGattCharacteristic.PROPERTY_NOTIFY,
+                BluetoothGattCharacteristic.PERMISSION_READ or BluetoothGattCharacteristic.PERMISSION_WRITE
+            )
+            service.addCharacteristic(char)
+            server.addService(service)
+            gattServer = server
+            bleCharacteristic = char
+
+            val advertiser = adapter.bluetoothLeAdvertiser ?: return
+            bleAdvertiser = advertiser
+            val settings = AdvertiseSettings.Builder()
+                .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
+                .setConnectable(true)
+                .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_HIGH)
+                .build()
+            val data = AdvertiseData.Builder()
+                .setIncludeDeviceName(false)
+                .addServiceUuid(ParcelUuid(bleServiceUuid))
+                .build()
+            advertiser.startAdvertising(settings, data, bleAdvCallback)
+        } catch (e: Exception) {
+            Log.w(TAG, "BLE GATT server warning: ${e.message}")
+        }
+    }
+
+    private val bleAdvCallback = object : AdvertiseCallback() {}
+
+    @SuppressLint("MissingPermission")
     fun startScanningFaceToFaceRooms() {
         stopNetworking()
+        refreshLocalIpAddress()
         _isHostingRoom.value = false
         _isScanningRooms.value = true
         _discoveredRooms.value = emptyList()
+        acquireWifiMulticastLock()
 
-        // A. Listen for UDP Broadcasts
+        // A. Listen for UDP Broadcasts on port 47788
         Thread {
             try {
-                val ds = DatagramSocket(udpBroadcastPort)
-                ds.soTimeout = 2000
+                val ds = DatagramSocket(null)
+                ds.reuseAddress = true
+                ds.bind(InetSocketAddress(udpBroadcastPort))
+                ds.soTimeout = 1500
                 udpSocket = ds
-                val buf = ByteArray(1024)
+                val buf = ByteArray(2048)
                 while (_isScanningRooms.value && !ds.isClosed) {
                     try {
                         val pkt = DatagramPacket(buf, buf.size)
                         ds.receive(pkt)
                         val json = JSONObject(String(pkt.data, 0, pkt.length, Charsets.UTF_8))
                         if (json.optString("type") == "kon_ddz_room") {
+                            val hostIp = json.optString("ip").ifBlank { pkt.address.hostAddress ?: "" }
                             val room = DiscoveredP2PRoom(
-                                id = "${pkt.address.hostAddress}:${json.optInt("port", tcpPort)}",
+                                id = "$hostIp:${json.optInt("port", tcpPort)}",
                                 roomCode = json.optString("code", "8888"),
-                                hostName = json.optString("host", "房主"),
+                                hostName = "${json.optString("host", "房主")} ($hostIp)",
                                 hostCharId = json.optInt("char", 1),
-                                hostAddress = pkt.address.hostAddress ?: "",
+                                hostAddress = hostIp,
                                 port = json.optInt("port", tcpPort)
                             )
                             mainHandler.post { addDiscoveredRoom(room) }
@@ -515,13 +722,15 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
                             override fun onResolveFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {}
                             override fun onServiceResolved(resolved: NsdServiceInfo) {
                                 val hostIp = resolved.host?.hostAddress ?: return
+                                // If resolved port is dynamic (iOS MCSession), also offer port 47789 cross-play port
+                                val targetPort = if (resolved.port == tcpPort) tcpPort else resolved.port
                                 val r = DiscoveredP2PRoom(
-                                    id = "$hostIp:${resolved.port}",
-                                    roomCode = resolved.serviceName.substringAfter("HTT-").substringBefore("-").ifBlank { "8888" },
-                                    hostName = resolved.serviceName,
+                                    id = "$hostIp:$targetPort",
+                                    roomCode = resolved.serviceName.substringAfter("HTT-").substringBefore("-").ifBlank { _roomCode.value },
+                                    hostName = "${resolved.serviceName} ($hostIp)",
                                     hostCharId = 1,
                                     hostAddress = hostIp,
-                                    port = resolved.port
+                                    port = targetPort
                                 )
                                 mainHandler.post { addDiscoveredRoom(r) }
                             }
@@ -537,7 +746,19 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
             nsd.discoverServices("_kon-ddz._tcp.", NsdManager.PROTOCOL_DNS_SD, discL)
         } catch (_: Exception) {}
 
-        // C. Check Paired Bluetooth Devices as Bluetooth P2P Candidates
+        // C. Scan BLE GATT Rooms (iOS & Android BLE advertisers)
+        try {
+            val btMgr = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
+            val scanner = btMgr?.adapter?.bluetoothLeScanner
+            if (scanner != null && btMgr.adapter.isEnabled) {
+                bleScanner = scanner
+                val filter = ScanFilter.Builder().setServiceUuid(ParcelUuid(bleServiceUuid)).build()
+                val settings = ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build()
+                scanner.startScan(listOf(filter), settings, bleScanCallback)
+            }
+        } catch (_: Exception) {}
+
+        // D. Also list Paired Bluetooth Devices as Bluetooth P2P Candidates
         try {
             val btMgr = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
             val adapter = btMgr?.adapter
@@ -558,7 +779,26 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
             }
         } catch (_: Exception) {}
 
-        _statusBanner.value = "🔍 正在通过蓝牙与 P2P Wi-Fi 扫描附近房间..."
+        _statusBanner.value = "🔍 正在通过蓝牙 BLE + P2P Wi-Fi 扫描附近房间（也可直接输入房主IP连接）..."
+    }
+
+    private val bleScanCallback = object : ScanCallback() {
+        @SuppressLint("MissingPermission")
+        override fun onScanResult(callbackType: Int, result: ScanResult) {
+            val dev = result.device ?: return
+            val name = dev.name ?: result.scanRecord?.deviceName ?: "轻音蓝牙房主"
+            val room = DiscoveredP2PRoom(
+                id = "ble_${dev.address}",
+                roomCode = _roomCode.value,
+                hostName = "$name (BLE蓝牙免配对)",
+                hostCharId = 1,
+                hostAddress = dev.address,
+                port = 0,
+                isBle = true,
+                bleDevice = dev
+            )
+            mainHandler.post { addDiscoveredRoom(room) }
+        }
     }
 
     private fun addDiscoveredRoom(room: DiscoveredP2PRoom) {
@@ -569,42 +809,320 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
         }
     }
 
+    fun connectDirectToHostIp() {
+        val raw = _directConnectIp.value.trim()
+        if (raw.isEmpty()) {
+            _statusBanner.value = "⚠️ 请先输入房主局域网/热点 IP 地址（例如 192.168.1.100）"
+            return
+        }
+        if (raw.startsWith("ws://") || raw.startsWith("wss://")) {
+            _serverUrl.value = raw
+            connectOnlineServerRoom()
+            return
+        }
+        val host = raw.substringBefore(":")
+        val port = raw.substringAfter(":", "$tcpPort").toIntOrNull() ?: tcpPort
+        joinDiscoveredRoom(
+            DiscoveredP2PRoom(
+                id = "$host:$port",
+                roomCode = _roomCode.value,
+                hostName = "IP直连 ($host)",
+                hostCharId = 1,
+                hostAddress = host,
+                port = port
+            )
+        )
+    }
+
     @SuppressLint("MissingPermission")
     fun joinDiscoveredRoom(room: DiscoveredP2PRoom) {
         _isScanningRooms.value = false
         _statusBanner.value = "🔗 正在加入 [${room.hostName}] 的房间 (${room.roomCode})..."
         Thread {
             try {
-                if (room.isBluetooth) {
+                if (room.isBle && room.bleDevice != null) {
+                    connectToBleRoom(room.bleDevice)
+                } else if (room.isBluetooth) {
                     val btMgr = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
                     val dev = btMgr?.adapter?.getRemoteDevice(room.hostAddress)
                     val sock = dev?.createRfcommSocketToServiceRecord(btSppUuid)
                     sock?.connect()
                     if (sock != null) {
                         btClientSocket = sock
-                        val pw = PrintWriter(sock.outputStream, true)
-                        clientWriters.add(pw)
+                        attachRawLineChannel(sock.inputStream, sock.outputStream)
                         sendJoinRequestPacket()
-                        listenStream(BufferedReader(InputStreamReader(sock.inputStream)))
                     }
                 } else {
-                    val sock = Socket(room.hostAddress, room.port)
+                    val sock = Socket()
+                    sock.connect(InetSocketAddress(room.hostAddress, room.port), 5000)
                     clientSocket = sock
-                    val pw = PrintWriter(sock.outputStream, true)
-                    clientWriters.add(pw)
+                    attachRawLineChannel(sock.inputStream, sock.outputStream)
                     sendJoinRequestPacket()
-                    listenStream(BufferedReader(InputStreamReader(sock.inputStream)))
                 }
             } catch (e: Exception) {
                 mainHandler.post {
-                    _statusBanner.value = "⚠️ 加入房间失败: ${e.message}"
+                    _statusBanner.value = "⚠️ 加入房间失败 (${e.message})，若对方为原版iOS请在iOS端填本机 ws://${_localIpAddress.value}:$wsPort"
                 }
             }
         }.start()
     }
 
+    @SuppressLint("MissingPermission")
+    private fun connectToBleRoom(device: BluetoothDevice) {
+        val rxBuf = ByteArrayOutputStream()
+        val gatt = device.connectGatt(context, false, object : BluetoothGattCallback() {
+            override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
+                if (newState == BluetoothProfile.STATE_CONNECTED) {
+                    g.requestMtu(247)
+                    g.discoverServices()
+                }
+            }
+
+            override fun onMtuChanged(g: BluetoothGatt, mtu: Int, status: Int) {
+                g.discoverServices()
+            }
+
+            override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {
+                val svc = g.getService(bleServiceUuid) ?: return
+                val ch = svc.getCharacteristic(bleCharUuid) ?: return
+                g.setCharacteristicNotification(ch, true)
+                val channel = object : PeerChannel {
+                    override fun sendJson(raw: String) {
+                        val bytes = (raw + "\n").toByteArray(Charsets.UTF_8)
+                        var offset = 0
+                        while (offset < bytes.size) {
+                            val end = minOf(offset + 180, bytes.size)
+                            ch.value = bytes.copyOfRange(offset, end)
+                            g.writeCharacteristic(ch)
+                            offset = end
+                            Thread.sleep(18)
+                        }
+                    }
+                    override fun close() {
+                        try { g.close() } catch (_: Exception) {}
+                    }
+                }
+                activeChannels.add(channel)
+                sendJoinRequestPacket()
+            }
+
+            @Deprecated("Deprecated in Java")
+            override fun onCharacteristicChanged(g: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
+                val value = characteristic.value ?: return
+                for (b in value) {
+                    if (b == '\n'.code.toByte()) {
+                        val line = rxBuf.toString("UTF-8").trim()
+                        rxBuf.reset()
+                        if (line.isNotEmpty()) {
+                            mainHandler.post { handleReceivedPacketJson(line) }
+                        }
+                    } else {
+                        rxBuf.write(b.toInt())
+                    }
+                }
+            }
+        })
+        bleClientGatt = gatt
+    }
+
     // =========================================================================
-    // 2. Reserved Online WebSocket Server (`ws://psp.azusa.online`)
+    // 2. Dual-Protocol Socket Handler (Raw JSON Line + RFC-6455 WebSocket Server for iOS)
+    // =========================================================================
+    private fun handleAcceptedSocket(sock: Socket) {
+        Thread {
+            try {
+                val ins = BufferedInputStream(sock.getInputStream())
+                val outs = BufferedOutputStream(sock.getOutputStream())
+                ins.mark(16)
+                val firstBytes = ByteArray(4)
+                val n = ins.read(firstBytes)
+                ins.reset()
+                if (n >= 4 && String(firstBytes, 0, 4, Charsets.US_ASCII) == "GET ") {
+                    handleIncomingWebSocketUpgrade(sock, ins, outs)
+                } else {
+                    attachRawLineChannel(ins, outs)
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Accepted socket error: ${e.message}")
+            }
+        }.start()
+    }
+
+    private fun attachRawLineChannel(ins: InputStream, outs: OutputStream) {
+        val channel = object : PeerChannel {
+            override fun sendJson(raw: String) {
+                synchronized(outs) {
+                    outs.write((raw + "\n").toByteArray(Charsets.UTF_8))
+                    outs.flush()
+                }
+            }
+            override fun close() {
+                try { ins.close() } catch (_: Exception) {}
+                try { outs.close() } catch (_: Exception) {}
+            }
+        }
+        activeChannels.add(channel)
+        Thread {
+            try {
+                val reader = ins.bufferedReader(Charsets.UTF_8)
+                while (true) {
+                    val line = reader.readLine() ?: break
+                    if (line.isNotBlank()) {
+                        mainHandler.post { handleReceivedPacketJson(line) }
+                    }
+                }
+            } catch (_: Exception) {
+            } finally {
+                activeChannels.remove(channel)
+            }
+        }.start()
+    }
+
+    private fun handleIncomingWebSocketUpgrade(sock: Socket, ins: InputStream, outs: OutputStream) {
+        try {
+            // Read HTTP Upgrade headers byte-by-byte until \r\n\r\n so we never over-read WebSocket frames!
+            val headerBuf = ByteArrayOutputStream()
+            var state = 0
+            while (state < 4) {
+                val b = ins.read()
+                if (b == -1) return
+                headerBuf.write(b)
+                state = when {
+                    state == 0 && b == '\r'.code -> 1
+                    state == 1 && b == '\n'.code -> 2
+                    state == 2 && b == '\r'.code -> 3
+                    state == 3 && b == '\n'.code -> 4
+                    b == '\r'.code -> 1
+                    else -> 0
+                }
+            }
+            val headersText = headerBuf.toString("UTF-8")
+            var secKey = ""
+            for (line in headersText.split("\r\n")) {
+                if (line.startsWith("Sec-WebSocket-Key:", ignoreCase = true)) {
+                    secKey = line.substringAfter(":").trim()
+                }
+            }
+            if (secKey.isEmpty()) return
+
+            val acceptSeed = secKey + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+            val sha1 = MessageDigest.getInstance("SHA-1").digest(acceptSeed.toByteArray(Charsets.US_ASCII))
+            val acceptKey = Base64.encodeToString(sha1, Base64.NO_WRAP)
+
+            val response = "HTTP/1.1 101 Switching Protocols\r\n" +
+                "Upgrade: websocket\r\n" +
+                "Connection: Upgrade\r\n" +
+                "Sec-WebSocket-Accept: $acceptKey\r\n\r\n"
+            synchronized(outs) {
+                outs.write(response.toByteArray(Charsets.US_ASCII))
+                outs.flush()
+            }
+
+            val wsChannel = object : PeerChannel {
+                override fun sendJson(raw: String) {
+                    val payload = raw.toByteArray(Charsets.UTF_8)
+                    synchronized(outs) {
+                        // Send as unmasked Text Frame (0x81) which URLSessionWebSocketTask & OkHttp both decode
+                        outs.write(0x81)
+                        when {
+                            payload.size <= 125 -> {
+                                outs.write(payload.size)
+                            }
+                            payload.size <= 65535 -> {
+                                outs.write(126)
+                                outs.write((payload.size shr 8) and 0xFF)
+                                outs.write(payload.size and 0xFF)
+                            }
+                            else -> {
+                                outs.write(127)
+                                val len = payload.size.toLong()
+                                for (shift in 56 downTo 0 step 8) {
+                                    outs.write(((len shr shift) and 0xFF).toInt())
+                                }
+                            }
+                        }
+                        outs.write(payload)
+                        outs.flush()
+                    }
+                }
+                override fun close() {
+                    try { sock.close() } catch (_: Exception) {}
+                }
+            }
+            activeChannels.add(wsChannel)
+
+            // Unmodified iOS KOnDoudizhuManager connects via WebSocket without sending joinRequest.
+            // Register iOS peer immediately so iOS <-> Android works with zero iOS modifications!
+            mainHandler.postDelayed({
+                if (_isHostingRoom.value && _connectedPeerNames.value.isEmpty()) {
+                    hasUnmodifiedIosWsPeer = true
+                    _connectedPeerNames.value = listOf("iOS 玩家")
+                    rebuildLobbySeats()
+                    _statusBanner.value = "🎉 iOS 玩家已连入房间！点击下方【立即开始牌局】即可与 iOS 端同步对战"
+                    broadcastFullStateSync()
+                }
+            }, 400L)
+
+            // Read incoming RFC-6455 frames from iOS / Android WebSocket client
+            while (!sock.isClosed) {
+                val b0 = ins.read()
+                val b1 = ins.read()
+                if (b0 == -1 || b1 == -1) break
+                val opcode = b0 and 0x0F
+                if (opcode == 0x08) break // Close frame
+                val isMasked = (b1 and 0x80) != 0
+                var payloadLen = (b1 and 0x7F).toLong()
+                if (payloadLen == 126L) {
+                    payloadLen = (((ins.read() and 0xFF) shl 8) or (ins.read() and 0xFF)).toLong()
+                } else if (payloadLen == 127L) {
+                    payloadLen = 0L
+                    for (i in 0 until 8) {
+                        payloadLen = (payloadLen shl 8) or (ins.read() and 0xFF).toLong()
+                    }
+                }
+                val maskKey = ByteArray(4)
+                if (isMasked) {
+                    var readM = 0
+                    while (readM < 4) {
+                        val r = ins.read(maskKey, readM, 4 - readM)
+                        if (r == -1) break
+                        readM += r
+                    }
+                }
+                val payload = ByteArray(payloadLen.toInt())
+                var readP = 0
+                while (readP < payload.size) {
+                    val r = ins.read(payload, readP, payload.size - readP)
+                    if (r == -1) break
+                    readP += r
+                }
+                if (isMasked) {
+                    for (i in payload.indices) {
+                        payload[i] = (payload[i].toInt() xor maskKey[i % 4].toInt()).toByte()
+                    }
+                }
+                if (opcode == 0x01 || opcode == 0x02) {
+                    val text = String(payload, Charsets.UTF_8).trim()
+                    if (text.isNotEmpty()) {
+                        mainHandler.post { handleReceivedPacketJson(text) }
+                    }
+                } else if (opcode == 0x09) {
+                    // Reply Pong (0x8A)
+                    synchronized(outs) {
+                        outs.write(0x8A)
+                        outs.write(payload.size)
+                        outs.write(payload)
+                        outs.flush()
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "WS client disconnected: ${e.message}")
+        }
+    }
+
+    // =========================================================================
+    // 3. Online WebSocket Client (`ws://` or `wss://`)
     // =========================================================================
     fun connectOnlineServerRoom() {
         val url = _serverUrl.value.trim()
@@ -613,14 +1131,14 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
             return
         }
         stopNetworking()
-        _statusBanner.value = "🌐 正在连接在线服务器 ($url) 房间 [${_roomCode.value}]..."
+        _statusBanner.value = "🌐 正在连接服务器 ($url) 房间 [${_roomCode.value}]..."
 
         val req = Request.Builder().url(url).build()
         webSocket = okHttpClient.newWebSocket(req, object : WebSocketListener() {
             override fun onOpen(ws: WebSocket, response: Response) {
                 mainHandler.post {
                     _isServerConnected.value = true
-                    _statusBanner.value = "✅ 已连接在线服务器 ($url)，房间号：${_roomCode.value}"
+                    _statusBanner.value = "✅ 已连接服务器 ($url)，房间号：${_roomCode.value}"
                     sendJoinRequestPacket()
                 }
             }
@@ -629,10 +1147,14 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
                 mainHandler.post { handleReceivedPacketJson(text) }
             }
 
+            override fun onMessage(ws: WebSocket, bytes: okio.ByteString) {
+                mainHandler.post { handleReceivedPacketJson(bytes.utf8()) }
+            }
+
             override fun onFailure(ws: WebSocket, t: Throwable, response: Response?) {
                 mainHandler.post {
                     _isServerConnected.value = false
-                    _statusBanner.value = "⚠️ 在线服务器连接失败 (${t.message ?: "网络异常"})，可使用面对面联机或AI陪打"
+                    _statusBanner.value = "⚠️ 在线服务器暂未响应，建议在面对面模式创建房间并在iOS端填 ws://${_localIpAddress.value}:$wsPort"
                 }
             }
 
@@ -640,6 +1162,20 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
                 mainHandler.post { _isServerConnected.value = false }
             }
         })
+    }
+
+    private fun acquireWifiMulticastLock() {
+        try {
+            val wm = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager ?: return
+            if (multicastLock == null) {
+                multicastLock = wm.createMulticastLock("kon_ddz_multicast_lock").apply {
+                    setReferenceCounted(false)
+                }
+            }
+            if (multicastLock?.isHeld == false) {
+                multicastLock?.acquire()
+            }
+        } catch (_: Exception) {}
     }
 
     fun leaveRoomAndResetLobby() {
@@ -650,60 +1186,61 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
         _statusBanner.value = "✨ 🏠 您已离开并关闭当前房间，返回房间大厅"
     }
 
+    @SuppressLint("MissingPermission")
     fun stopNetworking() {
         _isHostingRoom.value = false
         _isScanningRooms.value = false
         _isServerConnected.value = false
+        hasUnmodifiedIosWsPeer = false
         _connectedPeerNames.value = emptyList()
         try { tcpServerSocket?.close() } catch (_: Exception) {}
+        try { wsServerSocket?.close() } catch (_: Exception) {}
         try { clientSocket?.close() } catch (_: Exception) {}
         try { udpSocket?.close() } catch (_: Exception) {}
         try { btServerSocket?.close() } catch (_: Exception) {}
         try { btClientSocket?.close() } catch (_: Exception) {}
+        try { bleAdvertiser?.stopAdvertising(bleAdvCallback) } catch (_: Exception) {}
+        try { bleScanner?.stopScan(bleScanCallback) } catch (_: Exception) {}
+        try { gattServer?.close() } catch (_: Exception) {}
+        try { bleClientGatt?.close() } catch (_: Exception) {}
         try { webSocket?.close(1000, "Leave") } catch (_: Exception) {}
-        clientWriters.clear()
+        try { if (multicastLock?.isHeld == true) multicastLock?.release() } catch (_: Exception) {}
+        activeChannels.forEach { try { it.close() } catch (_: Exception) {} }
+        activeChannels.clear()
+        bleConnectedDevices.clear()
         try { nsdRegListener?.let { nsdManager?.unregisterService(it) } } catch (_: Exception) {}
         try { nsdDiscListener?.let { nsdManager?.stopServiceDiscovery(it) } } catch (_: Exception) {}
         nsdRegListener = null
         nsdDiscListener = null
     }
 
-    private fun handleIncomingSocket(sock: Socket) {
-        Thread {
-            try {
-                val pw = PrintWriter(sock.outputStream, true)
-                clientWriters.add(pw)
-                listenStream(BufferedReader(InputStreamReader(sock.inputStream)))
-            } catch (_: Exception) {}
-        }.start()
-    }
-
     private fun handleIncomingBluetoothSocket(sock: BluetoothSocket) {
-        Thread {
-            try {
-                val pw = PrintWriter(sock.outputStream, true)
-                clientWriters.add(pw)
-                listenStream(BufferedReader(InputStreamReader(sock.inputStream)))
-            } catch (_: Exception) {}
-        }.start()
+        attachRawLineChannel(sock.inputStream, sock.outputStream)
     }
 
-    private fun listenStream(reader: BufferedReader) {
-        try {
-            while (true) {
-                val line = reader.readLine() ?: break
-                mainHandler.post { handleReceivedPacketJson(line) }
-            }
-        } catch (_: Exception) {}
-    }
-
+    @SuppressLint("MissingPermission")
     private fun sendPacketJson(pkt: JSONObject) {
         val raw = pkt.toString()
         Thread {
-            clientWriters.forEach { pw ->
-                try { pw.println(raw) } catch (_: Exception) {}
+            activeChannels.forEach { ch ->
+                try { ch.sendJson(raw) } catch (_: Exception) {}
             }
             try { webSocket?.send(raw) } catch (_: Exception) {}
+            val gSrv = gattServer
+            val gChar = bleCharacteristic
+            if (gSrv != null && gChar != null && bleConnectedDevices.isNotEmpty()) {
+                val bytes = (raw + "\n").toByteArray(Charsets.UTF_8)
+                for (dev in bleConnectedDevices) {
+                    var offset = 0
+                    while (offset < bytes.size) {
+                        val end = minOf(offset + 180, bytes.size)
+                        gChar.value = bytes.copyOfRange(offset, end)
+                        try { gSrv.notifyCharacteristicChanged(dev, gChar, false) } catch (_: Exception) {}
+                        offset = end
+                        Thread.sleep(15)
+                    }
+                }
+            }
         }.start()
     }
 
@@ -718,7 +1255,6 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
     }
 
     private fun broadcastFullStateSync() {
-        if (!_isHostingRoom.value && _mySeatIndex.value != 0) return
         val pkt = JSONObject().apply {
             put("kind", "stateSync")
             put("roomCode", _roomCode.value)
@@ -742,25 +1278,29 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
     private fun handleReceivedPacketJson(raw: String) {
         try {
             val obj = JSONObject(raw)
-            if (obj.optString("roomCode") != _roomCode.value) return
+            val pktRoom = obj.optString("roomCode")
+            if (pktRoom.isNotEmpty() && pktRoom != _roomCode.value && !_isHostingRoom.value) {
+                _roomCode.value = pktRoom
+            }
             val kind = obj.optString("kind")
             val senderName = obj.optString("senderPeerName", "玩家")
             val senderCid = obj.optInt("senderCharId", 1)
 
             when (kind) {
                 "joinRequest" -> {
+                    hasUnmodifiedIosWsPeer = false
                     val peers = _connectedPeerNames.value.toMutableList()
                     if (!peers.contains(senderName)) {
                         peers.add(senderName)
                         _connectedPeerNames.value = peers
                     }
-                    // Assign to seat 1 or 2 if currently AI
                     val curSeats = _seats.value.toMutableList()
-                    val aiSlot = curSeats.indexOfFirst { it.isAI && it.seatIndex > 0 }
-                    if (aiSlot != -1) {
+                    val existingSlot = curSeats.indexOfFirst { it.peerDisplayName == senderName }
+                    val targetSlot = if (existingSlot != -1) existingSlot else curSeats.indexOfFirst { it.isAI && it.seatIndex > 0 }
+                    if (targetSlot != -1) {
                         val ch = CharacterFilter.fiveIndividuals.firstOrNull { it.charId == senderCid } ?: CharacterFilter.MIO
-                        curSeats[aiSlot] = DoudizhuPlayerSeat(
-                            seatIndex = aiSlot,
+                        curSeats[targetSlot] = DoudizhuPlayerSeat(
+                            seatIndex = targetSlot,
                             name = "$senderName (${ch.displayName(currentLang())})",
                             character = ch,
                             isAI = false,
@@ -773,26 +1313,59 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
                 }
                 "stateSync" -> {
                     val sArr = obj.optJSONArray("seats")
+                    var parsedSeats: List<DoudizhuPlayerSeat> = emptyList()
                     if (sArr != null) {
-                        val parsed = (0 until sArr.length()).map { DoudizhuPlayerSeat.fromJson(sArr.getJSONObject(it)) }
-                        _seats.value = parsed
-                        val myIdx = parsed.indexOfFirst { it.peerDisplayName == _myNickname.value }
-                        if (myIdx >= 0) _mySeatIndex.value = myIdx
+                        parsedSeats = (0 until sArr.length()).map { DoudizhuPlayerSeat.fromJson(sArr.getJSONObject(it)) }
                     }
                     val hArr = obj.optJSONArray("holeCards")
                     if (hArr != null) {
                         _holeCards.value = (0 until hArr.length()).map { DoudizhuCard.fromJson(hArr.getJSONObject(it)) }
                     }
                     val phStr = obj.optString("phase", "lobby")
-                    _phase.value = DoudizhuGamePhase.values().firstOrNull { it.wireName == phStr } ?: DoudizhuGamePhase.LOBBY
-                    _currentTurnSeat.value = obj.optInt("currentTurnSeat", 0)
+                    val newPhase = DoudizhuGamePhase.values().firstOrNull { it.wireName == phStr } ?: DoudizhuGamePhase.LOBBY
+                    var newTurn = obj.optInt("currentTurnSeat", 0)
                     _highestBid.value = obj.optInt("highestBid", 0)
                     _highestBidderSeat.value = obj.optInt("highestBidderSeat", -1)
                     _multiplier.value = obj.optInt("multiplier", 1)
                     _lastValidHand.value = EvaluatedDoudizhuHand.fromJson(obj.optJSONObject("lastValidHand"))
                     _lastPlaySeat.value = obj.optInt("lastPlaySeat", -1)
-                    if (obj.has("winnerSeat")) _winnerSeat.value = obj.optInt("winnerSeat")
+                    _winnerSeat.value = if (obj.has("winnerSeat") && !obj.isNull("winnerSeat")) obj.optInt("winnerSeat") else null
                     _statusBanner.value = obj.optString("statusBanner", _statusBanner.value)
+
+                    if (hasUnmodifiedIosWsPeer && parsedSeats.size == 3) {
+                        // Unmodified iOS sent stateSync (either after starting a round or making a move at Seat 0)
+                        val mut = parsedSeats.toMutableList()
+                        val wasAndroidOverwrittenByIosLobbyRebuild = mut[1].isAI
+                        if (wasAndroidOverwrittenByIosLobbyRebuild) {
+                            mut[1] = mut[1].copy(
+                                name = "${_myNickname.value} (${_myChar.value.displayName(currentLang())})",
+                                character = _myChar.value,
+                                isAI = false,
+                                peerDisplayName = _myNickname.value
+                            )
+                            if (newTurn == 1 && newPhase == DoudizhuGamePhase.BIDDING) {
+                                newTurn = 0
+                            }
+                        }
+                        _mySeatIndex.value = 1
+                        _seats.value = mut
+                        _phase.value = newPhase
+                        _currentTurnSeat.value = newTurn
+                        _turnRemainingSeconds.value = _turnTimeLimit.value
+                        if (wasAndroidOverwrittenByIosLobbyRebuild) {
+                            broadcastFullStateSync()
+                        }
+                        return
+                    }
+
+                    if (parsedSeats.isNotEmpty()) {
+                        _seats.value = parsedSeats
+                        val myIdx = parsedSeats.indexOfFirst { it.peerDisplayName == _myNickname.value }
+                        if (myIdx >= 0) _mySeatIndex.value = myIdx
+                    }
+                    _phase.value = newPhase
+                    _currentTurnSeat.value = newTurn
+                    _turnRemainingSeconds.value = _turnTimeLimit.value
                 }
                 "bidAction" -> {
                     if (_isHostingRoom.value || _mySeatIndex.value == 0) {
@@ -823,14 +1396,14 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
     }
 
     // =========================================================================
-    // 3. Game Play & Rules Engine
+    // 4. Game Play & Complete Doudizhu Rules Engine (1:1 with iOS)
     // =========================================================================
     fun startNewGame() {
         val deck = createShuffledDeck()
-        val p0 = deck.subList(0, 17).sortedByDescending { it.rank * 10 + it.suit.ordinal }
-        val p1 = deck.subList(17, 34).sortedByDescending { it.rank * 10 + it.suit.ordinal }
-        val p2 = deck.subList(34, 51).sortedByDescending { it.rank * 10 + it.suit.ordinal }
-        val hole = deck.subList(51, 54)
+        val p0 = deck.subList(0, 17).sortedWith(compareByDescending<DoudizhuCard> { it.rank }.thenBy { it.suit.ordinal })
+        val p1 = deck.subList(17, 34).sortedWith(compareByDescending<DoudizhuCard> { it.rank }.thenBy { it.suit.ordinal })
+        val p2 = deck.subList(34, 51).sortedWith(compareByDescending<DoudizhuCard> { it.rank }.thenBy { it.suit.ordinal })
+        val hole = deck.subList(51, 54).sortedWith(compareByDescending<DoudizhuCard> { it.rank }.thenBy { it.suit.ordinal })
 
         val cur = _seats.value
         val s0 = cur.getOrNull(0)?.copy(hand = p0, isLandlord = false, lastPlayed = emptyList(), lastActionText = "", passedLast = false)
@@ -851,17 +1424,19 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
         _lastPlaySeat.value = -1
         _winnerSeat.value = null
         _playedCardsHistory.value = emptyList()
-        _currentTurnSeat.value = 0
+        hintIndex = 0
+        // If connected with unmodified iOS peer, start bidding at Android seat (1) or iOS seat (0)
+        _currentTurnSeat.value = if (hasUnmodifiedIosWsPeer) 1 else 0
         _turnRemainingSeconds.value = _turnTimeLimit.value
         _phase.value = DoudizhuGamePhase.BIDDING
-        _statusBanner.value = "✨ 轮到 [${s0.name}] 叫分"
+        _statusBanner.value = "🃏 发牌完成！轮到 [${_seats.value[_currentTurnSeat.value].name}] 叫地主"
         broadcastFullStateSync()
     }
 
     fun submitBid(bid: Int) {
         val myIdx = _mySeatIndex.value
         if (_phase.value != DoudizhuGamePhase.BIDDING || _currentTurnSeat.value != myIdx) return
-        if (myIdx != 0) {
+        if (myIdx != 0 && !hasUnmodifiedIosWsPeer) {
             sendPacketJson(JSONObject().apply {
                 put("kind", "bidAction")
                 put("roomCode", _roomCode.value)
@@ -871,7 +1446,7 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
             })
             return
         }
-        processBid(0, bid)
+        processBid(myIdx, bid)
     }
 
     private fun processBid(seatIdx: Int, bid: Int) {
@@ -882,6 +1457,7 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
         if (bid > _highestBid.value) {
             _highestBid.value = bid
             _highestBidderSeat.value = seatIdx
+            _multiplier.value = maxOf(1, bid)
         }
         _bidsCount.value += 1
 
@@ -898,6 +1474,7 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
 
             if (nextSeat.isAI) {
                 mainHandler.postDelayed({
+                    if (_phase.value != DoudizhuGamePhase.BIDDING || _currentTurnSeat.value != next) return@postDelayed
                     val aiScore = evaluateHandStrength(nextSeat.hand)
                     val aiBid = when {
                         aiScore >= 80 && _highestBid.value < 3 -> 3
@@ -906,7 +1483,7 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
                         else -> 0
                     }
                     processBid(next, aiBid)
-                }, 650L)
+                }, 700L)
             }
         }
     }
@@ -914,17 +1491,19 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
     private fun assignLandlord(landlordIdx: Int) {
         val updated = _seats.value.map { s ->
             if (s.seatIndex == landlordIdx) {
-                val combined = (s.hand + _holeCards.value).sortedByDescending { it.rank * 10 + it.suit.ordinal }
-                s.copy(isLandlord = true, hand = combined, lastActionText = "地主")
+                val combined = (s.hand + _holeCards.value).sortedWith(compareByDescending<DoudizhuCard> { it.rank }.thenBy { it.suit.ordinal })
+                s.copy(isLandlord = true, hand = combined, lastActionText = "🎩 地主")
             } else {
-                s.copy(isLandlord = false, lastActionText = "")
+                s.copy(isLandlord = false, lastActionText = "🌾 农民")
             }
         }
         _seats.value = updated
         _currentTurnSeat.value = landlordIdx
         _turnRemainingSeconds.value = _turnTimeLimit.value
+        _lastValidHand.value = null
+        _lastPlaySeat.value = landlordIdx
         _phase.value = DoudizhuGamePhase.PLAYING
-        _statusBanner.value = "👑 地主 [${updated[landlordIdx].name}] 亮底牌出牌！"
+        _statusBanner.value = "👑 [${updated[landlordIdx].name}] 成为地主！获得三张底牌并优先出牌"
         broadcastFullStateSync()
 
         if (updated[landlordIdx].isAI) {
@@ -947,17 +1526,21 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
         if (_phase.value != DoudizhuGamePhase.PLAYING || _currentTurnSeat.value != myIdx) return
         val mySeat = _seats.value[myIdx]
         val chosen = mySeat.hand.filter { _selectedCardIds.value.contains(it.id) }
+        if (chosen.isEmpty()) {
+            _statusBanner.value = "⚠️ 请先点选要出的扑克牌！"
+            return
+        }
         val eval = evaluateHand(chosen)
         if (eval.type == DoudizhuHandType.INVALID) {
-            _statusBanner.value = "⚠️ 所选牌型不合法，请重新选择！"
+            _statusBanner.value = "⚠️ 所选牌型不合法（支持单张/对子/三带一/三带二/顺子/连对/飞机/四带二/炸弹/王炸）"
             return
         }
-        val prev = if (_lastPlaySeat.value == myIdx) null else _lastValidHand.value
+        val prev = if (_lastPlaySeat.value == myIdx || _lastPlaySeat.value == -1) null else _lastValidHand.value
         if (prev != null && !canBeat(eval, prev)) {
-            _statusBanner.value = "⚠️ 所选牌型打不过上家！"
+            _statusBanner.value = "⚠️ 所选牌型无法大过上家的 [${prev.type.label}]！"
             return
         }
-        if (myIdx != 0) {
+        if (myIdx != 0 && !hasUnmodifiedIosWsPeer) {
             sendPacketJson(JSONObject().apply {
                 put("kind", "playCardsAction")
                 put("roomCode", _roomCode.value)
@@ -968,17 +1551,17 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
             _selectedCardIds.value = emptySet()
             return
         }
-        executePlay(0, eval)
+        executePlay(myIdx, eval)
     }
 
     fun passTurn() {
         val myIdx = _mySeatIndex.value
         if (_phase.value != DoudizhuGamePhase.PLAYING || _currentTurnSeat.value != myIdx) return
         if (_lastPlaySeat.value == -1 || _lastPlaySeat.value == myIdx) {
-            _statusBanner.value = "⚠️ 当前你是首家出牌，不能不出！"
+            _statusBanner.value = "⚠️ 当前由您自由领出，不能选择【不出】！"
             return
         }
-        if (myIdx != 0) {
+        if (myIdx != 0 && !hasUnmodifiedIosWsPeer) {
             sendPacketJson(JSONObject().apply {
                 put("kind", "passAction")
                 put("roomCode", _roomCode.value)
@@ -987,7 +1570,7 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
             })
             return
         }
-        executePass(0)
+        executePass(myIdx)
     }
 
     fun hintCards() {
@@ -995,11 +1578,13 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
         if (_phase.value != DoudizhuGamePhase.PLAYING || _currentTurnSeat.value != myIdx) return
         val myHand = _seats.value[myIdx].hand
         val target = if (_lastPlaySeat.value == myIdx || _lastPlaySeat.value == -1) null else _lastValidHand.value
-        val candidate = findBestPlayableHand(myHand, target)
-        if (candidate != null) {
-            _selectedCardIds.value = candidate.cards.map { it.id }.toSet()
+        val candidates = findHints(myHand, target)
+        if (candidates.isNotEmpty()) {
+            val chosen = candidates[hintIndex % candidates.size]
+            hintIndex += 1
+            _selectedCardIds.value = chosen.map { it.id }.toSet()
         } else {
-            _statusBanner.value = "没有能大过上家的牌，请点击【不出】"
+            _statusBanner.value = "💡 没有能大过上家的牌，建议点击【不出】"
         }
     }
 
@@ -1011,6 +1596,7 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
         _lastValidHand.value = eval
         _lastPlaySeat.value = seatIdx
         _playedCardsHistory.value = _playedCardsHistory.value + eval.cards
+        hintIndex = 0
 
         val updated = _seats.value.map { s ->
             if (s.seatIndex == seatIdx) {
@@ -1023,18 +1609,20 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
         _seats.value = updated
         if (seatIdx == _mySeatIndex.value) _selectedCardIds.value = emptySet()
 
+        audioMgr.playMascotVoice(updated[seatIdx].character)
+
         val winner = updated[seatIdx]
         if (winner.hand.isEmpty()) {
             _winnerSeat.value = seatIdx
             _phase.value = DoudizhuGamePhase.FINISHED
-            val winPts = _baseScore.value * _multiplier.value * _highestBid.value.coerceAtLeast(1)
+            val winPts = _baseScore.value * _multiplier.value
             val settled = updated.map { s ->
                 val isWinSide = (s.isLandlord == winner.isLandlord)
                 val delta = if (s.isLandlord) winPts * 2 else winPts
                 s.copy(score = s.score + if (isWinSide) delta else -delta)
             }
             _seats.value = settled
-            _statusBanner.value = "🎉 本局结束！${winner.name} (${if (winner.isLandlord) "地主" else "农民"}) 获胜！"
+            _statusBanner.value = "🎉 本局结束！[${winner.name}] (${if (winner.isLandlord) "🎩 地主" else "🌾 农民"}) 获胜！(倍数 x${_multiplier.value})"
             audioMgr.triggerBirthdaySpecialVoice()
             broadcastFullStateSync()
             return
@@ -1043,7 +1631,7 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
         val next = (seatIdx + 1) % 3
         _currentTurnSeat.value = next
         _turnRemainingSeconds.value = _turnTimeLimit.value
-        _statusBanner.value = "✨ 轮到 [${updated[next].name}] 出牌"
+        _statusBanner.value = "[${updated[seatIdx].name}] 打出 ${eval.type.label}，轮到 [${updated[next].name}]"
         broadcastFullStateSync()
         runAITurnsIfNeeded()
     }
@@ -1060,7 +1648,7 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
             _lastValidHand.value = null
             _seats.value = _seats.value.map { it.copy(lastPlayed = emptyList(), lastActionText = "", passedLast = false) }
         }
-        _statusBanner.value = "✨ 轮到 [${_seats.value[next].name}] 出牌"
+        _statusBanner.value = "[${updated[seatIdx].name}] 选择不出，轮到 [${_seats.value[next].name}] 出牌"
         broadcastFullStateSync()
         runAITurnsIfNeeded()
     }
@@ -1070,108 +1658,235 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
         val seat = _seats.value.getOrNull(cur) ?: return
         if (_phase.value != DoudizhuGamePhase.PLAYING || !seat.isAI) return
 
+        val delayMs = if (hasUnmodifiedIosWsPeer) 1150L else 750L
         mainHandler.postDelayed({
             if (_phase.value != DoudizhuGamePhase.PLAYING || _currentTurnSeat.value != cur) return@postDelayed
+            val activeSeat = _seats.value.getOrNull(cur) ?: return@postDelayed
+            if (!activeSeat.isAI) return@postDelayed
             val target = if (_lastPlaySeat.value == cur || _lastPlaySeat.value == -1) null else _lastValidHand.value
-            val play = findBestPlayableHand(seat.hand, target)
-            if (play != null) {
-                executePlay(cur, play)
+            val hints = findHints(activeSeat.hand, target)
+            val chosen = hints.firstOrNull()
+            if (chosen != null) {
+                val ev = evaluateHand(chosen)
+                // Farmer cooperation: don't bomb teammate farmer's high hand
+                if (target != null && _lastPlaySeat.value >= 0 && !activeSeat.isLandlord && !_seats.value[_lastPlaySeat.value].isLandlord) {
+                    if (ev.type == DoudizhuHandType.BOMB || ev.type == DoudizhuHandType.ROCKET || target.mainRank >= 13) {
+                        executePass(cur)
+                        return@postDelayed
+                    }
+                }
+                executePlay(cur, ev)
             } else {
                 executePass(cur)
             }
-        }, 700L)
+        }, delayMs)
     }
 
-    private fun findBestPlayableHand(hand: List<DoudizhuCard>, target: EvaluatedDoudizhuHand?): EvaluatedDoudizhuHand? {
-        val sorted = hand.sortedBy { it.rank }
-        if (target == null) {
-            val groups = sorted.groupBy { it.rank }
-            val pair = groups.values.firstOrNull { it.size == 2 }
-            if (pair != null) return evaluateHand(pair)
-            return sorted.firstOrNull()?.let { evaluateHand(listOf(it)) }
+    // Complete 1:1 Hint Finder matching iOS DoudizhuHandEvaluator.findHints
+    private fun findHints(hand: List<DoudizhuCard>, target: EvaluatedDoudizhuHand?): List<List<DoudizhuCard>> {
+        val asc = hand.sortedBy { it.rank }
+        if (asc.isEmpty()) return emptyList()
+        val byRank = asc.groupBy { it.rank }
+        val uniqueRanks = byRank.keys.sorted()
+        val hints = mutableListOf<List<DoudizhuCard>>()
+
+        if (target == null || target.type == DoudizhuHandType.INVALID) {
+            for (r in uniqueRanks) {
+                val arr = byRank[r] ?: continue
+                when (arr.size) {
+                    1 -> hints.add(arr)
+                    2 -> hints.add(arr)
+                    3 -> {
+                        val kickerR = uniqueRanks.firstOrNull { it != r && (byRank[it]?.isNotEmpty() == true) }
+                        if (kickerR != null) hints.add(arr + byRank[kickerR]!!.first()) else hints.add(arr)
+                    }
+                }
+            }
+            if (hints.isEmpty()) hints.add(listOf(asc.first()))
+            return hints
         }
 
-        val groups = sorted.groupBy { it.rank }
+        if (target.type == DoudizhuHandType.ROCKET) return emptyList()
+
         when (target.type) {
             DoudizhuHandType.SINGLE -> {
-                val card = sorted.firstOrNull { it.rank > target.mainRank }
-                if (card != null) return evaluateHand(listOf(card))
+                for (r in uniqueRanks) {
+                    if (r > target.mainRank) {
+                        byRank[r]?.firstOrNull()?.let { hints.add(listOf(it)) }
+                    }
+                }
             }
             DoudizhuHandType.PAIR -> {
-                val pair = groups.entries.firstOrNull { it.key > target.mainRank && it.value.size >= 2 }?.value?.take(2)
-                if (pair != null) return evaluateHand(pair)
+                for (r in uniqueRanks) {
+                    val arr = byRank[r] ?: continue
+                    if (r > target.mainRank && arr.size >= 2) hints.add(arr.take(2))
+                }
             }
             DoudizhuHandType.TRIPLE -> {
-                val tri = groups.entries.firstOrNull { it.key > target.mainRank && it.value.size >= 3 }?.value?.take(3)
-                if (tri != null) return evaluateHand(tri)
+                for (r in uniqueRanks) {
+                    val arr = byRank[r] ?: continue
+                    if (r > target.mainRank && arr.size >= 3) hints.add(arr.take(3))
+                }
             }
             DoudizhuHandType.TRIPLE_ONE -> {
-                val tri = groups.entries.firstOrNull { it.key > target.mainRank && it.value.size >= 3 }?.value?.take(3)
-                val kicker = sorted.firstOrNull { c -> tri != null && c.rank != tri[0].rank }
-                if (tri != null && kicker != null) return evaluateHand(tri + kicker)
+                for (r in uniqueRanks) {
+                    val arr = byRank[r] ?: continue
+                    if (r > target.mainRank && arr.size >= 3) {
+                        val kickerR = uniqueRanks.firstOrNull { it != r }
+                        if (kickerR != null) hints.add(arr.take(3) + byRank[kickerR]!!.first())
+                    }
+                }
             }
             DoudizhuHandType.TRIPLE_PAIR -> {
-                val tri = groups.entries.firstOrNull { it.key > target.mainRank && it.value.size >= 3 }?.value?.take(3)
-                val kickerPair = groups.entries.firstOrNull { it.value.size >= 2 && (tri == null || it.key != tri[0].rank) }?.value?.take(2)
-                if (tri != null && kickerPair != null) return evaluateHand(tri + kickerPair)
+                for (r in uniqueRanks) {
+                    val arr = byRank[r] ?: continue
+                    if (r > target.mainRank && arr.size >= 3) {
+                        val kickerR = uniqueRanks.firstOrNull { it != r && (byRank[it]?.size ?: 0) >= 2 }
+                        if (kickerR != null) hints.add(arr.take(3) + byRank[kickerR]!!.take(2))
+                    }
+                }
+            }
+            DoudizhuHandType.STRAIGHT -> {
+                val len = target.length
+                val validSingleRanks = uniqueRanks.filter { it <= 14 }
+                if (validSingleRanks.size >= len) {
+                    for (startIdx in 0..(validSingleRanks.size - len)) {
+                        val slice = validSingleRanks.subList(startIdx, startIdx + len)
+                        if (slice.last() - slice.first() == len - 1 && slice.last() > target.mainRank) {
+                            hints.add(slice.map { byRank[it]!!.first() })
+                        }
+                    }
+                }
+            }
+            DoudizhuHandType.DOUBLE_STRAIGHT -> {
+                val pairCount = target.length / 2
+                val validPairRanks = uniqueRanks.filter { it <= 14 && (byRank[it]?.size ?: 0) >= 2 }
+                if (validPairRanks.size >= pairCount) {
+                    for (startIdx in 0..(validPairRanks.size - pairCount)) {
+                        val slice = validPairRanks.subList(startIdx, startIdx + pairCount)
+                        if (slice.last() - slice.first() == pairCount - 1 && slice.last() > target.mainRank) {
+                            val combo = mutableListOf<DoudizhuCard>()
+                            slice.forEach { r -> combo.addAll(byRank[r]!!.take(2)) }
+                            hints.add(combo)
+                        }
+                    }
+                }
             }
             else -> {}
         }
 
-        if (target.type != DoudizhuHandType.ROCKET) {
-            val minBombRank = if (target.type == DoudizhuHandType.BOMB) target.mainRank else 0
-            val bomb = groups.entries.firstOrNull { it.key > minBombRank && it.value.size == 4 }?.value
-            if (bomb != null) return evaluateHand(bomb)
-            val sj = sorted.firstOrNull { it.rank == 16 }
-            val bj = sorted.firstOrNull { it.rank == 17 }
-            if (sj != null && bj != null) return evaluateHand(listOf(sj, bj))
+        for (r in uniqueRanks) {
+            val arr = byRank[r] ?: continue
+            if (arr.size == 4 && (target.type != DoudizhuHandType.BOMB || r > target.mainRank)) {
+                hints.add(arr)
+            }
         }
-        return null
+        val j1 = byRank[16]?.firstOrNull()
+        val j2 = byRank[17]?.firstOrNull()
+        if (j1 != null && j2 != null) {
+            hints.add(listOf(j2, j1))
+        }
+        return hints
     }
 
     private fun evaluateHandStrength(hand: List<DoudizhuCard>): Int {
         var s = 0
         hand.forEach {
-            if (it.rank == 17) s += 20
-            else if (it.rank == 16) s += 15
-            else if (it.rank == 15) s += 10
-            else if (it.rank == 14) s += 5
+            when (it.rank) {
+                17 -> s += 20
+                16 -> s += 15
+                15 -> s += 10
+                14 -> s += 5
+            }
         }
         s += hand.groupBy { it.rank }.count { it.value.size == 4 } * 25
         return s
     }
 
+    // Complete 1:1 Hand Evaluator matching iOS DoudizhuHandEvaluator.evaluate
     fun evaluateHand(cards: List<DoudizhuCard>): EvaluatedDoudizhuHand {
-        if (cards.isEmpty()) return EvaluatedDoudizhuHand(DoudizhuHandType.INVALID, 0, 0, cards)
-        val sorted = cards.sortedBy { it.rank }
-        val n = sorted.size
-        val counts = sorted.groupingBy { it.rank }.eachCount()
+        if (cards.isEmpty()) return EvaluatedDoudizhuHand(DoudizhuHandType.INVALID, 0, 0, emptyList())
+        val counts = cards.groupingBy { it.rank }.eachCount()
+        // Order cards by (group frequency desc, rank desc, suit ordinal asc) so triples/quads appear before kickers
+        val ordered = cards.sortedWith(
+            compareByDescending<DoudizhuCard> { counts[it.rank] ?: 0 }
+                .thenByDescending { it.rank }
+                .thenBy { it.suit.ordinal }
+        )
+        val sortedByRankDesc = cards.sortedWith(compareByDescending<DoudizhuCard> { it.rank }.thenBy { it.suit.ordinal })
+        val n = cards.size
+        val groups = counts.entries.sortedWith(compareByDescending<Map.Entry<Int, Int>> { it.value }.thenByDescending { it.key })
 
-        if (n == 2 && sorted[0].rank == 16 && sorted[1].rank == 17) return EvaluatedDoudizhuHand(DoudizhuHandType.ROCKET, 99, 2, sorted)
-        if (n == 1) return EvaluatedDoudizhuHand(DoudizhuHandType.SINGLE, sorted[0].rank, 1, sorted)
-        if (n == 2 && counts.size == 1) return EvaluatedDoudizhuHand(DoudizhuHandType.PAIR, sorted[0].rank, 2, sorted)
-        if (n == 3 && counts.size == 1) return EvaluatedDoudizhuHand(DoudizhuHandType.TRIPLE, sorted[0].rank, 3, sorted)
-        if (n == 4 && counts.size == 1) return EvaluatedDoudizhuHand(DoudizhuHandType.BOMB, sorted[0].rank, 4, sorted)
-        if (n == 4 && counts.containsValue(3)) {
-            val main = counts.entries.first { it.value == 3 }.key
-            return EvaluatedDoudizhuHand(DoudizhuHandType.TRIPLE_ONE, main, 4, sorted)
+        if (n == 1) return EvaluatedDoudizhuHand(DoudizhuHandType.SINGLE, sortedByRankDesc[0].rank, 1, ordered)
+        if (n == 2) {
+            if (sortedByRankDesc[0].rank == 17 && sortedByRankDesc[1].rank == 16) {
+                return EvaluatedDoudizhuHand(DoudizhuHandType.ROCKET, 99, 2, sortedByRankDesc)
+            }
+            if (groups.size == 1 && groups[0].value == 2) {
+                return EvaluatedDoudizhuHand(DoudizhuHandType.PAIR, groups[0].key, 2, ordered)
+            }
+            return EvaluatedDoudizhuHand(DoudizhuHandType.INVALID, 0, n, ordered)
         }
-        if (n == 5 && counts.containsValue(3) && counts.containsValue(2)) {
-            val main = counts.entries.first { it.value == 3 }.key
-            return EvaluatedDoudizhuHand(DoudizhuHandType.TRIPLE_PAIR, main, 5, sorted)
+        if (n == 3) {
+            if (groups.size == 1 && groups[0].value == 3) {
+                return EvaluatedDoudizhuHand(DoudizhuHandType.TRIPLE, groups[0].key, 3, ordered)
+            }
+            return EvaluatedDoudizhuHand(DoudizhuHandType.INVALID, 0, n, ordered)
         }
-        if (n >= 5 && counts.size == n && sorted.last().rank <= 14) {
-            if ((0 until n - 1).all { sorted[it + 1].rank == sorted[it].rank + 1 }) {
-                return EvaluatedDoudizhuHand(DoudizhuHandType.STRAIGHT, sorted.first().rank, n, sorted)
+        if (n == 4) {
+            if (groups.size == 1 && groups[0].value == 4) {
+                return EvaluatedDoudizhuHand(DoudizhuHandType.BOMB, groups[0].key, 4, ordered)
+            }
+            if (groups.size == 2 && groups[0].value == 3) {
+                return EvaluatedDoudizhuHand(DoudizhuHandType.TRIPLE_ONE, groups[0].key, 4, ordered)
+            }
+            return EvaluatedDoudizhuHand(DoudizhuHandType.INVALID, 0, n, ordered)
+        }
+        if (n == 5 && groups.size == 2 && groups[0].value == 3 && groups[1].value == 2) {
+            return EvaluatedDoudizhuHand(DoudizhuHandType.TRIPLE_PAIR, groups[0].key, 5, ordered)
+        }
+        if (n == 6 && groups[0].value == 4) {
+            return EvaluatedDoudizhuHand(DoudizhuHandType.FOUR_WITH_TWO, groups[0].key, 6, ordered)
+        }
+        if (n == 8 && groups[0].value == 4 && groups.size == 3 && groups[1].value == 2 && groups[2].value == 2) {
+            return EvaluatedDoudizhuHand(DoudizhuHandType.FOUR_WITH_TWO, groups[0].key, 8, ordered)
+        }
+        if (n >= 5 && groups.size == n) {
+            val maxR = sortedByRankDesc.first().rank
+            val minR = sortedByRankDesc.last().rank
+            if (maxR <= 14 && (maxR - minR == n - 1)) {
+                return EvaluatedDoudizhuHand(DoudizhuHandType.STRAIGHT, maxR, n, sortedByRankDesc)
             }
         }
-        if (n >= 6 && n % 2 == 0 && counts.all { it.value == 2 }) {
-            val ranks = counts.keys.sorted()
-            if (ranks.last() <= 14 && (0 until ranks.size - 1).all { ranks[it + 1] == ranks[it] + 1 }) {
-                return EvaluatedDoudizhuHand(DoudizhuHandType.DOUBLE_STRAIGHT, ranks.first(), n, sorted)
+        if (n >= 6 && n % 2 == 0 && groups.size == n / 2 && groups.all { it.value == 2 && it.key <= 14 }) {
+            val pairRanks = groups.map { it.key }.sorted()
+            if (pairRanks.last() - pairRanks.first() == (n / 2 - 1)) {
+                return EvaluatedDoudizhuHand(DoudizhuHandType.DOUBLE_STRAIGHT, pairRanks.last(), n, sortedByRankDesc)
             }
         }
-        return EvaluatedDoudizhuHand(DoudizhuHandType.INVALID, 0, n, sorted)
+        val tripleRanks = groups.filter { it.value >= 3 && it.key <= 14 }.map { it.key }.sorted()
+        if (tripleRanks.size >= 2) {
+            var maxConsec = 1
+            var bestHigh = tripleRanks.last()
+            var curConsec = 1
+            for (i in 1 until tripleRanks.size) {
+                if (tripleRanks[i] == tripleRanks[i - 1] + 1) {
+                    curConsec += 1
+                    if (curConsec >= maxConsec) {
+                        maxConsec = curConsec
+                        bestHigh = tripleRanks[i]
+                    }
+                } else {
+                    curConsec = 1
+                }
+            }
+            if (maxConsec >= 2) {
+                if (n == maxConsec * 3 || n == maxConsec * 4 || (n == maxConsec * 5 && groups.count { it.value == 2 } >= maxConsec)) {
+                    return EvaluatedDoudizhuHand(DoudizhuHandType.AIRPLANE, bestHigh, n, ordered)
+                }
+            }
+        }
+        return EvaluatedDoudizhuHand(DoudizhuHandType.INVALID, 0, n, ordered)
     }
 
     private fun canBeat(challenger: EvaluatedDoudizhuHand, prev: EvaluatedDoudizhuHand): Boolean {
@@ -1187,11 +1902,11 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
         val list = ArrayList<DoudizhuCard>(54)
         for (r in 3..15) {
             for (s in listOf(CardSuit.SPADE, CardSuit.HEART, CardSuit.CLUB, CardSuit.DIAMOND)) {
-                list.add(DoudizhuCard("${s.name}_$r", r, s))
+                list.add(DoudizhuCard("${s.symbol}_$r", r, s))
             }
         }
-        list.add(DoudizhuCard("JOKER_16", 16, CardSuit.JOKER))
-        list.add(DoudizhuCard("JOKER_17", 17, CardSuit.JOKER))
+        list.add(DoudizhuCard("joker_16", 16, CardSuit.JOKER))
+        list.add(DoudizhuCard("joker_17", 17, CardSuit.JOKER))
         list.shuffle()
         return list
     }
