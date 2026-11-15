@@ -8733,7 +8733,6 @@ struct KOnDoudizhuSheetView: View {
     }
     
     // MARK: - 竖屏/横屏全可见自适应手牌扇形区（竖屏 >10 张自动双排居中叠放，<=10 张或横屏单排动态步进）
-    @ViewBuilder
     private func triggerDdzDealingAnimation(hand: [DoudizhuCard]) {
         dealingUnsortedOrder = hand.shuffled()
         dealtVisibleCount = 0
@@ -8755,6 +8754,7 @@ struct KOnDoudizhuSheetView: View {
         }
     }
 
+    @ViewBuilder
     private func adaptivePlayerHandView(hand: [DoudizhuCard], usableWidth: CGFloat, isLandscape: Bool, isCompact: Bool, geoHeight: CGFloat = 390) -> some View {
         let count = hand.count
         let counterOn = isLandscape && ddz.allowCardCounter && ddz.showCardCounter
@@ -9080,7 +9080,7 @@ struct KOnDoudizhuSheetView: View {
     
     private func handPokerCardView(card: DoudizhuCard, isSelected: Bool, cardW: CGFloat = 62, cardH: CGFloat = 90) -> some View {
         let headerH: CGFloat = max(14, min(17, cardH * 0.24))
-        VStack(spacing: 0) {
+        return VStack(spacing: 0) {
             // Dedicated top white header strip so rank+suit never cover the K-ON! character's face!
             HStack(spacing: 1.5) {
                 Text(card.displayRank)
