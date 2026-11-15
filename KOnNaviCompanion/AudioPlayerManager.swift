@@ -11024,12 +11024,12 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
                 }
                 statusBanner = "ℹ️ 玩家 [\(cleanLeft)] 已离开房间 \(myCode)\(isRoomAuthority ? "，您当前为房主" : "")"
             } else {
-                promoteAuthorityIfNeededAndResumeAI()
                 for i in 0..<seats.count where seats[i].peerDisplayName == pName {
                     seats[i].isAI = true
                     seats[i].name = "\(characterFilter(for: seats[i].characterId).displayName(AudioPlayerManager.shared.language)) (AI接管)"
                 }
-                statusBanner = "ℹ️ 玩家 [\(cleanLeft)] 已离开，由轻音AI自动接管继续对局"
+                promoteAuthorityIfNeededAndResumeAI()
+                statusBanner = "ℹ️ 玩家 [\(cleanLeft)] 已离开，由轻音AI自动接管\(isRoomAuthority ? "（您已接任房主）" : "")"
                 promoteAuthorityIfNeededAndResumeAI()
             }
             
@@ -12141,10 +12141,16 @@ class KOnMahjongManager: NSObject, ObservableObject, MCSessionDelegate, MCNearby
             seats[i].discards = []
             seats[i].isDealer = (i == dealerIdx)
             seats[i].lastActionText = ""
-            let count = (i == dealerIdx) ? 14 : 13
-            let slice = Array(deck.prefix(count))
-            deck.removeFirst(count)
-            seats[i].hand = MahjongEvaluator.sortHand(slice)
+            if i == dealerIdx {
+                let first13 = MahjongEvaluator.sortHand(Array(deck.prefix(13)))
+                let drawn14 = deck[13]
+                deck.removeFirst(14)
+                seats[i].hand = first13 + [drawn14]
+            } else {
+                let slice = Array(deck.prefix(13))
+                deck.removeFirst(13)
+                seats[i].hand = MahjongEvaluator.sortHand(slice)
+            }
         }
         wall = deck
         wallCount = wall.count

@@ -9155,24 +9155,31 @@ struct KOnDoudizhuSheetView: View {
     }
     
     private func miniPokerCardView(card: DoudizhuCard) -> some View {
-        ZStack(alignment: .topLeading) {
+        VStack(spacing: 0) {
+            HStack(spacing: 1) {
+                Text(card.displayRank)
+                    .font(.system(size: card.rank >= 16 ? 6 : 7.5, weight: .black))
+                    .foregroundColor(card.isRedCard ? Color(red: 0.85, green: 0.10, blue: 0.15) : .black)
+                if card.rank < 16 {
+                    Text(card.suit.rawValue)
+                        .font(.system(size: 6.5, weight: .bold))
+                        .foregroundColor(card.isRedCard ? Color(red: 0.85, green: 0.10, blue: 0.15) : .black)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 2)
+            .frame(width: 28, height: 10)
+            .background(Color.white)
+
             if let img = ddz.cardImage(for: card) {
                 Image(uiImage: img)
                     .resizable()
                     .scaledToFill()
-                    .frame(width: 28, height: 40)
+                    .frame(width: 28, height: 30)
                     .clipped()
             } else {
-                Color.white
-                    .frame(width: 28, height: 40)
+                Color.white.frame(width: 28, height: 30)
             }
-            Text(card.displayRank)
-                .font(.system(size: card.rank >= 16 ? 6 : 8, weight: .black))
-                .foregroundColor(card.isRedCard ? Color(red: 0.85, green: 0.10, blue: 0.15) : .black)
-                .padding(.horizontal, 2)
-                .background(Color.white.opacity(0.88))
-                .cornerRadius(2)
-                .padding(1.5)
         }
         .frame(width: 28, height: 40)
         .clipShape(RoundedRectangle(cornerRadius: 4))
@@ -9983,9 +9990,10 @@ struct KOnMahjongSheetView: View {
     }
 
     private func mjMyHandView(hand: [MahjongTile], usableWidth: CGFloat, maxTileH: CGFloat = 50.0) -> some View {
-        let safeW = max(240.0, usableWidth)
+        // Compute constant tile width from full screen width (15-slot baseline: 13 tiles + 1 gap + 1 drawn tile) so Pong/Kong never shrinks or shifts tile size!
+        let fullTableW = max(360.0, UIScreen.main.bounds.width - 28.0)
         let maxW = maxTileH / 1.4
-        let tileW = min(maxW, max(26.0, (safeW - 24) / CGFloat(max(1, hand.count))))
+        let tileW = min(maxW, max(30.0, fullTableW / 16.2))
         let tileH = tileW * 1.4
         return AnyView(mjTileRow(tiles: hand, tileW: tileW, tileH: tileH))
     }
@@ -9996,7 +10004,7 @@ struct KOnMahjongSheetView: View {
                 let sel = (mj.selectedTileId == tile.id)
                 let isDrawn = (mj.drawnTileId == tile.id)
                 if isDrawn && tile.id == tiles.last?.id && tiles.count > 1 {
-                    Spacer().frame(width: 10)
+                    Spacer().frame(width: max(14, tileW * 0.48))
                 }
                 Button(action: {
                     if mj.phase == .playing && mj.currentTurnSeat == mj.mySeatIndex {
