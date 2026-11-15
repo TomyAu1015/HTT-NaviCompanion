@@ -182,6 +182,26 @@ static void openSwitchRoomCodeKeyboard() {
     }
 }
 
+static void openSwitchNicknameKeyboard() {
+    SwkbdConfig kbd;
+    Result rc = swkbdCreate(&kbd, 0);
+    if (R_SUCCEEDED(rc)) {
+        swkbdConfigMakePresetDefault(&kbd);
+        swkbdConfigSetHeaderText(&kbd, "请输入 Switch 联机昵称");
+        swkbdConfigSetSubText(&kbd, "例如: TomySwitch");
+        swkbdConfigSetInitialText(&kbd, gMyPeerName.c_str());
+        swkbdConfigSetStringLenMax(&kbd, 16);
+        char outBuf[32] = {0};
+        if (R_SUCCEEDED(swkbdShow(&kbd, outBuf, sizeof(outBuf)))) {
+            if (strlen(outBuf) > 0) {
+                gMyPeerName = outBuf;
+                gStatusBanner = "已修改本机昵称: " + gMyPeerName;
+            }
+        }
+        swkbdClose(&kbd);
+    }
+}
+
 // ============================================================================
 // Cross-Platform WebSocket Sync (wss://azusa.online/ddz)
 // ============================================================================
@@ -302,7 +322,7 @@ static void rebuildLobbySeats() {
             bool isMe = (gRoomPeers[i].name == gMyPeerName);
             if (isMe) gDdzMySeat = i;
             usedChars.insert(gRoomPeers[i].charId);
-            std::string roleTag = (i == 0) ? "[房主]房主 " : ("#" + std::to_string(i + 1) + " ");
+            std::string roleTag = (i == 0) ? "[房主] " : ("#" + std::to_string(i + 1) + " ");
             gDdzSeats[i] = {i, roleTag + gRoomPeers[i].name + " (" + getCharacterName(gRoomPeers[i].charId) + ")",
                             gRoomPeers[i].charId, false, gRoomPeers[i].name, {}, false, "", {}, prevScore};
         } else {
@@ -320,7 +340,7 @@ static void rebuildLobbySeats() {
             bool isMe = (gRoomPeers[i].name == gMyPeerName);
             if (isMe) gMjMySeat = i;
             usedChars.insert(gRoomPeers[i].charId);
-            std::string roleTag = (i == 0) ? "[房主]房主 " : ("#" + std::to_string(i + 1) + " ");
+            std::string roleTag = (i == 0) ? "[房主] " : ("#" + std::to_string(i + 1) + " ");
             gMjSeats[i] = {i, roleTag + gRoomPeers[i].name, gRoomPeers[i].charId, false, gRoomPeers[i].name, {}, {}, {}, prevScore, (i == 0), ""};
         } else {
             int aiChar = 1;
@@ -844,11 +864,42 @@ static void drawPokerCard(const DdzCard& c, int x, int y, int w, int h, bool isC
     int drawY = y - (isSelected ? 18 : 0);
     drawRectFill(x, drawY, w, h, COL_WHITE);
 
-    // Top White Header Strip (Rank + Suit never cover K-ON! character face!)
-    int headerH = std::max(18, h / 5);
+    // Top White Header Strip (Rank + Vector Suit Icon never cover K-ON! character face & zero □ boxes!)
+    int headerH = std::max(20, h / 5);
     SDL_Color idxCol = c.isRed() ? SDL_Color{215, 25, 35, 255} : COL_BLACK;
-    std::string badge = c.rankLabel() + (c.rank < 16 ? c.suit : "");
-    drawText(gFontSmall, badge, x + 5, drawY + 2, idxCol);
+    drawText(gFontSmall, c.rankLabel(), x + 4, drawY + 1, idxCol);
+    if (c.rank < 16) {
+        int sx = x + (c.rank == 10 ? 27 : 20);
+        int sy = drawY + 10;
+        SDL_SetRenderDrawColor(gRenderer, idxCol.r, idxCol.g, idxCol.b, 255);
+        if (c.suit == "♦") {
+            for (int dy = -5; dy <= 5; ++dy) {
+                int hw = 5 - std::abs(dy);
+                SDL_RenderDrawLine(gRenderer, sx - hw, sy + dy, sx + hw, sy + dy);
+            }
+        } else if (c.suit == "♥") {
+            SDL_Rect l1 = {sx - 4, sy - 4, 4, 4}, l2 = {sx + 1, sy - 4, 4, 4};
+            SDL_RenderFillRect(gRenderer, &l1);
+            SDL_RenderFillRect(gRenderer, &l2);
+            for (int dy = 0; dy <= 5; ++dy) {
+                int hw = 5 - dy;
+                SDL_RenderDrawLine(gRenderer, sx - hw, sy + dy, sx + hw, sy + dy);
+            }
+        } else if (c.suit == "♣") {
+            SDL_Rect c1 = {sx - 2, sy - 5, 4, 4}, c2 = {sx - 5, sy - 1, 4, 4}, c3 = {sx + 1, sy - 1, 4, 4};
+            SDL_RenderFillRect(gRenderer, &c1);
+            SDL_RenderFillRect(gRenderer, &c2);
+            SDL_RenderFillRect(gRenderer, &c3);
+            SDL_RenderDrawLine(gRenderer, sx, sy + 1, sx, sy + 5);
+        } else {
+            for (int dy = -5; dy <= 1; ++dy) {
+                int hw = (dy + 5) * 5 / 6;
+                SDL_RenderDrawLine(gRenderer, sx - hw, sy + dy, sx + hw, sy + dy);
+            }
+            SDL_RenderDrawLine(gRenderer, sx, sy + 1, sx, sy + 5);
+            SDL_RenderDrawLine(gRenderer, sx - 2, sy + 5, sx + 2, sy + 5);
+        }
+    }
 
     // Character Illustration below header
     SDL_Texture* tex = getTexture(c.romfsImagePath());
@@ -932,7 +983,7 @@ static void renderTopBar() {
         drawText(gFontSmall, "[-] < 退出房间", 88, 16, COL_GOLD, true);
         if (!gIsOnlineRoom || gIsRoomAuthority) {
             drawRectFill(SCREEN_W - 150, 10, 134, 32, COL_GOLD);
-            drawText(gFontSmall, "[ZR] 刷新 刷新", SCREEN_W - 83, 16, COL_BLACK, true);
+            drawText(gFontSmall, "[ZR] 刷新", SCREEN_W - 83, 16, COL_BLACK, true);
         }
     }
     drawText(gFontLarge, "放课后茶会 · 放课后棋牌室 (Switch 触屏+手柄版)", SCREEN_W / 2, 12, COL_WHITE, true);
@@ -963,7 +1014,10 @@ static void renderLobbyScreen() {
 
     // 1. Character Selector
     drawRectFill(40, 166, 1200, 125, COL_PANEL);
-    drawText(gFontMed, "1. 选择轻音部角色 (方向键左右 + [A] 确认)    本机标识: " + gMyPeerName, 58, 174, COL_GOLD);
+    drawText(gFontMed, "1. 选择轻音部角色 (摇杆/方向键选择)    本机标识: " + gMyPeerName, 58, 174, COL_GOLD);
+    drawRectFill(1050, 171, 172, 28, COL_BLUE_BTN);
+    drawRectOutline(1050, 171, 172, 28, COL_GOLD, 1);
+    drawText(gFontSmall, "[ZL] 修改昵称", 1136, 175, COL_WHITE, true);
     for (int i = 0; i < 5; ++i) {
         int bx = 58 + i * 232;
         int by = 208;
@@ -1007,9 +1061,9 @@ static void renderLobbyScreen() {
         int sc = (gSelectedGame == 0) ? gDdzSeats[i].score : gMjSeats[i].score;
         drawRectFill(sx, sy, sw, 94, {14, 54, 34, 255});
         drawRectOutline(sx, sy, sw, 94, isAI ? COL_GRAY : COL_GOLD, isAI ? 1 : 2);
-        drawCharAvatar(sChar, sx + 8, sy + 16, 58, 58);
-        drawText(gFontSmall, sName, sx + sw / 2 + 20, sy + 18, COL_WHITE, true);
-        drawText(gFontSmall, std::string(isAI ? "[AI] 轻音AI补位" : "真人玩家") + " · 积分: " + std::to_string(sc), sx + sw / 2, sy + 54, COL_GOLD, true);
+        drawCharAvatar(sChar, sx + 8, sy + 18, 52, 52);
+        drawText(gFontSmall, sName, sx + 66, sy + 20, COL_WHITE);
+        drawText(gFontSmall, std::string(isAI ? "[AI] 轻音AI" : "[真人] 玩家") + " · " + std::to_string(sc) + "分", sx + 66, sy + 52, COL_GOLD);
     }
 
     // 4. Start Button
@@ -1075,7 +1129,7 @@ static void renderDoudizhuTable() {
     drawRectOutline(20, 210, 220, 190, gDdzTurnSeat == leftIdx ? COL_GOLD : COL_GRAY, 2);
     drawCharAvatar(lSeat.characterId, 26, 216, 48, 48);
     drawText(gFontSmall, lSeat.name, 78, 220, COL_WHITE);
-    drawText(gFontSmall, std::string(lSeat.isLandlord ? "[地主] 地主" : "[农民] 农民") + " · 积分:" + std::to_string(lSeat.score), 78, 244, COL_GOLD);
+    drawText(gFontSmall, (gDdzPhase == "bidding" ? "待叫分" : (lSeat.isLandlord ? "[地主]" : "[农民]")) + std::string(" · ") + std::to_string(lSeat.score) + "分", 78, 244, COL_GOLD);
     for (int k = 0; k < std::min(6, std::max(1, (int)lSeat.hand.size() / 3)); ++k) {
         drawPokerBack(32 + k * 12, 274, 46, 64);
     }
@@ -1086,7 +1140,7 @@ static void renderDoudizhuTable() {
     drawRectOutline(1040, 210, 220, 190, gDdzTurnSeat == rightIdx ? COL_GOLD : COL_GRAY, 2);
     drawCharAvatar(rSeat.characterId, 1046, 216, 48, 48);
     drawText(gFontSmall, rSeat.name, 1098, 220, COL_WHITE);
-    drawText(gFontSmall, std::string(rSeat.isLandlord ? "[地主] 地主" : "[农民] 农民") + " · 积分:" + std::to_string(rSeat.score), 1098, 244, COL_GOLD);
+    drawText(gFontSmall, (gDdzPhase == "bidding" ? "待叫分" : (rSeat.isLandlord ? "[地主]" : "[农民]")) + std::string(" · ") + std::to_string(rSeat.score) + "分", 1098, 244, COL_GOLD);
     for (int k = 0; k < std::min(6, std::max(1, (int)rSeat.hand.size() / 3)); ++k) {
         drawPokerBack(1052 + k * 12, 274, 46, 64);
     }
@@ -1122,7 +1176,8 @@ static void renderDoudizhuTable() {
     // Action Bar
     drawRectFill(20, 432, 430, 44, COL_PANEL);
     drawRectOutline(20, 432, 430, 44, gDdzTurnSeat == gDdzMySeat ? COL_GOLD : COL_GRAY, 2);
-    drawText(gFontSmall, me.name + (me.isLandlord ? " [[地主]地主]" : " [[农民]农民]") + " · 手牌:" + std::to_string(me.hand.size()) + " · 积分:" + std::to_string(me.score), 34, 444, COL_WHITE);
+    std::string myRole = (gDdzPhase == "bidding") ? " [待叫分]" : (me.isLandlord ? " [地主]" : " [农民]");
+    drawText(gFontSmall, me.name + myRole + " · " + std::to_string(me.hand.size()) + "张 · " + std::to_string(me.score) + "分", 34, 444, COL_WHITE);
 
     if (gDdzPhase == "bidding" && gDdzTurnSeat == gDdzMySeat) {
         drawRectFill(470, 432, 790, 44, COL_CRIMSON);
@@ -1372,6 +1427,8 @@ int main(int argc, char* argv[]) {
     padInitializeDefault(&pad);
     hidInitializeTouchScreen();
     bool wasTouching = false;
+    bool wasWsConnected = false;
+    uint32_t lastSlideTick = 0;
 
     bool running = true;
     while (running && appletMainLoop()) {
@@ -1382,6 +1439,13 @@ int main(int argc, char* argv[]) {
 
         padUpdate(&pad);
         u64 kDown = padGetButtonsDown(&pad);
+        u64 kHeld = padGetButtons(&pad);
+
+        bool nowWsConnected = gWs.isConnected();
+        if (nowWsConnected && !wasWsConnected && gIsOnlineRoom) {
+            sendJoinRequestPacket();
+        }
+        wasWsConnected = nowWsConnected;
 
         HidTouchScreenState touchState = {0};
         hidGetTouchScreenStates(&touchState, 1);
@@ -1417,6 +1481,7 @@ int main(int argc, char* argv[]) {
                 bool inJoinedRoom = gIsOnlineRoom && gWs.isConnected();
                 if (!inJoinedRoom && pointInRect(tx, ty, 40, 64, 590, 44)) { gSelectedGame = 0; rebuildLobbySeats(); }
                 else if (!inJoinedRoom && pointInRect(tx, ty, 650, 64, 590, 44)) { gSelectedGame = 1; rebuildLobbySeats(); }
+                else if (pointInRect(tx, ty, 1050, 171, 172, 28)) kDown |= HidNpadButton_ZL;
                 else if (pointInRect(tx, ty, 58, 352, 360, 54)) kDown |= HidNpadButton_Y;
                 else if (pointInRect(tx, ty, 440, 352, 380, 54)) kDown |= HidNpadButton_X;
                 else if (pointInRect(tx, ty, 40, 610, 1200, 68)) kDown |= HidNpadButton_A;
@@ -1509,11 +1574,17 @@ int main(int argc, char* argv[]) {
                 if (kDown & HidNpadButton_L) { gSelectedGame = 0; rebuildLobbySeats(); }
                 if (kDown & HidNpadButton_R) { gSelectedGame = 1; rebuildLobbySeats(); }
             }
+            if (kDown & HidNpadButton_ZL) {
+                openSwitchNicknameKeyboard();
+                rebuildLobbySeats();
+            }
             if (kDown & (HidNpadButton_Left | HidNpadButton_StickLLeft)) {
                 if (gLobbyFocus <= 4) {
                     gLobbyFocus = (gLobbyFocus + 4) % 5;
                     gMyCharId = kCharacters[gLobbyFocus].charId;
                     rebuildLobbySeats();
+                } else if (gLobbyFocus == 6) {
+                    gLobbyFocus = 5;
                 }
             }
             if (kDown & (HidNpadButton_Right | HidNpadButton_StickLRight)) {
@@ -1521,13 +1592,17 @@ int main(int argc, char* argv[]) {
                     gLobbyFocus = (gLobbyFocus + 1) % 5;
                     gMyCharId = kCharacters[gLobbyFocus].charId;
                     rebuildLobbySeats();
+                } else if (gLobbyFocus == 5) {
+                    gLobbyFocus = 6;
                 }
             }
             if (kDown & (HidNpadButton_Up | HidNpadButton_StickLUp)) {
-                gLobbyFocus = 0;
+                if (gLobbyFocus == 7) gLobbyFocus = 5;
+                else if (gLobbyFocus == 5 || gLobbyFocus == 6) gLobbyFocus = std::max(0, std::min(4, gMyCharId - 1));
             }
             if (kDown & (HidNpadButton_Down | HidNpadButton_StickLDown)) {
-                gLobbyFocus = 7;
+                if (gLobbyFocus <= 4) gLobbyFocus = 5;
+                else if (gLobbyFocus == 5 || gLobbyFocus == 6) gLobbyFocus = 7;
             }
             if (kDown & HidNpadButton_Y) {
                 openSwitchRoomCodeKeyboard();
@@ -1555,8 +1630,12 @@ int main(int argc, char* argv[]) {
                 }
             }
             if (kDown & HidNpadButton_A) {
-                if (gSelectedGame == 0) startNewDoudizhuRound();
-                else startNewMahjongRound();
+                if (gLobbyFocus == 5) kDown |= HidNpadButton_Y;
+                else if (gLobbyFocus == 6) kDown |= HidNpadButton_X;
+                else {
+                    if (gSelectedGame == 0) startNewDoudizhuRound();
+                    else startNewMahjongRound();
+                }
             }
         } else if (gScreen == MODE_DDZ_TABLE) {
             auto& myHand = gDdzSeats[gDdzMySeat].hand;
@@ -1568,11 +1647,15 @@ int main(int argc, char* argv[]) {
             if (kDown & HidNpadButton_R) {
                 gDdzShowCounter = !gDdzShowCounter;
             }
-            if (kDown & (HidNpadButton_Left | HidNpadButton_StickLLeft)) {
-                if (!myHand.empty()) gDdzCursor = (gDdzCursor + (int)myHand.size() - 1) % (int)myHand.size();
-            }
-            if (kDown & (HidNpadButton_Right | HidNpadButton_StickLRight)) {
-                if (!myHand.empty()) gDdzCursor = (gDdzCursor + 1) % (int)myHand.size();
+            uint32_t nowT = SDL_GetTicks();
+            bool slideLeft = (kDown & (HidNpadButton_Left | HidNpadButton_StickLLeft)) || ((kHeld & (HidNpadButton_Left | HidNpadButton_StickLLeft)) && nowT - lastSlideTick > 110);
+            bool slideRight = (kDown & (HidNpadButton_Right | HidNpadButton_StickLRight)) || ((kHeld & (HidNpadButton_Right | HidNpadButton_StickLRight)) && nowT - lastSlideTick > 110);
+            if (slideLeft && !myHand.empty()) {
+                gDdzCursor = (gDdzCursor + (int)myHand.size() - 1) % (int)myHand.size();
+                lastSlideTick = nowT;
+            } else if (slideRight && !myHand.empty()) {
+                gDdzCursor = (gDdzCursor + 1) % (int)myHand.size();
+                lastSlideTick = nowT;
             }
             if (gDdzPhase == "bidding" && gDdzTurnSeat == gDdzMySeat) {
                 if (kDown & HidNpadButton_B) handleDdzBid(gDdzMySeat, 0);
@@ -1631,11 +1714,15 @@ int main(int argc, char* argv[]) {
                 gScreen = MODE_LOBBY;
                 gStatusBanner = "已退出麻将房间返回大厅";
             }
-            if (kDown & (HidNpadButton_Left | HidNpadButton_StickLLeft)) {
-                if (!myHand.empty()) gMjCursor = (gMjCursor + (int)myHand.size() - 1) % (int)myHand.size();
-            }
-            if (kDown & (HidNpadButton_Right | HidNpadButton_StickLRight)) {
-                if (!myHand.empty()) gMjCursor = (gMjCursor + 1) % (int)myHand.size();
+            uint32_t nowT = SDL_GetTicks();
+            bool slideLeft = (kDown & (HidNpadButton_Left | HidNpadButton_StickLLeft)) || ((kHeld & (HidNpadButton_Left | HidNpadButton_StickLLeft)) && nowT - lastSlideTick > 110);
+            bool slideRight = (kDown & (HidNpadButton_Right | HidNpadButton_StickLRight)) || ((kHeld & (HidNpadButton_Right | HidNpadButton_StickLRight)) && nowT - lastSlideTick > 110);
+            if (slideLeft && !myHand.empty()) {
+                gMjCursor = (gMjCursor + (int)myHand.size() - 1) % (int)myHand.size();
+                lastSlideTick = nowT;
+            } else if (slideRight && !myHand.empty()) {
+                gMjCursor = (gMjCursor + 1) % (int)myHand.size();
+                lastSlideTick = nowT;
             }
             if (gMjPhase == "claimWindow" && gMjHasClaim) {
                 if ((kDown & HidNpadButton_X) && gMjCanHu) {

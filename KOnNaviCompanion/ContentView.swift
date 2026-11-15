@@ -9530,7 +9530,7 @@ struct KOnMahjongSheetView: View {
             let rightIdx = (mj.mySeatIndex + 1) % 4
             let usableW = max(280, geo.size.width - 16)
 
-            let midH = max(110.0, geo.size.height - 156.0)
+            let midH = max(130.0, geo.size.height - 138.0)
             ZStack(alignment: .bottom) {
             VStack(spacing: 3) {
                 // Top Row: Opposite Seat with Standing Tile Wall + Info
@@ -9773,7 +9773,7 @@ struct KOnMahjongSheetView: View {
                     }
                     .padding(.horizontal, 8)
                     .padding(.top, 2)
-                    .padding(.bottom, max(16, geo.safeAreaInsets.bottom + 8))
+                    .padding(.bottom, max(12, geo.safeAreaInsets.bottom + 4))
                 }
             }
             .frame(width: geo.size.width, height: geo.size.height, alignment: .top)
@@ -9954,7 +9954,7 @@ struct KOnMahjongSheetView: View {
                     ForEach(rows[rIdx]) { t in
                         let isLatest = (t.id == seat.discards.last?.id)
                         ZStack(alignment: .top) {
-                            mjTileView(tile: t, width: 20, height: 27, isSelected: false, isHighlight: isLatest)
+                            mjTileView(tile: t, width: 17, height: 23, isSelected: false, isHighlight: isLatest)
                             if isLatest {
                                 Text("▼")
                                     .font(.system(size: 9, weight: .black))

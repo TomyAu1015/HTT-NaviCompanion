@@ -10045,7 +10045,7 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
             }
         }
     }
-    @Published var customServerURL: String = UserDefaults.standard.string(forKey: "kon_ddz_server_url") ?? "wss://psp.azusa.online/ddz" {
+    @Published var customServerURL: String = (UserDefaults.standard.string(forKey: "kon_ddz_server_url") ?? "").replacingOccurrences(of: "psp.azusa.online", with: "azusa.online").isEmpty ? "wss://azusa.online/ddz" : (UserDefaults.standard.string(forKey: "kon_ddz_server_url") ?? "wss://azusa.online/ddz").replacingOccurrences(of: "psp.azusa.online", with: "azusa.online") {
         didSet {
             UserDefaults.standard.set(customServerURL, forKey: "kon_ddz_server_url")
         }
