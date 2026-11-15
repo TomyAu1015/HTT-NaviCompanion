@@ -69,6 +69,24 @@ namespace MiniJson {
         return defVal;
     }
 
+    inline std::string extractObject(const std::string& json, const std::string& objKey) {
+        size_t pos = findKeyValPos(json, objKey);
+        if (pos == std::string::npos || pos >= json.size() || json[pos] != '{') return "";
+        int depth = 0;
+        bool inStr = false;
+        for (size_t i = pos; i < json.size(); ++i) {
+            char c = json[i];
+            if (c == '"' && (i == 0 || json[i - 1] != '\\')) inStr = !inStr;
+            if (inStr) continue;
+            if (c == '{') depth++;
+            else if (c == '}') {
+                depth--;
+                if (depth == 0) return json.substr(pos, i - pos + 1);
+            }
+        }
+        return "";
+    }
+
     // Splits a top-level JSON array `[{...},{...}]` into object strings
     inline std::vector<std::string> extractObjectsArray(const std::string& json, const std::string& arrayKey) {
         std::vector<std::string> items;
@@ -398,6 +416,15 @@ struct MjMeld {
 
     std::string toJson() const {
         return "{\"id\":\"" + MiniJson::esc(id) + "\",\"kind\":\"" + MiniJson::esc(kind) + "\",\"tile\":" + tile.toJson() + "}";
+    }
+
+    static MjMeld fromJson(const std::string& j) {
+        MjMeld m;
+        m.id = MiniJson::getStr(j, "id");
+        m.kind = MiniJson::getStr(j, "kind", "碰");
+        std::string tObj = MiniJson::extractObject(j, "tile");
+        m.tile = MjTile::fromJson(tObj.empty() ? j : tObj);
+        return m;
     }
 };
 
