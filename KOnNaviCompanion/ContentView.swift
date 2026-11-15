@@ -8651,7 +8651,8 @@ struct KOnDoudizhuSheetView: View {
                         opponentSeatPanel(seat: ddz.seats[rightSeatIdx], isLeft: false, isCompact: isCompact)
                     }
                 }
-                .frame(maxHeight: .infinity)
+                .frame(maxHeight: max(110.0, geo.size.height - (ddz.allowCardCounter && ddz.showCardCounter ? 205.0 : 172.0)))
+                .clipped()
                 .padding(.horizontal, 12)
                 
                 Spacer(minLength: 2)
@@ -9529,8 +9530,9 @@ struct KOnMahjongSheetView: View {
             let rightIdx = (mj.mySeatIndex + 1) % 4
             let usableW = max(280, geo.size.width - 16)
 
-            ZStack {
-            VStack(spacing: 4) {
+            let midH = max(110.0, geo.size.height - 156.0)
+            ZStack(alignment: .bottom) {
+            VStack(spacing: 3) {
                 // Top Row: Opposite Seat with Standing Tile Wall + Info
                 HStack(spacing: 10) {
                     if oppIdx < mj.seats.count {
@@ -9702,7 +9704,7 @@ struct KOnMahjongSheetView: View {
                         .padding(.horizontal, 8)
                 }
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .frame(width: geo.size.width, height: midH, alignment: .center)
                 .clipped()
 
                 // My Badge + Action Bar in One Compact Row, followed by Melds + Hand Tiles in One Row
@@ -9774,6 +9776,7 @@ struct KOnMahjongSheetView: View {
                     .padding(.bottom, max(16, geo.safeAreaInsets.bottom + 8))
                 }
             }
+            .frame(width: geo.size.width, height: geo.size.height, alignment: .top)
 
             // Floating Ting Card Popup Panel (like Tencent Happy Mahjong)
             if showTingPopup {

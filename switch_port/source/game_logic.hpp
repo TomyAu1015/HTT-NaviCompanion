@@ -178,8 +178,8 @@ struct DdzEvalHand {
         if (category == "consecutivePairs") return "连对";
         if (category == "airplane") return "飞机";
         if (category == "fourWithTwo") return "四带二";
-        if (category == "bomb") return "💣 炸弹";
-        if (category == "rocket") return "🚀 王炸";
+        if (category == "bomb") return "炸弹";
+        if (category == "rocket") return "王炸";
         return "";
     }
 
