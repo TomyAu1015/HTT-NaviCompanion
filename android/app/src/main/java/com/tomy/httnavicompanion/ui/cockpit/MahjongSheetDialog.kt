@@ -523,7 +523,18 @@ fun KOnMahjongSheetDialog(onDismiss: () -> Unit, embeddedInGameRoom: Boolean = f
                                 }
                             }
                         }
-                        Box(modifier = Modifier.clip(RoundedCornerShape(8.dp)).background(MjCardGreen).padding(horizontal = 10.dp, vertical = 4.dp)) {
+                        Row(
+                            modifier = Modifier.clip(RoundedCornerShape(8.dp)).background(MjCardGreen).padding(horizontal = 8.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Row(horizontalArrangement = Arrangement.spacedBy(1.dp)) {
+                                repeat(((wallCount + 14) / 15).coerceIn(1, 8)) {
+                                    Box(modifier = Modifier.size(10.dp, 14.dp)) {
+                                        MjTileBack(10.dp, 12.dp)
+                                    }
+                                }
+                            }
                             Text("余 $wallCount 张 · 第${currentRound}局 · ⏱${turnRem}s", color = MjGold, fontSize = 11.sp, fontWeight = FontWeight.Black)
                         }
                     }
@@ -688,7 +699,7 @@ fun KOnMahjongSheetDialog(onDismiss: () -> Unit, embeddedInGameRoom: Boolean = f
                                             Text("打出 ${selTile.fullName}", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Black)
                                         }
                                     } else {
-                                        Text("👉 请点选或双击手牌出牌", color = Color(0xFF00E676), fontSize = 11.sp, fontWeight = FontWeight.Black)
+                                        Text("👉 点选后点击【打出】出牌（再点取消）", color = Color(0xFF00E676), fontSize = 11.sp, fontWeight = FontWeight.Black)
                                     }
                                 } else if (phase == MahjongGamePhase.ROUND_OVER) {
                                     val inRoom = isServerConn || isHosting || connectedPeers.isNotEmpty()
@@ -723,8 +734,12 @@ fun KOnMahjongSheetDialog(onDismiss: () -> Unit, embeddedInGameRoom: Boolean = f
                                     Row(horizontalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.padding(end = 8.dp)) {
                                         me.melds.forEach { m ->
                                             Row(modifier = Modifier.clip(RoundedCornerShape(5.dp)).background(Color.Black.copy(alpha = 0.35f)).padding(2.dp), horizontalArrangement = Arrangement.spacedBy(1.dp)) {
-                                                repeat(if (m.kind == MahjongMeldKind.PONG) 3 else 4) {
-                                                    MjTileCard(m.tile, 24.dp, 34.dp, isSelected = false, isHighlight = false)
+                                                repeat(if (m.kind == MahjongMeldKind.PONG) 3 else 4) { idx ->
+                                                    if (m.kind == MahjongMeldKind.CONCEALED_KONG && idx != 2) {
+                                                        MjTileBack(24.dp, 34.dp)
+                                                    } else {
+                                                        MjTileCard(m.tile, 24.dp, 34.dp, isSelected = false, isHighlight = false)
+                                                    }
                                                 }
                                             }
                                         }
@@ -800,9 +815,18 @@ private fun MjSeatBadge(seat: MahjongSeat, isTurn: Boolean, bmp: android.graphic
 private fun MjDiscardRiver(seat: MahjongSeat) {
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
         if (seat.melds.isNotEmpty()) {
-            Row(horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 seat.melds.forEach { m ->
-                    Text("${m.kind.label}${m.tile.fullName}", color = Color.Black, fontSize = 8.sp, fontWeight = FontWeight.Black, modifier = Modifier.clip(RoundedCornerShape(3.dp)).background(MjGold).padding(horizontal = 3.dp, vertical = 1.dp))
+                    Row(modifier = Modifier.clip(RoundedCornerShape(4.dp)).background(Color.Black.copy(alpha = 0.35f)).padding(2.dp), horizontalArrangement = Arrangement.spacedBy(1.dp)) {
+                        val cnt = if (m.kind == MahjongMeldKind.PONG) 3 else 4
+                        repeat(cnt) { idx ->
+                            if (m.kind == MahjongMeldKind.CONCEALED_KONG && idx != 2) {
+                                MjTileBack(15.dp, 21.dp)
+                            } else {
+                                MjTileCard(m.tile, 15.dp, 21.dp, isSelected = false, isHighlight = false)
+                            }
+                        }
+                    }
                 }
             }
         }
