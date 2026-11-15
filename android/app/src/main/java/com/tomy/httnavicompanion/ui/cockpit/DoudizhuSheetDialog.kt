@@ -638,14 +638,27 @@ fun KOnDoudizhuSheetDialog(onDismiss: () -> Unit, embeddedInGameRoom: Boolean = 
                         }
 
                         if (allowCounter) {
-                            Box(
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .background(if (showCardCounter) DdzGold else DdzCardGreen)
-                                    .clickable { showCardCounter = !showCardCounter }
-                                    .padding(horizontal = 7.dp, vertical = 4.dp)
-                            ) {
-                                Text("记牌器", color = if (showCardCounter) Color.Black else Color.White, fontSize = 10.sp, fontWeight = FontWeight.Black)
+                            Row(horizontalArrangement = Arrangement.spacedBy(5.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(if (showCardCounter) DdzGold else DdzCardGreen)
+                                        .clickable { showCardCounter = !showCardCounter }
+                                        .padding(horizontal = 7.dp, vertical = 4.dp)
+                                ) {
+                                    Text("记牌器", color = if (showCardCounter) Color.Black else Color.White, fontSize = 10.sp, fontWeight = FontWeight.Black)
+                                }
+                                if (isRoomAuthority || (!isHosting && !isServerConn && connectedPeers.isEmpty())) {
+                                    Box(
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(DdzGold)
+                                            .clickable { engine.startNewGame() }
+                                            .padding(horizontal = 7.dp, vertical = 4.dp)
+                                    ) {
+                                        Text("↻", color = Color.Black, fontSize = 11.sp, fontWeight = FontWeight.Black)
+                                    }
+                                }
                             }
                         }
                     }

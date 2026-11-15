@@ -523,19 +523,28 @@ fun KOnMahjongSheetDialog(onDismiss: () -> Unit, embeddedInGameRoom: Boolean = f
                                 }
                             }
                         }
-                        Row(
-                            modifier = Modifier.clip(RoundedCornerShape(8.dp)).background(MjCardGreen).padding(horizontal = 8.dp, vertical = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            Row(horizontalArrangement = Arrangement.spacedBy(1.dp)) {
-                                repeat(((wallCount + 14) / 15).coerceIn(1, 8)) {
-                                    Box(modifier = Modifier.size(10.dp, 14.dp)) {
-                                        MjTileBack(10.dp, 12.dp)
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Row(
+                                modifier = Modifier.clip(RoundedCornerShape(8.dp)).background(MjCardGreen).padding(horizontal = 8.dp, vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Row(horizontalArrangement = Arrangement.spacedBy(1.dp)) {
+                                    repeat(((wallCount + 14) / 15).coerceIn(1, 8)) {
+                                        Box(modifier = Modifier.size(10.dp, 14.dp)) {
+                                            MjTileBack(10.dp, 12.dp)
+                                        }
                                     }
                                 }
+                                Text("余 $wallCount 张 · 第${currentRound}局 · ⏱${turnRem}s", color = MjGold, fontSize = 11.sp, fontWeight = FontWeight.Black)
                             }
-                            Text("余 $wallCount 张 · 第${currentRound}局 · ⏱${turnRem}s", color = MjGold, fontSize = 11.sp, fontWeight = FontWeight.Black)
+                            if (isRoomAuthority || (!isHosting && !isServerConn && connectedPeers.isEmpty())) {
+                                Box(
+                                    modifier = Modifier.clip(RoundedCornerShape(8.dp)).background(MjGold).clickable { engine.startNewGame() }.padding(horizontal = 8.dp, vertical = 4.dp)
+                                ) {
+                                    Text("↻", color = Color.Black, fontSize = 12.sp, fontWeight = FontWeight.Black)
+                                }
+                            }
                         }
                     }
 
@@ -765,8 +774,11 @@ fun KOnMahjongSheetDialog(onDismiss: () -> Unit, embeddedInGameRoom: Boolean = f
                                     }
                                 }
                                 val shownTiles = if (isMjDealing) mjDealingOrder.take(mjDealtCount) else me.hand
-                                Row(horizontalArrangement = Arrangement.spacedBy(1.5.dp)) {
-                                    shownTiles.forEach { t ->
+                                Row(horizontalArrangement = Arrangement.spacedBy(1.5.dp), verticalAlignment = Alignment.Bottom) {
+                                    shownTiles.forEachIndexed { idx, t ->
+                                        if (!isMjDealing && drawnTileId == t.id && idx == shownTiles.lastIndex && shownTiles.size > 1) {
+                                            Spacer(Modifier.width(10.dp))
+                                        }
                                         MjTileCard(t, tileW, tileH, selectedTileId == t.id, drawnTileId == t.id) { engine.selectOrDiscardTile(t) }
                                     }
                                 }

@@ -1312,7 +1312,7 @@ class MahjongEngine(private val context: Context, private val audioMgr: AudioPla
         _wallCount.value = wall.size
         val cur = _seats.value.toMutableList()
         val s = cur[seatIdx]
-        cur[seatIdx] = s.copy(hand = MahjongEvaluator.sortHand(s.hand + drawn))
+        cur[seatIdx] = s.copy(hand = s.hand + drawn)
         _seats.value = cur
         _drawnTileId.value = drawn.id
         _phase.value = MahjongGamePhase.PLAYING
