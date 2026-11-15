@@ -911,14 +911,22 @@ static void drawMahjongBack(int x, int y, int w, int h) {
 // ============================================================================
 // Render Screens
 // ============================================================================
+static inline bool pointInRect(int px, int py, int x, int y, int w, int h) {
+    return px >= x && px <= (x + w) && py >= y && py <= (y + h);
+}
+
 static void renderTopBar() {
     drawRectFill(0, 0, SCREEN_W, 52, {6, 28, 17, 240});
     if (gScreen != MODE_LOBBY) {
         drawRectFill(16, 10, 145, 32, COL_PANEL);
         drawRectOutline(16, 10, 145, 32, COL_GOLD, 1);
         drawText(gFontSmall, "[-] < 退出房间", 88, 16, COL_GOLD, true);
+        if (!gIsOnlineRoom || gIsRoomAuthority) {
+            drawRectFill(SCREEN_W - 150, 10, 134, 32, COL_GOLD);
+            drawText(gFontSmall, "[ZR] ↻ 刷新", SCREEN_W - 83, 16, COL_BLACK, true);
+        }
     }
-    drawText(gFontLarge, "放课后茶会 · 放课后棋牌室 (Switch 跨平台联机版)", SCREEN_W / 2, 12, COL_WHITE, true);
+    drawText(gFontLarge, "放课后茶会 · 放课后棋牌室 (Switch 触屏+手柄版)", SCREEN_W / 2, 12, COL_WHITE, true);
     if (gScreen == MODE_LOBBY) {
         drawRectFill(SCREEN_W - 140, 10, 124, 32, COL_PANEL);
         drawRectOutline(SCREEN_W - 140, 10, 124, 32, COL_GOLD, 1);
@@ -1234,11 +1242,11 @@ static void renderMahjongTable() {
     int visCount = std::min((int)me.hand.size(), std::max(1, (int)(elapsed / 40)));
     if (elapsed > 750) visCount = (int)me.hand.size();
 
-    int tileW = 64, tileH = 92;
+    int tileW = 62, tileH = 90;
     for (int i = 0; i < visCount; ++i) {
         bool isDrawn = (me.hand[i].id == gMjDrawnTileId);
-        int extraGap = (isDrawn && i + 1 == visCount) ? 14 : 0;
-        drawMahjongTile(me.hand[i], curX + i * (tileW + 4) + extraGap, 534, tileW, tileH,
+        int extraGap = (isDrawn && i + 1 == visCount && visCount > 1) ? 18 : 0;
+        drawMahjongTile(me.hand[i], curX + i * (tileW + 4) + extraGap, 536, tileW, tileH,
                         (i == gMjCursor), (i == gMjSelectedIdx), isDrawn);
     }
 }
@@ -1332,6 +1340,8 @@ int main(int argc, char* argv[]) {
     PadState pad;
     padConfigureInput(1, HidNpadStyleSet_NpadStandard);
     padInitializeDefault(&pad);
+    hidInitializeTouchScreen();
+    bool wasTouching = false;
 
     bool running = true;
     while (running && appletMainLoop()) {
@@ -1343,8 +1353,123 @@ int main(int argc, char* argv[]) {
         padUpdate(&pad);
         u64 kDown = padGetButtonsDown(&pad);
 
+        HidTouchScreenState touchState = {0};
+        hidGetTouchScreenStates(&touchState, 1);
+        bool isTouchingNow = (touchState.count > 0);
+        bool tapped = (isTouchingNow && !wasTouching);
+        int tx = isTouchingNow ? (int)touchState.touches[0].x : -1;
+        int ty = isTouchingNow ? (int)touchState.touches[0].y : -1;
+        wasTouching = isTouchingNow;
+
         processIncomingNetworkMessages();
         updateAiTurns();
+
+        // Host-only [ZR] / Touch refresh button in active game
+        if (gScreen != MODE_LOBBY && (!gIsOnlineRoom || gIsRoomAuthority)) {
+            if ((kDown & HidNpadButton_ZR) || (tapped && pointInRect(tx, ty, SCREEN_W - 150, 10, 134, 32))) {
+                if (gScreen == MODE_DDZ_TABLE) { gDdzRound++; startNewDoudizhuRound(); }
+                else if (gScreen == MODE_MJ_TABLE) { gMjRound++; startNewMahjongRound(); }
+                tapped = false;
+            }
+        }
+        // Touch Top Bar Leave / Exit
+        if (tapped && gScreen != MODE_LOBBY && pointInRect(tx, ty, 16, 10, 145, 32)) {
+            kDown |= HidNpadButton_Minus;
+            tapped = false;
+        }
+        if (tapped && gScreen == MODE_LOBBY && pointInRect(tx, ty, SCREEN_W - 140, 10, 124, 32)) {
+            running = false;
+            tapped = false;
+        }
+        // Touch mapping for Lobby, Doudizhu, and Mahjong
+        if (tapped) {
+            if (gScreen == MODE_LOBBY) {
+                bool inJoinedRoom = gIsOnlineRoom && gWs.isConnected();
+                if (!inJoinedRoom && pointInRect(tx, ty, 40, 64, 590, 44)) { gSelectedGame = 0; rebuildLobbySeats(); }
+                else if (!inJoinedRoom && pointInRect(tx, ty, 650, 64, 590, 44)) { gSelectedGame = 1; rebuildLobbySeats(); }
+                else if (pointInRect(tx, ty, 58, 352, 360, 54)) kDown |= HidNpadButton_Y;
+                else if (pointInRect(tx, ty, 440, 352, 380, 54)) kDown |= HidNpadButton_X;
+                else if (pointInRect(tx, ty, 40, 610, 1200, 68)) kDown |= HidNpadButton_A;
+                else {
+                    for (int i = 0; i < 5; ++i) {
+                        if (pointInRect(tx, ty, 58 + i * 232, 208, 216, 68)) {
+                            gLobbyFocus = i;
+                            gMyCharId = kCharacters[i].charId;
+                            rebuildLobbySeats();
+                            break;
+                        }
+                    }
+                }
+            } else if (gScreen == MODE_DDZ_TABLE) {
+                if (pointInRect(tx, ty, 1110, 104, 150, 40)) {
+                    kDown |= HidNpadButton_R;
+                } else if (pointInRect(tx, ty, 470, 432, 790, 44)) {
+                    if (gDdzPhase == "bidding") {
+                        if (tx < 670) kDown |= HidNpadButton_B;
+                        else if (tx < 865) kDown |= HidNpadButton_Y;
+                        else if (tx < 1060) kDown |= HidNpadButton_X;
+                        else kDown |= HidNpadButton_A;
+                    } else if (gDdzPhase == "playing") {
+                        if (tx < 760) kDown |= HidNpadButton_Y;
+                        else if (tx < 960) kDown |= HidNpadButton_B;
+                        else kDown |= HidNpadButton_X;
+                    } else if (gDdzPhase == "roundOver") {
+                        kDown |= HidNpadButton_A;
+                    }
+                } else if (ty >= 490) {
+                    auto& myHand = gDdzSeats[gDdzMySeat].hand;
+                    int cnt = (int)myHand.size();
+                    if (cnt > 0) {
+                        int cardW = 84;
+                        int step = (cnt > 1) ? std::min(52, (1160 - cardW) / (cnt - 1)) : 0;
+                        int totalW = cardW + std::max(0, cnt - 1) * step;
+                        int startX = (SCREEN_W - totalW) / 2;
+                        for (int i = cnt - 1; i >= 0; --i) {
+                            int cx = startX + i * step;
+                            if (tx >= cx && tx <= cx + cardW) {
+                                gDdzCursor = i;
+                                myHand[i].selected = !myHand[i].selected;
+                                break;
+                            }
+                        }
+                    }
+                }
+            } else if (gScreen == MODE_MJ_TABLE) {
+                if (pointInRect(tx, ty, 396, 464, 864, 42)) {
+                    if (gMjPhase == "claimWindow") {
+                        if (tx < 680) kDown |= HidNpadButton_X;
+                        else if (tx < 980) kDown |= HidNpadButton_Y;
+                        else kDown |= HidNpadButton_B;
+                    } else if (gMjPhase == "playing") {
+                        if (tx > 1050) kDown |= HidNpadButton_X;
+                        else kDown |= HidNpadButton_Y;
+                    } else if (gMjPhase == "roundOver") {
+                        kDown |= HidNpadButton_A;
+                    }
+                } else if (ty >= 520) {
+                    auto& myHand = gMjSeats[gMjMySeat].hand;
+                    int cnt = (int)myHand.size();
+                    int curX = 28;
+                    for (const auto& m : gMjSeats[gMjMySeat].melds) {
+                        curX += ((m.kind == "碰") ? 3 : 4) * 50 + 14;
+                    }
+                    int tileW = 62;
+                    for (int i = cnt - 1; i >= 0; --i) {
+                        bool isDrawn = (myHand[i].id == gMjDrawnTileId);
+                        int extraGap = (isDrawn && i + 1 == cnt && cnt > 1) ? 18 : 0;
+                        int mx = curX + i * (tileW + 4) + extraGap;
+                        if (tx >= mx && tx <= mx + tileW) {
+                            gMjCursor = i;
+                            if (gMjPhase == "playing" && gMjTurnSeat == gMjMySeat) {
+                                if (gMjSelectedIdx == i) gMjSelectedIdx = -1;
+                                else gMjSelectedIdx = i;
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+        }
 
         if (gScreen == MODE_LOBBY) {
             if (kDown & HidNpadButton_Plus) {

@@ -9563,7 +9563,8 @@ struct KOnMahjongSheetView: View {
                 }
                 .padding(.horizontal, 8)
 
-                // Opposite Melds & Discards
+                // Bounded Middle Arena (Opp River + Compass + My River) so growing discards/melds NEVER clip bottom hand tiles
+                VStack(spacing: 2) {
                 if oppIdx < mj.seats.count {
                     mjSeatRiverAndMelds(seat: mj.seats[oppIdx], maxWidth: usableW)
                         .padding(.horizontal, 8)
@@ -9693,6 +9694,9 @@ struct KOnMahjongSheetView: View {
                     mjSeatRiverAndMelds(seat: mj.seats[mj.mySeatIndex], maxWidth: usableW)
                         .padding(.horizontal, 8)
                 }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .clipped()
 
                 // My Badge + Action Bar in One Compact Row, followed by Melds + Hand Tiles in One Row
                 if mj.mySeatIndex < mj.seats.count {
@@ -9738,7 +9742,7 @@ struct KOnMahjongSheetView: View {
                             }
                         }
                         let displayedTiles: [MahjongTile] = isMjDealing ? Array(mjDealingOrder.prefix(mjDealtCount)) : me.hand
-                        mjMyHandView(hand: displayedTiles, usableWidth: usableW - CGFloat(me.melds.count * 95), maxTileH: min(50, max(38, geo.size.height * 0.138)))
+                        mjMyHandView(hand: displayedTiles, usableWidth: usableW - CGFloat(me.melds.count * 90), maxTileH: 50)
                             .onAppear {
                                 if mj.phase == .playing && !me.hand.isEmpty && mjDealingOrder.isEmpty {
                                     triggerMjDealingAnimation(hand: me.hand)
@@ -9912,8 +9916,9 @@ struct KOnMahjongSheetView: View {
     }
 
     private func mjSeatRiverAndMelds(seat: MahjongSeat, maxWidth: CGFloat) -> some View {
-        let cols = max(4, Int(maxWidth / 22))
-        let rows = stride(from: 0, to: seat.discards.count, by: cols).map { Array(seat.discards[$0..<min($0 + cols, seat.discards.count)]) }
+        let cols = max(5, Int(maxWidth / 20))
+        let visibleDiscards = seat.discards.count > cols * 2 ? Array(seat.discards.suffix(cols * 2)) : seat.discards
+        let rows = stride(from: 0, to: visibleDiscards.count, by: cols).map { Array(visibleDiscards[$0..<min($0 + cols, visibleDiscards.count)]) }
         return VStack(alignment: .leading, spacing: 2) {
             if !seat.melds.isEmpty {
                 HStack(spacing: 4) {
@@ -9990,6 +9995,9 @@ struct KOnMahjongSheetView: View {
             ForEach(tiles) { tile in
                 let sel = (mj.selectedTileId == tile.id)
                 let isDrawn = (mj.drawnTileId == tile.id)
+                if isDrawn && tile.id == tiles.last?.id && tiles.count > 1 {
+                    Spacer().frame(width: 10)
+                }
                 Button(action: {
                     if mj.phase == .playing && mj.currentTurnSeat == mj.mySeatIndex {
                         if mj.selectedTileId == tile.id {

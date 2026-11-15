@@ -11024,6 +11024,7 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
                 }
                 statusBanner = "ℹ️ 玩家 [\(cleanLeft)] 已离开房间 \(myCode)\(isRoomAuthority ? "，您当前为房主" : "")"
             } else {
+                promoteAuthorityIfNeededAndResumeAI()
                 for i in 0..<seats.count where seats[i].peerDisplayName == pName {
                     seats[i].isAI = true
                     seats[i].name = "\(characterFilter(for: seats[i].characterId).displayName(AudioPlayerManager.shared.language)) (AI接管)"
@@ -12405,7 +12406,6 @@ class KOnMahjongManager: NSObject, ObservableObject, MCSessionDelegate, MCNearby
         let drawn = wall.removeFirst()
         wallCount = wall.count
         seats[seatIdx].hand.append(drawn)
-        seats[seatIdx].hand = MahjongEvaluator.sortHand(seats[seatIdx].hand)
         drawnTileId = drawn.id
         phase = .playing
         currentTurnSeat = seatIdx
@@ -12595,6 +12595,7 @@ class KOnMahjongManager: NSObject, ObservableObject, MCSessionDelegate, MCNearby
                 promoteAuthorityIfNeeded()
                 if phase == .lobby { rebuildLobbySeats() }
             } else {
+                promoteAuthorityIfNeeded()
                 for i in 0..<seats.count where seats[i].peerDisplayName == pName {
                     seats[i].isAI = true
                     seats[i].name = "\(characterFilter(for: seats[i].characterId).displayName(AudioPlayerManager.shared.language))(AI接管)"
