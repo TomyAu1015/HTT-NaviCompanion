@@ -500,7 +500,6 @@ static void selectDdzHintForMe() {
         return;
     }
     // Search single/pair/triple/bomb that beats gDdzLastValid
-    int needLen = gDdzLastValid.length;
     if (gDdzLastValid.category == "single") {
         for (int i = (int)myHand.size() - 1; i >= 0; --i) {
             if (myHand[i].rank > gDdzLastValid.primaryRank) {
@@ -1318,7 +1317,7 @@ int main(int argc, char* argv[]) {
     gWindow = SDL_CreateWindow("HTT_GameRoom_Switch", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, SCREEN_W, SCREEN_H, SDL_WINDOW_SHOWN);
     gRenderer = SDL_CreateRenderer(gWindow, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
 
-    // Load Nintendo Switch Shared Chinese System Font (PlFontType_ChineseSimplified)
+    // Load Nintendo Switch Shared Chinese System Font (PlSharedFontType_ChineseSimplified)
     plInitialize(PlServiceType_User);
     PlFontData fontData;
     if (R_SUCCEEDED(plGetSharedFontByType(&fontData, PlFontType_ChineseSimplified))) {
