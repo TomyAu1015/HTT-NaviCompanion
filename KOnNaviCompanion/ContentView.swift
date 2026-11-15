@@ -8605,14 +8605,24 @@ struct KOnDoudizhuSheetView: View {
 
                         // Big Glowing Action / Win Callout VFX (王炸 / 炸弹 / 飞机 / 胜利)
                         if ddz.phase == .roundOver, let wIdx = ddz.winnerSeat, wIdx < ddz.seats.count {
-                            Text(ddz.seats[wIdx].isLandlord ? "🎉 地主胜利!" : "🎉 农民胜利!")
-                                .font(.system(size: 18, weight: .black))
-                                .foregroundColor(.white)
-                                .padding(.horizontal, 14).padding(.vertical, 5)
-                                .background(LinearGradient(colors: [httCrimson, httGold], startPoint: .leading, endPoint: .trailing))
-                                .cornerRadius(12)
-                                .shadow(color: httGold.opacity(0.8), radius: 10)
-                                .transition(.scale(scale: 0.5).combined(with: .opacity))
+                            let isSeriesDone = (ddz.totalRounds > 0 && ddz.currentRound >= ddz.totalRounds)
+                            let ranked = ddz.seats.sorted { $0.score > $1.score }
+                            VStack(spacing: 3) {
+                                Text(isSeriesDone ? "🏆 整场积分排名 (共\(ddz.totalRounds)局)" : (ddz.seats[wIdx].isLandlord ? "🎉 地主胜利!" : "🎉 农民胜利!"))
+                                    .font(.system(size: isSeriesDone ? 14 : 18, weight: .black))
+                                    .foregroundColor(.white)
+                                if isSeriesDone {
+                                    ForEach(Array(ranked.enumerated()), id: \.element.id) { idx, rs in
+                                        Text("\(idx == 0 ? "🥇" : (idx == 1 ? "🥈" : "🥉")) \(rs.name): \(rs.score)分")
+                                            .font(.system(size: 10, weight: .bold)).foregroundColor(.yellow)
+                                    }
+                                }
+                            }
+                            .padding(.horizontal, 14).padding(.vertical, 6)
+                            .background(LinearGradient(colors: [httCrimson, Color.black.opacity(0.8)], startPoint: .leading, endPoint: .trailing))
+                            .cornerRadius(12)
+                            .shadow(color: httGold.opacity(0.8), radius: 10)
+                            .transition(.scale(scale: 0.5).combined(with: .opacity))
                         } else if let lv = ddz.lastValidHand, (lv.category == .rocket || lv.category == .bomb || lv.category == .airplane) {
                             Text(lv.category == .rocket ? "🚀 王炸!" : (lv.category == .bomb ? "💣 炸弹!" : "✈ 飞机!"))
                                 .font(.system(size: 16, weight: .black))
@@ -9611,14 +9621,21 @@ struct KOnMahjongSheetView: View {
                                 .transition(.scale(scale: 0.65).combined(with: .opacity))
                                 .animation(.spring(response: 0.28, dampingFraction: 0.70), value: cl.tile.id)
                             } else if mj.phase == .roundOver {
-                                VStack(spacing: 3) {
-                                    Text(mj.winnerSeat != nil ? "🀄 胡!" : "🌊 流局")
-                                        .font(.system(size: 22, weight: .black))
-                                        .foregroundColor(mj.winnerSeat != nil ? .yellow : httGold)
-                                        .shadow(color: httCrimson, radius: 8)
-                                    if let w = mj.winnerSeat, w < mj.seats.count {
+                                let isSeriesDone = (mj.totalRounds > 0 && mj.currentRound >= mj.totalRounds)
+                                let ranked = mj.seats.sorted { $0.score > $1.score }
+                                VStack(spacing: 2) {
+                                    Text(isSeriesDone ? "🏆 整场积分排名" : (mj.winnerSeat != nil ? "🀄 胡!" : "🌊 流局"))
+                                        .font(.system(size: isSeriesDone ? 13 : 20, weight: .black))
+                                        .foregroundColor(.yellow)
+                                        .shadow(color: httCrimson, radius: 6)
+                                    if isSeriesDone {
+                                        ForEach(Array(ranked.enumerated()), id: \.element.id) { idx, rs in
+                                            Text("\(idx == 0 ? "🥇" : (idx == 1 ? "🥈" : (idx == 2 ? "🥉" : "4."))) \(rs.name): \(rs.score)分")
+                                                .font(.system(size: 9.5, weight: .bold)).foregroundColor(.white).lineLimit(1)
+                                        }
+                                    } else if let w = mj.winnerSeat, w < mj.seats.count {
                                         Text("\(mj.seats[w].name) · \(mj.winReason)")
-                                            .font(.system(size: 10, weight: .bold)).foregroundColor(.white).multilineTextAlignment(.center)
+                                            .font(.system(size: 9.5, weight: .bold)).foregroundColor(.white).multilineTextAlignment(.center)
                                     }
                                 }
                                 .transition(.scale(scale: 0.5).combined(with: .opacity))
@@ -9926,7 +9943,7 @@ struct KOnMahjongSheetView: View {
     }
 
     private func mjSeatRiverAndMelds(seat: MahjongSeat, maxWidth: CGFloat) -> some View {
-        let cols = max(5, Int(maxWidth / 20))
+        let cols = max(7, Int(maxWidth / 16))
         let visibleDiscards = seat.discards.count > cols * 2 ? Array(seat.discards.suffix(cols * 2)) : seat.discards
         let rows = stride(from: 0, to: visibleDiscards.count, by: cols).map { Array(visibleDiscards[$0..<min($0 + cols, visibleDiscards.count)]) }
         return VStack(alignment: .leading, spacing: 2) {
@@ -9954,7 +9971,7 @@ struct KOnMahjongSheetView: View {
                     ForEach(rows[rIdx]) { t in
                         let isLatest = (t.id == seat.discards.last?.id)
                         ZStack(alignment: .top) {
-                            mjTileView(tile: t, width: 17, height: 23, isSelected: false, isHighlight: isLatest)
+                            mjTileView(tile: t, width: 14, height: 19, isSelected: false, isHighlight: isLatest)
                             if isLatest {
                                 Text("▼")
                                     .font(.system(size: 9, weight: .black))
@@ -10176,7 +10193,23 @@ struct KOnGameRoomSheetView: View {
                 .padding(.horizontal, 10)
                 .padding(.top, 6)
 
-                // Game Switcher Bar (Hidden once user enters/hosts a room or starts an active game)
+                // Game Switcher Bar (Hidden once user enters/hosts a room or starts an active game; show current room game badge instead)
+                if isInJoinedRoom && isInLobby {
+                    HStack(spacing: 6) {
+                        Text(selectedGame == 0 ? "🃏 当前房间：放课后斗地主 (3人)" : "🀄 当前房间：广东红中麻将 (4人)")
+                            .font(.system(size: 12, weight: .black))
+                            .foregroundColor(.white)
+                        Spacer()
+                        Text("房号: \(selectedGame == 0 ? ddz.roomCode : mj.roomCode)")
+                            .font(.system(size: 11, weight: .bold, design: .monospaced))
+                            .foregroundColor(httGold)
+                    }
+                    .padding(.horizontal, 12).padding(.vertical, 5)
+                    .background(selectedGame == 0 ? Color(red: 0.78, green: 0.18, blue: 0.22).opacity(0.85) : Color(red: 0.08, green: 0.45, blue: 0.25).opacity(0.85))
+                    .cornerRadius(9)
+                    .overlay(RoundedRectangle(cornerRadius: 9).stroke(httGold, lineWidth: 1.2))
+                    .padding(.horizontal, 10)
+                }
                 if !isInJoinedRoom {
                     HStack(spacing: 8) {
                         Button(action: {

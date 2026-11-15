@@ -10878,7 +10878,7 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
             }
         }
         self.aiTurnWorkItem = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.05, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.85, execute: work)
     }
     
     // MARK: - Remaining Card Counter (记牌器)
@@ -12308,9 +12308,7 @@ class KOnMahjongManager: NSObject, ObservableObject, MCSessionDelegate, MCNearby
             for offset in 1...3 {
                 let sIdx = (actor + offset) % 4
                 let s = seats[sIdx]
-                if MahjongEvaluator.canWin(hand: s.hand, meldsCount: s.melds.count, extraTile: tile) {
-                    huSeats.append(sIdx)
-                }
+                // 广东红中赖子规则：只能自摸，不能点炮
                 let sameCount = s.hand.filter { $0.suit == tile.suit && $0.rank == tile.rank }.count
                 if sameCount >= 3 { kongSeats.append(sIdx) }
                 if sameCount >= 2 { pongSeats.append(sIdx) }
@@ -12427,21 +12425,32 @@ class KOnMahjongManager: NSObject, ObservableObject, MCSessionDelegate, MCNearby
             seats[winner].hand = MahjongEvaluator.sortHand(seats[winner].hand)
         }
         let laiziCount = seats[winner].hand.filter { $0.isLaizi }.count
-        let mult = (isSelfDrawn ? 2 : 1) * (laiziCount >= 4 ? 2 : 1)
-        let pts = baseScore * mult
-        if isSelfDrawn {
-            for i in 0..<4 {
-                seats[i].score += (i == winner) ? (pts * 3) : (-pts)
+
+        // 摸马 (Draw up to 4 Horse tiles; 1, 5, 9, or 红中 hits!)
+        let horseCount = min(4, wall.count)
+        var horseHits = 0
+        var horseNames: [String] = []
+        for _ in 0..<horseCount {
+            let h = wall.removeFirst()
+            let isHit = h.isLaizi || (h.suit != .honor && (h.rank == 1 || h.rank == 5 || h.rank == 9))
+            if isHit {
+                horseHits += 1
+                horseNames.append(h.fullName)
             }
-        } else if let l = loser {
-            seats[winner].score += pts * 2
-            seats[l].score -= pts * 2
+        }
+        wallCount = wall.count
+
+        let mult = (2 + horseHits) * (laiziCount >= 4 ? 2 : 1)
+        let pts = baseScore * mult
+        for i in 0..<4 {
+            seats[i].score += (i == winner) ? (pts * 3) : (-pts)
         }
         pendingClaim = nil
         winnerSeat = winner
-        winReason = isSelfDrawn ? "自摸胡牌 (x\(mult))" : "点炮胡牌 (x\(mult))"
+        let horseDesc = horseCount > 0 ? " · 摸马中\(horseHits)匹\(horseHits > 0 ? "[\(horseNames.joined(separator: ","))]" : "")" : ""
+        winReason = (laiziCount >= 4 ? "四红中自摸" : "自摸胡牌") + " (x\(mult))" + horseDesc
         phase = .roundOver
-        seats[winner].lastActionText = "🎉 胡牌!"
+        seats[winner].lastActionText = "🎉 自摸胡!"
         statusBanner = "🎉 恭喜 [\(seats[winner].name)] \(winReason)！"
         AudioPlayerManager.shared.triggerBirthdaySpecialVoice()
         broadcastFullState()
@@ -12468,7 +12477,7 @@ class KOnMahjongManager: NSObject, ObservableObject, MCSessionDelegate, MCNearby
             self.executeDiscard(tileId: discard.id, fromSeat: seatIdx)
         }
         aiWorkItem = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.85, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.80, execute: work)
     }
 
     private func scheduleAIClaimIfNeeded() {
