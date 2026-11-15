@@ -8600,6 +8600,30 @@ struct KOnDoudizhuSheetView: View {
                             }
                         }
 
+                        // Big Glowing Action / Win Callout VFX (王炸 / 炸弹 / 飞机 / 胜利)
+                        if ddz.phase == .roundOver, let wIdx = ddz.winnerSeat, wIdx < ddz.seats.count {
+                            Text(ddz.seats[wIdx].isLandlord ? "🎉 地主胜利!" : "🎉 农民胜利!")
+                                .font(.system(size: 18, weight: .black))
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 14).padding(.vertical, 5)
+                                .background(LinearGradient(colors: [httCrimson, httGold], startPoint: .leading, endPoint: .trailing))
+                                .cornerRadius(12)
+                                .shadow(color: httGold.opacity(0.8), radius: 10)
+                                .transition(.scale(scale: 0.5).combined(with: .opacity))
+                        } else if let lv = ddz.lastValidHand, (lv.category == .rocket || lv.category == .bomb || lv.category == .airplane) {
+                            Text(lv.category == .rocket ? "🚀 王炸!" : (lv.category == .bomb ? "💣 炸弹!" : "✈ 飞机!"))
+                                .font(.system(size: 16, weight: .black))
+                                .foregroundColor(.yellow)
+                                .padding(.horizontal, 12).padding(.vertical, 4)
+                                .background(Color.black.opacity(0.72))
+                                .cornerRadius(10)
+                                .overlay(RoundedRectangle(cornerRadius: 10).stroke(httGold, lineWidth: 1.5))
+                                .shadow(color: httGold.opacity(0.75), radius: 8)
+                                .id("ddz_vfx_\(lv.category.rawValue)_\(ddz.lastPlaySeat)")
+                                .transition(.scale(scale: 0.45).combined(with: .opacity))
+                                .animation(.spring(response: 0.30, dampingFraction: 0.62), value: ddz.lastPlaySeat)
+                        }
+
                         // My Own Played Cards / Pass Bubble
                         if ddz.mySeatIndex < ddz.seats.count {
                             let me = ddz.seats[ddz.mySeatIndex]
@@ -8690,8 +8714,8 @@ struct KOnDoudizhuSheetView: View {
     @ViewBuilder
     private func adaptivePlayerHandView(hand: [DoudizhuCard], usableWidth: CGFloat, isLandscape: Bool, isCompact: Bool, geoHeight: CGFloat = 390) -> some View {
         let count = hand.count
-        let cardH: CGFloat = isLandscape ? min(60, max(46, geoHeight * 0.155)) : (isCompact ? 74 : 90)
-        let cardW: CGFloat = isLandscape ? (cardH * 0.71) : (isCompact ? 50 : 62)
+        let cardH: CGFloat = isLandscape ? min(76, max(60, geoHeight * 0.20)) : (isCompact ? 78 : 94)
+        let cardW: CGFloat = isLandscape ? (cardH * 0.72) : (isCompact ? 54 : 66)
         if count == 0 {
             EmptyView()
         } else if !isLandscape && count > 10 {
@@ -8898,9 +8922,9 @@ struct KOnDoudizhuSheetView: View {
         VStack(alignment: alignRight ? .trailing : .leading, spacing: 2) {
             if !seat.lastPlayedCards.isEmpty {
                 let cCount = seat.lastPlayedCards.count
-                let cardW: CGFloat = 34
-                let cardH: CGFloat = 48
-                let step: CGFloat = cCount > 1 ? min(18.0, max(9.0, (maxW - cardW) / CGFloat(cCount - 1))) : 0
+                let cardW: CGFloat = 44
+                let cardH: CGFloat = 62
+                let step: CGFloat = cCount > 1 ? min(22.0, max(11.0, (maxW - cardW) / CGFloat(cCount - 1))) : 0
                 let rowW: CGFloat = cardW + CGFloat(max(0, cCount - 1)) * step
                 let playedKey = seat.lastPlayedCards.map(\.id).joined(separator: ",")
                 ZStack(alignment: .leading) {
@@ -9143,6 +9167,7 @@ struct KOnMahjongSheetView: View {
     var embeddedInGameRoom: Bool = false
     @ObservedObject private var mj = KOnMahjongManager.shared
     @Environment(\.dismiss) private var dismiss
+    @State private var showTingPopup: Bool = false
 
     private let httGold = Color(red: 0.88, green: 0.68, blue: 0.24)
     private let httCrimson = Color(red: 0.78, green: 0.18, blue: 0.22)
@@ -9451,7 +9476,8 @@ struct KOnMahjongSheetView: View {
             let rightIdx = (mj.mySeatIndex + 1) % 4
             let usableW = max(280, geo.size.width - 16)
 
-            VStack(spacing: 5) {
+            ZStack {
+            VStack(spacing: 4) {
                 // Top Row: Opposite Seat with Standing Tile Wall + Info
                 HStack(spacing: 10) {
                     if oppIdx < mj.seats.count {
@@ -9507,41 +9533,83 @@ struct KOnMahjongSheetView: View {
                         .frame(maxWidth: usableW * 0.36, alignment: .leading)
                     }
 
-                    // Center Compass & Highlight
-                    VStack(spacing: 4) {
-                        if let cl = mj.pendingClaim {
-                            VStack(spacing: 2) {
-                                Text("⚡ 响应牌").font(.system(size: 11, weight: .black)).foregroundColor(httGold)
-                                mjTileView(tile: cl.tile, width: 36, height: 50, isSelected: false, isHighlight: true)
-                            }
-                            .id("mj_claim_\(cl.tile.id)")
-                            .transition(.scale(scale: 0.68).combined(with: .opacity))
-                            .animation(.spring(response: 0.28, dampingFraction: 0.70), value: cl.tile.id)
-                        } else if mj.phase == .roundOver {
-                            Text(mj.winnerSeat != nil ? "🎉 \(mj.seats[mj.winnerSeat!].name) 胡牌" : "🌊 流局")
-                                .font(.system(size: 12, weight: .black)).foregroundColor(httGold).multilineTextAlignment(.center)
-                            Text(mj.winReason).font(.system(size: 10, weight: .bold)).foregroundColor(.white)
-                        } else {
-                            let tingList = mj.mySeatIndex < mj.seats.count ? MahjongEvaluator.readyTiles(hand: mj.seats[mj.mySeatIndex].hand, meldsCount: mj.seats[mj.mySeatIndex].melds.count) : []
-                            Text("广东红中赖子 · 136张无花牌")
-                                .font(.system(size: 10, weight: .black)).foregroundColor(httGold)
-                            if !tingList.isEmpty {
-                                Text("💡 听牌: \(tingList.map { $0.fullName }.prefix(6).joined(separator: " "))")
-                                    .font(.system(size: 10, weight: .black))
-                                    .foregroundColor(.green)
-                                    .multilineTextAlignment(.center)
+                    // Tencent-Style Center 4-Direction Wind Compass + Countdown + Ting Button
+                    let tingList = mj.mySeatIndex < mj.seats.count ? MahjongEvaluator.readyTiles(hand: mj.seats[mj.mySeatIndex].hand, meldsCount: mj.seats[mj.mySeatIndex].melds.count) : []
+                    ZStack {
+                        VStack(spacing: 4) {
+                            if let cl = mj.pendingClaim {
+                                VStack(spacing: 2) {
+                                    Text("⚡ 响应牌").font(.system(size: 11, weight: .black)).foregroundColor(httGold)
+                                    mjTileView(tile: cl.tile, width: 34, height: 48, isSelected: false, isHighlight: true)
+                                }
+                                .id("mj_claim_\(cl.tile.id)")
+                                .transition(.scale(scale: 0.65).combined(with: .opacity))
+                                .animation(.spring(response: 0.28, dampingFraction: 0.70), value: cl.tile.id)
+                            } else if mj.phase == .roundOver {
+                                VStack(spacing: 3) {
+                                    Text(mj.winnerSeat != nil ? "🀄 胡!" : "🌊 流局")
+                                        .font(.system(size: 22, weight: .black))
+                                        .foregroundColor(mj.winnerSeat != nil ? .yellow : httGold)
+                                        .shadow(color: httCrimson, radius: 8)
+                                    if let w = mj.winnerSeat, w < mj.seats.count {
+                                        Text("\(mj.seats[w].name) · \(mj.winReason)")
+                                            .font(.system(size: 10, weight: .bold)).foregroundColor(.white).multilineTextAlignment(.center)
+                                    }
+                                }
+                                .transition(.scale(scale: 0.5).combined(with: .opacity))
                             } else {
-                                Text("红中=赖子 · 不能吃 · 可碰杠")
-                                    .font(.system(size: 9, weight: .bold))
-                                    .foregroundColor(httCream.opacity(0.75))
-                                    .multilineTextAlignment(.center)
+                                // 4-Direction Compass Hub (东/南/西/北 + Center Countdown)
+                                VStack(spacing: 1) {
+                                    Text("北")
+                                        .font(.system(size: 9, weight: .black))
+                                        .foregroundColor(mj.currentTurnSeat == oppIdx ? .yellow : .white.opacity(0.45))
+                                        .padding(.horizontal, 10).padding(.vertical, 1)
+                                        .background(mj.currentTurnSeat == oppIdx ? httCrimson : Color.clear).cornerRadius(3)
+                                    HStack(spacing: 6) {
+                                        Text("西")
+                                            .font(.system(size: 9, weight: .black))
+                                            .foregroundColor(mj.currentTurnSeat == leftIdx ? .yellow : .white.opacity(0.45))
+                                            .padding(.horizontal, 4).padding(.vertical, 6)
+                                            .background(mj.currentTurnSeat == leftIdx ? httCrimson : Color.clear).cornerRadius(3)
+                                        ZStack {
+                                            Circle()
+                                                .fill(LinearGradient(colors: [Color(red: 0.04, green: 0.28, blue: 0.36), Color(red: 0.02, green: 0.14, blue: 0.20)], startPoint: .top, endPoint: .bottom))
+                                                .frame(width: 34, height: 34)
+                                                .overlay(Circle().stroke(httGold.opacity(0.75), lineWidth: 1.5))
+                                            Text("\(mj.turnRemainingSeconds)")
+                                                .font(.system(size: 15, weight: .black, design: .monospaced))
+                                                .foregroundColor(mj.turnRemainingSeconds <= 5 ? .red : .cyan)
+                                        }
+                                        Text("东")
+                                            .font(.system(size: 9, weight: .black))
+                                            .foregroundColor(mj.currentTurnSeat == rightIdx ? .yellow : .white.opacity(0.45))
+                                            .padding(.horizontal, 4).padding(.vertical, 6)
+                                            .background(mj.currentTurnSeat == rightIdx ? httCrimson : Color.clear).cornerRadius(3)
+                                    }
+                                    Text("南")
+                                        .font(.system(size: 9, weight: .black))
+                                        .foregroundColor(mj.currentTurnSeat == mj.mySeatIndex ? .yellow : .white.opacity(0.45))
+                                        .padding(.horizontal, 10).padding(.vertical, 1)
+                                        .background(mj.currentTurnSeat == mj.mySeatIndex ? httCrimson : Color.clear).cornerRadius(3)
+                                }
+                                .padding(5)
+                                .background(Color(red: 0.03, green: 0.18, blue: 0.22).opacity(0.92))
+                                .cornerRadius(10)
+                                .overlay(RoundedRectangle(cornerRadius: 10).stroke(httGold.opacity(0.65), lineWidth: 1.5))
+
+                                if !tingList.isEmpty {
+                                    Button(action: { withAnimation(.spring(response: 0.28, dampingFraction: 0.78)) { showTingPopup.toggle() } }) {
+                                        Text("💡 听牌 (\(tingList.count))")
+                                            .font(.system(size: 10, weight: .black))
+                                            .foregroundColor(.black)
+                                            .padding(.horizontal, 8).padding(.vertical, 3)
+                                            .background(httGold).cornerRadius(6)
+                                    }.buttonStyle(PlainButtonStyle())
+                                }
                             }
                         }
                     }
-                    .frame(maxWidth: .infinity, minHeight: 56)
-                    .padding(.horizontal, 6)
-                    .background(Color.black.opacity(0.32)).cornerRadius(12)
-                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(httGold.opacity(0.45), lineWidth: 1.2))
+                    .frame(maxWidth: .infinity, minHeight: 72)
 
                     if rightIdx < mj.seats.count {
                         let rSeat = mj.seats[rightIdx]
@@ -9616,6 +9684,46 @@ struct KOnMahjongSheetView: View {
                     .padding(.top, 2)
                     .padding(.bottom, max(16, geo.safeAreaInsets.bottom + 8))
                 }
+            }
+
+            // Floating Ting Card Popup Panel (like Tencent Happy Mahjong)
+            if showTingPopup {
+                let tingTiles = mj.mySeatIndex < mj.seats.count ? MahjongEvaluator.readyTiles(hand: mj.seats[mj.mySeatIndex].hand, meldsCount: mj.seats[mj.mySeatIndex].melds.count) : []
+                Color.black.opacity(0.35)
+                    .ignoresSafeArea()
+                    .onTapGesture { withAnimation { showTingPopup = false } }
+                VStack(spacing: 8) {
+                    HStack {
+                        Text("💡 听牌提示 (共\(tingTiles.count)种)")
+                            .font(.system(size: 12, weight: .black)).foregroundColor(Color(red: 0.12, green: 0.35, blue: 0.22))
+                        Spacer()
+                        Button(action: { withAnimation { showTingPopup = false } }) {
+                            Image(systemName: "xmark.circle.fill").font(.system(size: 16)).foregroundColor(.gray)
+                        }.buttonStyle(PlainButtonStyle())
+                    }
+                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: min(6, max(1, tingTiles.count))), spacing: 6) {
+                        ForEach(tingTiles) { tt in
+                            let seenCount = mj.seats.flatMap { $0.discards }.filter { $0.suit == tt.suit && $0.rank == tt.rank }.count
+                                + (mj.mySeatIndex < mj.seats.count ? mj.seats[mj.mySeatIndex].hand.filter { $0.suit == tt.suit && $0.rank == tt.rank }.count : 0)
+                            let rem = max(0, 4 - seenCount)
+                            VStack(spacing: 2) {
+                                mjTileView(tile: tt, width: 30, height: 42, isSelected: false, isHighlight: rem > 0)
+                                    .opacity(rem == 0 ? 0.45 : 1.0)
+                                Text("余\(rem)张")
+                                    .font(.system(size: 9, weight: .bold))
+                                    .foregroundColor(rem == 0 ? .gray : Color(red: 0.78, green: 0.18, blue: 0.22))
+                            }
+                        }
+                    }
+                }
+                .padding(12)
+                .frame(maxWidth: min(usableW * 0.82, 340))
+                .background(Color(red: 0.94, green: 0.98, blue: 0.96))
+                .cornerRadius(14)
+                .overlay(RoundedRectangle(cornerRadius: 14).stroke(httGold, lineWidth: 2))
+                .shadow(color: .black.opacity(0.45), radius: 14)
+                .transition(.scale(scale: 0.85).combined(with: .opacity))
+            }
             }
         }
     }
@@ -9730,8 +9838,17 @@ struct KOnMahjongSheetView: View {
                 HStack(spacing: 1.5) {
                     ForEach(rows[rIdx]) { t in
                         let isLatest = (t.id == seat.discards.last?.id)
-                        mjTileView(tile: t, width: 19, height: 26, isSelected: false, isHighlight: isLatest)
-                            .transition(.scale(scale: 1.35).combined(with: .opacity))
+                        ZStack(alignment: .top) {
+                            mjTileView(tile: t, width: 20, height: 27, isSelected: false, isHighlight: isLatest)
+                            if isLatest {
+                                Text("▼")
+                                    .font(.system(size: 9, weight: .black))
+                                    .foregroundColor(.orange)
+                                    .shadow(color: .black, radius: 1)
+                                    .offset(y: -8)
+                            }
+                        }
+                        .transition(.scale(scale: 1.38).combined(with: .opacity))
                     }
                 }
             }
@@ -9769,10 +9886,17 @@ struct KOnMahjongSheetView: View {
     }
 
     private func mjTileBackView(width: CGFloat, height: CGFloat) -> some View {
-        RoundedRectangle(cornerRadius: 3)
-            .fill(LinearGradient(colors: [Color(red: 0.06, green: 0.56, blue: 0.34), Color(red: 0.03, green: 0.36, blue: 0.20)], startPoint: .top, endPoint: .bottom))
-            .frame(width: width, height: height)
-            .overlay(RoundedRectangle(cornerRadius: 3).stroke(Color(red: 0.85, green: 0.96, blue: 0.88).opacity(0.75), lineWidth: 0.8))
+        ZStack(alignment: .bottom) {
+            RoundedRectangle(cornerRadius: 3)
+                .fill(Color(red: 0.90, green: 0.93, blue: 0.91))
+                .frame(width: width, height: height)
+            RoundedRectangle(cornerRadius: 2.5)
+                .fill(LinearGradient(colors: [Color(red: 0.08, green: 0.62, blue: 0.36), Color(red: 0.03, green: 0.40, blue: 0.22)], startPoint: .top, endPoint: .bottom))
+                .frame(width: width, height: max(4, height - 2.5))
+                .offset(y: -2)
+        }
+        .overlay(RoundedRectangle(cornerRadius: 3).stroke(Color.white.opacity(0.65), lineWidth: 0.6))
+        .shadow(color: .black.opacity(0.35), radius: 1, y: 1)
     }
 
     private func mjTileView(tile: MahjongTile, width: CGFloat, height: CGFloat, isSelected: Bool, isHighlight: Bool) -> some View {
