@@ -4,6 +4,14 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.widget.Toast
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -711,31 +719,55 @@ fun KOnDoudizhuSheetDialog(onDismiss: () -> Unit, embeddedInGameRoom: Boolean = 
                                 ) {
                                     // Left Opponent Played Cards (上家)
                                     Column(modifier = Modifier.weight(1f), horizontalAlignment = Alignment.Start, verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                                        if (leftSeat.lastPlayed.isNotEmpty()) {
-                                            FittedTablePlayedCardsView(cards = leftSeat.lastPlayed, app = app)
-                                        } else {
-                                            ActionBadge("⬅ 上家", leftSeat.lastActionText.ifBlank { "等待中" })
+                                        AnimatedContent(
+                                            targetState = leftSeat.lastPlayed.map { it.id } to leftSeat.lastActionText,
+                                            transitionSpec = {
+                                                (scaleIn(initialScale = 0.72f, animationSpec = spring(dampingRatio = 0.7f, stiffness = 420f)) + fadeIn(tween(180)) + slideInVertically { it / 4 }) togetherWith fadeOut(tween(120))
+                                            },
+                                            label = "ddz_left_play"
+                                        ) { _ ->
+                                            if (leftSeat.lastPlayed.isNotEmpty()) {
+                                                FittedTablePlayedCardsView(cards = leftSeat.lastPlayed, app = app)
+                                            } else {
+                                                ActionBadge("⬅ 上家", leftSeat.lastActionText.ifBlank { "等待中" })
+                                            }
                                         }
                                     }
                                     Spacer(Modifier.width(6.dp))
                                     // Right Opponent Played Cards (下家)
                                     Column(modifier = Modifier.weight(1f), horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                                        if (rightSeat.lastPlayed.isNotEmpty()) {
-                                            FittedTablePlayedCardsView(cards = rightSeat.lastPlayed, app = app)
-                                        } else {
-                                            ActionBadge("下家 ➡", rightSeat.lastActionText.ifBlank { "等待中" })
+                                        AnimatedContent(
+                                            targetState = rightSeat.lastPlayed.map { it.id } to rightSeat.lastActionText,
+                                            transitionSpec = {
+                                                (scaleIn(initialScale = 0.72f, animationSpec = spring(dampingRatio = 0.7f, stiffness = 420f)) + fadeIn(tween(180)) + slideInVertically { it / 4 }) togetherWith fadeOut(tween(120))
+                                            },
+                                            label = "ddz_right_play"
+                                        ) { _ ->
+                                            if (rightSeat.lastPlayed.isNotEmpty()) {
+                                                FittedTablePlayedCardsView(cards = rightSeat.lastPlayed, app = app)
+                                            } else {
+                                                ActionBadge("下家 ➡", rightSeat.lastActionText.ifBlank { "等待中" })
+                                            }
                                         }
                                     }
                                 }
 
                                 // My Own Played Cards / Status
                                 val mySeatNow = seats.getOrNull(mySeatIdx)
-                                if (mySeatNow != null && mySeatNow.lastPlayed.isNotEmpty()) {
-                                    FittedTablePlayedCardsView(cards = mySeatNow.lastPlayed, app = app)
-                                } else if (phase == DoudizhuGamePhase.BIDDING) {
-                                    Text("📢 叫地主阶段 · 请选择叫分", color = Color.White.copy(alpha = 0.65f), fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                                } else if (mySeatNow != null && mySeatNow.lastActionText.isNotEmpty()) {
-                                    Text("我方: ${mySeatNow.lastActionText}", color = DdzGold, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                AnimatedContent(
+                                    targetState = (mySeatNow?.lastPlayed?.map { it.id } ?: emptyList()) to (mySeatNow?.lastActionText ?: ""),
+                                    transitionSpec = {
+                                        (scaleIn(initialScale = 0.72f, animationSpec = spring(dampingRatio = 0.7f, stiffness = 420f)) + fadeIn(tween(180)) + slideInVertically { it / 3 }) togetherWith fadeOut(tween(120))
+                                    },
+                                    label = "ddz_my_play"
+                                ) { _ ->
+                                    if (mySeatNow != null && mySeatNow.lastPlayed.isNotEmpty()) {
+                                        FittedTablePlayedCardsView(cards = mySeatNow.lastPlayed, app = app)
+                                    } else if (phase == DoudizhuGamePhase.BIDDING) {
+                                        Text("📢 叫地主阶段 · 请选择叫分", color = Color.White.copy(alpha = 0.65f), fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                    } else if (mySeatNow != null && mySeatNow.lastActionText.isNotEmpty()) {
+                                        Text("我方: ${mySeatNow.lastActionText}", color = DdzGold, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                    }
                                 }
                             }
 

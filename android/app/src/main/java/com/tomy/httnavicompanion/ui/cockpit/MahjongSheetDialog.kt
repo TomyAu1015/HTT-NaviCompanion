@@ -4,7 +4,10 @@ import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
 import android.content.pm.ActivityInfo
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.Image
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -103,17 +106,13 @@ fun KOnGameRoomSheetDialog(onDismiss: () -> Unit) {
             mjEngine.leaveRoomAndResetLobby()
             onDismiss()
         },
-        properties = DialogProperties(usePlatformDefaultWidth = false)
+        properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)
     ) {
         Surface(
-            modifier = Modifier
-                .fillMaxWidth(0.98f)
-                .fillMaxHeight(0.96f)
-                .clip(RoundedCornerShape(18.dp))
-                .border(2.dp, MjGold, RoundedCornerShape(18.dp)),
+            modifier = Modifier.fillMaxSize(),
             color = if (selectedGame == 0) Color(0xFF104B2C) else MjBgGreen
         ) {
-            Column(modifier = Modifier.fillMaxSize()) {
+            Column(modifier = Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
                 // Unified Header
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
@@ -673,7 +672,7 @@ fun KOnMahjongSheetDialog(onDismiss: () -> Unit, embeddedInGameRoom: Boolean = f
                             val totalW = maxWidth
                             val meldW = (me.melds.size * 84).dp
                             val handW = (totalW - meldW - 12.dp).coerceAtLeast(220.dp)
-                            val tileW = (handW / me.hand.size.coerceAtLeast(1)).coerceIn(28.dp, 42.dp)
+                            val tileW = (handW / me.hand.size.coerceAtLeast(1)).coerceIn(26.dp, 36.dp)
                             val tileH = tileW * 1.4f
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
@@ -767,9 +766,20 @@ private fun MjDiscardRiver(seat: MahjongSeat) {
                 }
             }
         }
+        val latestId = seat.discards.lastOrNull()?.id
         seat.discards.chunked(6).forEach { row ->
             Row(horizontalArrangement = Arrangement.spacedBy(1.5.dp)) {
-                row.forEach { t -> MjTileCard(t, 19.dp, 26.dp, isSelected = false, isHighlight = false) }
+                row.forEach { t ->
+                    val isLatest = (t.id == latestId)
+                    val popScale by animateFloatAsState(
+                        targetValue = if (isLatest) 1.06f else 1.0f,
+                        animationSpec = spring(dampingRatio = 0.55f, stiffness = 420f),
+                        label = "mj_discard_pop"
+                    )
+                    Box(modifier = Modifier.graphicsLayer(scaleX = popScale, scaleY = popScale)) {
+                        MjTileCard(t, 19.dp, 26.dp, isSelected = false, isHighlight = isLatest)
+                    }
+                }
             }
         }
     }
