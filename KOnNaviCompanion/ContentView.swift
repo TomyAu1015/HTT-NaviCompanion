@@ -9703,9 +9703,7 @@ struct KOnMahjongSheetView: View {
                     }
                     LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: min(6, max(1, tingTiles.count))), spacing: 6) {
                         ForEach(tingTiles) { tt in
-                            let seenCount = mj.seats.flatMap { $0.discards }.filter { $0.suit == tt.suit && $0.rank == tt.rank }.count
-                                + (mj.mySeatIndex < mj.seats.count ? mj.seats[mj.mySeatIndex].hand.filter { $0.suit == tt.suit && $0.rank == tt.rank }.count : 0)
-                            let rem = max(0, 4 - seenCount)
+                            let rem = mjRemainingTileCount(for: tt)
                             VStack(spacing: 2) {
                                 mjTileView(tile: tt, width: 30, height: 42, isSelected: false, isHighlight: rem > 0)
                                     .opacity(rem == 0 ? 0.45 : 1.0)
@@ -9803,6 +9801,21 @@ struct KOnMahjongSheetView: View {
                 }
             }
         }
+    }
+
+    private func mjRemainingTileCount(for tile: MahjongTile) -> Int {
+        var seen = 0
+        for s in mj.seats {
+            for d in s.discards where d.suit == tile.suit && d.rank == tile.rank {
+                seen += 1
+            }
+        }
+        if mj.mySeatIndex < mj.seats.count {
+            for h in mj.seats[mj.mySeatIndex].hand where h.suit == tile.suit && h.rank == tile.rank {
+                seen += 1
+            }
+        }
+        return max(0, 4 - seen)
     }
 
     private func mjCompactSeatBadge(seat: MahjongSeat, isTurn: Bool) -> some View {
