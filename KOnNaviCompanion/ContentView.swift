@@ -1105,6 +1105,7 @@ struct ContentView: View {
     @StateObject private var manager = AudioPlayerManager.shared
     @ObservedObject private var musicManager = KOnMusicManager.shared
     @State private var activeModalSheet: ActiveModalSheet? = nil
+    @State private var showGameRoomFullScreen: Bool = false
     @State private var showSoundboardSheet: Bool = false
     @State private var showSearchSheet: Bool = false
     @State private var showAboutSheet: Bool = false
@@ -1371,9 +1372,11 @@ struct ContentView: View {
             case .vehicleSettings:
                 VehicleAndPlateSettingsSheetView(manager: manager)
             case .gameRoom:
-                KOnGameRoomSheetView(manager: manager)
-                    .interactiveDismissDisabled(true)
+                EmptyView()
             }
+        }
+        .fullScreenCover(isPresented: $showGameRoomFullScreen) {
+            KOnGameRoomSheetView(manager: manager)
         }
     }
     
@@ -2787,7 +2790,7 @@ struct ContentView: View {
             }
             
             Button(action: {
-                activeModalSheet = .gameRoom
+                showGameRoomFullScreen = true
             }) {
                 HStack(spacing: 3) {
                     Text("🀄")
@@ -8621,6 +8624,7 @@ struct KOnDoudizhuSheetView: View {
                         opponentSeatPanel(seat: ddz.seats[rightSeatIdx], isLeft: false, isCompact: isCompact)
                     }
                 }
+                .frame(maxHeight: .infinity)
                 .padding(.horizontal, 12)
                 
                 Spacer(minLength: 2)
@@ -8673,9 +8677,9 @@ struct KOnDoudizhuSheetView: View {
                         }
                         .padding(.horizontal, 12)
 
-                        adaptivePlayerHandView(hand: me.hand, usableWidth: usableWidth, isLandscape: isLandscape, isCompact: isCompact)
+                        adaptivePlayerHandView(hand: me.hand, usableWidth: usableWidth, isLandscape: isLandscape, isCompact: isCompact, geoHeight: geo.size.height)
                             .padding(.horizontal, 12)
-                            .padding(.bottom, isLandscape ? 10 : 6)
+                            .padding(.bottom, isLandscape ? max(16, geo.safeAreaInsets.bottom + 8) : 6)
                     }
                 }
             }
@@ -8684,10 +8688,10 @@ struct KOnDoudizhuSheetView: View {
     
     // MARK: - 竖屏/横屏全可见自适应手牌扇形区（竖屏 >10 张自动双排居中叠放，<=10 张或横屏单排动态步进）
     @ViewBuilder
-    private func adaptivePlayerHandView(hand: [DoudizhuCard], usableWidth: CGFloat, isLandscape: Bool, isCompact: Bool) -> some View {
+    private func adaptivePlayerHandView(hand: [DoudizhuCard], usableWidth: CGFloat, isLandscape: Bool, isCompact: Bool, geoHeight: CGFloat = 390) -> some View {
         let count = hand.count
-        let cardW: CGFloat = isLandscape ? 54 : (isCompact ? 50 : 62)
-        let cardH: CGFloat = isLandscape ? 76 : (isCompact ? 74 : 90)
+        let cardH: CGFloat = isLandscape ? min(60, max(46, geoHeight * 0.155)) : (isCompact ? 74 : 90)
+        let cardW: CGFloat = isLandscape ? (cardH * 0.71) : (isCompact ? 50 : 62)
         if count == 0 {
             EmptyView()
         } else if !isLandscape && count > 10 {
@@ -8898,6 +8902,7 @@ struct KOnDoudizhuSheetView: View {
                 let cardH: CGFloat = 48
                 let step: CGFloat = cCount > 1 ? min(18.0, max(9.0, (maxW - cardW) / CGFloat(cCount - 1))) : 0
                 let rowW: CGFloat = cardW + CGFloat(max(0, cCount - 1)) * step
+                let playedKey = seat.lastPlayedCards.map(\.id).joined(separator: ",")
                 ZStack(alignment: .leading) {
                     ForEach(Array(seat.lastPlayedCards.enumerated()), id: \.element.id) { idx, c in
                         handPokerCardView(card: c, isSelected: false, cardW: cardW, cardH: cardH)
@@ -8905,6 +8910,9 @@ struct KOnDoudizhuSheetView: View {
                             .zIndex(Double(idx))
                     }
                 }
+                .id("ddz_played_\(seat.id)_\(playedKey)")
+                .transition(.asymmetric(insertion: .scale(scale: 0.68).combined(with: .opacity).combined(with: .offset(y: 14)), removal: .opacity))
+                .animation(.spring(response: 0.30, dampingFraction: 0.72), value: playedKey)
                 .frame(width: rowW, height: cardH, alignment: .leading)
             } else if !seat.lastActionText.isEmpty {
                 Text("\(label): \(seat.lastActionText)")
@@ -9502,8 +9510,13 @@ struct KOnMahjongSheetView: View {
                     // Center Compass & Highlight
                     VStack(spacing: 4) {
                         if let cl = mj.pendingClaim {
-                            Text("⚡ 响应牌").font(.system(size: 11, weight: .black)).foregroundColor(httGold)
-                            mjTileView(tile: cl.tile, width: 36, height: 50, isSelected: false, isHighlight: true)
+                            VStack(spacing: 2) {
+                                Text("⚡ 响应牌").font(.system(size: 11, weight: .black)).foregroundColor(httGold)
+                                mjTileView(tile: cl.tile, width: 36, height: 50, isSelected: false, isHighlight: true)
+                            }
+                            .id("mj_claim_\(cl.tile.id)")
+                            .transition(.scale(scale: 0.68).combined(with: .opacity))
+                            .animation(.spring(response: 0.28, dampingFraction: 0.70), value: cl.tile.id)
                         } else if mj.phase == .roundOver {
                             Text(mj.winnerSeat != nil ? "🎉 \(mj.seats[mj.winnerSeat!].name) 胡牌" : "🌊 流局")
                                 .font(.system(size: 12, weight: .black)).foregroundColor(httGold).multilineTextAlignment(.center)
@@ -9547,6 +9560,7 @@ struct KOnMahjongSheetView: View {
                         .frame(maxWidth: usableW * 0.36, alignment: .trailing)
                     }
                 }
+                .frame(maxHeight: .infinity)
                 .padding(.horizontal, 8)
 
                 Spacer(minLength: 2)
@@ -9596,11 +9610,11 @@ struct KOnMahjongSheetView: View {
                                 }
                             }
                         }
-                        mjMyHandView(hand: me.hand, usableWidth: usableW - CGFloat(me.melds.count * 95))
+                        mjMyHandView(hand: me.hand, usableWidth: usableW - CGFloat(me.melds.count * 95), maxTileH: min(50, max(38, geo.size.height * 0.138)))
                     }
                     .padding(.horizontal, 8)
-                    .padding(.top, 4)
-                    .padding(.bottom, 10)
+                    .padding(.top, 2)
+                    .padding(.bottom, max(16, geo.safeAreaInsets.bottom + 8))
                 }
             }
         }
@@ -9715,16 +9729,20 @@ struct KOnMahjongSheetView: View {
             ForEach(0..<rows.count, id: \.self) { rIdx in
                 HStack(spacing: 1.5) {
                     ForEach(rows[rIdx]) { t in
-                        mjTileView(tile: t, width: 19, height: 26, isSelected: false, isHighlight: false)
+                        let isLatest = (t.id == seat.discards.last?.id)
+                        mjTileView(tile: t, width: 19, height: 26, isSelected: false, isHighlight: isLatest)
+                            .transition(.scale(scale: 1.35).combined(with: .opacity))
                     }
                 }
             }
+            .animation(.spring(response: 0.28, dampingFraction: 0.68), value: seat.discards.count)
         }
     }
 
-    private func mjMyHandView(hand: [MahjongTile], usableWidth: CGFloat) -> some View {
+    private func mjMyHandView(hand: [MahjongTile], usableWidth: CGFloat, maxTileH: CGFloat = 50.0) -> some View {
         let safeW = max(240.0, usableWidth)
-        let tileW = min(44.0, max(28.0, (safeW - 24) / CGFloat(max(1, hand.count))))
+        let maxW = maxTileH / 1.4
+        let tileW = min(maxW, max(26.0, (safeW - 24) / CGFloat(max(1, hand.count))))
         let tileH = tileW * 1.4
         return AnyView(mjTileRow(tiles: hand, tileW: tileW, tileH: tileH))
     }
