@@ -31,7 +31,7 @@ CXXFLAGS    := $(CFLAGS) -fno-rtti -std=gnu++17
 ASFLAGS     := -g $(ARCH)
 LDFLAGS     = -specs=$(DEVKITPRO)/libnx/switch.specs -g $(ARCH) -Wl,-Map,$(notdir $*.map)
 
-LIBS        := -lSDL2_image -lSDL2_ttf -lSDL2 -lwebp -lpng -ljpeg -lfreetype -lharfbuzz -lbz2 -lz \
+LIBS        := -lSDL2_image -lSDL2_ttf -lSDL2 -lEGL -lglapi -ldrm_nouveau -lwebp -lpng -ljpeg -lfreetype -lharfbuzz -lbz2 -lz \
                -lmbedtls -lmbedx509 -lmbedcrypto -lnx -lm
 
 LIBDIRS     := $(PORTLIBS) $(LIBNX)
