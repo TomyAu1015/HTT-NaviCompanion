@@ -9,6 +9,7 @@
 #include <ctime>
 #include <cstdlib>
 #include <algorithm>
+#include <cmath>
 #include <random>
 
 #include "ws_client.hpp"
@@ -54,9 +55,9 @@ static SwitchWsClient gWs;
 static AppScreenMode gScreen = MODE_LOBBY;
 static int gSelectedGame = 0; // 0 = 放课后斗地主(3P), 1 = 广东红中麻将(4P)
 static int gMyCharId = 1;     // 1..5
-static std::string gRoomCode = "888";
+static std::string gRoomCode = "";
 static std::string gMyPeerName = "Switch#101";
-static std::string gStatusBanner = "欢迎来到 Switch 放课后棋牌室！按 [L/R] 切换斗地主/麻将，按 [Y] 输入房号，按 [X] 连接跨平台房间";
+static std::string gStatusBanner = "欢迎来到放课后棋牌室！按 [L/R] 切换游戏，按 [Y] 填写房号后按 [X] 跨平台联机";
 
 static bool gIsOnlineRoom = false;
 static bool gIsRoomAuthority = true;
@@ -128,20 +129,54 @@ static SDL_Texture* getTexture(const std::string& path) {
     return tex;
 }
 
-static void drawRectFill(int x, int y, int w, int h, SDL_Color c) {
+static void drawRoundedRectFill(int x, int y, int w, int h, int rad, SDL_Color c) {
+    if (w <= 0 || h <= 0) return;
+    int r = std::min(rad, std::min(w / 2, h / 2));
     SDL_SetRenderDrawBlendMode(gRenderer, SDL_BLENDMODE_BLEND);
     SDL_SetRenderDrawColor(gRenderer, c.r, c.g, c.b, c.a);
-    SDL_Rect r = {x, y, w, h};
-    SDL_RenderFillRect(gRenderer, &r);
+    if (r <= 1) {
+        SDL_Rect rc = {x, y, w, h};
+        SDL_RenderFillRect(gRenderer, &rc);
+        return;
+    }
+    SDL_Rect mid = {x, y + r, w, h - 2 * r};
+    SDL_RenderFillRect(gRenderer, &mid);
+    for (int dy = 0; dy < r; ++dy) {
+        int dx = r - (int)std::sqrt((double)(r * r - (r - dy) * (r - dy)));
+        SDL_RenderDrawLine(gRenderer, x + dx, y + dy, x + w - 1 - dx, y + dy);
+        SDL_RenderDrawLine(gRenderer, x + dx, y + h - 1 - dy, x + w - 1 - dx, y + h - 1 - dy);
+    }
+}
+
+static void drawRoundedRectOutline(int x, int y, int w, int h, int rad, SDL_Color c, int thickness = 2) {
+    if (w <= 0 || h <= 0) return;
+    int r = std::min(rad, std::min(w / 2, h / 2));
+    SDL_SetRenderDrawBlendMode(gRenderer, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(gRenderer, c.r, c.g, c.b, c.a);
+    for (int t = 0; t < thickness; ++t) {
+        int rx = x + t, ry = y + t, rw = w - 2 * t, rh = h - 2 * t;
+        int rr = std::max(0, r - t);
+        if (rw <= 0 || rh <= 0) break;
+        SDL_RenderDrawLine(gRenderer, rx + rr, ry, rx + rw - 1 - rr, ry);
+        SDL_RenderDrawLine(gRenderer, rx + rr, ry + rh - 1, rx + rw - 1 - rr, ry + rh - 1);
+        SDL_RenderDrawLine(gRenderer, rx, ry + rr, rx, ry + rh - 1 - rr);
+        SDL_RenderDrawLine(gRenderer, rx + rw - 1, ry + rr, rx + rw - 1, ry + rh - 1 - rr);
+        for (int dy = 0; dy < rr; ++dy) {
+            int dx = rr - (int)std::sqrt((double)(rr * rr - (rr - dy) * (rr - dy)));
+            SDL_RenderDrawPoint(gRenderer, rx + dx, ry + dy);
+            SDL_RenderDrawPoint(gRenderer, rx + rw - 1 - dx, ry + dy);
+            SDL_RenderDrawPoint(gRenderer, rx + dx, ry + rh - 1 - dy);
+            SDL_RenderDrawPoint(gRenderer, rx + rw - 1 - dx, ry + rh - 1 - dy);
+        }
+    }
+}
+
+static void drawRectFill(int x, int y, int w, int h, SDL_Color c) {
+    drawRoundedRectFill(x, y, w, h, 8, c);
 }
 
 static void drawRectOutline(int x, int y, int w, int h, SDL_Color c, int thickness = 2) {
-    SDL_SetRenderDrawBlendMode(gRenderer, SDL_BLENDMODE_BLEND);
-    SDL_SetRenderDrawColor(gRenderer, c.r, c.g, c.b, c.a);
-    for (int i = 0; i < thickness; ++i) {
-        SDL_Rect r = {x + i, y + i, w - i * 2, h - i * 2};
-        SDL_RenderDrawRect(gRenderer, &r);
-    }
+    drawRoundedRectOutline(x, y, w, h, 8, c, thickness);
 }
 
 static void drawText(TTF_Font* font, const std::string& text, int x, int y, SDL_Color col, bool center = false, bool rightAlign = false) {
@@ -758,15 +793,15 @@ static void processIncomingNetworkMessages() {
                 rebuildLobbySeats();
             }
         } else if (kind == "joinRequest") {
-            if (gIsRoomAuthority) {
-                int maxP = isMjPkt ? 4 : 3;
-                bool exists = false;
-                for (auto& rp : gRoomPeers) if (rp.name == sender) { rp.charId = senderChar; exists = true; }
-                if (!exists && (int)gRoomPeers.size() < maxP) {
-                    gRoomPeers.push_back({sender, senderChar, sender});
-                }
+            int maxP = isMjPkt ? 4 : 3;
+            bool exists = false;
+            for (auto& rp : gRoomPeers) if (rp.name == sender) { rp.charId = senderChar; exists = true; }
+            if (!exists && (int)gRoomPeers.size() < maxP) {
+                gRoomPeers.push_back({sender, senderChar, sender});
                 rebuildLobbySeats();
                 gStatusBanner = "跨平台玩家 [" + sender + "] 已加入房间 " + gRoomCode + "！";
+            }
+            if (gIsRoomAuthority) {
                 if (gSelectedGame == 0) broadcastDdzState();
                 else broadcastMjState();
             }
@@ -1011,13 +1046,19 @@ static void renderLobbyScreen() {
         std::string badge = (gSelectedGame == 0 ? "当前房间：放课后斗地主 (3人)" : "当前房间：广东红中麻将 (4人 · 136张)") + std::string("  |  房号: ") + gRoomCode;
         drawText(gFontMed, badge, SCREEN_W / 2, 74, COL_WHITE, true);
     } else {
-        drawRectFill(40, 64, 590, 44, gSelectedGame == 0 ? COL_CRIMSON : COL_PANEL);
-        drawRectOutline(40, 64, 590, 44, COL_GOLD, gSelectedGame == 0 ? 2 : 1);
-        drawText(gFontMed, "[L] 放课后斗地主 (3人)", 335, 74, COL_WHITE, true);
+        drawRoundedRectFill(40, 64, 590, 44, 12, gSelectedGame == 0 ? COL_CRIMSON : COL_PANEL);
+        drawRoundedRectOutline(40, 64, 590, 44, 12, COL_GOLD, gSelectedGame == 0 ? 2 : 1);
+        // Mini Poker Card Icon
+        drawRoundedRectFill(165, 72, 20, 28, 3, COL_WHITE);
+        drawText(gFontSmall, "A", 175, 76, COL_CRIMSON, true);
+        drawText(gFontMed, "[L] 放课后斗地主 (3人)", 350, 74, COL_WHITE, true);
 
-        drawRectFill(650, 64, 590, 44, gSelectedGame == 1 ? COL_GREEN_BTN : COL_PANEL);
-        drawRectOutline(650, 64, 590, 44, COL_GOLD, gSelectedGame == 1 ? 2 : 1);
-        drawText(gFontMed, "[R] 广东红中麻将 (4人 · 136张)", 945, 74, COL_WHITE, true);
+        drawRoundedRectFill(650, 64, 590, 44, 12, gSelectedGame == 1 ? COL_GREEN_BTN : COL_PANEL);
+        drawRoundedRectOutline(650, 64, 590, 44, 12, COL_GOLD, gSelectedGame == 1 ? 2 : 1);
+        // Mini Mahjong Tile Icon
+        drawRoundedRectFill(755, 72, 20, 28, 3, COL_CREAM);
+        drawText(gFontSmall, "中", 765, 75, COL_CRIMSON, true);
+        drawText(gFontMed, "[R] 广东红中麻将 (4人 · 136张)", 960, 74, COL_WHITE, true);
     }
 
     // Status Banner
@@ -1046,10 +1087,11 @@ static void renderLobbyScreen() {
     drawRectFill(40, 304, 1200, 120, COL_PANEL);
     drawText(gFontMed, "2. 跨平台在线服务器联机 (Switch / iOS / Android 互通 · wss://azusa.online/ddz)", 58, 314, COL_GOLD);
 
-    // Room Code Box
-    drawRectFill(58, 352, 360, 54, {15, 52, 34, 255});
-    drawRectOutline(58, 352, 360, 54, gLobbyFocus == 5 ? COL_WHITE : COL_GOLD, gLobbyFocus == 5 ? 3 : 1);
-    drawText(gFontMed, "[Y] 房间号: " + gRoomCode, 238, 366, COL_WHITE, true);
+    // Room Code Box (requires input before joining!)
+    drawRoundedRectFill(58, 352, 360, 54, 12, {15, 52, 34, 255});
+    drawRoundedRectOutline(58, 352, 360, 54, 12, gLobbyFocus == 5 ? COL_WHITE : COL_GOLD, gLobbyFocus == 5 ? 3 : 1);
+    std::string rcDisplay = gRoomCode.empty() ? "[Y] 房号: 必填房号 (点击输入)" : ("[Y] 房间号: " + gRoomCode);
+    drawText(gFontMed, rcDisplay, 238, 366, gRoomCode.empty() ? COL_GOLD : COL_WHITE, true);
 
     // Connect / Disconnect Button
     bool wsConn = gWs.isConnected();
@@ -1455,8 +1497,13 @@ int main(int argc, char* argv[]) {
         u64 kHeld = padGetButtons(&pad);
 
         bool nowWsConnected = gWs.isConnected();
+        static uint32_t lastJoinHbTick = 0;
         if (nowWsConnected && !wasWsConnected && gIsOnlineRoom) {
             sendJoinRequestPacket();
+            lastJoinHbTick = SDL_GetTicks();
+        } else if (nowWsConnected && gIsOnlineRoom && gScreen == MODE_LOBBY && SDL_GetTicks() - lastJoinHbTick > 2500) {
+            sendJoinRequestPacket();
+            lastJoinHbTick = SDL_GetTicks();
         }
         wasWsConnected = nowWsConnected;
 
@@ -1632,14 +1679,19 @@ int main(int argc, char* argv[]) {
                     rebuildLobbySeats();
                     gStatusBanner = "已退出在线房间，恢复单人+轻音AI模式";
                 } else {
-                    gIsOnlineRoom = true;
-                    gRoomPeers.clear();
-                    gRoomPeers.push_back({gMyPeerName, gMyCharId, gMyPeerName});
-                    rebuildLobbySeats();
-                    gWs.connectToRelay("azusa.online", "443", "/ddz");
-                    SDL_Delay(350);
-                    sendJoinRequestPacket();
-                    gStatusBanner = "已连接跨平台服务器 azusa.online，房间号: " + gRoomCode;
+                    if (gRoomCode.empty()) {
+                        openSwitchRoomCodeKeyboard();
+                    }
+                    if (gRoomCode.empty()) {
+                        gStatusBanner = "[注意] 请先按 [Y] 填写房间号后再连接！";
+                    } else {
+                        gIsOnlineRoom = true;
+                        gRoomPeers.clear();
+                        gRoomPeers.push_back({gMyPeerName, gMyCharId, gMyPeerName});
+                        rebuildLobbySeats();
+                        gWs.connectToRelay("azusa.online", "443", "/ddz");
+                        gStatusBanner = "正在连接跨平台服务器 azusa.online，房间号: " + gRoomCode + "...";
+                    }
                 }
             }
             if (kDown & HidNpadButton_A) {
