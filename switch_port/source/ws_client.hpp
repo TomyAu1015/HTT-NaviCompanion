@@ -6,6 +6,7 @@
 #include <atomic>
 #include <cstring>
 #include <cstdlib>
+#include <chrono>
 #include <sys/socket.h>
 #include <netdb.h>
 #include <unistd.h>
@@ -62,6 +63,15 @@ private:
     std::vector<std::string> outbox_;
     std::thread worker_;
 
+    static bool isTransientTlsRet(int r) {
+        if (r == MBEDTLS_ERR_SSL_WANT_READ || r == MBEDTLS_ERR_SSL_WANT_WRITE) return true;
+#ifdef MBEDTLS_ERR_SSL_RECEIVED_NEW_SESSION_TICKET
+        if (r == MBEDTLS_ERR_SSL_RECEIVED_NEW_SESSION_TICKET) return true;
+#endif
+        if (r == -0x7880) return true;
+        return false;
+    }
+
     static void buildMaskedFrame(const std::string& payload, std::vector<uint8_t>& outFrame) {
         outFrame.clear();
         outFrame.push_back(0x81); // FIN + Text frame
@@ -116,7 +126,7 @@ private:
         while (running_) {
             int ret = mbedtls_ssl_handshake(&ssl);
             if (ret == 0) break;
-            if (ret != MBEDTLS_ERR_SSL_WANT_READ && ret != MBEDTLS_ERR_SSL_WANT_WRITE) goto cleanup;
+            if (!isTransientTlsRet(ret)) goto cleanup;
         }
         if (!running_) goto cleanup;
 
@@ -132,7 +142,7 @@ private:
             while (written < req.size() && running_) {
                 int r = mbedtls_ssl_write(&ssl, (const unsigned char*)req.data() + written, req.size() - written);
                 if (r > 0) written += r;
-                else if (r != MBEDTLS_ERR_SSL_WANT_WRITE && r != MBEDTLS_ERR_SSL_WANT_READ) goto cleanup;
+                else if (!isTransientTlsRet(r)) goto cleanup;
             }
 
             // Read HTTP 101 response header
@@ -141,7 +151,7 @@ private:
             while (running_ && hdr.find("\r\n\r\n") == std::string::npos && hdr.size() < 4096) {
                 int r = mbedtls_ssl_read(&ssl, &ch, 1);
                 if (r == 1) hdr.push_back((char)ch);
-                else if (r != MBEDTLS_ERR_SSL_WANT_READ && r != MBEDTLS_ERR_SSL_WANT_WRITE) goto cleanup;
+                else if (!isTransientTlsRet(r)) goto cleanup;
             }
             if (hdr.find("101") == std::string::npos) goto cleanup;
         }
@@ -151,7 +161,11 @@ private:
 
         {
             std::vector<uint8_t> rxBuf;
-            unsigned char tmp[2048];
+            std::string fragBuf;
+            uint8_t fragOpcode = 0;
+            unsigned char tmp[8192];
+            auto lastPing = std::chrono::steady_clock::now();
+
             while (running_) {
                 // Flush outgoing frames
                 std::vector<std::string> toSend;
@@ -166,7 +180,7 @@ private:
                     while (sent < frame.size() && running_) {
                         int r = mbedtls_ssl_write(&ssl, frame.data() + sent, frame.size() - sent);
                         if (r > 0) sent += r;
-                        else if (r == MBEDTLS_ERR_SSL_WANT_WRITE || r == MBEDTLS_ERR_SSL_WANT_READ) {
+                        else if (isTransientTlsRet(r)) {
                             usleep(2000);
                         } else {
                             running_ = false;
@@ -175,61 +189,86 @@ private:
                     }
                 }
 
-                // Read incoming bytes
-                int r = mbedtls_ssl_read(&ssl, tmp, sizeof(tmp));
-                if (r > 0) {
-                    rxBuf.insert(rxBuf.end(), tmp, tmp + r);
-                    // Parse complete WebSocket frames
-                    while (rxBuf.size() >= 2) {
-                        uint8_t b0 = rxBuf[0];
-                        uint8_t b1 = rxBuf[1];
-                        uint8_t opcode = b0 & 0x0F;
-                        bool masked = (b1 & 0x80) != 0;
-                        uint64_t payloadLen = b1 & 0x7F;
-                        size_t headerSize = 2;
-                        if (payloadLen == 126) {
-                            if (rxBuf.size() < 4) break;
-                            payloadLen = ((uint64_t)rxBuf[2] << 8) | rxBuf[3];
-                            headerSize = 4;
-                        } else if (payloadLen == 127) {
-                            if (rxBuf.size() < 10) break;
-                            payloadLen = 0;
-                            for (int i = 0; i < 8; ++i) payloadLen = (payloadLen << 8) | rxBuf[2 + i];
-                            headerSize = 10;
-                        }
-                        if (masked) headerSize += 4;
-                        if (rxBuf.size() < headerSize + payloadLen) break;
-
-                        std::string payload((const char*)(rxBuf.data() + headerSize), (size_t)payloadLen);
-                        if (masked) {
-                            const uint8_t* m = rxBuf.data() + headerSize - 4;
-                            for (size_t i = 0; i < payload.size(); ++i) payload[i] ^= m[i & 3];
-                        }
-                        rxBuf.erase(rxBuf.begin(), rxBuf.begin() + headerSize + payloadLen);
-
-                        if (opcode == 0x01) { // Text frame
-                            std::lock_guard<std::mutex> lk(mtx_);
-                            inbox_.push_back(payload);
-                        } else if (opcode == 0x08) { // Close
-                            running_ = false;
-                            break;
-                        } else if (opcode == 0x09) { // Ping -> Pong
-                            std::vector<uint8_t> pong;
-                            pong.push_back(0x8A);
-                            pong.push_back(0x80);
-                            pong.push_back(0); pong.push_back(0); pong.push_back(0); pong.push_back(0);
-                            mbedtls_ssl_write(&ssl, pong.data(), pong.size());
-                        }
-                    }
-                } else if (r == MBEDTLS_ERR_SSL_WANT_READ || r == MBEDTLS_ERR_SSL_WANT_WRITE
-#ifdef MBEDTLS_ERR_SSL_RECEIVED_NEW_SESSION_TICKET
-                           || r == MBEDTLS_ERR_SSL_RECEIVED_NEW_SESSION_TICKET
-#endif
-                           || r == -0x7880) {
-                    usleep(12000);
-                } else {
-                    break;
+                // Periodic keepalive ping every 15s
+                auto now = std::chrono::steady_clock::now();
+                if (std::chrono::duration_cast<std::chrono::seconds>(now - lastPing).count() >= 15) {
+                    uint8_t pingFrame[6] = {0x89, 0x80, 0x11, 0x22, 0x33, 0x44};
+                    mbedtls_ssl_write(&ssl, pingFrame, sizeof(pingFrame));
+                    lastPing = now;
                 }
+
+                // Drain incoming bytes (up to 8 reads per iteration)
+                bool fatalReadErr = false;
+                for (int reads = 0; reads < 8 && running_; ++reads) {
+                    int r = mbedtls_ssl_read(&ssl, tmp, sizeof(tmp));
+                    if (r > 0) {
+                        rxBuf.insert(rxBuf.end(), tmp, tmp + r);
+                    } else if (isTransientTlsRet(r)) {
+                        break;
+                    } else {
+                        fatalReadErr = true;
+                        break;
+                    }
+                }
+                if (fatalReadErr) break;
+
+                // Parse complete WebSocket frames (Text 0x01, Binary 0x02, and fragmented Continuation 0x00)
+                while (rxBuf.size() >= 2) {
+                    uint8_t b0 = rxBuf[0];
+                    uint8_t b1 = rxBuf[1];
+                    bool fin = (b0 & 0x80) != 0;
+                    uint8_t opcode = b0 & 0x0F;
+                    bool masked = (b1 & 0x80) != 0;
+                    uint64_t payloadLen = b1 & 0x7F;
+                    size_t headerSize = 2;
+                    if (payloadLen == 126) {
+                        if (rxBuf.size() < 4) break;
+                        payloadLen = ((uint64_t)rxBuf[2] << 8) | rxBuf[3];
+                        headerSize = 4;
+                    } else if (payloadLen == 127) {
+                        if (rxBuf.size() < 10) break;
+                        payloadLen = 0;
+                        for (int i = 0; i < 8; ++i) payloadLen = (payloadLen << 8) | rxBuf[2 + i];
+                        headerSize = 10;
+                    }
+                    if (masked) headerSize += 4;
+                    if (rxBuf.size() < headerSize + payloadLen) break;
+
+                    std::string payload((const char*)(rxBuf.data() + headerSize), (size_t)payloadLen);
+                    if (masked) {
+                        const uint8_t* m = rxBuf.data() + headerSize - 4;
+                        for (size_t i = 0; i < payload.size(); ++i) payload[i] ^= m[i & 3];
+                    }
+                    rxBuf.erase(rxBuf.begin(), rxBuf.begin() + headerSize + payloadLen);
+
+                    if (opcode == 0x01 || opcode == 0x02) { // Text or Binary frame (iOS sends Binary 0x02!)
+                        if (fin) {
+                            std::lock_guard<std::mutex> lk(mtx_);
+                            inbox_.push_back(std::move(payload));
+                        } else {
+                            fragOpcode = opcode;
+                            fragBuf = std::move(payload);
+                        }
+                    } else if (opcode == 0x00) { // Continuation frame
+                        if (fragOpcode == 0x01 || fragOpcode == 0x02) {
+                            fragBuf += payload;
+                            if (fin) {
+                                std::lock_guard<std::mutex> lk(mtx_);
+                                inbox_.push_back(std::move(fragBuf));
+                                fragBuf.clear();
+                                fragOpcode = 0;
+                            }
+                        }
+                    } else if (opcode == 0x08) { // Close
+                        running_ = false;
+                        break;
+                    } else if (opcode == 0x09) { // Ping -> Pong
+                        uint8_t pong[6] = {0x8A, 0x80, 0, 0, 0, 0};
+                        mbedtls_ssl_write(&ssl, pong, sizeof(pong));
+                    }
+                }
+
+                usleep(12000);
             }
         }
 

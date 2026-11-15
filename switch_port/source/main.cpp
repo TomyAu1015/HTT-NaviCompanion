@@ -831,6 +831,17 @@ static void processIncomingNetworkMessages() {
             std::string banner = MiniJson::getStr(raw, "statusBanner");
             if (!banner.empty()) gStatusBanner = banner;
 
+            auto rObjs = MiniJson::extractObjectsArray(raw, "roomPeers");
+            if (!rObjs.empty()) {
+                gRoomPeers.clear();
+                for (const auto& ro : rObjs) {
+                    std::string pn = MiniJson::getStr(ro, "name");
+                    int pc = MiniJson::getInt(ro, "charId", 1);
+                    std::string pd = MiniJson::getStr(ro, "displayName", pn);
+                    if (!pn.empty()) gRoomPeers.push_back({pn, pc, pd});
+                }
+            }
+
             if (!isMjPkt) {
                 gDdzPhase = MiniJson::getStr(raw, "phase", gDdzPhase);
                 gDdzTurnSeat = MiniJson::getInt(raw, "currentTurnSeat", gDdzTurnSeat);
@@ -866,12 +877,14 @@ static void processIncomingNetworkMessages() {
                     }
                 }
                 if (gDdzPhase != "lobby") gScreen = MODE_DDZ_TABLE;
+                else if (gScreen == MODE_DDZ_TABLE) gScreen = MODE_LOBBY;
             } else {
                 gMjPhase = MiniJson::getStr(raw, "phase", gMjPhase);
                 gMjTurnSeat = MiniJson::getInt(raw, "currentTurnSeat", gMjTurnSeat);
                 gMjWallCount = MiniJson::getInt(raw, "wallCount", gMjWallCount);
                 gMjWinnerSeat = MiniJson::getInt(raw, "winnerSeat", gMjWinnerSeat);
                 gMjWinReason = MiniJson::getStr(raw, "winReason", gMjWinReason);
+                gMjDrawnTileId = MiniJson::getStr(raw, "drawnTileId", gMjDrawnTileId);
 
                 auto seatObjs = MiniJson::extractObjectsArray(raw, "seats");
                 if (seatObjs.size() == 4) {
@@ -895,6 +908,7 @@ static void processIncomingNetworkMessages() {
                     }
                 }
                 if (gMjPhase != "lobby") gScreen = MODE_MJ_TABLE;
+                else if (gScreen == MODE_MJ_TABLE) gScreen = MODE_LOBBY;
             }
         }
     }
@@ -1114,11 +1128,12 @@ static void renderLobbyScreen() {
         int sChar = (gSelectedGame == 0) ? gDdzSeats[i].characterId : gMjSeats[i].characterId;
         bool isAI = (gSelectedGame == 0) ? gDdzSeats[i].isAI : gMjSeats[i].isAI;
         int sc = (gSelectedGame == 0) ? gDdzSeats[i].score : gMjSeats[i].score;
-        drawRectFill(sx, sy, sw, 94, {14, 54, 34, 255});
-        drawRectOutline(sx, sy, sw, 94, isAI ? COL_GRAY : COL_GOLD, isAI ? 1 : 2);
+        SDL_Color humanGreen = {46, 229, 130, 255};
+        drawRoundedRectFill(sx, sy, sw, 94, 10, {14, 54, 34, 255});
+        drawRoundedRectOutline(sx, sy, sw, 94, 10, isAI ? COL_GRAY : humanGreen, isAI ? 1 : 2);
         drawCharAvatar(sChar, sx + 8, sy + 18, 52, 52);
         drawText(gFontSmall, sName, sx + 66, sy + 20, COL_WHITE);
-        drawText(gFontSmall, std::string(isAI ? "[AI] 轻音AI" : "[真人] 玩家") + " · " + std::to_string(sc) + "分", sx + 66, sy + 52, COL_GOLD);
+        drawText(gFontSmall, std::string(isAI ? "[AI] 轻音AI" : "[真人] 玩家") + " · " + std::to_string(sc) + "分", sx + 66, sy + 52, isAI ? COL_GOLD : humanGreen);
     }
 
     // 4. Start Button
@@ -1499,8 +1514,12 @@ int main(int argc, char* argv[]) {
         bool nowWsConnected = gWs.isConnected();
         static uint32_t lastJoinHbTick = 0;
         if (nowWsConnected && !wasWsConnected && gIsOnlineRoom) {
+            gStatusBanner = "已连接跨平台服务器 azusa.online，房间号: " + gRoomCode + "（等待同房好友或按[A]开始）";
             sendJoinRequestPacket();
             lastJoinHbTick = SDL_GetTicks();
+        } else if (!nowWsConnected && wasWsConnected && gIsOnlineRoom) {
+            gIsOnlineRoom = false;
+            gStatusBanner = "[注意] 服务器连接已断开，请检查网络后按 [X] 重连";
         } else if (nowWsConnected && gIsOnlineRoom && gScreen == MODE_LOBBY && SDL_GetTicks() - lastJoinHbTick > 2500) {
             sendJoinRequestPacket();
             lastJoinHbTick = SDL_GetTicks();

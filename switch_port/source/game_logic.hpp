@@ -23,11 +23,26 @@ namespace MiniJson {
         return o;
     }
 
+    inline size_t findKeyValPos(const std::string& json, const std::string& key) {
+        std::string pat = "\"" + key + "\"";
+        size_t pos = 0;
+        while ((pos = json.find(pat, pos)) != std::string::npos) {
+            size_t p = pos + pat.size();
+            while (p < json.size() && (json[p] == ' ' || json[p] == '\t' || json[p] == '\r' || json[p] == '\n')) p++;
+            if (p < json.size() && json[p] == ':') {
+                p++;
+                while (p < json.size() && (json[p] == ' ' || json[p] == '\t' || json[p] == '\r' || json[p] == '\n')) p++;
+                return p;
+            }
+            pos += pat.size();
+        }
+        return std::string::npos;
+    }
+
     inline std::string getStr(const std::string& json, const std::string& key, const std::string& defVal = "") {
-        std::string pat = "\"" + key + "\":\"";
-        size_t pos = json.find(pat);
-        if (pos == std::string::npos) return defVal;
-        pos += pat.size();
+        size_t pos = findKeyValPos(json, key);
+        if (pos == std::string::npos || pos >= json.size() || json[pos] != '"') return defVal;
+        pos++;
         std::string out;
         while (pos < json.size() && json[pos] != '"') {
             if (json[pos] == '\\' && pos + 1 < json.size()) {
@@ -39,21 +54,16 @@ namespace MiniJson {
     }
 
     inline int getInt(const std::string& json, const std::string& key, int defVal = -1) {
-        std::string pat = "\"" + key + "\":";
-        size_t pos = json.find(pat);
+        size_t pos = findKeyValPos(json, key);
         if (pos == std::string::npos) return defVal;
-        pos += pat.size();
-        while (pos < json.size() && (json[pos] == ' ' || json[pos] == '"')) pos++;
-        if (pos >= json.size() || (!isdigit(json[pos]) && json[pos] != '-')) return defVal;
+        if (pos < json.size() && json[pos] == '"') pos++;
+        if (pos >= json.size() || (!isdigit((unsigned char)json[pos]) && json[pos] != '-')) return defVal;
         return std::atoi(json.c_str() + pos);
     }
 
     inline bool getBool(const std::string& json, const std::string& key, bool defVal = false) {
-        std::string pat = "\"" + key + "\":";
-        size_t pos = json.find(pat);
+        size_t pos = findKeyValPos(json, key);
         if (pos == std::string::npos) return defVal;
-        pos += pat.size();
-        while (pos < json.size() && json[pos] == ' ') pos++;
         if (json.compare(pos, 4, "true") == 0) return true;
         if (json.compare(pos, 5, "false") == 0) return false;
         return defVal;
@@ -62,10 +72,9 @@ namespace MiniJson {
     // Splits a top-level JSON array `[{...},{...}]` into object strings
     inline std::vector<std::string> extractObjectsArray(const std::string& json, const std::string& arrayKey) {
         std::vector<std::string> items;
-        std::string pat = "\"" + arrayKey + "\":[";
-        size_t pos = json.find(pat);
-        if (pos == std::string::npos) return items;
-        pos += pat.size();
+        size_t pos = findKeyValPos(json, arrayKey);
+        if (pos == std::string::npos || pos >= json.size() || json[pos] != '[') return items;
+        pos++;
         int depth = 0;
         size_t objStart = 0;
         bool inStr = false;
