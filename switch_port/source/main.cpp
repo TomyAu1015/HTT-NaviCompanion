@@ -908,6 +908,15 @@ static void drawMahjongBack(int x, int y, int w, int h) {
     drawRectOutline(x, y, w, h, {255, 255, 255, 180}, 1);
 }
 
+static void drawCharAvatar(int charId, int x, int y, int w, int h) {
+    int cid = (charId >= 1 && charId <= 5) ? charId : 1;
+    SDL_Texture* tex = getTexture("romfs:/cards/char_" + std::to_string(cid) + ".png");
+    if (tex) {
+        SDL_Rect dst = {x, y, w, h};
+        SDL_RenderCopy(gRenderer, tex, nullptr, &dst);
+    }
+}
+
 // ============================================================================
 // Render Screens
 // ============================================================================
@@ -962,7 +971,8 @@ static void renderLobbyScreen() {
         bool isFoc = (gLobbyFocus == i);
         drawRectFill(bx, by, 216, 68, isSel ? COL_CRIMSON : SDL_Color{15, 52, 34, 255});
         drawRectOutline(bx, by, 216, 68, isFoc ? COL_WHITE : COL_GOLD, isFoc ? 3 : (isSel ? 2 : 1));
-        drawText(gFontMed, kCharacters[i].nameZh, bx + 108, by + 22, COL_WHITE, true);
+        drawCharAvatar(kCharacters[i].charId, bx + 12, by + 6, 56, 56);
+        drawText(gFontMed, kCharacters[i].nameZh, bx + 132, by + 22, COL_WHITE, true);
     }
 
     // 2. Cross-Platform Online Server Card (wss://azusa.online/ddz)
@@ -991,11 +1001,13 @@ static void renderLobbyScreen() {
         int sx = 58 + i * (sw + 16);
         int sy = 482;
         std::string sName = (gSelectedGame == 0) ? gDdzSeats[i].name : gMjSeats[i].name;
+        int sChar = (gSelectedGame == 0) ? gDdzSeats[i].characterId : gMjSeats[i].characterId;
         bool isAI = (gSelectedGame == 0) ? gDdzSeats[i].isAI : gMjSeats[i].isAI;
         int sc = (gSelectedGame == 0) ? gDdzSeats[i].score : gMjSeats[i].score;
         drawRectFill(sx, sy, sw, 94, {14, 54, 34, 255});
         drawRectOutline(sx, sy, sw, 94, isAI ? COL_GRAY : COL_GOLD, isAI ? 1 : 2);
-        drawText(gFontMed, sName, sx + sw / 2, sy + 16, COL_WHITE, true);
+        drawCharAvatar(sChar, sx + 8, sy + 16, 58, 58);
+        drawText(gFontSmall, sName, sx + sw / 2 + 20, sy + 18, COL_WHITE, true);
         drawText(gFontSmall, std::string(isAI ? "🤖 轻音AI补位" : "🎮 真人玩家") + " · 积分: " + std::to_string(sc), sx + sw / 2, sy + 54, COL_GOLD, true);
     }
 
@@ -1060,8 +1072,9 @@ static void renderDoudizhuTable() {
     // Left Opponent
     drawRectFill(20, 210, 220, 190, COL_PANEL);
     drawRectOutline(20, 210, 220, 190, gDdzTurnSeat == leftIdx ? COL_GOLD : COL_GRAY, 2);
-    drawText(gFontSmall, lSeat.name, 32, 220, COL_WHITE);
-    drawText(gFontSmall, std::string(lSeat.isLandlord ? "🎩 地主" : "🌾 农民") + " · 积分:" + std::to_string(lSeat.score), 32, 244, COL_GOLD);
+    drawCharAvatar(lSeat.characterId, 26, 216, 48, 48);
+    drawText(gFontSmall, lSeat.name, 78, 220, COL_WHITE);
+    drawText(gFontSmall, std::string(lSeat.isLandlord ? "🎩 地主" : "🌾 农民") + " · 积分:" + std::to_string(lSeat.score), 78, 244, COL_GOLD);
     for (int k = 0; k < std::min(6, std::max(1, (int)lSeat.hand.size() / 3)); ++k) {
         drawPokerBack(32 + k * 12, 274, 46, 64);
     }
@@ -1070,8 +1083,9 @@ static void renderDoudizhuTable() {
     // Right Opponent
     drawRectFill(1040, 210, 220, 190, COL_PANEL);
     drawRectOutline(1040, 210, 220, 190, gDdzTurnSeat == rightIdx ? COL_GOLD : COL_GRAY, 2);
-    drawText(gFontSmall, rSeat.name, 1052, 220, COL_WHITE);
-    drawText(gFontSmall, std::string(rSeat.isLandlord ? "🎩 地主" : "🌾 农民") + " · 积分:" + std::to_string(rSeat.score), 1052, 244, COL_GOLD);
+    drawCharAvatar(rSeat.characterId, 1046, 216, 48, 48);
+    drawText(gFontSmall, rSeat.name, 1098, 220, COL_WHITE);
+    drawText(gFontSmall, std::string(rSeat.isLandlord ? "🎩 地主" : "🌾 农民") + " · 积分:" + std::to_string(rSeat.score), 1098, 244, COL_GOLD);
     for (int k = 0; k < std::min(6, std::max(1, (int)rSeat.hand.size() / 3)); ++k) {
         drawPokerBack(1052 + k * 12, 274, 46, 64);
     }
@@ -1163,46 +1177,56 @@ static void renderMahjongTable() {
     }
     drawText(gFontSmall, "牌山余 " + std::to_string(gMjWallCount) + " 张 · 第" + std::to_string(gMjRound) + "局", 1035, 100, COL_GOLD);
 
-    // Opposite Discards & Melds
-    for (size_t i = 0; i < opp.discards.size(); ++i) {
-        drawMahjongTile(opp.discards[i], 340 + (int)(i % 12) * 34, 134 + (int)(i / 12) * 44, 32, 42, false, false, i + 1 == opp.discards.size());
+    // Opposite Discards (max 12 recent)
+    size_t oppStart = opp.discards.size() > 12 ? opp.discards.size() - 12 : 0;
+    for (size_t idx = oppStart; idx < opp.discards.size(); ++idx) {
+        size_t i = idx - oppStart;
+        drawMahjongTile(opp.discards[idx], 340 + (int)(i % 12) * 34, 134, 32, 42, false, false, idx + 1 == opp.discards.size());
     }
 
-    // Left Seat + Vertical Standing Wall + Discards
+    // Left Seat + Character Avatar + Vertical Standing Wall + Discards (max 12 recent)
     const auto& lSeat = gMjSeats[leftIdx];
-    drawRectFill(20, 145, 185, 36, COL_PANEL);
-    drawText(gFontSmall, lSeat.name + " · " + std::to_string(lSeat.score) + "分", 28, 154, COL_WHITE);
-    for (int i = 0; i < std::min(11, (int)lSeat.hand.size()); ++i) {
-        drawMahjongBack(24, 188 + i * 18, 30, 16);
+    drawRectFill(20, 145, 200, 42, COL_PANEL);
+    drawCharAvatar(lSeat.characterId, 24, 147, 36, 36);
+    drawText(gFontSmall, lSeat.name + " · " + std::to_string(lSeat.score) + "分", 66, 156, COL_WHITE);
+    for (int i = 0; i < std::min(10, (int)lSeat.hand.size()); ++i) {
+        drawMahjongBack(24, 194 + i * 18, 30, 16);
     }
-    for (size_t i = 0; i < lSeat.discards.size(); ++i) {
-        drawMahjongTile(lSeat.discards[i], 68 + (int)(i % 6) * 34, 190 + (int)(i / 6) * 44, 32, 42, false, false, i + 1 == lSeat.discards.size());
+    size_t lStart = lSeat.discards.size() > 12 ? lSeat.discards.size() - 12 : 0;
+    for (size_t idx = lStart; idx < lSeat.discards.size(); ++idx) {
+        size_t i = idx - lStart;
+        drawMahjongTile(lSeat.discards[idx], 68 + (int)(i % 6) * 34, 194 + (int)(i / 6) * 44, 32, 42, false, false, idx + 1 == lSeat.discards.size());
     }
 
-    // Center 4-Direction Wind Compass
-    drawRectFill(490, 215, 300, 130, {7, 43, 51, 240});
-    drawRectOutline(490, 215, 300, 130, COL_GOLD, 2);
-    drawText(gFontMed, "北", 640, 222, gMjTurnSeat == oppIdx ? COL_GOLD : COL_GRAY, true);
-    drawText(gFontMed, "西", 520, 268, gMjTurnSeat == leftIdx ? COL_GOLD : COL_GRAY, true);
-    drawText(gFontMed, "东", 760, 268, gMjTurnSeat == rightIdx ? COL_GOLD : COL_GRAY, true);
-    drawText(gFontMed, "南", 640, 314, gMjTurnSeat == gMjMySeat ? COL_GOLD : COL_GRAY, true);
-    drawText(gFontMed, gMjPhase == "roundOver" ? ("🀄 " + gMjWinReason) : "红中=赖子·可碰杠", 640, 268, COL_WHITE, true);
+    // Center 4-Direction Wind Compass (1:1 with iOS/Android)
+    drawRectFill(490, 205, 300, 130, {7, 43, 51, 240});
+    drawRectOutline(490, 205, 300, 130, COL_GOLD, 2);
+    drawText(gFontMed, "北", 640, 212, gMjTurnSeat == oppIdx ? COL_GOLD : COL_GRAY, true);
+    drawText(gFontMed, "西", 520, 258, gMjTurnSeat == leftIdx ? COL_GOLD : COL_GRAY, true);
+    drawText(gFontMed, "东", 760, 258, gMjTurnSeat == rightIdx ? COL_GOLD : COL_GRAY, true);
+    drawText(gFontMed, "南", 640, 304, gMjTurnSeat == gMjMySeat ? COL_GOLD : COL_GRAY, true);
+    drawText(gFontMed, gMjPhase == "roundOver" ? ("🀄 " + gMjWinReason) : "广东红中赖子·136张", 640, 258, COL_WHITE, true);
 
-    // Right Seat + Vertical Standing Wall + Discards
+    // Right Seat + Character Avatar + Vertical Standing Wall + Discards (max 12 recent)
     const auto& rSeat = gMjSeats[rightIdx];
-    drawRectFill(1075, 145, 185, 36, COL_PANEL);
-    drawText(gFontSmall, rSeat.name + " · " + std::to_string(rSeat.score) + "分", 1083, 154, COL_WHITE);
-    for (int i = 0; i < std::min(11, (int)rSeat.hand.size()); ++i) {
-        drawMahjongBack(1226, 188 + i * 18, 30, 16);
+    drawRectFill(1060, 145, 200, 42, COL_PANEL);
+    drawCharAvatar(rSeat.characterId, 1064, 147, 36, 36);
+    drawText(gFontSmall, rSeat.name + " · " + std::to_string(rSeat.score) + "分", 1106, 156, COL_WHITE);
+    for (int i = 0; i < std::min(10, (int)rSeat.hand.size()); ++i) {
+        drawMahjongBack(1226, 194 + i * 18, 30, 16);
     }
-    for (size_t i = 0; i < rSeat.discards.size(); ++i) {
-        drawMahjongTile(rSeat.discards[i], 990 + (int)(i % 6) * 34, 190 + (int)(i / 6) * 44, 32, 42, false, false, i + 1 == rSeat.discards.size());
+    size_t rStart = rSeat.discards.size() > 12 ? rSeat.discards.size() - 12 : 0;
+    for (size_t idx = rStart; idx < rSeat.discards.size(); ++idx) {
+        size_t i = idx - rStart;
+        drawMahjongTile(rSeat.discards[idx], 990 + (int)(i % 6) * 34, 194 + (int)(i / 6) * 44, 32, 42, false, false, idx + 1 == rSeat.discards.size());
     }
 
-    // My Own Discards River
+    // My Own Discards River (max 14 recent on single row so it NEVER overlaps bottom hand)
     const auto& me = gMjSeats[gMjMySeat];
-    for (size_t i = 0; i < me.discards.size(); ++i) {
-        drawMahjongTile(me.discards[i], 360 + (int)(i % 14) * 34, 366 + (int)(i / 14) * 44, 32, 42, false, false, i + 1 == me.discards.size());
+    size_t mStart = me.discards.size() > 14 ? me.discards.size() - 14 : 0;
+    for (size_t idx = mStart; idx < me.discards.size(); ++idx) {
+        size_t i = idx - mStart;
+        drawMahjongTile(me.discards[idx], 360 + (int)i * 34, 362, 32, 42, false, false, idx + 1 == me.discards.size());
     }
 
     // Action Bar
@@ -1245,7 +1269,7 @@ static void renderMahjongTable() {
     int tileW = 62, tileH = 90;
     for (int i = 0; i < visCount; ++i) {
         bool isDrawn = (me.hand[i].id == gMjDrawnTileId);
-        int extraGap = (isDrawn && i + 1 == visCount && visCount > 1) ? 18 : 0;
+        int extraGap = (isDrawn && i + 1 == visCount && visCount > 1) ? 32 : 0;
         drawMahjongTile(me.hand[i], curX + i * (tileW + 4) + extraGap, 536, tileW, tileH,
                         (i == gMjCursor), (i == gMjSelectedIdx), isDrawn);
     }
@@ -1456,7 +1480,7 @@ int main(int argc, char* argv[]) {
                     int tileW = 62;
                     for (int i = cnt - 1; i >= 0; --i) {
                         bool isDrawn = (myHand[i].id == gMjDrawnTileId);
-                        int extraGap = (isDrawn && i + 1 == cnt && cnt > 1) ? 18 : 0;
+                        int extraGap = (isDrawn && i + 1 == cnt && cnt > 1) ? 32 : 0;
                         int mx = curX + i * (tileW + 4) + extraGap;
                         if (tx >= mx && tx <= mx + tileW) {
                             gMjCursor = i;

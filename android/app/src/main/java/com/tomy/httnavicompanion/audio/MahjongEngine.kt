@@ -1071,7 +1071,11 @@ class MahjongEngine(private val context: Context, private val audioMgr: AudioPla
         var ptr = 0
         val dealtSeats = _seats.value.mapIndexed { idx, s ->
             val cnt = if (idx == dealerIdx) 14 else 13
-            val h = MahjongEvaluator.sortHand(deck.subList(ptr, ptr + cnt))
+            val h = if (idx == dealerIdx) {
+                MahjongEvaluator.sortHand(deck.subList(ptr, ptr + 13)) + deck[ptr + 13]
+            } else {
+                MahjongEvaluator.sortHand(deck.subList(ptr, ptr + 13))
+            }
             ptr += cnt
             s.copy(hand = h, melds = emptyList(), discards = emptyList(), isDealer = idx == dealerIdx, lastActionText = "")
         }

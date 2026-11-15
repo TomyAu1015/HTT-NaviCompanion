@@ -730,9 +730,7 @@ fun KOnMahjongSheetDialog(onDismiss: () -> Unit, embeddedInGameRoom: Boolean = f
                         // Melds + Hand Tiles side-by-side on bottom row so tiles are 100% visible!
                         BoxWithConstraints(modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp)) {
                             val totalW = maxWidth
-                            val meldW = (me.melds.size * 84).dp
-                            val handW = (totalW - meldW - 12.dp).coerceAtLeast(220.dp)
-                            val tileW = (handW / me.hand.size.coerceAtLeast(1)).coerceIn(26.dp, 36.dp)
+                            val tileW = (totalW / 16.2f).coerceIn(30.dp, 36.dp)
                             val tileH = tileW * 1.4f
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
@@ -777,7 +775,7 @@ fun KOnMahjongSheetDialog(onDismiss: () -> Unit, embeddedInGameRoom: Boolean = f
                                 Row(horizontalArrangement = Arrangement.spacedBy(1.5.dp), verticalAlignment = Alignment.Bottom) {
                                     shownTiles.forEachIndexed { idx, t ->
                                         if (!isMjDealing && drawnTileId == t.id && idx == shownTiles.lastIndex && shownTiles.size > 1) {
-                                            Spacer(Modifier.width(10.dp))
+                                            Spacer(Modifier.width(tileW * 0.48f))
                                         }
                                         MjTileCard(t, tileW, tileH, selectedTileId == t.id, drawnTileId == t.id) { engine.selectOrDiscardTile(t) }
                                     }
@@ -863,7 +861,8 @@ private fun MjDiscardRiver(seat: MahjongSeat) {
             }
         }
         val latestId = seat.discards.lastOrNull()?.id
-        seat.discards.chunked(6).forEach { row ->
+        val recentDiscards = if (seat.discards.size > 12) seat.discards.takeLast(12) else seat.discards
+        recentDiscards.chunked(6).forEach { row ->
             Row(horizontalArrangement = Arrangement.spacedBy(1.5.dp)) {
                 row.forEach { t ->
                     val isLatest = (t.id == latestId)
