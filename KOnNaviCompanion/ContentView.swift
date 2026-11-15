@@ -9492,7 +9492,16 @@ struct KOnMahjongSheetView: View {
                         .background(Color.black.opacity(0.35)).cornerRadius(6)
                     }
                     Spacer()
-                    HStack(spacing: 8) {
+                    HStack(spacing: 6) {
+                        // Visual 3D stacked un-drawn wall tiles (牌山)
+                        HStack(spacing: 1) {
+                            ForEach(0..<min(8, max(1, (mj.wallCount + 14) / 15)), id: \.self) { _ in
+                                VStack(spacing: -11) {
+                                    mjTileBackView(width: 11, height: 15)
+                                    mjTileBackView(width: 11, height: 15)
+                                }
+                            }
+                        }
                         Text("余 \(mj.wallCount) 张").font(.system(size: 11, weight: .black, design: .monospaced)).foregroundColor(httGold)
                         Text("第\(mj.currentRound)局").font(.system(size: 11, weight: .bold)).foregroundColor(httCream)
                         Text("⏱ \(mj.turnRemainingSeconds)s").font(.system(size: 11, weight: .black, design: .monospaced))
@@ -9670,8 +9679,12 @@ struct KOnMahjongSheetView: View {
                             HStack(spacing: 4) {
                                 ForEach(me.melds) { m in
                                     HStack(spacing: 1) {
-                                        ForEach(0..<(m.kind == .pong ? 3 : 4), id: \.self) { _ in
-                                            mjTileView(tile: m.tile, width: 26, height: 36, isSelected: false, isHighlight: false)
+                                        ForEach(0..<(m.kind == .pong ? 3 : 4), id: \.self) { idx in
+                                            if m.kind == .concealedKong && idx != 2 {
+                                                mjTileBackView(width: 24, height: 34)
+                                            } else {
+                                                mjTileView(tile: m.tile, width: 24, height: 34, isSelected: false, isHighlight: false)
+                                            }
                                         }
                                     }
                                     .padding(2).background(Color.black.opacity(0.38)).cornerRadius(5)
@@ -9775,7 +9788,7 @@ struct KOnMahjongSheetView: View {
                         Text("打出 \(tile.fullName)").font(.system(size: 14, weight: .black)).frame(maxWidth: .infinity, minHeight: 38).background(Color.green).foregroundColor(.white).cornerRadius(10)
                     }.buttonStyle(PlainButtonStyle())
                 } else {
-                    Text("点选或双击手牌出牌").font(.system(size: 11, weight: .bold)).foregroundColor(httCream.opacity(0.8))
+                    Text("点选牌后点击【打出】出牌（再点取消）").font(.system(size: 11, weight: .bold)).foregroundColor(httCream.opacity(0.8))
                 }
             }
         } else if mj.phase == .roundOver {
@@ -9838,12 +9851,21 @@ struct KOnMahjongSheetView: View {
         let rows = stride(from: 0, to: seat.discards.count, by: cols).map { Array(seat.discards[$0..<min($0 + cols, seat.discards.count)]) }
         return VStack(alignment: .leading, spacing: 2) {
             if !seat.melds.isEmpty {
-                HStack(spacing: 3) {
+                HStack(spacing: 4) {
                     ForEach(seat.melds) { m in
-                        Text("\(m.kind.rawValue)\(m.tile.fullName)")
-                            .font(.system(size: 8, weight: .black)).foregroundColor(.black)
-                            .padding(.horizontal, 4).padding(.vertical, 1)
-                            .background(httGold).cornerRadius(3)
+                        HStack(spacing: 1) {
+                            let cnt = (m.kind == .pong ? 3 : 4)
+                            ForEach(0..<cnt, id: \.self) { idx in
+                                if m.kind == .concealedKong && idx != 2 {
+                                    mjTileBackView(width: 15, height: 21)
+                                } else {
+                                    mjTileView(tile: m.tile, width: 15, height: 21, isSelected: false, isHighlight: false)
+                                }
+                            }
+                        }
+                        .padding(2)
+                        .background(Color.black.opacity(0.35))
+                        .cornerRadius(4)
                     }
                 }
             }
@@ -9885,7 +9907,7 @@ struct KOnMahjongSheetView: View {
                 Button(action: {
                     if mj.phase == .playing && mj.currentTurnSeat == mj.mySeatIndex {
                         if mj.selectedTileId == tile.id {
-                            mj.discardTile(tile)
+                            mj.selectedTileId = nil
                         } else {
                             mj.selectedTileId = tile.id
                         }
