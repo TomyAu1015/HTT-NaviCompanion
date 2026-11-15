@@ -210,7 +210,6 @@ static std::string wireRoomCode() {
 }
 
 static void sendJoinRequestPacket() {
-    if (!gWs.isConnected()) return;
     std::string kind = "joinRequest";
     std::string rc = wireRoomCode();
     std::string j = "{\"kind\":\"joinRequest\",\"roomCode\":\"" + MiniJson::esc(rc) +
@@ -408,7 +407,7 @@ static void finalizeDdzLandlord(int landlordIdx) {
     gDdzTurnSeat = landlordIdx;
     gDdzLastPlaySeat = landlordIdx;
     gDdzLastValid = DdzEvalHand();
-    gDdzAiNextTick = SDL_GetTicks() + 1000;
+    gDdzAiNextTick = SDL_GetTicks() + 1800;
     gStatusBanner = "[地主] [" + gDdzSeats[landlordIdx].name + "] 成为地主！获得三张底牌并优先出牌";
     broadcastDdzState();
 }
@@ -438,7 +437,7 @@ static void handleDdzBid(int seatIdx, int score) {
         finalizeDdzLandlord(landlord);
     } else {
         gDdzTurnSeat = (gDdzTurnSeat + 1) % 3;
-        gDdzAiNextTick = SDL_GetTicks() + 950;
+        gDdzAiNextTick = SDL_GetTicks() + 1800;
         gStatusBanner = "轮到 [" + gDdzSeats[gDdzTurnSeat].name + "] 叫分 (当前最高: " + std::to_string(gDdzHighestBid) + "分)";
         broadcastDdzState();
     }
@@ -476,7 +475,7 @@ static void executeDdzPlay(int seatIdx, const DdzEvalHand& eval) {
     gDdzTurnSeat = (seatIdx + 1) % 3;
     gDdzSeats[gDdzTurnSeat].lastPlayedCards.clear();
     gDdzSeats[gDdzTurnSeat].lastActionText = "";
-    gDdzAiNextTick = SDL_GetTicks() + 950;
+    gDdzAiNextTick = SDL_GetTicks() + 1800;
     gStatusBanner = "[" + gDdzSeats[seatIdx].name + "] 打出 " + eval.labelZh() + "，轮到 [" + gDdzSeats[gDdzTurnSeat].name + "]";
     broadcastDdzState();
 }
@@ -506,7 +505,7 @@ static void handleDdzPass(int seatIdx) {
         gDdzSeats[gDdzTurnSeat].lastPlayedCards.clear();
         gDdzSeats[gDdzTurnSeat].lastActionText = "";
     }
-    gDdzAiNextTick = SDL_GetTicks() + 950;
+    gDdzAiNextTick = SDL_GetTicks() + 1800;
     gStatusBanner = "[" + gDdzSeats[seatIdx].name + "] 不出，轮到 [" + gDdzSeats[gDdzTurnSeat].name + "]";
     broadcastDdzState();
 }
@@ -619,20 +618,29 @@ static void startNewMahjongRound() {
 
 static void executeMjWin(int winner, int loser, const std::string& reason) {
     gMjWinnerSeat = winner;
-    gMjWinReason = reason;
+    int horseCount = std::min(4, (int)gMjWall.size());
+    int horseHits = 0;
+    std::string horseNames;
+    for (int i = 0; i < horseCount; ++i) {
+        MjTile h = gMjWall.back();
+        gMjWall.pop_back();
+        bool isHit = h.isLaizi() || (h.suit != "H" && (h.rank == 1 || h.rank == 5 || h.rank == 9));
+        if (isHit) {
+            horseHits++;
+            if (!horseNames.empty()) horseNames += ",";
+            horseNames += h.fullName();
+        }
+    }
+    gMjWallCount = (int)gMjWall.size();
+    gMjWinReason = reason + " · 摸马中" + std::to_string(horseHits) + "匹" + (horseHits > 0 ? ("[" + horseNames + "]") : "");
     gMjPhase = "roundOver";
     gMjHasClaim = false;
-    int delta = gMjBaseScore * 2;
-    if (loser < 0) {
-        for (int i = 0; i < 4; ++i) {
-            if (i == winner) gMjSeats[i].score += delta * 3;
-            else gMjSeats[i].score -= delta;
-        }
-    } else {
-        gMjSeats[winner].score += delta * 2;
-        gMjSeats[loser].score -= delta * 2;
+    int delta = gMjBaseScore * (2 + horseHits);
+    for (int i = 0; i < 4; ++i) {
+        if (i == winner) gMjSeats[i].score += delta * 3;
+        else gMjSeats[i].score -= delta;
     }
-    gStatusBanner = "[" + gMjSeats[winner].name + "] " + reason + "！按 [A] 再来一局";
+    gStatusBanner = "[" + gMjSeats[winner].name + "] " + gMjWinReason + "！按 [A] 再来一局";
     broadcastMjState();
 }
 
@@ -653,7 +661,7 @@ static void drawMjTileForSeat(int seatIdx) {
     gMjTurnSeat = seatIdx;
     gMjPhase = "playing";
     gMjHasClaim = false;
-    gMjAiNextTick = SDL_GetTicks() + 950;
+    gMjAiNextTick = SDL_GetTicks() + 1800;
     gStatusBanner = "轮到 [" + gMjSeats[seatIdx].name + "] 摸牌出牌 (余 " + std::to_string(gMjWallCount) + " 张)";
     broadcastMjState();
 }
@@ -673,11 +681,9 @@ static void executeMjDiscard(int seatIdx, const std::string& tileId) {
         gMjCursor = std::max(0, (int)gMjSeats[gMjMySeat].hand.size() - 1);
     }
 
-    // Check if human player (gMjMySeat) can Hu/Kong/Pong on this discard (if not discarded by me and not Laizi)
+    // 广东红中赖子规则：只能自摸，不能点炮 (No winning on discards)
     if (seatIdx != gMjMySeat && !discarded.isLaizi()) {
-        auto myCopy = gMjSeats[gMjMySeat].hand;
-        myCopy.push_back(discarded);
-        gMjCanHu = MjEvaluator::canHu(myCopy, (int)gMjSeats[gMjMySeat].melds.size());
+        gMjCanHu = false;
         int sameCnt = 0;
         for (const auto& mt : gMjSeats[gMjMySeat].hand) {
             if (mt.suit == discarded.suit && mt.rank == discarded.rank) sameCnt++;
@@ -695,18 +701,8 @@ static void executeMjDiscard(int seatIdx, const std::string& tileId) {
         }
     }
 
-    // Check AI claims
+    // Check AI claims (只能自摸，不能点炮，AI 只碰不点炮胡)
     if (!discarded.isLaizi()) {
-        for (int step = 1; step <= 3; ++step) {
-            int idx = (seatIdx + step) % 4;
-            if (!gMjSeats[idx].isAI) continue;
-            auto copy = gMjSeats[idx].hand;
-            copy.push_back(discarded);
-            if (MjEvaluator::canHu(copy, (int)gMjSeats[idx].melds.size())) {
-                executeMjWin(idx, seatIdx, "点炮胡 (" + discarded.fullName() + ")");
-                return;
-            }
-        }
         for (int step = 1; step <= 3; ++step) {
             int idx = (seatIdx + step) % 4;
             if (!gMjSeats[idx].isAI) continue;
@@ -723,7 +719,7 @@ static void executeMjDiscard(int seatIdx, const std::string& tileId) {
                 gMjSeats[idx].melds.push_back({discarded.id, "碰", discarded});
                 gMjSeats[idx].lastActionText = "碰 " + discarded.fullName();
                 gMjTurnSeat = idx;
-                gMjAiNextTick = SDL_GetTicks() + 900;
+                gMjAiNextTick = SDL_GetTicks() + 1800;
                 broadcastMjState();
                 return;
             }
@@ -749,7 +745,19 @@ static void processIncomingNetworkMessages() {
         std::string cleanRc = isMjPkt ? rc.substr(3) : rc;
         if (cleanRc != gRoomCode) continue;
 
-        if (kind == "joinRequest") {
+        if (kind == "roomRoster") {
+            auto rObjs = MiniJson::extractObjectsArray(raw, "roomPeers");
+            if (!rObjs.empty()) {
+                gRoomPeers.clear();
+                for (const auto& ro : rObjs) {
+                    std::string pn = MiniJson::getStr(ro, "name");
+                    int pc = MiniJson::getInt(ro, "charId", 1);
+                    std::string pd = MiniJson::getStr(ro, "displayName", pn);
+                    if (!pn.empty()) gRoomPeers.push_back({pn, pc, pd});
+                }
+                rebuildLobbySeats();
+            }
+        } else if (kind == "joinRequest") {
             if (gIsRoomAuthority) {
                 int maxP = isMjPkt ? 4 : 3;
                 bool exists = false;
@@ -997,7 +1005,12 @@ static void renderTopBar() {
 static void renderLobbyScreen() {
     bool inJoinedRoom = gIsOnlineRoom && gWs.isConnected();
     // Game Switcher Bar (Hidden once user connects to a room, matching v1.8.7 requirement!)
-    if (!inJoinedRoom) {
+    if (inJoinedRoom) {
+        drawRectFill(40, 64, 1200, 44, gSelectedGame == 0 ? COL_CRIMSON : COL_GREEN_BTN);
+        drawRectOutline(40, 64, 1200, 44, COL_GOLD, 2);
+        std::string badge = (gSelectedGame == 0 ? "当前房间：放课后斗地主 (3人)" : "当前房间：广东红中麻将 (4人 · 136张)") + std::string("  |  房号: ") + gRoomCode;
+        drawText(gFontMed, badge, SCREEN_W / 2, 74, COL_WHITE, true);
+    } else {
         drawRectFill(40, 64, 590, 44, gSelectedGame == 0 ? COL_CRIMSON : COL_PANEL);
         drawRectOutline(40, 64, 590, 44, COL_GOLD, gSelectedGame == 0 ? 2 : 1);
         drawText(gFontMed, "[L] 放课后斗地主 (3人)", 335, 74, COL_WHITE, true);

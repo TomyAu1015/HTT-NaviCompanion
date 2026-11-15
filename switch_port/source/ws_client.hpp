@@ -221,10 +221,14 @@ private:
                             mbedtls_ssl_write(&ssl, pong.data(), pong.size());
                         }
                     }
-                } else if (r == 0 || (r != MBEDTLS_ERR_SSL_WANT_READ && r != MBEDTLS_ERR_SSL_WANT_WRITE)) {
-                    break;
-                } else {
+                } else if (r == MBEDTLS_ERR_SSL_WANT_READ || r == MBEDTLS_ERR_SSL_WANT_WRITE
+#ifdef MBEDTLS_ERR_SSL_RECEIVED_NEW_SESSION_TICKET
+                           || r == MBEDTLS_ERR_SSL_RECEIVED_NEW_SESSION_TICKET
+#endif
+                           || r == -0x7880) {
                     usleep(12000);
+                } else {
+                    break;
                 }
             }
         }

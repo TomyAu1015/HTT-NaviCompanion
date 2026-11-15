@@ -1222,7 +1222,7 @@ class MahjongEngine(private val context: Context, private val audioMgr: AudioPla
             for (off in 1..3) {
                 val sIdx = (actor + off) % 4
                 val cand = cur[sIdx]
-                if (MahjongEvaluator.canWin(cand.hand, cand.melds.size, tile)) huSeats.add(sIdx)
+                // 只能自摸，不能点炮
                 val same = cand.hand.count { it.suit == tile.suit && it.rank == tile.rank }
                 if (same >= 3) kongSeats.add(sIdx)
                 if (same >= 2) pongSeats.add(sIdx)

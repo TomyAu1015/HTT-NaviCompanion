@@ -162,7 +162,27 @@ fun KOnGameRoomSheetDialog(onDismiss: () -> Unit) {
                     }
                 }
 
-                // Game Switcher Bar (hidden once user enters/hosts a room or starts an active game)
+                // Game Switcher Bar (hidden once user enters/hosts a room or starts an active game; show current room game badge instead)
+                if (isInJoinedRoom && inLobbyNow) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp)
+                            .clip(RoundedCornerShape(9.dp))
+                            .background(if (selectedGame == 0) MjRed.copy(alpha = 0.85f) else Color(0xFF146C43).copy(alpha = 0.85f))
+                            .border(1.2.dp, MjGold, RoundedCornerShape(9.dp))
+                            .padding(horizontal = 10.dp, vertical = 5.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            if (selectedGame == 0) "🃏 当前房间：放课后斗地主 (3人)" else "🀄 当前房间：广东红中麻将 (4人)",
+                            color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Black
+                        )
+                        Text(
+                            "房号: ${if (selectedGame == 0) ddzEngine.roomCode.collectAsState().value else mjEngine.roomCode.collectAsState().value}",
+                            color = MjGold, fontSize = 11.sp, fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
                 if (!isInJoinedRoom) {
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
@@ -583,9 +603,18 @@ fun KOnMahjongSheetDialog(onDismiss: () -> Unit, embeddedInGameRoom: Boolean = f
                                     MjTileCard(cl.tile, 36.dp, 50.dp, isSelected = false, isHighlight = true)
                                 }
                                 phase == MahjongGamePhase.ROUND_OVER -> Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                    Text(if (winnerSeat != null) "🀄 胡!" else "🌊 流局", color = Color.Yellow, fontSize = 22.sp, fontWeight = FontWeight.Black, textAlign = TextAlign.Center)
-                                    if (winnerSeat != null) {
-                                        Text("${seats.getOrNull(winnerSeat!!)?.name} · $winReason", color = Color.White, fontSize = 10.sp, textAlign = TextAlign.Center)
+                                    val isSeriesDone = totalRounds > 0 && currentRound >= totalRounds
+                                    if (isSeriesDone) {
+                                        Text("🏆 整场积分排名", color = Color.Yellow, fontSize = 12.sp, fontWeight = FontWeight.Black)
+                                        seats.sortedByDescending { it.score }.forEachIndexed { idx, rs ->
+                                            val medal = when (idx) { 0 -> "🥇"; 1 -> "🥈"; 2 -> "🥉"; else -> "4." }
+                                            Text("$medal ${rs.name}: ${rs.score}分", color = Color.White, fontSize = 9.sp, maxLines = 1)
+                                        }
+                                    } else {
+                                        Text(if (winnerSeat != null) "🀄 胡!" else "🌊 流局", color = Color.Yellow, fontSize = 20.sp, fontWeight = FontWeight.Black, textAlign = TextAlign.Center)
+                                        if (winnerSeat != null) {
+                                            Text("${seats.getOrNull(winnerSeat!!)?.name} · $winReason", color = Color.White, fontSize = 10.sp, textAlign = TextAlign.Center)
+                                        }
                                     }
                                 }
                                 else -> {
