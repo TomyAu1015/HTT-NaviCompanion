@@ -1095,7 +1095,7 @@ class MahjongEngine(private val context: Context, private val audioMgr: AudioPla
 
     fun selectOrDiscardTile(tile: MahjongTile) {
         if (_phase.value != MahjongGamePhase.PLAYING || _currentTurnSeat.value != _mySeatIndex.value) return
-        if (_selectedTileId.value == tile.id) discardTile(tile) else _selectedTileId.value = tile.id
+        if (_selectedTileId.value == tile.id) _selectedTileId.value = null else _selectedTileId.value = tile.id
     }
 
     fun discardTile(tile: MahjongTile) {
@@ -1312,7 +1312,7 @@ class MahjongEngine(private val context: Context, private val audioMgr: AudioPla
         _wallCount.value = wall.size
         val cur = _seats.value.toMutableList()
         val s = cur[seatIdx]
-        cur[seatIdx] = s.copy(hand = MahjongEvaluator.sortHand(s.hand + drawn))
+        cur[seatIdx] = s.copy(hand = s.hand + drawn)
         _seats.value = cur
         _drawnTileId.value = drawn.id
         _phase.value = MahjongGamePhase.PLAYING

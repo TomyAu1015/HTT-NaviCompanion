@@ -4,7 +4,10 @@ import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
 import android.content.pm.ActivityInfo
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.Image
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -103,17 +106,13 @@ fun KOnGameRoomSheetDialog(onDismiss: () -> Unit) {
             mjEngine.leaveRoomAndResetLobby()
             onDismiss()
         },
-        properties = DialogProperties(usePlatformDefaultWidth = false)
+        properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)
     ) {
         Surface(
-            modifier = Modifier
-                .fillMaxWidth(0.98f)
-                .fillMaxHeight(0.96f)
-                .clip(RoundedCornerShape(18.dp))
-                .border(2.dp, MjGold, RoundedCornerShape(18.dp)),
+            modifier = Modifier.fillMaxSize(),
             color = if (selectedGame == 0) Color(0xFF104B2C) else MjBgGreen
         ) {
-            Column(modifier = Modifier.fillMaxSize()) {
+            Column(modifier = Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
                 // Unified Header
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
@@ -524,8 +523,28 @@ fun KOnMahjongSheetDialog(onDismiss: () -> Unit, embeddedInGameRoom: Boolean = f
                                 }
                             }
                         }
-                        Box(modifier = Modifier.clip(RoundedCornerShape(8.dp)).background(MjCardGreen).padding(horizontal = 10.dp, vertical = 4.dp)) {
-                            Text("余 $wallCount 张 · 第${currentRound}局 · ⏱${turnRem}s", color = MjGold, fontSize = 11.sp, fontWeight = FontWeight.Black)
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Row(
+                                modifier = Modifier.clip(RoundedCornerShape(8.dp)).background(MjCardGreen).padding(horizontal = 8.dp, vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Row(horizontalArrangement = Arrangement.spacedBy(1.dp)) {
+                                    repeat(((wallCount + 14) / 15).coerceIn(1, 8)) {
+                                        Box(modifier = Modifier.size(10.dp, 14.dp)) {
+                                            MjTileBack(10.dp, 12.dp)
+                                        }
+                                    }
+                                }
+                                Text("余 $wallCount 张 · 第${currentRound}局 · ⏱${turnRem}s", color = MjGold, fontSize = 11.sp, fontWeight = FontWeight.Black)
+                            }
+                            if (isRoomAuthority || (!isHosting && !isServerConn && connectedPeers.isEmpty())) {
+                                Box(
+                                    modifier = Modifier.clip(RoundedCornerShape(8.dp)).background(MjGold).clickable { engine.startNewGame() }.padding(horizontal = 8.dp, vertical = 4.dp)
+                                ) {
+                                    Text("↻", color = Color.Black, fontSize = 12.sp, fontWeight = FontWeight.Black)
+                                }
+                            }
                         }
                     }
 
@@ -550,9 +569,10 @@ fun KOnMahjongSheetDialog(onDismiss: () -> Unit, embeddedInGameRoom: Boolean = f
                             }
                         }
 
-                        // Center Compass Hub
+                        // Tencent-Style Center 4-Direction Wind Compass + Big Countdown + Ting Pill
+                        var showTingPopup by remember { mutableStateOf(false) }
                         Box(
-                            modifier = Modifier.weight(0.30f).fillMaxHeight().clip(RoundedCornerShape(12.dp)).background(Color.Black.copy(alpha = 0.32f)).border(1.2.dp, MjGold.copy(alpha = 0.45f), RoundedCornerShape(12.dp)).padding(6.dp),
+                            modifier = Modifier.weight(0.30f).fillMaxHeight(),
                             contentAlignment = Alignment.Center
                         ) {
                             val cl = pendingClaim
@@ -563,18 +583,57 @@ fun KOnMahjongSheetDialog(onDismiss: () -> Unit, embeddedInGameRoom: Boolean = f
                                     MjTileCard(cl.tile, 36.dp, 50.dp, isSelected = false, isHighlight = true)
                                 }
                                 phase == MahjongGamePhase.ROUND_OVER -> Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                    Text(if (winnerSeat != null) "🎉 ${seats.getOrNull(winnerSeat!!)?.name} 胡牌" else "🌊 流局", color = MjGold, fontSize = 12.sp, fontWeight = FontWeight.Black, textAlign = TextAlign.Center)
-                                    Text(winReason, color = Color.White, fontSize = 10.sp, textAlign = TextAlign.Center)
+                                    Text(if (winnerSeat != null) "🀄 胡!" else "🌊 流局", color = Color.Yellow, fontSize = 22.sp, fontWeight = FontWeight.Black, textAlign = TextAlign.Center)
+                                    if (winnerSeat != null) {
+                                        Text("${seats.getOrNull(winnerSeat!!)?.name} · $winReason", color = Color.White, fontSize = 10.sp, textAlign = TextAlign.Center)
+                                    }
                                 }
                                 else -> {
                                     val me = seats.getOrNull(mySeatIdx)
                                     val ting = if (me != null) MahjongEvaluator.readyTiles(me.hand, me.melds.size) else emptyList()
-                                    Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                                        Text("广东红中赖子 · 136张无花牌", color = MjGold, fontSize = 10.sp, fontWeight = FontWeight.Black, textAlign = TextAlign.Center)
+                                    Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                        Column(
+                                            modifier = Modifier.clip(RoundedCornerShape(10.dp)).background(Color(0xFF072B33)).border(1.5.dp, MjGold.copy(alpha = 0.7f), RoundedCornerShape(10.dp)).padding(horizontal = 8.dp, vertical = 4.dp),
+                                            horizontalAlignment = Alignment.CenterHorizontally
+                                        ) {
+                                            Text("北", fontSize = 9.sp, fontWeight = FontWeight.Black, color = if (currentTurn == oppIdx) Color.Yellow else Color.White.copy(alpha = 0.45f), modifier = Modifier.clip(RoundedCornerShape(3.dp)).background(if (currentTurn == oppIdx) MjRed else Color.Transparent).padding(horizontal = 8.dp, vertical = 1.dp))
+                                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                                Text("西", fontSize = 9.sp, fontWeight = FontWeight.Black, color = if (currentTurn == leftIdx) Color.Yellow else Color.White.copy(alpha = 0.45f), modifier = Modifier.clip(RoundedCornerShape(3.dp)).background(if (currentTurn == leftIdx) MjRed else Color.Transparent).padding(horizontal = 3.dp, vertical = 4.dp))
+                                                Box(
+                                                    modifier = Modifier.size(32.dp).clip(RoundedCornerShape(16.dp)).background(Color(0xFF0A3A46)).border(1.5.dp, MjGold, RoundedCornerShape(16.dp)),
+                                                    contentAlignment = Alignment.Center
+                                                ) {
+                                                    Text("$turnRem", color = if (turnRem <= 5) Color.Red else Color.Cyan, fontSize = 14.sp, fontWeight = FontWeight.Black)
+                                                }
+                                                Text("东", fontSize = 9.sp, fontWeight = FontWeight.Black, color = if (currentTurn == rightIdx) Color.Yellow else Color.White.copy(alpha = 0.45f), modifier = Modifier.clip(RoundedCornerShape(3.dp)).background(if (currentTurn == rightIdx) MjRed else Color.Transparent).padding(horizontal = 3.dp, vertical = 4.dp))
+                                            }
+                                            Text("南", fontSize = 9.sp, fontWeight = FontWeight.Black, color = if (currentTurn == mySeatIdx) Color.Yellow else Color.White.copy(alpha = 0.45f), modifier = Modifier.clip(RoundedCornerShape(3.dp)).background(if (currentTurn == mySeatIdx) MjRed else Color.Transparent).padding(horizontal = 8.dp, vertical = 1.dp))
+                                        }
                                         if (ting.isNotEmpty()) {
-                                            Text("💡 听牌: ${ting.take(6).joinToString(" ") { it.fullName }}", color = Color(0xFF00E676), fontSize = 10.sp, fontWeight = FontWeight.Black, textAlign = TextAlign.Center)
-                                        } else {
-                                            Text("红中=赖子 · 不能吃 · 可碰杠", color = Color.LightGray, fontSize = 9.sp, textAlign = TextAlign.Center)
+                                            Box(
+                                                modifier = Modifier.clip(RoundedCornerShape(6.dp)).background(MjGold).clickable { showTingPopup = !showTingPopup }.padding(horizontal = 8.dp, vertical = 2.dp)
+                                            ) {
+                                                Text("💡 听牌 (${ting.size})", color = Color.Black, fontSize = 10.sp, fontWeight = FontWeight.Black)
+                                            }
+                                        }
+                                    }
+                                    if (showTingPopup && ting.isNotEmpty()) {
+                                        Dialog(onDismissRequest = { showTingPopup = false }) {
+                                            Surface(shape = RoundedCornerShape(14.dp), color = Color(0xFFF1F9F5), modifier = Modifier.border(2.dp, MjGold, RoundedCornerShape(14.dp))) {
+                                                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                                    Text("💡 听牌提示 (共${ting.size}种)", color = Color(0xFF1A5233), fontSize = 13.sp, fontWeight = FontWeight.Black)
+                                                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                                        ting.take(8).forEach { tt ->
+                                                            val seen = seats.flatMap { it.discards }.count { it.suit == tt.suit && it.rank == tt.rank } + (me?.hand?.count { it.suit == tt.suit && it.rank == tt.rank } ?: 0)
+                                                            val rem = (4 - seen).coerceAtLeast(0)
+                                                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                                                MjTileCard(tt, 28.dp, 38.dp, isSelected = false, isHighlight = rem > 0)
+                                                                Text("余${rem}张", color = if (rem == 0) Color.Gray else MjRed, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -649,7 +708,7 @@ fun KOnMahjongSheetDialog(onDismiss: () -> Unit, embeddedInGameRoom: Boolean = f
                                             Text("打出 ${selTile.fullName}", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Black)
                                         }
                                     } else {
-                                        Text("👉 请点选或双击手牌出牌", color = Color(0xFF00E676), fontSize = 11.sp, fontWeight = FontWeight.Black)
+                                        Text("👉 点选后点击【打出】出牌（再点取消）", color = Color(0xFF00E676), fontSize = 11.sp, fontWeight = FontWeight.Black)
                                     }
                                 } else if (phase == MahjongGamePhase.ROUND_OVER) {
                                     val inRoom = isServerConn || isHosting || connectedPeers.isNotEmpty()
@@ -673,7 +732,7 @@ fun KOnMahjongSheetDialog(onDismiss: () -> Unit, embeddedInGameRoom: Boolean = f
                             val totalW = maxWidth
                             val meldW = (me.melds.size * 84).dp
                             val handW = (totalW - meldW - 12.dp).coerceAtLeast(220.dp)
-                            val tileW = (handW / me.hand.size.coerceAtLeast(1)).coerceIn(28.dp, 42.dp)
+                            val tileW = (handW / me.hand.size.coerceAtLeast(1)).coerceIn(26.dp, 36.dp)
                             val tileH = tileW * 1.4f
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
@@ -684,15 +743,42 @@ fun KOnMahjongSheetDialog(onDismiss: () -> Unit, embeddedInGameRoom: Boolean = f
                                     Row(horizontalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.padding(end = 8.dp)) {
                                         me.melds.forEach { m ->
                                             Row(modifier = Modifier.clip(RoundedCornerShape(5.dp)).background(Color.Black.copy(alpha = 0.35f)).padding(2.dp), horizontalArrangement = Arrangement.spacedBy(1.dp)) {
-                                                repeat(if (m.kind == MahjongMeldKind.PONG) 3 else 4) {
-                                                    MjTileCard(m.tile, 24.dp, 34.dp, isSelected = false, isHighlight = false)
+                                                repeat(if (m.kind == MahjongMeldKind.PONG) 3 else 4) { idx ->
+                                                    if (m.kind == MahjongMeldKind.CONCEALED_KONG && idx != 2) {
+                                                        MjTileBack(24.dp, 34.dp)
+                                                    } else {
+                                                        MjTileCard(m.tile, 24.dp, 34.dp, isSelected = false, isHighlight = false)
+                                                    }
                                                 }
                                             }
                                         }
                                     }
                                 }
-                                Row(horizontalArrangement = Arrangement.spacedBy(1.5.dp)) {
-                                    me.hand.forEach { t ->
+                                var mjDealtCount by remember(currentRound) { mutableIntStateOf(me.hand.size) }
+                                var mjDealingOrder by remember(currentRound) { mutableStateOf<List<MahjongTile>>(emptyList()) }
+                                var isMjDealing by remember(currentRound) { mutableStateOf(false) }
+                                LaunchedEffect(phase, currentRound) {
+                                    if (phase == MahjongGamePhase.PLAYING && me.hand.isNotEmpty() && mjDealingOrder.isEmpty()) {
+                                        mjDealingOrder = me.hand.shuffled()
+                                        isMjDealing = true
+                                        mjDealtCount = 0
+                                        for (i in 1..me.hand.size) {
+                                            kotlinx.coroutines.delay(40L)
+                                            mjDealtCount = i
+                                        }
+                                        kotlinx.coroutines.delay(160L)
+                                        isMjDealing = false
+                                    } else if (phase == MahjongGamePhase.LOBBY) {
+                                        isMjDealing = false
+                                        mjDealingOrder = emptyList()
+                                    }
+                                }
+                                val shownTiles = if (isMjDealing) mjDealingOrder.take(mjDealtCount) else me.hand
+                                Row(horizontalArrangement = Arrangement.spacedBy(1.5.dp), verticalAlignment = Alignment.Bottom) {
+                                    shownTiles.forEachIndexed { idx, t ->
+                                        if (!isMjDealing && drawnTileId == t.id && idx == shownTiles.lastIndex && shownTiles.size > 1) {
+                                            Spacer(Modifier.width(10.dp))
+                                        }
                                         MjTileCard(t, tileW, tileH, selectedTileId == t.id, drawnTileId == t.id) { engine.selectOrDiscardTile(t) }
                                     }
                                 }
@@ -761,15 +847,38 @@ private fun MjSeatBadge(seat: MahjongSeat, isTurn: Boolean, bmp: android.graphic
 private fun MjDiscardRiver(seat: MahjongSeat) {
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
         if (seat.melds.isNotEmpty()) {
-            Row(horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 seat.melds.forEach { m ->
-                    Text("${m.kind.label}${m.tile.fullName}", color = Color.Black, fontSize = 8.sp, fontWeight = FontWeight.Black, modifier = Modifier.clip(RoundedCornerShape(3.dp)).background(MjGold).padding(horizontal = 3.dp, vertical = 1.dp))
+                    Row(modifier = Modifier.clip(RoundedCornerShape(4.dp)).background(Color.Black.copy(alpha = 0.35f)).padding(2.dp), horizontalArrangement = Arrangement.spacedBy(1.dp)) {
+                        val cnt = if (m.kind == MahjongMeldKind.PONG) 3 else 4
+                        repeat(cnt) { idx ->
+                            if (m.kind == MahjongMeldKind.CONCEALED_KONG && idx != 2) {
+                                MjTileBack(15.dp, 21.dp)
+                            } else {
+                                MjTileCard(m.tile, 15.dp, 21.dp, isSelected = false, isHighlight = false)
+                            }
+                        }
+                    }
                 }
             }
         }
+        val latestId = seat.discards.lastOrNull()?.id
         seat.discards.chunked(6).forEach { row ->
             Row(horizontalArrangement = Arrangement.spacedBy(1.5.dp)) {
-                row.forEach { t -> MjTileCard(t, 19.dp, 26.dp, isSelected = false, isHighlight = false) }
+                row.forEach { t ->
+                    val isLatest = (t.id == latestId)
+                    val popScale by animateFloatAsState(
+                        targetValue = if (isLatest) 1.06f else 1.0f,
+                        animationSpec = spring(dampingRatio = 0.55f, stiffness = 420f),
+                        label = "mj_discard_pop"
+                    )
+                    Box(modifier = Modifier.graphicsLayer(scaleX = popScale, scaleY = popScale), contentAlignment = Alignment.TopCenter) {
+                        MjTileCard(t, 19.dp, 26.dp, isSelected = false, isHighlight = isLatest)
+                        if (isLatest) {
+                            Text("▼", color = Color(0xFFFF9800), fontSize = 9.sp, fontWeight = FontWeight.Black, modifier = Modifier.offset(y = (-8).dp))
+                        }
+                    }
+                }
             }
         }
     }
