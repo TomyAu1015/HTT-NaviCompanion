@@ -1320,7 +1320,7 @@ int main(int argc, char* argv[]) {
     // Load Nintendo Switch Shared Chinese System Font (PlSharedFontType_ChineseSimplified)
     plInitialize(PlServiceType_User);
     PlFontData fontData;
-    if (R_SUCCEEDED(plGetSharedFontByType(&fontData, PlFontType_ChineseSimplified))) {
+    if (R_SUCCEEDED(plGetSharedFontByType(&fontData, PlSharedFontType_ChineseSimplified))) {
         gFontSmall = TTF_OpenFontRW(SDL_RWFromConstMem(fontData.address, fontData.size), 1, 18);
         gFontMed   = TTF_OpenFontRW(SDL_RWFromConstMem(fontData.address, fontData.size), 1, 22);
         gFontLarge = TTF_OpenFontRW(SDL_RWFromConstMem(fontData.address, fontData.size), 1, 28);
