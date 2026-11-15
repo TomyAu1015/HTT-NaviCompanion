@@ -745,8 +745,28 @@ fun KOnMahjongSheetDialog(onDismiss: () -> Unit, embeddedInGameRoom: Boolean = f
                                         }
                                     }
                                 }
+                                var mjDealtCount by remember(currentRound) { mutableIntStateOf(me.hand.size) }
+                                var mjDealingOrder by remember(currentRound) { mutableStateOf<List<MahjongTile>>(emptyList()) }
+                                var isMjDealing by remember(currentRound) { mutableStateOf(false) }
+                                LaunchedEffect(phase, currentRound) {
+                                    if (phase == MahjongGamePhase.PLAYING && me.hand.isNotEmpty() && mjDealingOrder.isEmpty()) {
+                                        mjDealingOrder = me.hand.shuffled()
+                                        isMjDealing = true
+                                        mjDealtCount = 0
+                                        for (i in 1..me.hand.size) {
+                                            kotlinx.coroutines.delay(40L)
+                                            mjDealtCount = i
+                                        }
+                                        kotlinx.coroutines.delay(160L)
+                                        isMjDealing = false
+                                    } else if (phase == MahjongGamePhase.LOBBY) {
+                                        isMjDealing = false
+                                        mjDealingOrder = emptyList()
+                                    }
+                                }
+                                val shownTiles = if (isMjDealing) mjDealingOrder.take(mjDealtCount) else me.hand
                                 Row(horizontalArrangement = Arrangement.spacedBy(1.5.dp)) {
-                                    me.hand.forEach { t ->
+                                    shownTiles.forEach { t ->
                                         MjTileCard(t, tileW, tileH, selectedTileId == t.id, drawnTileId == t.id) { engine.selectOrDiscardTile(t) }
                                     }
                                 }

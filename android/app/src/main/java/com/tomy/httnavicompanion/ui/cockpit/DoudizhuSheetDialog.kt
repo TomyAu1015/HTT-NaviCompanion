@@ -938,8 +938,27 @@ fun KOnDoudizhuSheetDialog(onDismiss: () -> Unit, embeddedInGameRoom: Boolean = 
 
                         Spacer(Modifier.height(4.dp))
 
+                        var ddzDealtCount by remember(currentRound) { mutableIntStateOf(mySeat.hand.size) }
+                        var ddzDealingOrder by remember(currentRound) { mutableStateOf<List<DoudizhuCard>>(emptyList()) }
+                        var isDdzDealing by remember(currentRound) { mutableStateOf(false) }
+                        LaunchedEffect(phase, currentRound) {
+                            if (phase == DoudizhuGamePhase.BIDDING && mySeat.hand.isNotEmpty() && ddzDealingOrder.isEmpty()) {
+                                ddzDealingOrder = mySeat.hand.shuffled()
+                                isDdzDealing = true
+                                ddzDealtCount = 0
+                                for (i in 1..mySeat.hand.size) {
+                                    kotlinx.coroutines.delay(38L)
+                                    ddzDealtCount = i
+                                }
+                                kotlinx.coroutines.delay(160L)
+                                isDdzDealing = false
+                            } else if (phase == DoudizhuGamePhase.LOBBY) {
+                                isDdzDealing = false
+                                ddzDealingOrder = emptyList()
+                            }
+                        }
                         AdaptivePlayerHandView(
-                            hand = mySeat.hand,
+                            hand = if (isDdzDealing) ddzDealingOrder.take(ddzDealtCount) else mySeat.hand,
                             selectedIds = selectedIds,
                             app = app,
                             onToggle = { engine.toggleSelectCard(it) }
@@ -1140,7 +1159,7 @@ private fun HandPokerCardView(
     val bmp = app.assetDecryptor.getDoudizhuCardBitmap(card.cardImageKey)
     val indexColor = if (card.isRedCard) CardRedColor else Color.Black
 
-    Box(
+    Column(
         modifier = Modifier
             .size(cardW, cardH)
             .shadow(3.dp, RoundedCornerShape(7.dp))
@@ -1153,41 +1172,41 @@ private fun HandPokerCardView(
             )
             .clickable { onClick() }
     ) {
-        if (bmp != null) {
-            Image(
-                bitmap = bmp.asImageBitmap(),
-                contentDescription = card.rankLabel,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize()
-            )
-        }
-
-        // Crisp Top-Left Corner Index Badge so overlapped cards in a 20-card fan are 100% readable!
-        Column(
+        Row(
             modifier = Modifier
-                .align(Alignment.TopStart)
-                .padding(start = 2.5.dp, top = 2.5.dp)
-                .clip(RoundedCornerShape(4.dp))
-                .background(Color.White.copy(alpha = 0.92f))
-                .padding(horizontal = 3.dp, vertical = 1.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
+                .fillMaxWidth()
+                .height(16.dp)
+                .background(Color.White)
+                .padding(horizontal = 3.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(1.5.dp)
         ) {
             Text(
                 text = card.rankLabel,
                 color = indexColor,
-                fontSize = if (card.rank >= 16) 9.sp else 12.sp,
+                fontSize = if (card.rank >= 16) 8.5.sp else 11.sp,
                 fontWeight = FontWeight.Black,
-                lineHeight = 12.sp
+                lineHeight = 11.sp
             )
             if (card.rank < 16) {
                 Text(
                     text = card.suit.symbol,
                     color = indexColor,
-                    fontSize = 10.sp,
+                    fontSize = 9.5.sp,
                     fontWeight = FontWeight.Bold,
                     lineHeight = 10.sp
                 )
             }
+        }
+        if (bmp != null) {
+            Image(
+                bitmap = bmp.asImageBitmap(),
+                contentDescription = card.rankLabel,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxWidth().weight(1f)
+            )
+        } else {
+            Spacer(modifier = Modifier.fillMaxWidth().weight(1f))
         }
     }
 }
