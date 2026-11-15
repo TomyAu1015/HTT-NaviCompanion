@@ -7950,6 +7950,9 @@ struct KOnDoudizhuSheetView: View {
     @ObservedObject private var ddz = KOnDoudizhuManager.shared
     @Environment(\.dismiss) private var dismiss
     @State private var showServerConfig: Bool = false
+    @State private var dealtVisibleCount: Int = 99
+    @State private var dealingUnsortedOrder: [DoudizhuCard] = []
+    @State private var isDealingPhase: Bool = false
     
     private let httGold = Color(red: 0.88, green: 0.68, blue: 0.24)
     private let httCrimson = Color(red: 0.78, green: 0.18, blue: 0.22)
@@ -8459,7 +8462,7 @@ struct KOnDoudizhuSheetView: View {
             let usableWidth = max(280, geo.size.width - hPad * 2)
             let oppW: CGFloat = isCompact ? 68 : 86
             let centerStageWidth = max(120, usableWidth - (oppW * 2 + 16))
-            VStack(spacing: isLandscape ? 6 : (isCompact ? 5 : 8)) {
+            VStack(spacing: isLandscape ? 2 : (isCompact ? 4 : 6)) {
                 // Top Row: 3 Landlord Hole Cards + Multiplier + Timer + Card Counter Toggle
                 HStack(spacing: isCompact ? 5 : 8) {
                     HStack(spacing: 3) {
@@ -8565,7 +8568,7 @@ struct KOnDoudizhuSheetView: View {
                                     .foregroundColor(rem == 0 ? .gray.opacity(0.4) : (rem == 4 ? .orange : httCream))
                             }
                             .frame(maxWidth: .infinity)
-                            .padding(.vertical, 3)
+                            .padding(.vertical, isLandscape ? 1.5 : 3)
                             .background(Color.black.opacity(0.45))
                             .cornerRadius(4)
                         }
@@ -8701,9 +8704,28 @@ struct KOnDoudizhuSheetView: View {
                         }
                         .padding(.horizontal, 12)
 
-                        adaptivePlayerHandView(hand: me.hand, usableWidth: usableWidth, isLandscape: isLandscape, isCompact: isCompact, geoHeight: geo.size.height)
+                        let displayedHand: [DoudizhuCard] = isDealingPhase ? Array(dealingUnsortedOrder.prefix(dealtVisibleCount)) : me.hand
+                        adaptivePlayerHandView(hand: displayedHand, usableWidth: usableWidth, isLandscape: isLandscape, isCompact: isCompact, geoHeight: geo.size.height)
                             .padding(.horizontal, 12)
-                            .padding(.bottom, isLandscape ? max(16, geo.safeAreaInsets.bottom + 8) : 6)
+                            .padding(.bottom, isLandscape ? max(14, geo.safeAreaInsets.bottom + 4) : 6)
+                            .onAppear {
+                                if ddz.phase == .bidding && !me.hand.isEmpty && dealingUnsortedOrder.isEmpty {
+                                    triggerDdzDealingAnimation(hand: me.hand)
+                                }
+                            }
+                            .onChange(of: ddz.phase) { newP in
+                                if newP == .bidding && !me.hand.isEmpty {
+                                    triggerDdzDealingAnimation(hand: me.hand)
+                                } else if newP == .lobby {
+                                    isDealingPhase = false
+                                    dealingUnsortedOrder = []
+                                }
+                            }
+                            .onChange(of: ddz.currentRound) { _ in
+                                if ddz.phase == .bidding && !me.hand.isEmpty {
+                                    triggerDdzDealingAnimation(hand: me.hand)
+                                }
+                            }
                     }
                 }
             }
@@ -8712,9 +8734,31 @@ struct KOnDoudizhuSheetView: View {
     
     // MARK: - 竖屏/横屏全可见自适应手牌扇形区（竖屏 >10 张自动双排居中叠放，<=10 张或横屏单排动态步进）
     @ViewBuilder
+    private func triggerDdzDealingAnimation(hand: [DoudizhuCard]) {
+        dealingUnsortedOrder = hand.shuffled()
+        dealtVisibleCount = 0
+        isDealingPhase = true
+        let total = hand.count
+        for i in 1...max(1, total) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + Double(i) * 0.038) {
+                withAnimation(.spring(response: 0.25, dampingFraction: 0.75)) {
+                    dealtVisibleCount = i
+                }
+                if i == total {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
+                        withAnimation(.spring(response: 0.42, dampingFraction: 0.74)) {
+                            isDealingPhase = false
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     private func adaptivePlayerHandView(hand: [DoudizhuCard], usableWidth: CGFloat, isLandscape: Bool, isCompact: Bool, geoHeight: CGFloat = 390) -> some View {
         let count = hand.count
-        let cardH: CGFloat = isLandscape ? min(76, max(60, geoHeight * 0.20)) : (isCompact ? 78 : 94)
+        let counterOn = isLandscape && ddz.allowCardCounter && ddz.showCardCounter
+        let cardH: CGFloat = isLandscape ? (counterOn ? min(58, max(48, geoHeight * 0.155)) : min(74, max(58, geoHeight * 0.195))) : (isCompact ? 78 : 94)
         let cardW: CGFloat = isLandscape ? (cardH * 0.72) : (isCompact ? 54 : 66)
         if count == 0 {
             EmptyView()
@@ -9035,35 +9079,34 @@ struct KOnDoudizhuSheetView: View {
     }
     
     private func handPokerCardView(card: DoudizhuCard, isSelected: Bool, cardW: CGFloat = 62, cardH: CGFloat = 90) -> some View {
-        ZStack(alignment: .topLeading) {
+        let headerH: CGFloat = max(14, min(17, cardH * 0.24))
+        VStack(spacing: 0) {
+            // Dedicated top white header strip so rank+suit never cover the K-ON! character's face!
+            HStack(spacing: 1.5) {
+                Text(card.displayRank)
+                    .font(.system(size: card.rank >= 16 ? 8.5 : 11, weight: .black, design: .rounded))
+                    .foregroundColor(card.isRedCard ? Color(red: 0.85, green: 0.10, blue: 0.15) : .black)
+                if card.rank < 16 {
+                    Text(card.suit.rawValue)
+                        .font(.system(size: 9.5, weight: .bold))
+                        .foregroundColor(card.isRedCard ? Color(red: 0.85, green: 0.10, blue: 0.15) : .black)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 3.5)
+            .frame(width: cardW, height: headerH)
+            .background(Color.white)
+
             if let img = ddz.cardImage(for: card) {
                 Image(uiImage: img)
                     .resizable()
                     .scaledToFill()
-                    .frame(width: cardW, height: cardH)
+                    .frame(width: cardW, height: max(20, cardH - headerH))
                     .clipped()
             } else {
                 Color.white
-                    .frame(width: cardW, height: cardH)
+                    .frame(width: cardW, height: max(20, cardH - headerH))
             }
-            
-            // Crisp top-left corner index badge so overlapping cards in a 20-card fan are 100% readable at a glance!
-            VStack(spacing: -1) {
-                Text(card.displayRank)
-                    .font(.system(size: card.rank >= 16 ? 9 : 12, weight: .black, design: .rounded))
-                    .foregroundColor(card.isRedCard ? Color(red: 0.85, green: 0.10, blue: 0.15) : .black)
-                if card.rank < 16 {
-                    Text(card.suit.rawValue)
-                        .font(.system(size: 10, weight: .bold))
-                        .foregroundColor(card.isRedCard ? Color(red: 0.85, green: 0.10, blue: 0.15) : .black)
-                }
-            }
-            .padding(.horizontal, 3.5)
-            .padding(.vertical, 2)
-            .background(Color.white.opacity(0.90))
-            .cornerRadius(4)
-            .padding(.leading, 3)
-            .padding(.top, 3)
         }
         .frame(width: cardW, height: cardH)
         .clipShape(RoundedRectangle(cornerRadius: 7))
@@ -9168,6 +9211,9 @@ struct KOnMahjongSheetView: View {
     @ObservedObject private var mj = KOnMahjongManager.shared
     @Environment(\.dismiss) private var dismiss
     @State private var showTingPopup: Bool = false
+    @State private var mjDealtCount: Int = 99
+    @State private var mjDealingOrder: [MahjongTile] = []
+    @State private var isMjDealing: Bool = false
 
     private let httGold = Color(red: 0.88, green: 0.68, blue: 0.24)
     private let httCrimson = Color(red: 0.78, green: 0.18, blue: 0.22)
@@ -9691,7 +9737,26 @@ struct KOnMahjongSheetView: View {
                                 }
                             }
                         }
-                        mjMyHandView(hand: me.hand, usableWidth: usableW - CGFloat(me.melds.count * 95), maxTileH: min(50, max(38, geo.size.height * 0.138)))
+                        let displayedTiles: [MahjongTile] = isMjDealing ? Array(mjDealingOrder.prefix(mjDealtCount)) : me.hand
+                        mjMyHandView(hand: displayedTiles, usableWidth: usableW - CGFloat(me.melds.count * 95), maxTileH: min(50, max(38, geo.size.height * 0.138)))
+                            .onAppear {
+                                if mj.phase == .playing && !me.hand.isEmpty && mjDealingOrder.isEmpty {
+                                    triggerMjDealingAnimation(hand: me.hand)
+                                }
+                            }
+                            .onChange(of: mj.phase) { newP in
+                                if newP == .playing && !me.hand.isEmpty {
+                                    triggerMjDealingAnimation(hand: me.hand)
+                                } else if newP == .lobby {
+                                    isMjDealing = false
+                                    mjDealingOrder = []
+                                }
+                            }
+                            .onChange(of: mj.currentRound) { _ in
+                                if mj.phase == .playing && !me.hand.isEmpty {
+                                    triggerMjDealingAnimation(hand: me.hand)
+                                }
+                            }
                     }
                     .padding(.horizontal, 8)
                     .padding(.top, 2)
@@ -9888,6 +9953,27 @@ struct KOnMahjongSheetView: View {
                 }
             }
             .animation(.spring(response: 0.28, dampingFraction: 0.68), value: seat.discards.count)
+        }
+    }
+
+    private func triggerMjDealingAnimation(hand: [MahjongTile]) {
+        mjDealingOrder = hand.shuffled()
+        mjDealtCount = 0
+        isMjDealing = true
+        let total = hand.count
+        for i in 1...max(1, total) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + Double(i) * 0.04) {
+                withAnimation(.spring(response: 0.24, dampingFraction: 0.74)) {
+                    mjDealtCount = i
+                }
+                if i == total {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
+                        withAnimation(.spring(response: 0.40, dampingFraction: 0.74)) {
+                            isMjDealing = false
+                        }
+                    }
+                }
+            }
         }
     }
 
