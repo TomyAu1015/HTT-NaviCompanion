@@ -1,0 +1,51 @@
+name: Build Nintendo Switch NRO
+
+on:
+  push:
+    branches: [ main, master ]
+    paths:
+      - 'switch_port/**'
+      - '.github/workflows/build-switch.yml'
+  workflow_dispatch:
+
+jobs:
+  build-switch:
+    name: Build Switch Homebrew (.nro)
+    runs-on: ubuntu-latest
+    container:
+      image: devkitpro/devkita64:latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install Switch SDL2 & MbedTLS Packages
+        run: |
+          dkp-pacman -Syu --noconfirm switch-sdl2 switch-sdl2_image switch-sdl2_ttf switch-freetype switch-glad switch-libjpeg-turbo switch-libpng switch-libwebp switch-zlib switch-bzip2 switch-mbedtls || true
+
+      - name: Unpack K-ON! Poker & Mahjong Textures into RomFS
+        run: |
+          cd switch_port
+          mkdir -p romfs/cards
+          if [ -f "romfs/cards_pack.zip" ]; then
+            unzip -q -o romfs/cards_pack.zip -d romfs/cards/
+            rm -f romfs/cards_pack.zip
+          fi
+          ls -la romfs/cards | head -n 20
+
+      - name: Compile HTT_GameRoom_Switch.nro
+        run: |
+          cd switch_port
+          make -j4
+          mkdir -p /github/workspace/switch_output/switch/HTT_GameRoom_Switch
+          cp HTT_GameRoom_Switch.nro /github/workspace/switch_output/switch/HTT_GameRoom_Switch/
+          if [ -d "atmosphere_hosts_template" ]; then
+            cp -r atmosphere_hosts_template/* /github/workspace/switch_output/
+          fi
+
+      - name: Upload Switch NRO & Anti-Ban Package
+        uses: actions/upload-artifact@v4
+        with:
+          name: HTT-GameRoom-Switch-NRO
+          path: /github/workspace/switch_output/**
+          retention-days: 30
