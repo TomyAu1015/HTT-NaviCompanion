@@ -74,6 +74,7 @@ fun KOnGameRoomSheetDialog(onDismiss: () -> Unit) {
     val mjServerConn by mjEngine.isServerConnected.collectAsState()
     val mjPeers by mjEngine.connectedPeerNames.collectAsState()
     val rmkServerConn by rmkEngine.isServerConnected.collectAsState()
+    val rmkHosting by rmkEngine.isHostingRoom.collectAsState()
     val rmkPeers by rmkEngine.connectedPeerNames.collectAsState()
     val rmkPlayerCnt by rmkEngine.roomPlayerCount.collectAsState()
 
@@ -83,7 +84,7 @@ fun KOnGameRoomSheetDialog(onDismiss: () -> Unit) {
     val isInJoinedRoom = !inLobbyNow ||
         (selectedGame == 0 && (ddzHosting || ddzServerConn || ddzPeers.isNotEmpty())) ||
         (selectedGame == 1 && (mjHosting || mjServerConn || mjPeers.isNotEmpty())) ||
-        (selectedGame == 2 && (rmkServerConn || rmkPeers.isNotEmpty()))
+        (selectedGame == 2 && (rmkHosting || rmkServerConn || rmkPeers.isNotEmpty()))
 
     val activity = remember(context) {
         var ctx: Context? = context
@@ -421,6 +422,13 @@ fun KOnMahjongSheetDialog(onDismiss: () -> Unit, embeddedInGameRoom: Boolean = f
                                 contentAlignment = Alignment.Center
                             ) { Text("☁️ 在线服务器联机", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Black) }
                         }
+                        Text(
+                            "💡 联机说明：面对面(免流量)仅限安卓设备之间局域网/蓝牙直连；与 iOS / Switch 跨平台同桌请用【在线服务器联机】(可开热点共享网络)",
+                            color = MjGold.copy(alpha = 0.95f),
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(7.dp)).background(Color.Black.copy(alpha = 0.35f)).padding(horizontal = 8.dp, vertical = 5.dp)
+                        )
 
                         // 1. Profile
                         Column(
@@ -1101,24 +1109,80 @@ fun KOnRummikubContent() {
                         }
                     }
                 }
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    val netMode by rmk.networkMode.collectAsState()
+                    val isP2P = (netMode == RmkNetworkMode.LOCAL_LAN)
+                    Box(modifier = Modifier.weight(1f).clip(RoundedCornerShape(9.dp)).background(if (isP2P) MjRed else Color.Black.copy(alpha = 0.45f))
+                        .border(1.5.dp, if (isP2P) MjGold else Color.Transparent, RoundedCornerShape(9.dp))
+                        .clickable { rmk.setNetworkMode(RmkNetworkMode.LOCAL_LAN) }.padding(vertical = 7.dp), contentAlignment = Alignment.Center) {
+                        Text("📡 面对面开房联机 (免流量)", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Black)
+                    }
+                    Box(modifier = Modifier.weight(1f).clip(RoundedCornerShape(9.dp)).background(if (!isP2P) MjBlue else Color.Black.copy(alpha = 0.45f))
+                        .border(1.5.dp, if (!isP2P) MjGold else Color.Transparent, RoundedCornerShape(9.dp))
+                        .clickable { rmk.setNetworkMode(RmkNetworkMode.ONLINE_SERVER) }.padding(vertical = 7.dp), contentAlignment = Alignment.Center) {
+                        Text("☁️ 在线服务器联机", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Black)
+                    }
+                }
+                Text(
+                    "💡 联机说明：面对面(免流量)仅限安卓设备之间局域网直连；与 iOS / Switch 跨平台同桌请用【在线服务器联机】(可开热点共享网络)",
+                    color = MjGold.copy(alpha = 0.95f), fontSize = 10.sp, fontWeight = FontWeight.Bold,
+                    modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(7.dp)).background(Color.Black.copy(alpha = 0.35f)).padding(horizontal = 8.dp, vertical = 5.dp)
+                )
                 Column(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(Color.Black.copy(alpha = 0.45f)).padding(8.dp)) {
+                    val netMode by rmk.networkMode.collectAsState()
+                    val isHosting by rmk.isHostingRoom.collectAsState()
+                    val isScanning by rmk.isScanningRooms.collectAsState()
+                    val discRooms by rmk.discoveredRooms.collectAsState()
+                    val directIp by rmk.directConnectIp.collectAsState()
+                    val localIp by rmk.localIpAddress.collectAsState()
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("2. 跨平台远程联机 (2~4人拉密数字牌)", color = MjGold, fontSize = 12.sp, fontWeight = FontWeight.Black, modifier = Modifier.weight(1f))
+                        Text(if (netMode == RmkNetworkMode.LOCAL_LAN) "2. 面对面开房联机 (本机IP: $localIp)" else "2. 跨平台远程联机 (2~4人拉密数字牌)", color = MjGold, fontSize = 11.sp, fontWeight = FontWeight.Black, modifier = Modifier.weight(1f))
                         Text("房号:", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                         Spacer(Modifier.width(4.dp))
                         BasicTextField(value = roomCode, onValueChange = { rmk.setRoomCode(it) }, textStyle = TextStyle(color = MjGold, fontSize = 12.sp, fontWeight = FontWeight.Black),
                             modifier = Modifier.width(72.dp).clip(RoundedCornerShape(6.dp)).background(Color.White.copy(alpha = 0.14f)).padding(6.dp))
                     }
                     Spacer(Modifier.height(6.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                        BasicTextField(value = serverUrl, onValueChange = { rmk.setServerUrl(it) }, textStyle = TextStyle(color = Color.White, fontSize = 11.sp),
-                            modifier = Modifier.weight(1f).clip(RoundedCornerShape(6.dp)).background(Color.White.copy(alpha = 0.12f)).padding(7.dp))
-                        Box(modifier = Modifier.clip(RoundedCornerShape(8.dp)).background(if (isConn) Color(0xFF2E7D32) else Color(0xFF1976D2)).clickable { rmk.connectOnlineServerRoom() }.padding(horizontal = 10.dp, vertical = 7.dp)) {
-                            Text(if (isConn) "已连($roomCode)" else "连接房间", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Black)
+                    if (netMode == RmkNetworkMode.LOCAL_LAN) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Box(modifier = Modifier.weight(1f).clip(RoundedCornerShape(8.dp)).background(if (isHosting) Color(0xFF2E7D32) else MjRed).clickable { rmk.startHostingFaceToFaceRoom() }.padding(vertical = 7.dp), contentAlignment = Alignment.Center) {
+                                Text(if (isHosting) "已建房($roomCode)" else "创建面对面房间", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Black)
+                            }
+                            Box(modifier = Modifier.weight(1f).clip(RoundedCornerShape(8.dp)).background(MjBlue).clickable { rmk.startScanningFaceToFaceRooms() }.padding(vertical = 7.dp), contentAlignment = Alignment.Center) {
+                                Text(if (isScanning) "扫描中..." else "扫描附近房间", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Black)
+                            }
+                            if (isHosting) {
+                                Box(modifier = Modifier.clip(RoundedCornerShape(8.dp)).background(Color.Gray).clickable { rmk.leaveRoomAndResetLobby() }.padding(horizontal = 9.dp, vertical = 7.dp)) {
+                                    Text("退出", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Black)
+                                }
+                            }
                         }
-                        if (isConn) {
-                            Box(modifier = Modifier.clip(RoundedCornerShape(8.dp)).background(MjRed).clickable { rmk.leaveRoomAndResetLobby() }.padding(horizontal = 9.dp, vertical = 7.dp)) {
-                                Text("退出", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Black)
+                        Spacer(Modifier.height(6.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                            BasicTextField(value = directIp, onValueChange = { rmk.setDirectConnectIp(it) }, textStyle = TextStyle(color = Color.White, fontSize = 11.sp),
+                                modifier = Modifier.weight(1f).clip(RoundedCornerShape(6.dp)).background(Color.White.copy(alpha = 0.12f)).padding(7.dp))
+                            Box(modifier = Modifier.clip(RoundedCornerShape(8.dp)).background(Color(0xFF00897B)).clickable { rmk.connectDirectToHostIp() }.padding(horizontal = 10.dp, vertical = 7.dp)) {
+                                Text("IP直连加入", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Black)
+                            }
+                        }
+                        discRooms.forEach { rm ->
+                            Spacer(Modifier.height(4.dp))
+                            Row(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(6.dp)).background(Color.White.copy(alpha = 0.12f)).clickable { rmk.joinDiscoveredRoom(rm) }.padding(7.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Text("📡 ${rm.hostName} (房号: ${rm.roomCode})", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                                Text("点击加入", color = MjGold, fontSize = 10.sp, fontWeight = FontWeight.Black)
+                            }
+                        }
+                    } else {
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                            BasicTextField(value = serverUrl, onValueChange = { rmk.setServerUrl(it) }, textStyle = TextStyle(color = Color.White, fontSize = 11.sp),
+                                modifier = Modifier.weight(1f).clip(RoundedCornerShape(6.dp)).background(Color.White.copy(alpha = 0.12f)).padding(7.dp))
+                            Box(modifier = Modifier.clip(RoundedCornerShape(8.dp)).background(if (isConn) Color(0xFF2E7D32) else Color(0xFF1976D2)).clickable { rmk.connectOnlineServerRoom() }.padding(horizontal = 10.dp, vertical = 7.dp)) {
+                                Text(if (isConn) "已连($roomCode)" else "连接房间", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Black)
+                            }
+                            if (isConn) {
+                                Box(modifier = Modifier.clip(RoundedCornerShape(8.dp)).background(MjRed).clickable { rmk.leaveRoomAndResetLobby() }.padding(horizontal = 9.dp, vertical = 7.dp)) {
+                                    Text("退出", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Black)
+                                }
                             }
                         }
                     }

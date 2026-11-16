@@ -12,7 +12,22 @@ import okhttp3.*
 import okio.ByteString
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.BufferedReader
+import java.io.BufferedWriter
+import java.io.InputStreamReader
+import java.io.OutputStreamWriter
+import java.net.DatagramPacket
+import java.net.DatagramSocket
+import java.net.Inet4Address
+import java.net.InetAddress
+import java.net.InetSocketAddress
+import java.net.NetworkInterface
+import java.net.ServerSocket
+import java.net.Socket
+import java.net.SocketTimeoutException
+import java.util.Collections
 import java.util.UUID
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.zip.ZipInputStream
 import kotlin.random.Random
 
@@ -55,6 +70,7 @@ data class RmkSeat(
 )
 
 enum class RmkGamePhase { LOBBY, PLAYING, ROUND_OVER }
+enum class RmkNetworkMode { LOCAL_LAN, ONLINE_SERVER }
 
 object RmkEvaluator {
     fun evaluateMeld(tiles: List<RmkTile>): Int? {
@@ -191,11 +207,35 @@ class RummikubEngine(
     private val _serverUrl = MutableStateFlow("wss://azusa.online/ddz")
     val serverUrl: StateFlow<String> = _serverUrl.asStateFlow()
 
+    private val _networkMode = MutableStateFlow(RmkNetworkMode.ONLINE_SERVER)
+    val networkMode: StateFlow<RmkNetworkMode> = _networkMode.asStateFlow()
+
+    private val _isHostingRoom = MutableStateFlow(false)
+    val isHostingRoom: StateFlow<Boolean> = _isHostingRoom.asStateFlow()
+
+    private val _isScanningRooms = MutableStateFlow(false)
+    val isScanningRooms: StateFlow<Boolean> = _isScanningRooms.asStateFlow()
+
+    private val _discoveredRooms = MutableStateFlow<List<DiscoveredP2PRoom>>(emptyList())
+    val discoveredRooms: StateFlow<List<DiscoveredP2PRoom>> = _discoveredRooms.asStateFlow()
+
+    private val _directConnectIp = MutableStateFlow("")
+    val directConnectIp: StateFlow<String> = _directConnectIp.asStateFlow()
+
+    private val _localIpAddress = MutableStateFlow("192.168.43.1")
+    val localIpAddress: StateFlow<String> = _localIpAddress.asStateFlow()
+
     private val _isServerConnected = MutableStateFlow(false)
     val isServerConnected: StateFlow<Boolean> = _isServerConnected.asStateFlow()
 
     private val _isRoomAuthority = MutableStateFlow(true)
     val isRoomAuthority: StateFlow<Boolean> = _isRoomAuthority.asStateFlow()
+
+    private val tcpPort = 19193
+    private val udpPort = 19194
+    private var tcpServerSocket: ServerSocket? = null
+    private var udpSocket: DatagramSocket? = null
+    private val lanWriters = CopyOnWriteArrayList<BufferedWriter>()
 
     private val _connectedPeerNames = MutableStateFlow<List<String>>(emptyList())
     val connectedPeerNames: StateFlow<List<String>> = _connectedPeerNames.asStateFlow()
@@ -258,6 +298,8 @@ class RummikubEngine(
 
     fun setNickname(n: String) { _myNickname.value = n; prefs.edit().putString("nick", n).apply(); rebuildLobbySeats() }
     fun setCharacter(c: CharacterFilter) { _myCharacter.value = c; rebuildLobbySeats() }
+    fun setNetworkMode(m: RmkNetworkMode) { _networkMode.value = m }
+    fun setDirectConnectIp(ip: String) { _directConnectIp.value = ip }
     fun setRoomCode(c: String) { _roomCode.value = c }
     fun setServerUrl(u: String) { _serverUrl.value = u }
     fun setRoomPlayerCount(cnt: Int) {
@@ -265,7 +307,7 @@ class RummikubEngine(
         if (_roomPlayerCount.value != c && _phase.value == RmkGamePhase.LOBBY) {
             _roomPlayerCount.value = c
             rebuildLobbySeats()
-            if (_isServerConnected.value && _isRoomAuthority.value) {
+            if ((_isServerConnected.value || _isHostingRoom.value || lanWriters.isNotEmpty()) && _isRoomAuthority.value) {
                 broadcastRoster()
                 broadcastFullState()
             }
@@ -334,6 +376,174 @@ class RummikubEngine(
         _seats.value = list
     }
 
+    private fun refreshLocalIpAddress(): String {
+        try {
+            val ifaces = Collections.list(NetworkInterface.getNetworkInterfaces())
+            for (intf in ifaces) {
+                if (!intf.isUp || intf.isLoopback) continue
+                for (addr in Collections.list(intf.inetAddresses)) {
+                    if (addr is Inet4Address && !addr.isLoopbackAddress) {
+                        val ip = addr.hostAddress ?: continue
+                        _localIpAddress.value = ip
+                        return ip
+                    }
+                }
+            }
+        } catch (_: Exception) {}
+        return _localIpAddress.value
+    }
+
+    private fun sendPacketText(jsonStr: String) {
+        if (_isServerConnected.value) {
+            sendPacketText(jsonStr)
+        }
+        if (lanWriters.isNotEmpty()) {
+            Thread {
+                for (w in lanWriters) {
+                    try {
+                        synchronized(w) { w.write(jsonStr); w.newLine(); w.flush() }
+                    } catch (_: Exception) {
+                        lanWriters.remove(w)
+                    }
+                }
+            }.start()
+        }
+    }
+
+    private fun attachLanSocket(sock: Socket) {
+        Thread {
+            try {
+                val writer = BufferedWriter(OutputStreamWriter(sock.getOutputStream(), Charsets.UTF_8))
+                lanWriters.add(writer)
+                if (!_isRoomAuthority.value) {
+                    val joinJson = JSONObject().apply {
+                        put("kind", "joinRequest"); put("roomCode", wireRoomCode())
+                        put("senderPeerName", myPeerName); put("senderCharId", _myCharacter.value.charId)
+                        put("maxPlayers", _roomPlayerCount.value); put("gameType", "rummikub")
+                    }.toString()
+                    synchronized(writer) { writer.write(joinJson); writer.newLine(); writer.flush() }
+                }
+                val reader = BufferedReader(InputStreamReader(sock.getInputStream(), Charsets.UTF_8))
+                while (!sock.isClosed) {
+                    val line = reader.readLine() ?: break
+                    if (line.isNotBlank()) mainHandler.post { handleIncomingJson(line) }
+                }
+            } catch (_: Exception) {
+            } finally {
+                try { sock.close() } catch (_: Exception) {}
+            }
+        }.start()
+    }
+
+    fun startHostingFaceToFaceRoom() {
+        val code = _roomCode.value.trim()
+        if (code.isEmpty()) { _statusBanner.value = "⚠️ 请先填写房号再创建面对面房间！"; return }
+        stopNetworking()
+        _roomCode.value = code
+        _currentRound.value = 1
+        myPeerName = "${cleanNick()}#${Random.nextInt(100, 999)}"
+        orderedRoomPeers = mutableListOf(Triple(myPeerName, _myCharacter.value.charId, cleanNick()))
+        val ip = refreshLocalIpAddress()
+        _isHostingRoom.value = true
+        _isRoomAuthority.value = true
+        _isScanningRooms.value = false
+        _mySeatIndex.value = 0
+        rebuildLobbySeats()
+
+        Thread {
+            try {
+                val srv = ServerSocket().apply { reuseAddress = true; bind(InetSocketAddress(tcpPort)) }
+                tcpServerSocket = srv
+                while (_isHostingRoom.value && !srv.isClosed) {
+                    val sock = srv.accept()
+                    attachLanSocket(sock)
+                }
+            } catch (_: Exception) {}
+        }.start()
+
+        Thread {
+            try {
+                val ds = DatagramSocket().apply { broadcast = true }
+                udpSocket = ds
+                while (_isHostingRoom.value && !ds.isClosed) {
+                    val payload = JSONObject().apply {
+                        put("type", "kon_rmk_room")
+                        put("code", _roomCode.value)
+                        put("host", cleanNick())
+                        put("char", _myCharacter.value.charId)
+                        put("ip", refreshLocalIpAddress())
+                        put("port", tcpPort)
+                    }.toString().toByteArray(Charsets.UTF_8)
+                    try { ds.send(DatagramPacket(payload, payload.size, InetAddress.getByName("255.255.255.255"), udpPort)) } catch (_: Exception) {}
+                    Thread.sleep(1200)
+                }
+            } catch (_: Exception) {}
+        }.start()
+
+        _statusBanner.value = "🔢 面对面拉密房间 [$code] 已创建！本机IP: $ip (${_roomPlayerCount.value}人局 · 仅限安卓直连)"
+        audioManager.playMascotVoice(_myCharacter.value)
+    }
+
+    fun startScanningFaceToFaceRooms() {
+        val code = _roomCode.value.trim()
+        if (code.isEmpty()) { _statusBanner.value = "⚠️ 请先填写房号再扫描！"; return }
+        stopNetworking()
+        _roomCode.value = code
+        _isHostingRoom.value = false
+        _isScanningRooms.value = true
+        _discoveredRooms.value = emptyList()
+        myPeerName = "${cleanNick()}#${Random.nextInt(100, 999)}"
+
+        Thread {
+            try {
+                val ds = DatagramSocket(null).apply { reuseAddress = true; bind(InetSocketAddress(udpPort)); soTimeout = 1500 }
+                udpSocket = ds
+                val buf = ByteArray(2048)
+                while (_isScanningRooms.value && !ds.isClosed) {
+                    try {
+                        val pkt = DatagramPacket(buf, buf.size)
+                        ds.receive(pkt)
+                        val json = JSONObject(String(pkt.data, 0, pkt.length, Charsets.UTF_8))
+                        if (json.optString("type") == "kon_rmk_room" && json.optString("code").trim() == _roomCode.value.trim()) {
+                            val ip = json.optString("ip").ifBlank { pkt.address.hostAddress ?: "" }
+                            val r = DiscoveredP2PRoom("$ip:$tcpPort", json.optString("code"), "${json.optString("host")} ($ip)", json.optInt("char", 1), ip, tcpPort)
+                            mainHandler.post {
+                                val cur = _discoveredRooms.value.toMutableList()
+                                if (cur.none { it.id == r.id }) { cur.add(r); _discoveredRooms.value = cur }
+                            }
+                        }
+                    } catch (_: SocketTimeoutException) {}
+                }
+            } catch (_: Exception) {}
+        }.start()
+        _statusBanner.value = "🔍 正在扫描房号 [$code] 的面对面拉密房间..."
+    }
+
+    fun connectDirectToHostIp() {
+        val raw = _directConnectIp.value.trim()
+        if (raw.isEmpty()) { _statusBanner.value = "⚠️ 请输入房主 IP"; return }
+        val host = raw.substringBefore(":")
+        val port = raw.substringAfter(":", "$tcpPort").toIntOrNull() ?: tcpPort
+        joinDiscoveredRoom(DiscoveredP2PRoom("$host:$port", _roomCode.value, "IP直连($host)", 1, host, port))
+    }
+
+    fun joinDiscoveredRoom(room: DiscoveredP2PRoom) {
+        val code = _roomCode.value.trim()
+        if (code.isEmpty() || room.roomCode != code) { _statusBanner.value = "⚠️ 房号不匹配！"; return }
+        _isScanningRooms.value = false
+        _isRoomAuthority.value = false
+        Thread {
+            try {
+                val sock = Socket()
+                sock.connect(InetSocketAddress(room.hostAddress, room.port), 5000)
+                attachLanSocket(sock)
+                mainHandler.post { _statusBanner.value = "✅ 已直连到 [${room.hostName}] 的面对面拉密房间" }
+            } catch (e: Exception) {
+                mainHandler.post { _statusBanner.value = "⚠️ 连接失败: ${e.message}" }
+            }
+        }.start()
+    }
+
     fun connectOnlineServerRoom() {
         val code = _roomCode.value.trim()
         if (code.isEmpty()) { _statusBanner.value = "⚠️ 请先填写房号！"; return }
@@ -354,7 +564,7 @@ class RummikubEngine(
     private fun sendJoinRequest() {
         val wc = wireRoomCode()
         if (wc.isEmpty()) return
-        webSocket?.send(JSONObject().apply {
+        sendPacketText(JSONObject().apply {
             put("kind", "joinRequest"); put("roomCode", wc)
             put("senderPeerName", myPeerName); put("senderCharId", _myCharacter.value.charId)
             put("maxPlayers", _roomPlayerCount.value); put("gameType", "rummikub")
@@ -363,10 +573,11 @@ class RummikubEngine(
     }
 
     private fun broadcastRoster() {
-        if (!_isServerConnected.value || !_isRoomAuthority.value || wireRoomCode().isEmpty()) return
+        val inRoom = _isServerConnected.value || _isHostingRoom.value || lanWriters.isNotEmpty()
+        if (!inRoom || !_isRoomAuthority.value || wireRoomCode().isEmpty()) return
         val peersArr = JSONArray()
         orderedRoomPeers.forEach { rp -> peersArr.put(JSONObject().apply { put("name", rp.first); put("charId", rp.second); put("displayName", rp.third) }) }
-        webSocket?.send(JSONObject().apply {
+        sendPacketText(JSONObject().apply {
             put("kind", "roomRoster"); put("roomCode", wireRoomCode())
             put("senderPeerName", myPeerName); put("senderCharId", _myCharacter.value.charId)
             put("maxPlayers", _roomPlayerCount.value)
@@ -378,8 +589,8 @@ class RummikubEngine(
         aiRunnable?.let { mainHandler.removeCallbacks(it) }
         timerRunnable?.let { mainHandler.removeCallbacks(it) }
         val wc = wireRoomCode()
-        if (_isServerConnected.value && wc.isNotEmpty()) {
-            webSocket?.send(JSONObject().apply {
+        if ((_isServerConnected.value || _isHostingRoom.value || lanWriters.isNotEmpty()) && wc.isNotEmpty()) {
+            sendPacketText(JSONObject().apply {
                 put("kind", "leaveRoom"); put("roomCode", wc)
                 put("senderPeerName", myPeerName); put("senderCharId", _myCharacter.value.charId)
             }.toString())
@@ -393,14 +604,18 @@ class RummikubEngine(
 
     private fun stopNetworking() {
         webSocket?.close(1000, "leave"); webSocket = null
-        _isServerConnected.value = false; _connectedPeerNames.value = emptyList(); orderedRoomPeers.clear()
+        try { tcpServerSocket?.close() } catch (_: Exception) {}; tcpServerSocket = null
+        try { udpSocket?.close() } catch (_: Exception) {}; udpSocket = null
+        lanWriters.clear()
+        _isServerConnected.value = false; _isHostingRoom.value = false; _isScanningRooms.value = false
+        _discoveredRooms.value = emptyList(); _connectedPeerNames.value = emptyList(); orderedRoomPeers.clear()
     }
 
     private fun tileToJson(t: RmkTile) = JSONObject().apply { put("id", t.id); put("color", t.color.code); put("number", t.number) }
     private fun tileFromJson(o: JSONObject) = RmkTile(o.optString("id"), RmkColor.fromCode(o.optString("color", "R")), o.optInt("number", 1))
 
     private fun broadcastFullState() {
-        if (!_isServerConnected.value || !_isRoomAuthority.value || wireRoomCode().isEmpty()) return
+        if ((!_isServerConnected.value && !_isHostingRoom.value && lanWriters.isEmpty()) || !_isRoomAuthority.value || wireRoomCode().isEmpty()) return
         val peersArr = JSONArray()
         orderedRoomPeers.forEach { rp -> peersArr.put(JSONObject().apply { put("name", rp.first); put("charId", rp.second); put("displayName", rp.third) }) }
         val seatsArr = JSONArray()
@@ -418,7 +633,7 @@ class RummikubEngine(
             m.tiles.forEach { tArr.put(tileToJson(it)) }
             meldsArr.put(JSONObject().apply { put("id", m.id); put("tiles", tArr) })
         }
-        webSocket?.send(JSONObject().apply {
+        sendPacketText(JSONObject().apply {
             put("kind", "stateSync"); put("roomCode", wireRoomCode())
             put("senderPeerName", myPeerName); put("senderCharId", _myCharacter.value.charId)
             put("maxPlayers", _roomPlayerCount.value); put("gameType", "rummikub")
@@ -545,7 +760,7 @@ class RummikubEngine(
     }
 
     fun startNewRound() {
-        if (_isServerConnected.value && !_isRoomAuthority.value) return
+        if ((_isServerConnected.value || _connectedPeerNames.value.isNotEmpty() || lanWriters.isNotEmpty()) && !_isRoomAuthority.value) return
         rebuildLobbySeats()
         val pCnt = _seats.value.size.coerceIn(2, 4)
         pool.clear()
@@ -733,7 +948,7 @@ class RummikubEngine(
             }
         }
 
-        if (_isServerConnected.value && !_isRoomAuthority.value) {
+        if ((_isServerConnected.value || _connectedPeerNames.value.isNotEmpty() || lanWriters.isNotEmpty()) && !_isRoomAuthority.value) {
             val mArr = JSONArray()
             _workingMelds.value.forEach { m ->
                 val tArr = JSONArray()
@@ -742,7 +957,7 @@ class RummikubEngine(
             }
             val pArr = JSONArray()
             playedIds.forEach { pArr.put(it) }
-            webSocket?.send(JSONObject().apply {
+            sendPacketText(JSONObject().apply {
                 put("kind", "commitTurnAction"); put("roomCode", wireRoomCode())
                 put("senderPeerName", myPeerName); put("senderCharId", _myCharacter.value.charId)
                 put("tableMelds", mArr); put("committedHandIds", pArr)
@@ -756,8 +971,8 @@ class RummikubEngine(
     fun drawTilePassTapped() {
         if (_currentTurnSeat.value != _mySeatIndex.value || _phase.value != RmkGamePhase.PLAYING) return
         restoreWorkspaceSnapshot()
-        if (_isServerConnected.value && !_isRoomAuthority.value) {
-            webSocket?.send(JSONObject().apply {
+        if ((_isServerConnected.value || _connectedPeerNames.value.isNotEmpty() || lanWriters.isNotEmpty()) && !_isRoomAuthority.value) {
+            sendPacketText(JSONObject().apply {
                 put("kind", "drawTileAction"); put("roomCode", wireRoomCode())
                 put("senderPeerName", myPeerName); put("senderCharId", _myCharacter.value.charId)
             }.toString())
@@ -825,7 +1040,7 @@ class RummikubEngine(
 
     private fun scheduleAiTurnIfNeeded() {
         aiRunnable?.let { mainHandler.removeCallbacks(it) }
-        if (_isServerConnected.value && !_isRoomAuthority.value) return
+        if ((_isServerConnected.value || _connectedPeerNames.value.isNotEmpty() || lanWriters.isNotEmpty()) && !_isRoomAuthority.value) return
         val cur = _currentTurnSeat.value
         if (_phase.value == RmkGamePhase.PLAYING && _seats.value.getOrNull(cur)?.isAI == true) {
             val r = Runnable {
