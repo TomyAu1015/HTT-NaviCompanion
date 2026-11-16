@@ -9228,6 +9228,7 @@ struct KOnMahjongSheetView: View {
     var embeddedInGameRoom: Bool = false
     @ObservedObject private var mj = KOnMahjongManager.shared
     @ObservedObject private var ludo = AeroplaneChessEngine.shared
+    @ObservedObject private var rmk = RummikubEngine.shared
     @Environment(\.dismiss) private var dismiss
     @State private var showTingPopup: Bool = false
     @State private var mjDealtCount: Int = 99
@@ -10103,6 +10104,8 @@ struct KOnGameRoomSheetView: View {
     @ObservedObject var manager: AudioPlayerManager
     @ObservedObject private var ddz = KOnDoudizhuManager.shared
     @ObservedObject private var mj = KOnMahjongManager.shared
+    @ObservedObject private var ludo = AeroplaneChessEngine.shared
+    @ObservedObject private var rmk = RummikubEngine.shared
     @Environment(\.dismiss) private var dismiss
     @State private var selectedGame: Int = 0 // 0 = 斗地主, 1 = 广东红中麻将
 
@@ -10127,11 +10130,12 @@ struct KOnGameRoomSheetView: View {
             )
             .ignoresSafeArea()
 
-            let isInLobby = (selectedGame == 0 && ddz.phase == .lobby) || (selectedGame == 1 && mj.phase == .lobby) || (selectedGame == 2 && ludo.phase == .lobby)
+            let isInLobby = (selectedGame == 0 && ddz.phase == .lobby) || (selectedGame == 1 && mj.phase == .lobby) || (selectedGame == 2 && ludo.phase == .lobby) || (selectedGame == 3 && rmk.phase == .lobby)
             let isInJoinedRoom = !isInLobby
                 || (selectedGame == 0 && (ddz.isHostingRoom || ddz.isOnlineConnected || !ddz.connectedPeerNames.isEmpty))
                 || (selectedGame == 1 && (mj.isHostingRoom || mj.isOnlineConnected || !mj.connectedPeerNames.isEmpty))
                 || (selectedGame == 2 && (ludo.isHostingRoom || ludo.isOnlineConnected || !ludo.connectedPeerNames.isEmpty))
+                || (selectedGame == 3 && (rmk.isHostingRoom || rmk.isOnlineConnected || !rmk.connectedPeerNames.isEmpty))
             VStack(spacing: 4) {
                 // Unified Top Bar
                 HStack {
@@ -10141,8 +10145,10 @@ struct KOnGameRoomSheetView: View {
                                 ddz.leaveCurrentRoomAndReset()
                             } else if selectedGame == 1 {
                                 mj.leaveCurrentRoomAndReset()
-                            } else {
+                            } else if selectedGame == 2 {
                                 ludo.leaveCurrentRoomAndReset()
+                            } else {
+                                rmk.leaveCurrentRoomAndReset()
                             }
                         }) {
                             HStack(spacing: 4) {
@@ -10176,6 +10182,7 @@ struct KOnGameRoomSheetView: View {
                             ddz.leaveCurrentRoomAndReset()
                             mj.leaveCurrentRoomAndReset()
                             ludo.leaveCurrentRoomAndReset()
+                            rmk.leaveCurrentRoomAndReset()
                             dismiss()
                         }) {
                             HStack(spacing: 3) {
@@ -10201,11 +10208,11 @@ struct KOnGameRoomSheetView: View {
                 // Game Switcher Bar (Hidden once user enters/hosts a room or starts an active game; show current room game badge instead)
                 if isInJoinedRoom && isInLobby {
                     HStack(spacing: 6) {
-                        Text(selectedGame == 0 ? "🃏 当前房间：放课后斗地主 (3人)" : (selectedGame == 1 ? "🀄 当前房间：广东红中麻将 (4人)" : "✈️ 当前房间：3D轻音五人飞行棋 (5人)"))
+                        Text(selectedGame == 0 ? "🃏 当前房间：放课后斗地主 (3人)" : (selectedGame == 1 ? "🀄 当前房间：广东红中麻将 (4人)" : (selectedGame == 2 ? "✈️ 当前房间：3D轻音五人飞行棋 (5人)" : "🔢 当前房间：拉密数字牌 (4人)")))
                             .font(.system(size: 12, weight: .black))
                             .foregroundColor(.white)
                         Spacer()
-                        Text("房号: \(selectedGame == 0 ? ddz.roomCode : (selectedGame == 1 ? mj.roomCode : ludo.roomCode))")
+                        Text("房号: \(selectedGame == 0 ? ddz.roomCode : (selectedGame == 1 ? mj.roomCode : (selectedGame == 2 ? ludo.roomCode : rmk.roomCode)))")
                             .font(.system(size: 11, weight: .bold, design: .monospaced))
                             .foregroundColor(httGold)
                     }
@@ -10259,12 +10266,13 @@ struct KOnGameRoomSheetView: View {
                             if selectedGame != 2 {
                                 ddz.leaveCurrentRoomAndReset()
                                 mj.leaveCurrentRoomAndReset()
+                                rmk.leaveCurrentRoomAndReset()
                                 selectedGame = 2
                             }
                         }) {
-                            HStack(spacing: 4) {
+                            HStack(spacing: 3) {
                                 Text("✈️")
-                                Text(tr("五人飞行棋 (5人)", "五人飛行棋 (5人)", "Ludo (5P)"))
+                                Text(tr("飞行棋", "飛行棋", "Ludo"))
                                     .font(.system(size: 11, weight: .black))
                             }
                             .frame(maxWidth: .infinity, minHeight: 28)
@@ -10272,6 +10280,27 @@ struct KOnGameRoomSheetView: View {
                             .foregroundColor(.white)
                             .cornerRadius(9)
                             .overlay(RoundedRectangle(cornerRadius: 9).stroke(selectedGame == 2 ? httGold : httGold.opacity(0.35), lineWidth: selectedGame == 2 ? 1.5 : 1))
+                        }
+                        .buttonStyle(PlainButtonStyle())
+
+                        Button(action: {
+                            if selectedGame != 3 {
+                                ddz.leaveCurrentRoomAndReset()
+                                mj.leaveCurrentRoomAndReset()
+                                ludo.leaveCurrentRoomAndReset()
+                                selectedGame = 3
+                            }
+                        }) {
+                            HStack(spacing: 3) {
+                                Text("🔢")
+                                Text(tr("拉密牌", "拉密牌", "Rummikub"))
+                                    .font(.system(size: 11, weight: .black))
+                            }
+                            .frame(maxWidth: .infinity, minHeight: 28)
+                            .background(selectedGame == 3 ? Color.orange : Color.black.opacity(0.42))
+                            .foregroundColor(.white)
+                            .cornerRadius(9)
+                            .overlay(RoundedRectangle(cornerRadius: 9).stroke(selectedGame == 3 ? httGold : httGold.opacity(0.35), lineWidth: selectedGame == 3 ? 1.5 : 1))
                         }
                         .buttonStyle(PlainButtonStyle())
                     }
@@ -10283,21 +10312,27 @@ struct KOnGameRoomSheetView: View {
                     KOnDoudizhuSheetView(manager: manager, embeddedInGameRoom: true)
                 } else if selectedGame == 1 {
                     KOnMahjongSheetView(manager: manager, embeddedInGameRoom: true)
-                } else {
+                } else if selectedGame == 2 {
                     KOnAeroplaneChessSheetView(manager: manager)
+                } else {
+                    KOnRummikubSheetView(manager: manager)
                 }
             }
         }
         .onChange(of: ddz.phase) { newPhase in
-            let inGame = (selectedGame == 0 && newPhase != .lobby) || (selectedGame == 1 && mj.phase != .lobby)
+            let inGame = (selectedGame == 0 && newPhase != .lobby) || (selectedGame == 1 && mj.phase != .lobby) || (selectedGame == 2 && ludo.phase != .lobby) || (selectedGame == 3 && rmk.phase != .lobby)
             AppDelegate.setOrientation(inGame ? .landscape : .all, preferred: inGame ? .landscapeRight : .portrait)
         }
         .onChange(of: mj.phase) { newPhase in
-            let inGame = (selectedGame == 0 && ddz.phase != .lobby) || (selectedGame == 1 && newPhase != .lobby) || (selectedGame == 2 && ludo.phase != .lobby)
+            let inGame = (selectedGame == 0 && ddz.phase != .lobby) || (selectedGame == 1 && newPhase != .lobby) || (selectedGame == 2 && ludo.phase != .lobby) || (selectedGame == 3 && rmk.phase != .lobby)
             AppDelegate.setOrientation(inGame ? .landscape : .all, preferred: inGame ? .landscapeRight : .portrait)
         }
         .onChange(of: ludo.phase) { newPhase in
-            let inGame = (selectedGame == 0 && ddz.phase != .lobby) || (selectedGame == 1 && mj.phase != .lobby) || (selectedGame == 2 && newPhase != .lobby)
+            let inGame = (selectedGame == 0 && ddz.phase != .lobby) || (selectedGame == 1 && mj.phase != .lobby) || (selectedGame == 2 && newPhase != .lobby) || (selectedGame == 3 && rmk.phase != .lobby)
+            AppDelegate.setOrientation(inGame ? .landscape : .all, preferred: inGame ? .landscapeRight : .portrait)
+        }
+        .onChange(of: rmk.phase) { newPhase in
+            let inGame = (selectedGame == 0 && ddz.phase != .lobby) || (selectedGame == 1 && mj.phase != .lobby) || (selectedGame == 2 && ludo.phase != .lobby) || (selectedGame == 3 && newPhase != .lobby)
             AppDelegate.setOrientation(inGame ? .landscape : .all, preferred: inGame ? .landscapeRight : .portrait)
         }
         .onDisappear {
@@ -10571,5 +10606,284 @@ struct KOnAeroplaneChessSheetView: View {
             }
             .padding(.horizontal, 10).padding(.bottom, 6)
         }
+    }
+}
+
+
+// MARK: - K-ON! Rummikub View (106 Tiles · 30-Pt Icebreak · Table Rearrange · 60s Timer)
+struct KOnRummikubSheetView: View {
+    @ObservedObject var manager: AudioPlayerManager
+    @ObservedObject private var rmk = RummikubEngine.shared
+
+    private let httGold = Color(red: 0.91, green: 0.72, blue: 0.28)
+    private let httCrimson = Color(red: 0.80, green: 0.18, blue: 0.23)
+
+    private func tileColor(_ c: RmkColor) -> Color {
+        switch c {
+        case .red: return Color(red: 0.86, green: 0.16, blue: 0.20)
+        case .blue: return Color(red: 0.12, green: 0.48, blue: 0.90)
+        case .yellow: return Color(red: 0.90, green: 0.58, blue: 0.05)
+        case .black: return Color(red: 0.12, green: 0.12, blue: 0.14)
+        case .joker: return Color(red: 0.88, green: 0.25, blue: 0.58)
+        }
+    }
+
+    var body: some View {
+        if rmk.phase == .lobby { lobbyView } else { tableView }
+    }
+
+    private var lobbyView: some View {
+        VStack(spacing: 8) {
+            HStack(spacing: 6) {
+                Text("🔢")
+                Text(rmk.statusBanner).font(.system(size: 11, weight: .bold)).foregroundColor(httGold).lineLimit(2)
+                Spacer()
+            }
+            .padding(8).background(Color.black.opacity(0.45)).cornerRadius(9)
+            .overlay(RoundedRectangle(cornerRadius: 9).stroke(httGold.opacity(0.55), lineWidth: 1))
+
+            ScrollView(showsIndicators: false) {
+                VStack(spacing: 8) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack(spacing: 8) {
+                            Text("1. 昵称与角色").font(.system(size: 12, weight: .black)).foregroundColor(httGold)
+                            TextField("输入房间昵称", text: $rmk.myNickname)
+                                .font(.system(size: 12, weight: .bold)).foregroundColor(.white)
+                                .padding(.horizontal, 8).padding(.vertical, 5)
+                                .background(Color.white.opacity(0.12)).cornerRadius(6)
+                        }
+                        HStack(spacing: 6) {
+                            ForEach(AudioPlayerManager.CharacterFilter.fiveIndividuals, id: \.self) { char in
+                                Button(action: { rmk.myCharacter = char; manager.playMascotVoice(for: char) }) {
+                                    VStack(spacing: 2) {
+                                        if let sprite = manager.allMemberFrames[char.charId] {
+                                            Image(uiImage: sprite).interpolation(.none).resizable().scaledToFit().frame(width: 30, height: 34)
+                                        }
+                                        Text(char.displayName(manager.language)).font(.system(size: 9, weight: .bold)).foregroundColor(.white).lineLimit(1)
+                                    }
+                                    .frame(maxWidth: .infinity).padding(.vertical, 4)
+                                    .background(rmk.myCharacter == char ? httCrimson.opacity(0.85) : Color.white.opacity(0.10))
+                                    .cornerRadius(8)
+                                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(rmk.myCharacter == char ? httGold : .clear, lineWidth: 1.5))
+                                }.buttonStyle(PlainButtonStyle())
+                            }
+                        }
+                    }
+                    .padding(8).background(Color.black.opacity(0.45)).cornerRadius(10)
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Text("2. 跨平台远程联机 (4人拉密数字牌)").font(.system(size: 12, weight: .black)).foregroundColor(httGold)
+                            Spacer()
+                            Text("房号:").font(.system(size: 11, weight: .bold)).foregroundColor(.white)
+                            TextField("必填房号", text: $rmk.roomCode)
+                                .font(.system(size: 12, weight: .black, design: .monospaced)).foregroundColor(httGold)
+                                .frame(width: 72).padding(4).background(Color.white.opacity(0.14)).cornerRadius(6)
+                        }
+                        HStack(spacing: 6) {
+                            TextField("wss://azusa.online/ddz", text: $rmk.customServerURL)
+                                .font(.system(size: 11, design: .monospaced)).foregroundColor(.white)
+                                .padding(6).background(Color.white.opacity(0.12)).cornerRadius(6)
+                            Button(action: { rmk.connectOnlineServerRoom() }) {
+                                Text(rmk.isOnlineConnected ? "已连(\(rmk.roomCode))" : "连接房间")
+                                    .font(.system(size: 11, weight: .black)).padding(.horizontal, 10).frame(height: 30)
+                                    .background(rmk.isOnlineConnected ? Color.green : Color.blue).foregroundColor(.white).cornerRadius(8)
+                            }.buttonStyle(PlainButtonStyle())
+                            if rmk.isOnlineConnected {
+                                Button(action: { rmk.leaveCurrentRoomAndReset() }) {
+                                    Text("退出").font(.system(size: 11, weight: .black)).padding(.horizontal, 9).frame(height: 30)
+                                        .background(httCrimson).foregroundColor(.white).cornerRadius(8)
+                                }.buttonStyle(PlainButtonStyle())
+                            }
+                        }
+                    }
+                    .padding(8).background(Color.black.opacity(0.45)).cornerRadius(10)
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("3. 拉密数字牌规则 (共106张)").font(.system(size: 11, weight: .black)).foregroundColor(httGold)
+                        Text("• 4色1~13各2张 + 2张百搭鬼牌，每人发14张\n• 首次破冰 ≥30分（仅用自己牌架）；破冰后可自由拆解重组桌面\n• 鬼牌留手扣30分；每回合限时60秒，超时复原并罚抽1张")
+                            .font(.system(size: 10)).foregroundColor(.white.opacity(0.88))
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(8).background(Color.black.opacity(0.45)).cornerRadius(10)
+
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text("4. 四人牌桌座位预览 (不足4人由轻音AI补位)").font(.system(size: 11, weight: .black)).foregroundColor(httGold)
+                        HStack(spacing: 5) {
+                            ForEach(rmk.seats) { seat in
+                                VStack(spacing: 2) {
+                                    if let sprite = manager.allMemberFrames[seat.characterId] {
+                                        Image(uiImage: sprite).interpolation(.none).resizable().scaledToFit().frame(width: 28, height: 32)
+                                    }
+                                    Text(seat.name).font(.system(size: 9, weight: .black)).foregroundColor(.white).lineLimit(1)
+                                    Text(seat.isAI ? "🤖 AI" : "📱 真人").font(.system(size: 8, weight: .bold)).foregroundColor(seat.isAI ? httGold : .green)
+                                    Text("\(seat.score)分").font(.system(size: 8, design: .monospaced)).foregroundColor(.white.opacity(0.8))
+                                }
+                                .frame(maxWidth: .infinity).padding(.vertical, 4).background(Color.white.opacity(0.10)).cornerRadius(7)
+                                .overlay(RoundedRectangle(cornerRadius: 7).stroke(seat.isAI ? Color.white.opacity(0.2) : Color.green, lineWidth: 1))
+                            }
+                        }
+                    }
+                    .padding(8).background(Color.black.opacity(0.45)).cornerRadius(10)
+                }
+            }
+
+            let isGuestWait = rmk.isOnlineConnected && !rmk.isRoomAuthority
+            Button(action: { if !isGuestWait { rmk.startNewRound() } }) {
+                Text(isGuestWait ? "⏳ 等待 1 号房主开始拉密数字牌..." : "🔢 立即开始拉密数字牌 (106张)")
+                    .font(.system(size: 14, weight: .black))
+                    .frame(maxWidth: .infinity, minHeight: 42)
+                    .background(isGuestWait ? Color.gray : Color.orange)
+                    .foregroundColor(.white).cornerRadius(10)
+                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(httGold, lineWidth: 1.5))
+            }
+            .buttonStyle(PlainButtonStyle()).disabled(isGuestWait)
+        }
+        .padding(.horizontal, 10).padding(.bottom, 6)
+    }
+
+    private func tileChip(_ tile: RmkTile, selected: Bool, compact: Bool = false) -> some View {
+        VStack(spacing: 1) {
+            Text(tile.isJoker ? "☺" : "\(tile.number)")
+                .font(.system(size: compact ? 13 : 16, weight: .black, design: .rounded))
+                .foregroundColor(tileColor(tile.color))
+            Text(tile.isJoker ? "百搭" : tile.color.labelZh)
+                .font(.system(size: compact ? 7 : 8, weight: .bold))
+                .foregroundColor(tileColor(tile.color).opacity(0.85))
+        }
+        .frame(width: compact ? 26 : 34, height: compact ? 34 : 46)
+        .background(Color(red: 0.99, green: 0.97, blue: 0.92))
+        .cornerRadius(6)
+        .shadow(color: .black.opacity(0.35), radius: 2, y: 2)
+        .overlay(RoundedRectangle(cornerRadius: 6).stroke(selected ? Color.yellow : Color.gray.opacity(0.4), lineWidth: selected ? 2.5 : 1))
+        .offset(y: selected ? -7 : 0)
+    }
+
+    private var tableView: some View {
+        VStack(spacing: 5) {
+            // Top Status + Seat Badges + 60s Timer
+            HStack(spacing: 6) {
+                Text(rmk.statusBanner).font(.system(size: 11, weight: .bold)).foregroundColor(httGold).lineLimit(1)
+                Spacer()
+                Text("牌堆: \(rmk.poolCount)张").font(.system(size: 10, weight: .bold)).foregroundColor(.white)
+                Text("⏱ \(rmk.turnRemainingSeconds)s")
+                    .font(.system(size: 11, weight: .black, design: .monospaced))
+                    .foregroundColor(rmk.turnRemainingSeconds <= 10 ? .red : .green)
+                    .padding(.horizontal, 7).padding(.vertical, 3).background(Color.black.opacity(0.5)).cornerRadius(6)
+                if !rmk.isOnlineConnected || rmk.isRoomAuthority {
+                    Button(action: { rmk.currentRound += 1; rmk.startNewRound() }) {
+                        Image(systemName: "arrow.clockwise.circle.fill").font(.system(size: 18)).foregroundColor(httGold)
+                    }.buttonStyle(PlainButtonStyle())
+                }
+            }
+            .padding(.horizontal, 10).padding(.vertical, 5).background(Color.black.opacity(0.45)).cornerRadius(8)
+
+            HStack(spacing: 6) {
+                ForEach(rmk.seats) { s in
+                    let isTurn = (rmk.currentTurnSeat == s.id)
+                    HStack(spacing: 4) {
+                        if let sprite = manager.allMemberFrames[s.characterId] {
+                            Image(uiImage: sprite).interpolation(.none).resizable().scaledToFit().frame(width: 22, height: 24)
+                        }
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(s.name).font(.system(size: 9, weight: .black)).foregroundColor(.white).lineLimit(1)
+                            Text("\(s.hand.count)张 · \(s.hasBrokenIce ? "已破冰" : "未破冰") · \(s.score)分")
+                                .font(.system(size: 8, weight: .bold)).foregroundColor(s.hasBrokenIce ? .green : httGold)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(5)
+                    .background(isTurn ? Color.orange.opacity(0.32) : Color.black.opacity(0.35)).cornerRadius(8)
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(isTurn ? httGold : Color.white.opacity(0.15), lineWidth: isTurn ? 1.5 : 1))
+                }
+            }
+
+            // Center Table Melds Area (Scrollable grid of existing Groups & Runs)
+            let displayMelds = rmk.isEditingTable ? rmk.workingMelds : rmk.tableMelds
+            ScrollView {
+                if displayMelds.isEmpty {
+                    Text("桌面暂无牌组 · 首次破冰需选牌总和 ≥30 分后点【放上桌面】")
+                        .font(.system(size: 12, weight: .bold)).foregroundColor(.white.opacity(0.6)).padding(28)
+                } else {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 110), spacing: 8)], spacing: 8) {
+                        ForEach(displayMelds) { meld in
+                            let isValid = RmkEvaluator.evaluateMeld(meld.tiles) != nil
+                            HStack(spacing: 2) {
+                                ForEach(meld.tiles) { t in tileChip(t, selected: false, compact: true) }
+                            }
+                            .padding(5)
+                            .background(Color.black.opacity(0.35)).cornerRadius(8)
+                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(isValid ? httGold.opacity(0.6) : Color.red, lineWidth: 1.2))
+                            .onTapGesture {
+                                if !rmk.selectedTileIds.isEmpty { rmk.addSelectedToTableMeld(meld.id) }
+                                else { rmk.splitMeldToWorkspace(meld.id) }
+                            }
+                        }
+                    }
+                    .padding(6)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color.black.opacity(0.25)).cornerRadius(10)
+
+            // Action Controls Bar
+            let myTurn = (rmk.currentTurnSeat == rmk.mySeatIndex && rmk.phase == .playing)
+            HStack(spacing: 6) {
+                Button(action: { rmk.toggleSortMode() }) {
+                    Text(rmk.sortByColor ? "🎨 按色排" : "🔢 按数排")
+                        .font(.system(size: 10, weight: .black)).padding(.horizontal, 8).padding(.vertical, 7)
+                        .background(Color.blue.opacity(0.8)).foregroundColor(.white).cornerRadius(7)
+                }.buttonStyle(PlainButtonStyle())
+
+                if rmk.phase == .roundOver {
+                    Button(action: { rmk.currentRound += 1; rmk.startNewRound() }) {
+                        Text("🏆 再来一局").font(.system(size: 12, weight: .black)).frame(maxWidth: .infinity, minHeight: 32)
+                            .background(httCrimson).foregroundColor(.white).cornerRadius(8)
+                    }.buttonStyle(PlainButtonStyle())
+                } else {
+                    Button(action: { rmk.smartHintOrAutoPlace() }) {
+                        Text("💡 提示").font(.system(size: 10, weight: .black)).padding(.horizontal, 8).padding(.vertical, 7)
+                            .background(Color.purple).foregroundColor(.white).cornerRadius(7)
+                    }.buttonStyle(PlainButtonStyle()).disabled(!myTurn)
+
+                    Button(action: { rmk.placeSelectedAsNewMeld() }) {
+                        Text("⬆️ 放上桌面").font(.system(size: 10, weight: .black)).padding(.horizontal, 9).padding(.vertical, 7)
+                            .background(myTurn && !rmk.selectedTileIds.isEmpty ? Color.orange : Color.gray.opacity(0.5)).foregroundColor(.white).cornerRadius(7)
+                    }.buttonStyle(PlainButtonStyle()).disabled(!myTurn || rmk.selectedTileIds.isEmpty)
+
+                    Button(action: { rmk.restoreWorkspaceSnapshot() }) {
+                        Text("↩️ 复原").font(.system(size: 10, weight: .black)).padding(.horizontal, 8).padding(.vertical, 7)
+                            .background(rmk.isEditingTable ? Color.brown : Color.gray.opacity(0.5)).foregroundColor(.white).cornerRadius(7)
+                    }.buttonStyle(PlainButtonStyle()).disabled(!myTurn || !rmk.isEditingTable)
+
+                    Button(action: { rmk.drawTilePassTapped() }) {
+                        Text("🃏 摸牌过").font(.system(size: 10, weight: .black)).padding(.horizontal, 8).padding(.vertical, 7)
+                            .background(myTurn ? Color.teal : Color.gray.opacity(0.5)).foregroundColor(.white).cornerRadius(7)
+                    }.buttonStyle(PlainButtonStyle()).disabled(!myTurn)
+
+                    Button(action: { rmk.commitMyTurn() }) {
+                        Text("✅ 确认出牌").font(.system(size: 11, weight: .black)).frame(maxWidth: .infinity, minHeight: 30)
+                            .background(myTurn && rmk.isEditingTable ? Color.green : Color.gray.opacity(0.5)).foregroundColor(.white).cornerRadius(7)
+                    }.buttonStyle(PlainButtonStyle()).disabled(!myTurn || !rmk.isEditingTable)
+                }
+            }
+
+            // Bottom Player Rack (牌架)
+            let myRack = rmk.isEditingTable ? rmk.workingHand : (rmk.mySeatIndex < rmk.seats.count ? rmk.seats[rmk.mySeatIndex].hand : [])
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 4) {
+                    ForEach(myRack) { tile in
+                        tileChip(tile, selected: rmk.selectedTileIds.contains(tile.id))
+                            .onTapGesture {
+                                if myTurn { rmk.toggleSelectHandTile(tile.id) }
+                            }
+                    }
+                }
+                .padding(.horizontal, 8).padding(.vertical, 8)
+            }
+            .frame(height: 64)
+            .background(Color(red: 0.36, green: 0.22, blue: 0.12).opacity(0.92))
+            .cornerRadius(10)
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(httGold, lineWidth: 1.5))
+        }
+        .padding(.horizontal, 10).padding(.bottom, 4)
     }
 }

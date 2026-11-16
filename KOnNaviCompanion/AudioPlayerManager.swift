@@ -13388,3 +13388,706 @@ final class AeroplaneChessEngine: NSObject, ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.4, execute: work)
     }
 }
+
+
+
+
+// MARK: - 12. K-ON! Rummikub (拉密数字牌 · 106张 · 30分破冰 · 桌面重组 · 60秒限时)
+enum RmkColor: String, Codable, CaseIterable {
+    case red = "R"
+    case blue = "B"
+    case yellow = "Y"
+    case black = "K"
+    case joker = "J"
+
+    var labelZh: String {
+        switch self {
+        case .red: return "红"
+        case .blue: return "蓝"
+        case .yellow: return "黄"
+        case .black: return "黑"
+        case .joker: return "鬼"
+        }
+    }
+}
+
+struct RmkTile: Identifiable, Codable, Equatable {
+    let id: String
+    let color: RmkColor
+    let number: Int // 1..13, 0 = Joker
+
+    var isJoker: Bool { color == .joker }
+}
+
+struct RmkMeld: Identifiable, Codable, Equatable {
+    var id: String
+    var tiles: [RmkTile]
+}
+
+struct RmkSeat: Identifiable, Codable, Equatable {
+    let id: Int
+    var name: String
+    var characterId: Int
+    var isAI: Bool
+    var peerDisplayName: String
+    var hand: [RmkTile]
+    var hasBrokenIce: Bool
+    var score: Int
+}
+
+enum RmkPhase: String, Codable {
+    case lobby
+    case playing
+    case roundOver
+}
+
+struct RmkNetPacket: Codable {
+    enum Kind: String, Codable {
+        case joinRequest, leaveRoom, roomRoster, roomFull, stateSync
+        case commitTurnAction, drawTileAction
+    }
+    var kind: Kind
+    var roomCode: String
+    var senderPeerName: String
+    var senderCharId: Int
+    var maxPlayers: Int? = 4
+    var gameType: String? = "rummikub"
+    var hostPeerName: String? = nil
+    var roomPeers: [DoudizhuRoomPeer]? = nil
+    var seats: [RmkSeat]? = nil
+    var tableMelds: [RmkMeld]? = nil
+    var poolCount: Int? = nil
+    var phase: RmkPhase? = nil
+    var currentTurnSeat: Int? = nil
+    var winnerSeat: Int? = nil
+    var statusBanner: String? = nil
+    var currentRound: Int? = nil
+    var committedHandIds: [String]? = nil
+}
+
+struct RmkEvaluator {
+    /// Returns nil if invalid; otherwise returns the point value of the meld (Jokers take their substituted value)
+    static func evaluateMeld(_ tiles: [RmkTile]) -> Int? {
+        guard tiles.count >= 3 else { return nil }
+        let jokers = tiles.filter { $0.isJoker }
+        let normals = tiles.filter { !$0.isJoker }
+        guard !normals.isEmpty else { return nil }
+
+        // 1. Check Group (same number, distinct colors, max 4 tiles)
+        if tiles.count <= 4 {
+            let num = normals[0].number
+            let sameNum = normals.allSatisfy { $0.number == num }
+            let cols = Set(normals.map { $0.color })
+            if sameNum && cols.count == normals.count {
+                return num * tiles.count
+            }
+        }
+
+        // 2. Check Run (same color, strictly consecutive numbers within 1..13)
+        let col = normals[0].color
+        if normals.allSatisfy({ $0.color == col }) {
+            let nums = normals.map { $0.number }.sorted()
+            // No duplicate numbers allowed in a Run
+            guard Set(nums).count == nums.count else { return nil }
+            let span = (nums.last! - nums.first!) + 1
+            let gaps = span - nums.count
+            if gaps <= jokers.count && tiles.count <= 13 {
+                // Assign remaining jokers to extend the run (prefer high end up to 13, then low end down to 1)
+                var remJ = jokers.count - gaps
+                var low = nums.first!
+                var high = nums.last!
+                while remJ > 0 && high < 13 { high += 1; remJ -= 1 }
+                while remJ > 0 && low > 1 { low -= 1; remJ -= 1 }
+                guard (high - low + 1) == tiles.count && low >= 1 && high <= 13 else { return nil }
+                // Sum arithmetic progression low..high
+                return (low + high) * tiles.count / 2
+            }
+        }
+        return nil
+    }
+
+    /// Greedy finder for AI or Smart Hint: finds best valid group or run from hand
+    static func findBestMeld(in hand: [RmkTile]) -> [RmkTile]? {
+        // Try Groups of same number
+        let byNum = Dictionary(grouping: hand.filter { !$0.isJoker }, by: { $0.number })
+        let jokers = hand.filter { $0.isJoker }
+        var best: [RmkTile]? = nil
+        var bestPts = 0
+
+        for (_, group) in byNum {
+            var uniq: [RmkTile] = []
+            var seen = Set<RmkColor>()
+            for t in group where !seen.contains(t.color) {
+                seen.insert(t.color)
+                uniq.append(t)
+            }
+            if uniq.count >= 3 {
+                let pts = evaluateMeld(uniq) ?? 0
+                if pts > bestPts { bestPts = pts; best = uniq }
+            } else if uniq.count == 2 && !jokers.isEmpty {
+                let cand = uniq + [jokers[0]]
+                let pts = evaluateMeld(cand) ?? 0
+                if pts > bestPts { bestPts = pts; best = cand }
+            }
+        }
+
+        // Try Runs of same color
+        let byCol = Dictionary(grouping: hand.filter { !$0.isJoker }, by: { $0.color })
+        for (_, group) in byCol {
+            var uniq: [RmkTile] = []
+            var seen = Set<Int>()
+            for t in group.sorted(by: { $0.number < $1.number }) where !seen.contains(t.number) {
+                seen.insert(t.number)
+                uniq.append(t)
+            }
+            // Sliding window of consecutive runs
+            var cur: [RmkTile] = []
+            for t in uniq {
+                if cur.isEmpty || t.number == cur.last!.number + 1 {
+                    cur.append(t)
+                } else {
+                    if cur.count >= 3 {
+                        let pts = evaluateMeld(cur) ?? 0
+                        if pts > bestPts { bestPts = pts; best = cur }
+                    }
+                    cur = [t]
+                }
+            }
+            if cur.count >= 3 {
+                let pts = evaluateMeld(cur) ?? 0
+                if pts > bestPts { bestPts = pts; best = cur }
+            }
+        }
+        return best
+    }
+}
+
+final class RummikubEngine: NSObject, ObservableObject {
+    static let shared = RummikubEngine()
+
+    @Published var phase: RmkPhase = .lobby
+    @Published var seats: [RmkSeat] = []
+    @Published var tableMelds: [RmkMeld] = []
+    @Published var poolCount: Int = 0
+    @Published var mySeatIndex: Int = 0
+    @Published var currentTurnSeat: Int = 0
+    @Published var selectedTileIds: Set<String> = []
+    @Published var selectedTableMeldId: String? = nil
+    @Published var turnRemainingSeconds: Int = 60
+    @Published var winnerSeat: Int? = nil
+    @Published var statusBanner: String = "欢迎来到拉密数字牌 (106张 · 30分破冰 · 60秒限时)"
+    @Published var sortByColor: Bool = false
+
+    @Published var myNickname: String = UserDefaults.standard.string(forKey: "KOnRmkNickname") ?? "轻音车友" {
+        didSet { UserDefaults.standard.set(myNickname, forKey: "KOnRmkNickname") }
+    }
+    @Published var myCharacter: AudioPlayerManager.CharacterFilter = .yui {
+        didSet { rebuildLobbySeats() }
+    }
+    @Published var roomCode: String = ""
+    @Published var customServerURL: String = "wss://azusa.online/ddz"
+    @Published var isOnlineConnected: Bool = false
+    @Published var isHostingRoom: Bool = false
+    @Published var isRoomAuthority: Bool = true
+    @Published var connectedPeerNames: [String] = []
+    @Published var currentRound: Int = 1
+
+    // Local Turn Workspace Snapshot (for 60s timeout rollback or manual Reset)
+    @Published var workingMelds: [RmkMeld] = []
+    @Published var workingHand: [RmkTile] = []
+    @Published var isEditingTable: Bool = false
+    private var snapshotMelds: [RmkMeld] = []
+    private var snapshotHand: [RmkTile] = []
+
+    private var pool: [RmkTile] = []
+    private var myPeerName: String = ""
+    private var orderedRoomPeers: [DoudizhuRoomPeer] = []
+    private var webSocketTask: URLSessionWebSocketTask?
+    private var wsPingTimer: Timer?
+    private var turnTimer: Timer?
+    private var aiWorkItem: DispatchWorkItem?
+
+    override init() {
+        super.init()
+        let dev = UIDevice.current.name
+        if myNickname == "轻音车友" && !dev.isEmpty && dev != "iPhone" { myNickname = dev }
+        myPeerName = "\(cleanNick())#\(Int.random(in: 100...999))"
+        rebuildLobbySeats()
+    }
+
+    private func cleanNick() -> String {
+        let t = myNickname.trimmingCharacters(in: .whitespacesAndNewlines)
+        return t.isEmpty ? "轻音车友" : t
+    }
+    private func cleanPeer(_ raw: String) -> String {
+        if let idx = raw.lastIndex(of: "#") {
+            let p = String(raw[..<idx]).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !p.isEmpty { return p }
+        }
+        return raw
+    }
+    func wireRoomCode() -> String {
+        let c = roomCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        return c.isEmpty ? "" : "RMK_\(c)"
+    }
+
+    static func build106Deck() -> [RmkTile] {
+        var deck: [RmkTile] = []
+        for copy in 1...2 {
+            for col in [RmkColor.red, .blue, .yellow, .black] {
+                for num in 1...13 {
+                    deck.append(RmkTile(id: "\(col.rawValue)_\(num)_\(copy)", color: col, number: num))
+                }
+            }
+        }
+        deck.append(RmkTile(id: "J_1", color: .joker, number: 0))
+        deck.append(RmkTile(id: "J_2", color: .joker, number: 0))
+        return deck.shuffled()
+    }
+
+    func sortHandTiles(_ tiles: [RmkTile]) -> [RmkTile] {
+        return tiles.sorted { a, b in
+            if a.isJoker != b.isJoker { return !a.isJoker }
+            if sortByColor {
+                if a.color != b.color { return a.color.rawValue < b.color.rawValue }
+                return a.number < b.number
+            } else {
+                if a.number != b.number { return a.number < b.number }
+                return a.color.rawValue < b.color.rawValue
+            }
+        }
+    }
+
+    func toggleSortMode() {
+        sortByColor.toggle()
+        if mySeatIndex < seats.count {
+            seats[mySeatIndex].hand = sortHandTiles(seats[mySeatIndex].hand)
+            if isEditingTable { workingHand = sortHandTiles(workingHand) }
+        }
+    }
+
+    func rebuildLobbySeats() {
+        if orderedRoomPeers.isEmpty {
+            orderedRoomPeers = [DoudizhuRoomPeer(name: myPeerName, charId: myCharacter.charId, displayName: cleanNick())]
+        } else if let idx = orderedRoomPeers.firstIndex(where: { $0.name == myPeerName }) {
+            orderedRoomPeers[idx] = DoudizhuRoomPeer(name: myPeerName, charId: myCharacter.charId, displayName: cleanNick())
+        }
+        isRoomAuthority = (orderedRoomPeers.first?.name == myPeerName)
+        var used = Set<Int>()
+        var newSeats: [RmkSeat] = []
+        for i in 0..<4 {
+            let prevScore = (i < seats.count) ? seats[i].score : 1000
+            if i < orderedRoomPeers.count {
+                let rp = orderedRoomPeers[i]
+                if rp.name == myPeerName { mySeatIndex = i }
+                used.insert(rp.charId)
+                let tag = (i == 0) ? "👑房主 " : "\(i + 1)号 "
+                newSeats.append(RmkSeat(id: i, name: tag + cleanPeer(rp.displayName ?? rp.name), characterId: rp.charId, isAI: false, peerDisplayName: rp.name, hand: [], hasBrokenIce: false, score: prevScore))
+            } else {
+                let aiChar = AudioPlayerManager.CharacterFilter.fiveIndividuals.first(where: { !used.contains($0.charId) })?.charId ?? ((i % 5) + 1)
+                used.insert(aiChar)
+                let aiName = AudioPlayerManager.CharacterFilter.fiveIndividuals.first(where: { $0.charId == aiChar })?.displayName(AudioPlayerManager.shared.language) ?? "轻音AI"
+                newSeats.append(RmkSeat(id: i, name: "\(aiName) (AI)", characterId: aiChar, isAI: true, peerDisplayName: "AI_\(i)", hand: [], hasBrokenIce: false, score: prevScore))
+            }
+        }
+        seats = newSeats
+    }
+
+    func connectOnlineServerRoom() {
+        let code = roomCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !code.isEmpty, let url = URL(string: customServerURL.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+            statusBanner = "⚠️ 请先填写房号！"
+            return
+        }
+        stopNetworking()
+        myPeerName = "\(cleanNick())#\(Int.random(in: 100...999))"
+        orderedRoomPeers = [DoudizhuRoomPeer(name: myPeerName, charId: myCharacter.charId, displayName: cleanNick())]
+        isRoomAuthority = false
+        isOnlineConnected = true
+        let task = URLSession.shared.webSocketTask(with: url)
+        self.webSocketTask = task
+        task.resume()
+        receiveNextWs()
+        wsPingTimer = Timer.scheduledTimer(withTimeInterval: 15.0, repeats: true) { [weak self] _ in
+            self?.webSocketTask?.sendPing { _ in }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+            self?.sendJoinRequest()
+        }
+    }
+
+    private func sendJoinRequest() {
+        guard !wireRoomCode().isEmpty else { return }
+        sendPacket(RmkNetPacket(kind: .joinRequest, roomCode: wireRoomCode(), senderPeerName: myPeerName, senderCharId: myCharacter.charId))
+        statusBanner = "✅ 已连接拉密数字牌房间 [\(roomCode)]"
+    }
+
+    func leaveCurrentRoomAndReset() {
+        aiWorkItem?.cancel()
+        turnTimer?.invalidate()
+        if isOnlineConnected, !wireRoomCode().isEmpty {
+            sendPacket(RmkNetPacket(kind: .leaveRoom, roomCode: wireRoomCode(), senderPeerName: myPeerName, senderCharId: myCharacter.charId))
+        }
+        stopNetworking()
+        phase = .lobby
+        currentRound = 1
+        rebuildLobbySeats()
+        statusBanner = "已退出拉密数字牌房间"
+    }
+
+    private func stopNetworking() {
+        wsPingTimer?.invalidate(); wsPingTimer = nil
+        webSocketTask?.cancel(with: .goingAway, reason: nil); webSocketTask = nil
+        isOnlineConnected = false; isHostingRoom = false
+        connectedPeerNames = []; orderedRoomPeers = []
+    }
+
+    private func receiveNextWs() {
+        webSocketTask?.receive { [weak self] res in
+            guard let self = self else { return }
+            if case .success(let msg) = res {
+                var dOpt: Data? = nil
+                if case .data(let d) = msg { dOpt = d }
+                else if case .string(let s) = msg { dOpt = s.data(using: .utf8) }
+                if let d = dOpt, let pkt = try? JSONDecoder().decode(RmkNetPacket.self, from: d) {
+                    DispatchQueue.main.async { self.handlePacket(pkt) }
+                }
+                self.receiveNextWs()
+            } else {
+                DispatchQueue.main.async { self.isOnlineConnected = false }
+            }
+        }
+    }
+
+    private func sendPacket(_ pkt: RmkNetPacket) {
+        guard let data = try? JSONEncoder().encode(pkt) else { return }
+        webSocketTask?.send(.data(data)) { _ in }
+    }
+
+    private func broadcastFullState() {
+        guard isOnlineConnected, isRoomAuthority, !wireRoomCode().isEmpty else { return }
+        sendPacket(RmkNetPacket(
+            kind: .stateSync, roomCode: wireRoomCode(), senderPeerName: myPeerName, senderCharId: myCharacter.charId,
+            hostPeerName: myPeerName, roomPeers: orderedRoomPeers, seats: seats, tableMelds: tableMelds,
+            poolCount: poolCount, phase: phase, currentTurnSeat: currentTurnSeat, winnerSeat: winnerSeat,
+            statusBanner: statusBanner, currentRound: currentRound
+        ))
+    }
+
+    private func handlePacket(_ pkt: RmkNetPacket) {
+        guard pkt.roomCode == wireRoomCode(), !wireRoomCode().isEmpty else { return }
+        switch pkt.kind {
+        case .roomFull:
+            stopNetworking(); phase = .lobby; statusBanner = pkt.statusBanner ?? "⚠️ 房间已满"
+        case .roomRoster:
+            if let rp = pkt.roomPeers, !rp.isEmpty {
+                orderedRoomPeers = rp
+                connectedPeerNames = rp.map { $0.name }.filter { $0 != myPeerName }
+                isRoomAuthority = (rp.first?.name == myPeerName)
+                if phase == .lobby { rebuildLobbySeats() }
+            }
+        case .joinRequest:
+            guard pkt.senderPeerName != myPeerName else { return }
+            if isRoomAuthority && !orderedRoomPeers.contains(where: { $0.name == pkt.senderPeerName }) && orderedRoomPeers.count < 4 {
+                orderedRoomPeers.append(DoudizhuRoomPeer(name: pkt.senderPeerName, charId: pkt.senderCharId, displayName: cleanPeer(pkt.senderPeerName)))
+                rebuildLobbySeats()
+                sendPacket(RmkNetPacket(kind: .roomRoster, roomCode: wireRoomCode(), senderPeerName: myPeerName, senderCharId: myCharacter.charId, hostPeerName: myPeerName, roomPeers: orderedRoomPeers))
+                broadcastFullState()
+            }
+        case .leaveRoom:
+            orderedRoomPeers.removeAll { $0.name == pkt.senderPeerName }
+            connectedPeerNames.removeAll { $0 == pkt.senderPeerName }
+            isRoomAuthority = (orderedRoomPeers.first?.name == myPeerName) || orderedRoomPeers.isEmpty
+            if phase == .lobby { rebuildLobbySeats() }
+        case .stateSync:
+            guard pkt.senderPeerName != myPeerName else { return }
+            if let rp = pkt.roomPeers, !rp.isEmpty { orderedRoomPeers = rp; connectedPeerNames = rp.map { $0.name }.filter { $0 != myPeerName } }
+            isRoomAuthority = (pkt.hostPeerName == myPeerName)
+            if let s = pkt.seats {
+                seats = s
+                if let idx = s.firstIndex(where: { $0.peerDisplayName == myPeerName }) { mySeatIndex = idx }
+            }
+            if let tm = pkt.tableMelds { tableMelds = tm }
+            if let pc = pkt.poolCount { poolCount = pc }
+            if let p = pkt.phase { phase = p }
+            if let ct = pkt.currentTurnSeat {
+                if ct != currentTurnSeat { resetWorkspaceForNewTurn() }
+                currentTurnSeat = ct
+            }
+            winnerSeat = pkt.winnerSeat
+            if let sb = pkt.statusBanner { statusBanner = sb }
+            if let cr = pkt.currentRound { currentRound = cr }
+            if phase == .playing { startTurnTimer() } else { turnTimer?.invalidate() }
+        case .drawTileAction:
+            if isRoomAuthority, let idx = seats.firstIndex(where: { $0.peerDisplayName == pkt.senderPeerName }), idx == currentTurnSeat {
+                executeDrawAndAdvance(seatIdx: idx, reason: "摸牌过")
+            }
+        case .commitTurnAction:
+            if isRoomAuthority, let idx = seats.firstIndex(where: { $0.peerDisplayName == pkt.senderPeerName }), idx == currentTurnSeat,
+               let newMelds = pkt.tableMelds, let playedIds = pkt.committedHandIds {
+                executeCommitTurn(seatIdx: idx, newMelds: newMelds, playedHandIds: playedIds)
+            }
+        }
+    }
+
+    func startNewRound() {
+        if isOnlineConnected && !isRoomAuthority { return }
+        rebuildLobbySeats()
+        pool = RummikubEngine.build106Deck()
+        for i in 0..<4 {
+            let dealt = Array(pool.prefix(14))
+            pool.removeFirst(14)
+            seats[i].hand = sortHandTiles(dealt)
+            seats[i].hasBrokenIce = false
+        }
+        poolCount = pool.count
+        tableMelds = []
+        currentTurnSeat = (currentRound - 1) % 4
+        winnerSeat = nil
+        phase = .playing
+        resetWorkspaceForNewTurn()
+        statusBanner = "🔢 第 \(currentRound) 局发牌完成！轮到 [\(seats[currentTurnSeat].name)] 出牌 (需≥30分破冰)"
+        startTurnTimer()
+        broadcastFullState()
+        scheduleAIIfNeeded()
+    }
+
+    private func startTurnTimer() {
+        turnTimer?.invalidate()
+        turnRemainingSeconds = 60
+        turnTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            guard let self = self, self.phase == .playing else { return }
+            if self.turnRemainingSeconds > 0 {
+                self.turnRemainingSeconds -= 1
+            } else if !self.isOnlineConnected || self.isRoomAuthority {
+                self.restoreWorkspaceSnapshot()
+                self.executeDrawAndAdvance(seatIdx: self.currentTurnSeat, reason: "⏰ 60秒超时复原桌面并罚抽1张")
+            }
+        }
+    }
+
+    func resetWorkspaceForNewTurn() {
+        selectedTileIds.removeAll()
+        selectedTableMeldId = nil
+        isEditingTable = false
+        if mySeatIndex < seats.count {
+            snapshotHand = seats[mySeatIndex].hand
+            workingHand = seats[mySeatIndex].hand
+        }
+        snapshotMelds = tableMelds
+        workingMelds = tableMelds
+    }
+
+    func beginOrEnsureWorkspace() {
+        if !isEditingTable && mySeatIndex < seats.count {
+            snapshotHand = seats[mySeatIndex].hand
+            workingHand = seats[mySeatIndex].hand
+            snapshotMelds = tableMelds
+            workingMelds = tableMelds
+            isEditingTable = true
+        }
+    }
+
+    func restoreWorkspaceSnapshot() {
+        if isEditingTable {
+            workingHand = snapshotHand
+            workingMelds = snapshotMelds
+            selectedTileIds.removeAll()
+            selectedTableMeldId = nil
+            isEditingTable = false
+            statusBanner = "↩️ 已复原到本回合初始牌面"
+        }
+    }
+
+    func toggleSelectHandTile(_ id: String) {
+        if selectedTileIds.contains(id) { selectedTileIds.remove(id) }
+        else { selectedTileIds.insert(id) }
+    }
+
+    /// Put selected hand tiles into a new table meld in workspace
+    func placeSelectedAsNewMeld() {
+        guard currentTurnSeat == mySeatIndex, phase == .playing, !selectedTileIds.isEmpty else { return }
+        beginOrEnsureWorkspace()
+        let picked = workingHand.filter { selectedTileIds.contains($0.id) }
+        guard RmkEvaluator.evaluateMeld(picked) != nil else {
+            statusBanner = "⚠️ 所选牌未能组成有效顺组或群组 (需≥3张)"
+            return
+        }
+        workingHand.removeAll { selectedTileIds.contains($0.id) }
+        workingMelds.append(RmkMeld(id: UUID().uuidString, tiles: picked))
+        selectedTileIds.removeAll()
+        statusBanner = "✅ 已暂放牌组到桌面（点击【确认出牌】完成回合）"
+    }
+
+    /// Merge selected hand tiles into an existing table meld (only after Icebreak!)
+    func addSelectedToTableMeld(_ meldId: String) {
+        guard currentTurnSeat == mySeatIndex, phase == .playing, !selectedTileIds.isEmpty else { return }
+        guard seats[mySeatIndex].hasBrokenIce else {
+            statusBanner = "⚠️ 尚未破冰！首次出牌只能使用自己牌架的牌且总和 ≥30 分"
+            return
+        }
+        beginOrEnsureWorkspace()
+        guard let idx = workingMelds.firstIndex(where: { $0.id == meldId }) else { return }
+        let picked = workingHand.filter { selectedTileIds.contains($0.id) }
+        let combined = workingMelds[idx].tiles + picked
+        guard RmkEvaluator.evaluateMeld(combined) != nil else {
+            statusBanner = "⚠️ 添牌后该牌组不符合群组或顺组规则"
+            return
+        }
+        workingHand.removeAll { selectedTileIds.contains($0.id) }
+        workingMelds[idx].tiles = combined.sorted { $0.number < $1.number }
+        selectedTileIds.removeAll()
+        statusBanner = "✅ 已将选牌并入桌面牌组（点击【确认出牌】完成回合）"
+    }
+
+    /// Split a table meld back into working hand? No, standard Rummikub splits a table meld into separate tiles or pulls a loose tile to form a new meld:
+    /// Split 1 tile from a 4+ tile meld into selected/new meld
+    func splitMeldToWorkspace(_ meldId: String) {
+        guard currentTurnSeat == mySeatIndex, phase == .playing else { return }
+        guard seats[mySeatIndex].hasBrokenIce else {
+            statusBanner = "⚠️ 尚未破冰，不能拆解桌面牌组！"
+            return
+        }
+        beginOrEnsureWorkspace()
+        guard let idx = workingMelds.firstIndex(where: { $0.id == meldId }), workingMelds[idx].tiles.count >= 4 else {
+            statusBanner = "⚠️ 只有 ≥4 张的牌组才可直接拆出端牌重组"
+            return
+        }
+        let popped = workingMelds[idx].tiles.removeLast()
+        workingHand.append(popped)
+        selectedTileIds.insert(popped.id)
+        statusBanner = "🔄 已从牌组拆出 1 张牌，请配合手牌组成新牌组后【确认出牌】"
+    }
+
+    func smartHintOrAutoPlace() {
+        guard currentTurnSeat == mySeatIndex, phase == .playing else { return }
+        beginOrEnsureWorkspace()
+        if let best = RmkEvaluator.findBestMeld(in: workingHand) {
+            selectedTileIds = Set(best.map { $0.id })
+            statusBanner = "💡 已为您选中推荐牌组（点【放上桌面】即可出牌）"
+        } else {
+            statusBanner = "💡 暂无可直出牌组，可尝试拆解桌面 ≥4 张牌组或摸牌"
+        }
+    }
+
+    func commitMyTurn() {
+        guard currentTurnSeat == mySeatIndex, phase == .playing else { return }
+        beginOrEnsureWorkspace()
+        let playedIds = snapshotHand.map { $0.id }.filter { id in !workingHand.contains(where: { $0.id == id }) }
+        guard !playedIds.isEmpty else {
+            statusBanner = "⚠️ 本回合尚未打出任何牌架上的牌（若不出请点【摸牌过】）"
+            return
+        }
+        // Validate every meld on table
+        for m in workingMelds {
+            guard RmkEvaluator.evaluateMeld(m.tiles) != nil else {
+                statusBanner = "⚠️ 桌面存在无效牌组，请继续重组或点【复原】"
+                return
+            }
+        }
+        // Validate 30-pt icebreak if not yet broken
+        if !seats[mySeatIndex].hasBrokenIce {
+            let newMeldsCount = workingMelds.count - snapshotMelds.count
+            guard newMeldsCount > 0 else {
+                statusBanner = "⚠️ 首次破冰只能出自己牌架的牌组！"
+                return
+            }
+            var icePts = 0
+            for i in snapshotMelds.count..<workingMelds.count {
+                icePts += RmkEvaluator.evaluateMeld(workingMelds[i].tiles) ?? 0
+            }
+            guard icePts >= 30 else {
+                statusBanner = "⚠️ 破冰总分仅 \(icePts) 分，必须 ≥30 分才能首次出牌！"
+                return
+            }
+        }
+
+        if isOnlineConnected && !isRoomAuthority {
+            sendPacket(RmkNetPacket(kind: .commitTurnAction, roomCode: wireRoomCode(), senderPeerName: myPeerName, senderCharId: myCharacter.charId, tableMelds: workingMelds, committedHandIds: playedIds))
+            isEditingTable = false
+            return
+        }
+        executeCommitTurn(seatIdx: mySeatIndex, newMelds: workingMelds, playedHandIds: playedIds)
+    }
+
+    func drawTilePassTapped() {
+        guard currentTurnSeat == mySeatIndex, phase == .playing else { return }
+        restoreWorkspaceSnapshot()
+        if isOnlineConnected && !isRoomAuthority {
+            sendPacket(RmkNetPacket(kind: .drawTileAction, roomCode: wireRoomCode(), senderPeerName: myPeerName, senderCharId: myCharacter.charId))
+            return
+        }
+        executeDrawAndAdvance(seatIdx: mySeatIndex, reason: "摸牌结束回合")
+    }
+
+    private func executeCommitTurn(seatIdx: Int, newMelds: [RmkMeld], playedHandIds: [String]) {
+        tableMelds = newMelds
+        seats[seatIdx].hand.removeAll { playedHandIds.contains($0.id) }
+        seats[seatIdx].hasBrokenIce = true
+        isEditingTable = false
+
+        if seats[seatIdx].hand.isEmpty {
+            finishRound(winner: seatIdx)
+            return
+        }
+        currentTurnSeat = (seatIdx + 1) % 4
+        resetWorkspaceForNewTurn()
+        turnRemainingSeconds = 60
+        statusBanner = "✅ [\(seats[seatIdx].name)] 出牌 \(playedHandIds.count) 张！轮到 [\(seats[currentTurnSeat].name)]"
+        broadcastFullState()
+        scheduleAIIfNeeded()
+    }
+
+    private func executeDrawAndAdvance(seatIdx: Int, reason: String) {
+        if !pool.isEmpty {
+            let t = pool.removeFirst()
+            seats[seatIdx].hand.append(t)
+            seats[seatIdx].hand = sortHandTiles(seats[seatIdx].hand)
+            poolCount = pool.count
+        }
+        isEditingTable = false
+        currentTurnSeat = (seatIdx + 1) % 4
+        resetWorkspaceForNewTurn()
+        turnRemainingSeconds = 60
+        statusBanner = "[\(seats[seatIdx].name)] \(reason) · 轮到 [\(seats[currentTurnSeat].name)]"
+        broadcastFullState()
+        scheduleAIIfNeeded()
+    }
+
+    private func finishRound(winner: Int) {
+        phase = .roundOver
+        winnerSeat = winner
+        turnTimer?.invalidate()
+        var totalGain = 0
+        for i in 0..<4 where i != winner {
+            let pen = seats[i].hand.reduce(0) { $0 + ($1.isJoker ? 30 : $1.number) }
+            seats[i].score -= pen
+            totalGain += pen
+        }
+        seats[winner].score += totalGain
+        statusBanner = "🏆 [\(seats[winner].name)] 清空牌架获胜！(赢得 +\(totalGain) 分)"
+        broadcastFullState()
+    }
+
+    private func scheduleAIIfNeeded() {
+        aiWorkItem?.cancel()
+        guard !isOnlineConnected || isRoomAuthority else { return }
+        guard phase == .playing, currentTurnSeat < seats.count, seats[currentTurnSeat].isAI else { return }
+        let seatIdx = currentTurnSeat
+        let work = DispatchWorkItem { [weak self] in
+            guard let self = self, self.phase == .playing, self.currentTurnSeat == seatIdx else { return }
+            if let best = RmkEvaluator.findBestMeld(in: self.seats[seatIdx].hand),
+               let pts = RmkEvaluator.evaluateMeld(best) {
+                if self.seats[seatIdx].hasBrokenIce || pts >= 30 {
+                    var nextMelds = self.tableMelds
+                    nextMelds.append(RmkMeld(id: UUID().uuidString, tiles: best))
+                    self.executeCommitTurn(seatIdx: seatIdx, newMelds: nextMelds, playedHandIds: best.map { $0.id })
+                    return
+                }
+            }
+            self.executeDrawAndAdvance(seatIdx: seatIdx, reason: "从共用牌堆摸1张牌")
+        }
+        aiWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: work)
+    }
+}
