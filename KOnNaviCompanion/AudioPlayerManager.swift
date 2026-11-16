@@ -12931,6 +12931,132 @@ struct RmkEvaluator {
         }
         return best
     }
+
+    /// Extracts all disjoint valid melds (>=3 tiles) and leftover tiles for 789 / 777 rack organization with empty-slot gaps!
+    static func organizeHandIntoGroups(_ hand: [RmkTile], preferRuns: Bool) -> (melds: [[RmkTile]], leftovers: [RmkTile]) {
+        var remaining = hand
+        var melds: [[RmkTile]] = []
+
+        func extractRuns() {
+            var changed = true
+            while changed {
+                changed = false
+                let byCol = Dictionary(grouping: remaining.filter { !$0.isJoker }, by: { $0.color })
+                for col in [RmkColor.red, .blue, .yellow, .black] {
+                    guard let grp = byCol[col] else { continue }
+                    var uniq: [RmkTile] = []
+                    var seen = Set<Int>()
+                    for t in grp.sorted(by: { $0.number < $1.number }) where !seen.contains(t.number) {
+                        seen.insert(t.number)
+                        uniq.append(t)
+                    }
+                    var run: [RmkTile] = []
+                    for t in uniq {
+                        if run.isEmpty || t.number == run.last!.number + 1 {
+                            run.append(t)
+                        } else {
+                            if run.count >= 3 { break }
+                            run = [t]
+                        }
+                    }
+                    if run.count >= 3 {
+                        melds.append(run)
+                        let usedIds = Set(run.map { $0.id })
+                        remaining.removeAll { usedIds.contains($0.id) }
+                        changed = true
+                        break
+                    }
+                }
+            }
+        }
+
+        func extractGroups() {
+            var changed = true
+            while changed {
+                changed = false
+                let byNum = Dictionary(grouping: remaining.filter { !$0.isJoker }, by: { $0.number })
+                for num in (1...13).reversed() {
+                    guard let grp = byNum[num] else { continue }
+                    var uniq: [RmkTile] = []
+                    var seen = Set<RmkColor>()
+                    for t in grp where !seen.contains(t.color) {
+                        seen.insert(t.color)
+                        uniq.append(t)
+                    }
+                    if uniq.count >= 3 {
+                        let pick = Array(uniq.prefix(4))
+                        melds.append(pick)
+                        let usedIds = Set(pick.map { $0.id })
+                        remaining.removeAll { usedIds.contains($0.id) }
+                        changed = true
+                        break
+                    }
+                }
+            }
+        }
+
+        if preferRuns {
+            extractRuns()
+            extractGroups()
+        } else {
+            extractGroups()
+            extractRuns()
+        }
+
+        // Try pairing 2-tile near-meld with a Joker if available
+        while let jIdx = remaining.firstIndex(where: { $0.isJoker }) {
+            let joker = remaining[jIdx]
+            var paired: [RmkTile]? = nil
+            if preferRuns {
+                let byCol = Dictionary(grouping: remaining.filter { !$0.isJoker }, by: { $0.color })
+                outerRun: for col in [RmkColor.red, .blue, .yellow, .black] {
+                    let s = (byCol[col] ?? []).sorted { $0.number < $1.number }
+                    if s.count >= 2 {
+                        for i in 0..<(s.count - 1) {
+                            if s[i+1].number - s[i].number >= 1 && s[i+1].number - s[i].number <= 2 {
+                                paired = [s[i], s[i+1], joker]
+                                break outerRun
+                            }
+                        }
+                    }
+                }
+            }
+            if paired == nil {
+                let byNum = Dictionary(grouping: remaining.filter { !$0.isJoker }, by: { $0.number })
+                for num in (1...13).reversed() {
+                    var uniq: [RmkTile] = []
+                    var seen = Set<RmkColor>()
+                    for t in (byNum[num] ?? []) where !seen.contains(t.color) {
+                        seen.insert(t.color); uniq.append(t)
+                    }
+                    if uniq.count == 2 {
+                        paired = [uniq[0], uniq[1], joker]
+                        break
+                    }
+                }
+            }
+            if let p = paired {
+                melds.append(p)
+                let ids = Set(p.map { $0.id })
+                remaining.removeAll { ids.contains($0.id) }
+            } else {
+                break
+            }
+        }
+
+        // Sort leftovers cleanly according to mode (789 = by color then number; 777 = by number then color)
+        let sortedLeftovers = remaining.sorted { a, b in
+            if a.isJoker != b.isJoker { return !a.isJoker }
+            if preferRuns {
+                if a.color != b.color { return a.color.rawValue < b.color.rawValue }
+                return a.number < b.number
+            } else {
+                if a.number != b.number { return a.number < b.number }
+                return a.color.rawValue < b.color.rawValue
+            }
+        }
+        return (melds, sortedLeftovers)
+    }
 }
 
 final class RummikubEngine: NSObject, ObservableObject {
@@ -13053,8 +13179,18 @@ final class RummikubEngine: NSObject, ObservableObject {
     @Published var workingMelds: [RmkMeld] = []
     @Published var workingHand: [RmkTile] = []
     @Published var isEditingTable: Bool = false
+    // 2-Row Dynamic Extending Wooden Rack (Row 0 & Row 1, default 10 cols = 20 slots, auto-extends as tiles grow!)
+    @Published var rackCols: Int = 10
+    @Published var rackSlots: [RmkTile?] = Array(repeating: nil, count: 20)
+    @Published var liftedSlotIndex: Int? = nil
+    @Published var dealingVisibleCount: Int = 99
+    @Published var isDealingAnimation: Bool = false
+    @Published var drawingAnimatedTile: RmkTile? = nil
+    @Published var isDrawingAnimation: Bool = false
+    private var dealAnimTimer: Timer? = nil
     private var snapshotMelds: [RmkMeld] = []
     private var snapshotHand: [RmkTile] = []
+    private var snapshotRackSlots: [RmkTile?] = []
 
     private let serviceType = "kon-rmk"
     private var pool: [RmkTile] = []
@@ -13120,12 +13256,139 @@ final class RummikubEngine: NSObject, ObservableObject {
         }
     }
 
-    func toggleSortMode() {
-        sortByColor.toggle()
-        if mySeatIndex < seats.count {
-            seats[mySeatIndex].hand = sortHandTiles(seats[mySeatIndex].hand)
-            if isEditingTable { workingHand = sortHandTiles(workingHand) }
+    func syncRackFromHand(_ tiles: [RmkTile], preserveExistingPositions: Bool = true) {
+        let minCols = max(10, (tiles.count + 1) / 2 + 2)
+        if !preserveExistingPositions || rackSlots.isEmpty {
+            rackCols = minCols
+            var nextSlots: [RmkTile?] = Array(repeating: nil, count: rackCols * 2)
+            // Fill initial 14 tiles raw (unsorted) across top row (first 8) and bottom row (next 6) like video!
+            let topCount = min(rackCols, (tiles.count + 1) / 2)
+            for i in 0..<tiles.count {
+                if i < topCount {
+                    nextSlots[i] = tiles[i]
+                } else {
+                    let botIdx = rackCols + (i - topCount)
+                    if botIdx < nextSlots.count { nextSlots[botIdx] = tiles[i] }
+                }
+            }
+            rackSlots = nextSlots
+            return
         }
+        // Preserve existing positions of tiles still in hand, place newly drawn/returned tiles in first empty slot
+        let handMap = Dictionary(uniqueKeysWithValues: tiles.map { ($0.id, $0) })
+        var placedIds = Set<String>()
+        var updated = rackSlots.map { slot -> RmkTile? in
+            guard let t = slot, let keep = handMap[t.id] else { return nil }
+            placedIds.insert(keep.id)
+            return keep
+        }
+        let missing = tiles.filter { !placedIds.contains($0.id) }
+        for m in missing {
+            if let emptyIdx = updated.firstIndex(where: { $0 == nil }) {
+                updated[emptyIdx] = m
+            } else {
+                extendRackColumns(by: 2, slots: &updated)
+                if let emptyIdx = updated.firstIndex(where: { $0 == nil }) {
+                    updated[emptyIdx] = m
+                }
+            }
+        }
+        // Auto-extend rack if fewer than 2 empty slots remain
+        if updated.filter({ $0 == nil }).count < 2 {
+            extendRackColumns(by: 2, slots: &updated)
+        }
+    }
+
+    private func extendRackColumns(by extraCols: Int, slots: inout [RmkTile?]) {
+        let oldCols = max(1, slots.count / 2)
+        let newCols = oldCols + extraCols
+        var newSlots: [RmkTile?] = Array(repeating: nil, count: newCols * 2)
+        for c in 0..<oldCols {
+            newSlots[c] = slots[c]
+            newSlots[newCols + c] = slots[oldCols + c]
+        }
+        rackCols = newCols
+        slots = newSlots
+    }
+
+    /// Move or swap a tile on the 2-row rack (supports dragging or tap-to-lift & tap-any-slot to place, auto-extending rack!)
+    func moveRackSlot(from srcIdx: Int, to dstIdx: Int) {
+        guard srcIdx >= 0, srcIdx < rackSlots.count, dstIdx >= 0, dstIdx < rackSlots.count, srcIdx != dstIdx else { return }
+        let temp = rackSlots[dstIdx]
+        rackSlots[dstIdx] = rackSlots[srcIdx]
+        rackSlots[srcIdx] = temp
+        liftedSlotIndex = nil
+        // If user placed a tile into the last column of either row, automatically extend rack by 1 column!
+        let cols = rackCols
+        if dstIdx == cols - 1 || dstIdx == cols * 2 - 1 || rackSlots.filter({ $0 == nil }).count < 2 {
+            var cur = rackSlots
+            extendRackColumns(by: 1, slots: &cur)
+            rackSlots = cur
+        }
+    }
+
+    /// Shuffle tiles randomly across the 2-row rack ("牌型可以打乱")
+    func shuffleRackRandomly() {
+        let activeTiles = rackSlots.compactMap { $0 }.shuffled()
+        syncRackFromHand(activeTiles, preserveExistingPositions: false)
+        selectedTileIds.removeAll()
+        liftedSlotIndex = nil
+        statusBanner = "🎲 已随机打乱牌架顺序（可点击或拖拽任意牌自由移动位置）"
+    }
+
+    /// Smart 789 (Runs) or 777 (Groups) rack organizer: places valid playable melds first with an empty slot ('nil') gap between each group!
+    func organizeRack(preferRuns: Bool) {
+        sortByColor = preferRuns
+        let activeTiles = rackSlots.compactMap { $0 }
+        let (melds, leftovers) = RmkEvaluator.organizeHandIntoGroups(activeTiles, preferRuns: preferRuns)
+
+        // Build row 0 and row 1 sequences with 1 empty slot gap between each valid meld and before leftovers
+        var row0: [RmkTile?] = []
+        var row1: [RmkTile?] = []
+
+        for meld in melds {
+            // Put on whichever row currently has fewer items
+            if row0.count <= row1.count {
+                if !row0.isEmpty { row0.append(nil) } // Empty slot gap!
+                for t in meld { row0.append(t) }
+            } else {
+                if !row1.isEmpty { row1.append(nil) } // Empty slot gap!
+                for t in meld { row1.append(t) }
+            }
+        }
+
+        // Separate playable melds from leftovers with an empty slot gap!
+        if !melds.isEmpty {
+            if !row0.isEmpty { row0.append(nil) }
+            if !row1.isEmpty { row1.append(nil) }
+        }
+
+        for t in leftovers {
+            if row0.count <= row1.count {
+                row0.append(t)
+            } else {
+                row1.append(t)
+            }
+        }
+
+        let neededCols = max(10, max(row0.count, row1.count) + 2)
+        rackCols = neededCols
+        var nextSlots: [RmkTile?] = Array(repeating: nil, count: neededCols * 2)
+        for (i, t) in row0.enumerated() where i < neededCols { nextSlots[i] = t }
+        for (i, t) in row1.enumerated() where i < neededCols { nextSlots[neededCols + i] = t }
+        rackSlots = nextSlots
+        liftedSlotIndex = nil
+
+        if !melds.isEmpty {
+            let modeLabel = preferRuns ? "789顺组" : "777群组"
+            statusBanner = "✨ 已按【\(modeLabel)】整理牌架：共识别 \(melds.count) 组可出牌型（已自动留空隔开）"
+        } else {
+            statusBanner = preferRuns ? "🔢 已按 789 同色顺子方向整理牌架" : "🔢 已按 777 同数群组方向整理牌架"
+        }
+    }
+
+    func toggleSortMode() {
+        organizeRack(preferRuns: !sortByColor)
     }
 
     func rebuildLobbySeats() {
@@ -13354,7 +13617,14 @@ final class RummikubEngine: NSObject, ObservableObject {
             }
             if let tm = pkt.tableMelds { tableMelds = tm }
             if let pc = pkt.poolCount { poolCount = pc }
-            if let p = pkt.phase { phase = p }
+            if let p = pkt.phase {
+                let wasLobby = (phase == .lobby)
+                phase = p
+                if wasLobby && p == .playing {
+                    resetWorkspaceForNewTurn(preserveRackLayout: false)
+                    trigger15sInitialDealAnimation()
+                }
+            }
             if let ct = pkt.currentTurnSeat {
                 if ct != currentTurnSeat { resetWorkspaceForNewTurn() }
                 currentTurnSeat = ct
@@ -13383,7 +13653,8 @@ final class RummikubEngine: NSObject, ObservableObject {
         for i in 0..<pCnt {
             let dealt = Array(pool.prefix(14))
             pool.removeFirst(14)
-            seats[i].hand = sortHandTiles(dealt)
+            // Keep initial 14 tiles in raw random dealt order so player can shuffle/organize with 789/777!
+            seats[i].hand = dealt
             seats[i].hasBrokenIce = false
         }
         poolCount = pool.count
@@ -13391,8 +13662,9 @@ final class RummikubEngine: NSObject, ObservableObject {
         currentTurnSeat = (currentRound - 1) % pCnt
         winnerSeat = nil
         phase = .playing
-        resetWorkspaceForNewTurn()
-        statusBanner = "🔢 第 \(currentRound) 局发牌完成 (\(pCnt)人局)！轮到 [\(seats[currentTurnSeat].name)] 出牌 (需≥30分破冰)"
+        resetWorkspaceForNewTurn(preserveRackLayout: false)
+        trigger15sInitialDealAnimation()
+        statusBanner = "🔢 正在派发 14 张初始手牌 (1.5秒发牌动画)... 轮到 [\(seats[currentTurnSeat].name)] 出牌 (需≥30分破冰)"
         startTurnTimer()
         broadcastFullState()
         scheduleAIIfNeeded()
@@ -13412,13 +13684,34 @@ final class RummikubEngine: NSObject, ObservableObject {
         }
     }
 
-    func resetWorkspaceForNewTurn() {
+    func trigger15sInitialDealAnimation() {
+        dealAnimTimer?.invalidate()
+        isDealingAnimation = true
+        dealingVisibleCount = 0
+        let total = 14
+        let stepInterval = 1.5 / Double(total)
+        dealAnimTimer = Timer.scheduledTimer(withTimeInterval: stepInterval, repeats: true) { [weak self] t in
+            guard let self = self else { t.invalidate(); return }
+            if self.dealingVisibleCount < total {
+                self.dealingVisibleCount += 1
+            } else {
+                self.dealingVisibleCount = 99
+                self.isDealingAnimation = false
+                t.invalidate()
+            }
+        }
+    }
+
+    func resetWorkspaceForNewTurn(preserveRackLayout: Bool = true) {
         selectedTileIds.removeAll()
         selectedTableMeldId = nil
+        liftedSlotIndex = nil
         isEditingTable = false
         if mySeatIndex < seats.count {
             snapshotHand = seats[mySeatIndex].hand
             workingHand = seats[mySeatIndex].hand
+            syncRackFromHand(workingHand, preserveExistingPositions: preserveRackLayout)
+            snapshotRackSlots = rackSlots
         }
         snapshotMelds = tableMelds
         workingMelds = tableMelds
@@ -13430,6 +13723,7 @@ final class RummikubEngine: NSObject, ObservableObject {
             workingHand = seats[mySeatIndex].hand
             snapshotMelds = tableMelds
             workingMelds = tableMelds
+            snapshotRackSlots = rackSlots
             isEditingTable = true
         }
     }
@@ -13438,10 +13732,12 @@ final class RummikubEngine: NSObject, ObservableObject {
         if isEditingTable {
             workingHand = snapshotHand
             workingMelds = snapshotMelds
+            rackSlots = snapshotRackSlots
             selectedTileIds.removeAll()
             selectedTableMeldId = nil
+            liftedSlotIndex = nil
             isEditingTable = false
-            statusBanner = "↩️ 已复原到本回合初始牌面"
+            statusBanner = "↩️ 已复原到本回合初始牌面与牌架位置"
         }
     }
 
@@ -13459,6 +13755,7 @@ final class RummikubEngine: NSObject, ObservableObject {
             return
         }
         workingHand.removeAll { selectedTileIds.contains($0.id) }
+        for i in 0..<rackSlots.count { if let t = rackSlots[i], selectedTileIds.contains(t.id) { rackSlots[i] = nil } }
         workingMelds.append(RmkMeld(id: UUID().uuidString, tiles: picked))
         selectedTileIds.removeAll()
         statusBanner = "✅ 已暂放牌组到桌面（点击【确认出牌】完成回合）"
@@ -13479,6 +13776,7 @@ final class RummikubEngine: NSObject, ObservableObject {
             return
         }
         workingHand.removeAll { selectedTileIds.contains($0.id) }
+        for i in 0..<rackSlots.count { if let t = rackSlots[i], selectedTileIds.contains(t.id) { rackSlots[i] = nil } }
         workingMelds[idx].tiles = combined.sorted { $0.number < $1.number }
         selectedTileIds.removeAll()
         statusBanner = "✅ 已将选牌并入桌面牌组（点击【确认出牌】完成回合）"
@@ -13497,6 +13795,7 @@ final class RummikubEngine: NSObject, ObservableObject {
         }
         let popped = workingMelds[idx].tiles.removeLast()
         workingHand.append(popped)
+        syncRackFromHand(workingHand, preserveExistingPositions: true)
         selectedTileIds.insert(popped.id)
         statusBanner = "🔄 已从牌组拆出 1 张牌，请配合手牌组成新牌组后【确认出牌】"
     }
@@ -13551,13 +13850,21 @@ final class RummikubEngine: NSObject, ObservableObject {
     }
 
     func drawTilePassTapped() {
-        guard currentTurnSeat == mySeatIndex, phase == .playing else { return }
+        guard currentTurnSeat == mySeatIndex, phase == .playing, !isDrawingAnimation else { return }
         restoreWorkspaceSnapshot()
-        if (isOnlineConnected || !connectedPeerNames.isEmpty) && !isRoomAuthority {
-            sendPacket(RmkNetPacket(kind: .drawTileAction, roomCode: wireRoomCode(), senderPeerName: myPeerName, senderCharId: myCharacter.charId))
-            return
+        isDrawingAnimation = true
+        drawingAnimatedTile = pool.first ?? RmkTile(id: "anim_draw", color: .red, number: 7)
+        statusBanner = "🃏 正在从牌堆摸取 1 张新牌 (1.5秒摸牌动画)..."
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+            guard let self = self else { return }
+            self.isDrawingAnimation = false
+            self.drawingAnimatedTile = nil
+            if (self.isOnlineConnected || !self.connectedPeerNames.isEmpty) && !self.isRoomAuthority {
+                self.sendPacket(RmkNetPacket(kind: .drawTileAction, roomCode: self.wireRoomCode(), senderPeerName: self.myPeerName, senderCharId: self.myCharacter.charId))
+                return
+            }
+            self.executeDrawAndAdvance(seatIdx: self.mySeatIndex, reason: "摸牌结束回合")
         }
-        executeDrawAndAdvance(seatIdx: mySeatIndex, reason: "摸牌结束回合")
     }
 
     private func executeCommitTurn(seatIdx: Int, newMelds: [RmkMeld], playedHandIds: [String]) {
@@ -13584,7 +13891,6 @@ final class RummikubEngine: NSObject, ObservableObject {
         if !pool.isEmpty {
             let t = pool.removeFirst()
             seats[seatIdx].hand.append(t)
-            seats[seatIdx].hand = sortHandTiles(seats[seatIdx].hand)
             poolCount = pool.count
         }
         isEditingTable = false
