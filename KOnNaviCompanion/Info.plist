@@ -139,6 +139,10 @@
 	<array>
 		<string>_kon-ddz._tcp</string>
 		<string>_kon-ddz._udp</string>
+		<string>_kon-mj._tcp</string>
+		<string>_kon-mj._udp</string>
+		<string>_kon-rmk._tcp</string>
+		<string>_kon-rmk._udp</string>
 	</array>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>用于实时获取行车速度、行进方向并在超速时触发轻音少女语音预警</string>

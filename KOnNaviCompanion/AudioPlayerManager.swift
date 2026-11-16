@@ -13009,7 +13009,7 @@ final class RummikubEngine: NSObject, ObservableObject {
         didSet {
             if phase == .lobby {
                 rebuildLobbySeats()
-                if isOnlineConnected && isRoomAuthority {
+                if (isOnlineConnected || isHostingRoom || !connectedPeerNames.isEmpty) && isRoomAuthority {
                     sendPacket(RmkNetPacket(kind: .roomRoster, roomCode: wireRoomCode(), senderPeerName: myPeerName, senderCharId: myCharacter.charId, maxPlayers: roomPlayerCount, hostPeerName: myPeerName, roomPeers: orderedRoomPeers))
                     broadcastFullState()
                 }
@@ -13034,10 +13034,18 @@ final class RummikubEngine: NSObject, ObservableObject {
     @Published var myCharacter: AudioPlayerManager.CharacterFilter = .yui {
         didSet { rebuildLobbySeats() }
     }
+    enum NetworkMode: String, CaseIterable {
+        case localLAN
+        case onlineServer
+    }
+
+    @Published var networkMode: NetworkMode = .onlineServer
     @Published var roomCode: String = ""
     @Published var customServerURL: String = "wss://azusa.online/ddz"
     @Published var isOnlineConnected: Bool = false
     @Published var isHostingRoom: Bool = false
+    @Published var isBrowsingRooms: Bool = false
+    @Published var discoveredRooms: [DoudizhuDiscoveredRoom] = []
     @Published var isRoomAuthority: Bool = true
     @Published var connectedPeerNames: [String] = []
     @Published var currentRound: Int = 1
@@ -13048,8 +13056,13 @@ final class RummikubEngine: NSObject, ObservableObject {
     private var snapshotMelds: [RmkMeld] = []
     private var snapshotHand: [RmkTile] = []
 
+    private let serviceType = "kon-rmk"
     private var pool: [RmkTile] = []
     private var myPeerName: String = ""
+    private var myPeerID: MCPeerID = MCPeerID(displayName: "HTT-Rmk")
+    private var mcSession: MCSession?
+    private var advertiser: MCNearbyServiceAdvertiser?
+    private var browser: MCNearbyServiceBrowser?
     private var orderedRoomPeers: [DoudizhuRoomPeer] = []
     private var webSocketTask: URLSessionWebSocketTask?
     private var wsPingTimer: Timer?
@@ -13143,6 +13156,71 @@ final class RummikubEngine: NSObject, ObservableObject {
         seats = newSeats
     }
 
+    func startHostingFaceToFaceRoom() {
+        let code = roomCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !code.isEmpty else {
+            statusBanner = "⚠️ 请先填写房号再创建面对面房间！"
+            return
+        }
+        stopNetworking()
+        roomCode = code
+        currentRound = 1
+        myPeerName = "\(cleanNick())#\(Int.random(in: 100...999))"
+        myPeerID = MCPeerID(displayName: myPeerName)
+        orderedRoomPeers = [DoudizhuRoomPeer(name: myPeerName, charId: myCharacter.charId, displayName: cleanNick())]
+        isHostingRoom = true
+        isRoomAuthority = true
+        isBrowsingRooms = false
+        mySeatIndex = 0
+
+        let session = MCSession(peer: myPeerID, securityIdentity: nil, encryptionPreference: .optional)
+        session.delegate = self
+        self.mcSession = session
+        let adv = MCNearbyServiceAdvertiser(peer: myPeerID, discoveryInfo: ["code": code, "host": cleanNick(), "char": "\(myCharacter.charId)", "max": "\(roomPlayerCount)"], serviceType: serviceType)
+        adv.delegate = self
+        adv.startAdvertisingPeer()
+        self.advertiser = adv
+        rebuildLobbySeats()
+        statusBanner = "🔢 面对面拉密房间 [\(code)] 已创建 (\(roomPlayerCount)人局 · 仅限 iOS 设备近距离直连)"
+        AudioPlayerManager.shared.playMascotVoice(for: myCharacter)
+    }
+
+    func startScanningFaceToFaceRooms() {
+        let code = roomCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !code.isEmpty else {
+            statusBanner = "⚠️ 请先填写房号再扫描附近房间！"
+            return
+        }
+        stopNetworking()
+        roomCode = code
+        isHostingRoom = false
+        isBrowsingRooms = true
+        discoveredRooms.removeAll()
+        myPeerName = "\(cleanNick())#\(Int.random(in: 100...999))"
+        myPeerID = MCPeerID(displayName: myPeerName)
+        let session = MCSession(peer: myPeerID, securityIdentity: nil, encryptionPreference: .optional)
+        session.delegate = self
+        self.mcSession = session
+        let brw = MCNearbyServiceBrowser(peer: myPeerID, serviceType: serviceType)
+        brw.delegate = self
+        brw.startBrowsingForPeers()
+        self.browser = brw
+        statusBanner = "🔍 正在扫描房号 [\(code)] 的面对面拉密房间..."
+    }
+
+    func joinDiscoveredRoom(_ room: DoudizhuDiscoveredRoom) {
+        isRoomAuthority = false
+        let code = roomCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !code.isEmpty && room.roomCode == code else {
+            statusBanner = "⚠️ 房号不匹配！"
+            return
+        }
+        guard let brw = browser, let session = mcSession else { return }
+        statusBanner = "🔗 正在加入 [\(room.hostName)] 的面对面拉密房间..."
+        let ctx = try? JSONEncoder().encode(["name": myPeerName, "char": "\(myCharacter.charId)", "code": room.roomCode])
+        brw.invitePeer(room.peerID, to: session, withContext: ctx, timeout: 15)
+    }
+
     func connectOnlineServerRoom() {
         let code = roomCode.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !code.isEmpty, let url = URL(string: customServerURL.trimmingCharacters(in: .whitespacesAndNewlines)) else {
@@ -13175,7 +13253,7 @@ final class RummikubEngine: NSObject, ObservableObject {
     func leaveCurrentRoomAndReset() {
         aiWorkItem?.cancel()
         turnTimer?.invalidate()
-        if isOnlineConnected, !wireRoomCode().isEmpty {
+        if (isOnlineConnected || isHostingRoom || !connectedPeerNames.isEmpty), !wireRoomCode().isEmpty {
             sendPacket(RmkNetPacket(kind: .leaveRoom, roomCode: wireRoomCode(), senderPeerName: myPeerName, senderCharId: myCharacter.charId))
         }
         stopNetworking()
@@ -13188,7 +13266,11 @@ final class RummikubEngine: NSObject, ObservableObject {
     private func stopNetworking() {
         wsPingTimer?.invalidate(); wsPingTimer = nil
         webSocketTask?.cancel(with: .goingAway, reason: nil); webSocketTask = nil
-        isOnlineConnected = false; isHostingRoom = false
+        advertiser?.stopAdvertisingPeer(); advertiser = nil
+        browser?.stopBrowsingForPeers(); browser = nil
+        mcSession?.disconnect(); mcSession = nil
+        discoveredRooms.removeAll()
+        isOnlineConnected = false; isHostingRoom = false; isBrowsingRooms = false
         connectedPeerNames = []; orderedRoomPeers = []
     }
 
@@ -13211,11 +13293,17 @@ final class RummikubEngine: NSObject, ObservableObject {
 
     private func sendPacket(_ pkt: RmkNetPacket) {
         guard let data = try? JSONEncoder().encode(pkt) else { return }
-        webSocketTask?.send(.data(data)) { _ in }
+        if isOnlineConnected, let ws = webSocketTask {
+            ws.send(.data(data)) { _ in }
+        }
+        if let session = mcSession, !session.connectedPeers.isEmpty {
+            try? session.send(data, toPeers: session.connectedPeers, with: .reliable)
+        }
     }
 
     private func broadcastFullState() {
-        guard isOnlineConnected, isRoomAuthority, !wireRoomCode().isEmpty else { return }
+        let inRoom = isOnlineConnected || isHostingRoom || !connectedPeerNames.isEmpty
+        guard inRoom, isRoomAuthority, !wireRoomCode().isEmpty else { return }
         sendPacket(RmkNetPacket(
             kind: .stateSync, roomCode: wireRoomCode(), senderPeerName: myPeerName, senderCharId: myCharacter.charId,
             maxPlayers: roomPlayerCount, hostPeerName: myPeerName, roomPeers: orderedRoomPeers, seats: seats, tableMelds: tableMelds,
@@ -13288,7 +13376,7 @@ final class RummikubEngine: NSObject, ObservableObject {
     }
 
     func startNewRound() {
-        if isOnlineConnected && !isRoomAuthority { return }
+        if (isOnlineConnected || !connectedPeerNames.isEmpty) && !isRoomAuthority { return }
         rebuildLobbySeats()
         let pCnt = max(2, min(4, seats.count))
         pool = RummikubEngine.build106Deck()
@@ -13454,7 +13542,7 @@ final class RummikubEngine: NSObject, ObservableObject {
             }
         }
 
-        if isOnlineConnected && !isRoomAuthority {
+        if (isOnlineConnected || !connectedPeerNames.isEmpty) && !isRoomAuthority {
             sendPacket(RmkNetPacket(kind: .commitTurnAction, roomCode: wireRoomCode(), senderPeerName: myPeerName, senderCharId: myCharacter.charId, tableMelds: workingMelds, committedHandIds: playedIds))
             isEditingTable = false
             return
@@ -13465,7 +13553,7 @@ final class RummikubEngine: NSObject, ObservableObject {
     func drawTilePassTapped() {
         guard currentTurnSeat == mySeatIndex, phase == .playing else { return }
         restoreWorkspaceSnapshot()
-        if isOnlineConnected && !isRoomAuthority {
+        if (isOnlineConnected || !connectedPeerNames.isEmpty) && !isRoomAuthority {
             sendPacket(RmkNetPacket(kind: .drawTileAction, roomCode: wireRoomCode(), senderPeerName: myPeerName, senderCharId: myCharacter.charId))
             return
         }
@@ -13526,7 +13614,7 @@ final class RummikubEngine: NSObject, ObservableObject {
 
     private func scheduleAIIfNeeded() {
         aiWorkItem?.cancel()
-        guard !isOnlineConnected || isRoomAuthority else { return }
+        guard !(isOnlineConnected || !connectedPeerNames.isEmpty) || isRoomAuthority else { return }
         guard phase == .playing, currentTurnSeat < seats.count, seats[currentTurnSeat].isAI else { return }
         let seatIdx = currentTurnSeat
         let work = DispatchWorkItem { [weak self] in
@@ -13544,5 +13632,54 @@ final class RummikubEngine: NSObject, ObservableObject {
         }
         aiWorkItem = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: work)
+    }
+}
+
+extension RummikubEngine: MCSessionDelegate, MCNearbyServiceAdvertiserDelegate, MCNearbyServiceBrowserDelegate {
+    func session(_ session: MCSession, peer peerID: MCPeerID, didChange state: MCSessionState) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            self.connectedPeerNames = session.connectedPeers.map { $0.displayName }
+            if state == .connected && !self.isRoomAuthority {
+                self.isBrowsingRooms = false
+                self.browser?.stopBrowsingForPeers()
+                self.sendPacket(RmkNetPacket(kind: .joinRequest, roomCode: self.wireRoomCode(), senderPeerName: self.myPeerName, senderCharId: self.myCharacter.charId, maxPlayers: self.roomPlayerCount))
+            }
+        }
+    }
+    func session(_ session: MCSession, didReceive data: Data, fromPeer peerID: MCPeerID) {
+        if let pkt = try? JSONDecoder().decode(RmkNetPacket.self, from: data) {
+            DispatchQueue.main.async { [weak self] in self?.handlePacket(pkt) }
+        }
+    }
+    func session(_ session: MCSession, didReceive stream: InputStream, withName streamName: String, fromPeer peerID: MCPeerID) {}
+    func session(_ session: MCSession, didStartReceivingResourceWithName resourceName: String, fromPeer peerID: MCPeerID, with progress: Progress) {}
+    func session(_ session: MCSession, didFinishReceivingResourceWithName resourceName: String, fromPeer peerID: MCPeerID, at localURL: URL?, withError error: Error?) {}
+
+    func advertiser(_ advertiser: MCNearbyServiceAdvertiser, didReceiveInvitationFromPeer peerID: MCPeerID, withContext context: Data?, invitationHandler: @escaping (Bool, MCSession?) -> Void) {
+        let cap = max(2, min(4, roomPlayerCount))
+        if orderedRoomPeers.count < cap, let session = mcSession {
+            invitationHandler(true, session)
+        } else {
+            invitationHandler(false, nil)
+        }
+    }
+
+    func browser(_ browser: MCNearbyServiceBrowser, foundPeer peerID: MCPeerID, withDiscoveryInfo info: [String: String]?) {
+        let code = info?["code"] ?? ""
+        let host = info?["host"] ?? peerID.displayName
+        let charId = Int(info?["char"] ?? "1") ?? 1
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            if code == self.roomCode.trimmingCharacters(in: .whitespacesAndNewlines) &&
+               !self.discoveredRooms.contains(where: { $0.peerID == peerID }) {
+                self.discoveredRooms.append(DoudizhuDiscoveredRoom(peerID: peerID, roomCode: code, hostName: host, charId: charId))
+            }
+        }
+    }
+    func browser(_ browser: MCNearbyServiceBrowser, lostPeer peerID: MCPeerID) {
+        DispatchQueue.main.async { [weak self] in
+            self?.discoveredRooms.removeAll { $0.peerID == peerID }
+        }
     }
 }

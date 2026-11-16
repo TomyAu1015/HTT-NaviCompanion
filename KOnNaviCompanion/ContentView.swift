@@ -8106,6 +8106,14 @@ struct KOnDoudizhuSheetView: View {
                 }
                 .buttonStyle(PlainButtonStyle())
             }
+
+            Text("💡 联机说明：面对面(免流量)仅限 iPhone/iPad 之间直连；与 Android / Switch 跨平台同桌请用【在线服务器联机】(可开热点共享网络)")
+                .font(.system(size: 10, weight: .bold))
+                .foregroundColor(httGold.opacity(0.95))
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 8).padding(.vertical, 5)
+                .background(Color.black.opacity(0.35)).cornerRadius(7)
+
             
             // 1. Player Nickname & K-ON! Character Avatar Selection
             VStack(alignment: .leading, spacing: 5) {
@@ -9355,6 +9363,14 @@ struct KOnMahjongSheetView: View {
                         }.buttonStyle(PlainButtonStyle())
                     }
 
+            Text("💡 联机说明：面对面(免流量)仅限 iPhone/iPad 之间直连；与 Android / Switch 跨平台同桌请用【在线服务器联机】(可开热点共享网络)")
+                .font(.system(size: 10, weight: .bold))
+                .foregroundColor(httGold.opacity(0.95))
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 8).padding(.vertical, 5)
+                .background(Color.black.opacity(0.35)).cornerRadius(7)
+
+
                     // 1. Profile
                     VStack(alignment: .leading, spacing: 5) {
                         HStack(spacing: 8) {
@@ -10383,29 +10399,95 @@ struct KOnRummikubSheetView: View {
                     }
                     .padding(8).background(Color.black.opacity(0.45)).cornerRadius(10)
 
+                    HStack(spacing: 8) {
+                        Button(action: { rmk.networkMode = .localLAN }) {
+                            HStack(spacing: 4) {
+                                Image(systemName: "antenna.radiowaves.left.and.right")
+                                Text("面对面开房联机 (免流量)").font(.system(size: 11, weight: .black))
+                            }
+                            .frame(maxWidth: .infinity, minHeight: 28)
+                            .background(rmk.networkMode == .localLAN ? httCrimson : Color.black.opacity(0.45))
+                            .foregroundColor(.white).cornerRadius(8)
+                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(rmk.networkMode == .localLAN ? httGold : .clear, lineWidth: 1.5))
+                        }.buttonStyle(PlainButtonStyle())
+
+                        Button(action: { rmk.networkMode = .onlineServer }) {
+                            HStack(spacing: 4) {
+                                Image(systemName: "icloud.and.arrow.up.fill")
+                                Text("在线服务器联机").font(.system(size: 11, weight: .black))
+                            }
+                            .frame(maxWidth: .infinity, minHeight: 28)
+                            .background(rmk.networkMode == .onlineServer ? Color.blue : Color.black.opacity(0.45))
+                            .foregroundColor(.white).cornerRadius(8)
+                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(rmk.networkMode == .onlineServer ? httGold : .clear, lineWidth: 1.5))
+                        }.buttonStyle(PlainButtonStyle())
+                    }
+
+                    Text("💡 联机说明：面对面(免流量)仅限 iPhone/iPad 之间直连；与 Android / Switch 跨平台同桌请用【在线服务器联机】(可开热点共享网络)")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundColor(httGold.opacity(0.95))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 8).padding(.vertical, 5)
+                        .background(Color.black.opacity(0.35)).cornerRadius(7)
+
                     VStack(alignment: .leading, spacing: 6) {
                         HStack {
-                            Text("2. 跨平台远程联机 (2~4人拉密数字牌)").font(.system(size: 12, weight: .black)).foregroundColor(httGold)
+                            Text(rmk.networkMode == .localLAN ? "2. 面对面开房联机 (iOS 近距离免流量)" : "2. 跨平台远程联机 (2~4人拉密数字牌)")
+                                .font(.system(size: 12, weight: .black)).foregroundColor(httGold)
                             Spacer()
                             Text("房号:").font(.system(size: 11, weight: .bold)).foregroundColor(.white)
                             TextField("必填房号", text: $rmk.roomCode)
                                 .font(.system(size: 12, weight: .black, design: .monospaced)).foregroundColor(httGold)
                                 .frame(width: 72).padding(4).background(Color.white.opacity(0.14)).cornerRadius(6)
                         }
-                        HStack(spacing: 6) {
-                            TextField("wss://azusa.online/ddz", text: $rmk.customServerURL)
-                                .font(.system(size: 11, design: .monospaced)).foregroundColor(.white)
-                                .padding(6).background(Color.white.opacity(0.12)).cornerRadius(6)
-                            Button(action: { rmk.connectOnlineServerRoom() }) {
-                                Text(rmk.isOnlineConnected ? "已连(\(rmk.roomCode))" : "连接房间")
-                                    .font(.system(size: 11, weight: .black)).padding(.horizontal, 10).frame(height: 30)
-                                    .background(rmk.isOnlineConnected ? Color.green : Color.blue).foregroundColor(.white).cornerRadius(8)
-                            }.buttonStyle(PlainButtonStyle())
-                            if rmk.isOnlineConnected {
-                                Button(action: { rmk.leaveCurrentRoomAndReset() }) {
-                                    Text("退出").font(.system(size: 11, weight: .black)).padding(.horizontal, 9).frame(height: 30)
-                                        .background(httCrimson).foregroundColor(.white).cornerRadius(8)
+                        if rmk.networkMode == .localLAN {
+                            HStack(spacing: 6) {
+                                Button(action: { rmk.startHostingFaceToFaceRoom() }) {
+                                    Text(rmk.isHostingRoom ? "已建房(\(rmk.roomCode))" : "创建面对面房间")
+                                        .font(.system(size: 11, weight: .black)).frame(maxWidth: .infinity, minHeight: 30)
+                                        .background(rmk.isHostingRoom ? Color.green : httCrimson).foregroundColor(.white).cornerRadius(8)
                                 }.buttonStyle(PlainButtonStyle())
+                                Button(action: { rmk.startScanningFaceToFaceRooms() }) {
+                                    Text(rmk.isBrowsingRooms ? "扫描中..." : "扫描附近房间")
+                                        .font(.system(size: 11, weight: .black)).frame(maxWidth: .infinity, minHeight: 30)
+                                        .background(Color.blue).foregroundColor(.white).cornerRadius(8)
+                                }.buttonStyle(PlainButtonStyle())
+                                if rmk.isHostingRoom || !rmk.connectedPeerNames.isEmpty {
+                                    Button(action: { rmk.leaveCurrentRoomAndReset() }) {
+                                        Text("退出").font(.system(size: 11, weight: .black)).padding(.horizontal, 9).frame(height: 30)
+                                            .background(Color.gray).foregroundColor(.white).cornerRadius(8)
+                                    }.buttonStyle(PlainButtonStyle())
+                                }
+                            }
+                            if !rmk.discoveredRooms.isEmpty {
+                                ForEach(rmk.discoveredRooms) { room in
+                                    Button(action: { rmk.joinDiscoveredRoom(room) }) {
+                                        HStack {
+                                            Text("📡 \(room.hostName) 的房间 (房号: \(room.roomCode))")
+                                                .font(.system(size: 11, weight: .bold)).foregroundColor(.white)
+                                            Spacer()
+                                            Text("点击加入").font(.system(size: 10, weight: .black)).foregroundColor(httGold)
+                                        }
+                                        .padding(6).background(Color.white.opacity(0.12)).cornerRadius(6)
+                                    }.buttonStyle(PlainButtonStyle())
+                                }
+                            }
+                        } else {
+                            HStack(spacing: 6) {
+                                TextField("wss://azusa.online/ddz", text: $rmk.customServerURL)
+                                    .font(.system(size: 11, design: .monospaced)).foregroundColor(.white)
+                                    .padding(6).background(Color.white.opacity(0.12)).cornerRadius(6)
+                                Button(action: { rmk.connectOnlineServerRoom() }) {
+                                    Text(rmk.isOnlineConnected ? "已连(\(rmk.roomCode))" : "连接房间")
+                                        .font(.system(size: 11, weight: .black)).padding(.horizontal, 10).frame(height: 30)
+                                        .background(rmk.isOnlineConnected ? Color.green : Color.blue).foregroundColor(.white).cornerRadius(8)
+                                }.buttonStyle(PlainButtonStyle())
+                                if rmk.isOnlineConnected {
+                                    Button(action: { rmk.leaveCurrentRoomAndReset() }) {
+                                        Text("退出").font(.system(size: 11, weight: .black)).padding(.horizontal, 9).frame(height: 30)
+                                            .background(httCrimson).foregroundColor(.white).cornerRadius(8)
+                                    }.buttonStyle(PlainButtonStyle())
+                                }
                             }
                         }
                     }
@@ -10418,7 +10500,7 @@ struct KOnRummikubSheetView: View {
                             Spacer()
                             ForEach([2, 3, 4], id: \.self) { cnt in
                                 Button(action: {
-                                    if !rmk.isOnlineConnected || rmk.isRoomAuthority {
+                                    if !(rmk.isOnlineConnected || !rmk.connectedPeerNames.isEmpty) || rmk.isRoomAuthority {
                                         rmk.roomPlayerCount = cnt
                                     }
                                 }) {
@@ -10458,7 +10540,7 @@ struct KOnRummikubSheetView: View {
                 }
             }
 
-            let isGuestWait = rmk.isOnlineConnected && !rmk.isRoomAuthority
+            let isGuestWait = (rmk.isOnlineConnected || !rmk.connectedPeerNames.isEmpty) && !rmk.isRoomAuthority
             Button(action: { if !isGuestWait { rmk.startNewRound() } }) {
                 HStack(spacing: 6) {
                     if let ic = RummikubEngine.tileImage(for: "icon_rummikub") {
