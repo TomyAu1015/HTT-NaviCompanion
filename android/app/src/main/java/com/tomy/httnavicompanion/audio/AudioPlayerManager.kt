@@ -495,7 +495,6 @@ class AudioPlayerManager(
 
     val doudizhuEngine: DoudizhuEngine by lazy { DoudizhuEngine(context, this) }
     val mahjongEngine: MahjongEngine by lazy { MahjongEngine(context, this) }
-    val ludoEngine: AeroplaneChessEngine by lazy { AeroplaneChessEngine(context, this) }
     val rummikubEngine: RummikubEngine by lazy { RummikubEngine(context, this) }
 
     @Volatile var isAppInForeground: Boolean = true

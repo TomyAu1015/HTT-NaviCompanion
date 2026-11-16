@@ -1,6 +1,8 @@
 package com.tomy.httnavicompanion.audio
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.os.Handler
 import android.os.Looper
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -11,10 +13,11 @@ import okio.ByteString
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
+import java.util.zip.ZipInputStream
 import kotlin.random.Random
 
 enum class RmkColor(val code: String, val labelZh: String) {
-    RED("R", "红"), BLUE("B", "蓝"), YELLOW("Y", "黄"), BLACK("K", "黑"), JOKER("J", "鬼");
+    RED("R", "红"), BLUE("B", "蓝"), YELLOW("Y", "黄"), BLACK("K", "绿"), JOKER("J", "百搭");
     companion object {
         fun fromCode(c: String): RmkColor = values().firstOrNull { it.code == c } ?: RED
     }
@@ -22,6 +25,20 @@ enum class RmkColor(val code: String, val labelZh: String) {
 
 data class RmkTile(val id: String, val color: RmkColor, val number: Int) {
     val isJoker: Boolean get() = color == RmkColor.JOKER
+
+    val assetFileName: String
+        get() {
+            if (isJoker) return "rmk_joker.png"
+            val cIdx = when (color) {
+                RmkColor.RED -> 1
+                RmkColor.BLUE -> 2
+                RmkColor.YELLOW -> 3
+                RmkColor.BLACK -> 4
+                RmkColor.JOKER -> 5
+            }
+            val n = number.coerceIn(1, 13)
+            return "rmk_${cIdx}_${n}.png"
+        }
 }
 
 data class RmkMeld(val id: String, val tiles: List<RmkTile>)
@@ -127,9 +144,13 @@ class RummikubEngine(
     private val mainHandler = Handler(Looper.getMainLooper())
     private val prefs = context.getSharedPreferences("HTT_Rmk", Context.MODE_PRIVATE)
     private val httpClient = OkHttpClient()
+    private val rmkBitmaps = HashMap<String, Bitmap>()
 
     private val _phase = MutableStateFlow(RmkGamePhase.LOBBY)
     val phase: StateFlow<RmkGamePhase> = _phase.asStateFlow()
+
+    private val _roomPlayerCount = MutableStateFlow(4)
+    val roomPlayerCount: StateFlow<Int> = _roomPlayerCount.asStateFlow()
 
     private val _seats = MutableStateFlow<List<RmkSeat>>(emptyList())
     val seats: StateFlow<List<RmkSeat>> = _seats.asStateFlow()
@@ -152,7 +173,7 @@ class RummikubEngine(
     private val _turnRemainingSeconds = MutableStateFlow(60)
     val turnRemainingSeconds: StateFlow<Int> = _turnRemainingSeconds.asStateFlow()
 
-    private val _statusBanner = MutableStateFlow("欢迎来到拉密数字牌 (106张 · 30分破冰 · 60秒限时)")
+    private val _statusBanner = MutableStateFlow("欢迎来到轻音拉密数字牌 (2~4人自由开房 · 30分破冰 · 60秒限时)")
     val statusBanner: StateFlow<String> = _statusBanner.asStateFlow()
 
     private val _sortByColor = MutableStateFlow(false)
@@ -202,8 +223,34 @@ class RummikubEngine(
 
     init {
         myPeerName = "${cleanNick()}#${Random.nextInt(100, 999)}"
+        loadRmkAssets()
         rebuildLobbySeats()
     }
+
+    private fun loadRmkAssets() {
+        Thread {
+            try {
+                context.assets.open("doudizhu_cards.zip").use { fis ->
+                    ZipInputStream(fis).use { zis ->
+                        var entry = zis.nextEntry
+                        while (entry != null) {
+                            val name = entry.name.substringAfterLast("/")
+                            if (name.startsWith("rmk_") || name == "icon_rummikub.png") {
+                                val bytes = zis.readBytes()
+                                BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.let { bmp ->
+                                    synchronized(rmkBitmaps) { rmkBitmaps[name] = bmp }
+                                }
+                            }
+                            zis.closeEntry()
+                            entry = zis.nextEntry
+                        }
+                    }
+                }
+            } catch (_: Exception) {}
+        }.start()
+    }
+
+    fun getAssetBitmap(name: String): Bitmap? = synchronized(rmkBitmaps) { rmkBitmaps[name] }
 
     private fun cleanNick(): String = _myNickname.value.trim().ifEmpty { "轻音车友" }
     private fun cleanPeer(raw: String): String = raw.substringBeforeLast("#").trim().ifEmpty { raw }
@@ -213,6 +260,17 @@ class RummikubEngine(
     fun setCharacter(c: CharacterFilter) { _myCharacter.value = c; rebuildLobbySeats() }
     fun setRoomCode(c: String) { _roomCode.value = c }
     fun setServerUrl(u: String) { _serverUrl.value = u }
+    fun setRoomPlayerCount(cnt: Int) {
+        val c = cnt.coerceIn(2, 4)
+        if (_roomPlayerCount.value != c && _phase.value == RmkGamePhase.LOBBY) {
+            _roomPlayerCount.value = c
+            rebuildLobbySeats()
+            if (_isServerConnected.value && _isRoomAuthority.value) {
+                broadcastRoster()
+                broadcastFullState()
+            }
+        }
+    }
 
     private fun build106Deck(): List<RmkTile> {
         val deck = ArrayList<RmkTile>(106)
@@ -248,6 +306,7 @@ class RummikubEngine(
     }
 
     fun rebuildLobbySeats() {
+        val cap = _roomPlayerCount.value.coerceIn(2, 4)
         if (orderedRoomPeers.isEmpty()) orderedRoomPeers.add(Triple(myPeerName, _myCharacter.value.charId, cleanNick()))
         else {
             val idx = orderedRoomPeers.indexOfFirst { it.first == myPeerName }
@@ -255,9 +314,9 @@ class RummikubEngine(
         }
         _isRoomAuthority.value = (orderedRoomPeers.first().first == myPeerName)
         val used = HashSet<Int>()
-        val list = ArrayList<RmkSeat>(4)
+        val list = ArrayList<RmkSeat>(cap)
         val old = _seats.value
-        for (i in 0 until 4) {
+        for (i in 0 until cap) {
             val ps = old.getOrNull(i)?.score ?: 1000
             if (i < orderedRoomPeers.size) {
                 val rp = orderedRoomPeers[i]
@@ -298,9 +357,21 @@ class RummikubEngine(
         webSocket?.send(JSONObject().apply {
             put("kind", "joinRequest"); put("roomCode", wc)
             put("senderPeerName", myPeerName); put("senderCharId", _myCharacter.value.charId)
-            put("maxPlayers", 4); put("gameType", "rummikub")
+            put("maxPlayers", _roomPlayerCount.value); put("gameType", "rummikub")
         }.toString())
-        _statusBanner.value = "✅ 已连接拉密数字牌房间 [${_roomCode.value}]"
+        _statusBanner.value = "✅ 已连接拉密数字牌房间 [${_roomCode.value}] (${_roomPlayerCount.value}人局 · 真人进房自动替换AI)"
+    }
+
+    private fun broadcastRoster() {
+        if (!_isServerConnected.value || !_isRoomAuthority.value || wireRoomCode().isEmpty()) return
+        val peersArr = JSONArray()
+        orderedRoomPeers.forEach { rp -> peersArr.put(JSONObject().apply { put("name", rp.first); put("charId", rp.second); put("displayName", rp.third) }) }
+        webSocket?.send(JSONObject().apply {
+            put("kind", "roomRoster"); put("roomCode", wireRoomCode())
+            put("senderPeerName", myPeerName); put("senderCharId", _myCharacter.value.charId)
+            put("maxPlayers", _roomPlayerCount.value)
+            put("hostPeerName", myPeerName); put("roomPeers", peersArr)
+        }.toString())
     }
 
     fun leaveRoomAndResetLobby() {
@@ -350,6 +421,7 @@ class RummikubEngine(
         webSocket?.send(JSONObject().apply {
             put("kind", "stateSync"); put("roomCode", wireRoomCode())
             put("senderPeerName", myPeerName); put("senderCharId", _myCharacter.value.charId)
+            put("maxPlayers", _roomPlayerCount.value); put("gameType", "rummikub")
             put("hostPeerName", myPeerName); put("roomPeers", peersArr); put("seats", seatsArr); put("tableMelds", meldsArr)
             put("poolCount", _poolCount.value)
             put("phase", when (_phase.value) { RmkGamePhase.LOBBY -> "lobby"; RmkGamePhase.PLAYING -> "playing"; RmkGamePhase.ROUND_OVER -> "roundOver" })
@@ -366,6 +438,8 @@ class RummikubEngine(
             val sChar = obj.optInt("senderCharId", 1)
             when (kind) {
                 "roomRoster" -> {
+                    val mp = obj.optInt("maxPlayers", 0)
+                    if (mp in 2..4) _roomPlayerCount.value = mp
                     val rpArr = obj.optJSONArray("roomPeers") ?: return
                     val list = mutableListOf<Triple<String, Int, String>>()
                     for (i in 0 until rpArr.length()) {
@@ -380,16 +454,12 @@ class RummikubEngine(
                 }
                 "joinRequest" -> {
                     if (sender == myPeerName) return
-                    if (_isRoomAuthority.value && orderedRoomPeers.none { it.first == sender } && orderedRoomPeers.size < 4) {
+                    val cap = _roomPlayerCount.value.coerceIn(2, 4)
+                    if (_isRoomAuthority.value && orderedRoomPeers.none { it.first == sender } && orderedRoomPeers.size < cap) {
                         orderedRoomPeers.add(Triple(sender, sChar, cleanPeer(sender)))
                         rebuildLobbySeats()
-                        val peersArr = JSONArray()
-                        orderedRoomPeers.forEach { rp -> peersArr.put(JSONObject().apply { put("name", rp.first); put("charId", rp.second); put("displayName", rp.third) }) }
-                        webSocket?.send(JSONObject().apply {
-                            put("kind", "roomRoster"); put("roomCode", wireRoomCode())
-                            put("senderPeerName", myPeerName); put("senderCharId", _myCharacter.value.charId)
-                            put("hostPeerName", myPeerName); put("roomPeers", peersArr)
-                        }.toString())
+                        _statusBanner.value = "🎉 跨平台玩家 [${cleanPeer(sender)}] 加入房间 (已自动替换 AI 座位)"
+                        broadcastRoster()
                         broadcastFullState()
                     }
                 }
@@ -401,9 +471,12 @@ class RummikubEngine(
                 }
                 "stateSync" -> {
                     if (sender == myPeerName) return
+                    val mp = obj.optInt("maxPlayers", 0)
+                    if (mp in 2..4) _roomPlayerCount.value = mp
                     _isRoomAuthority.value = (obj.optString("hostPeerName") == myPeerName)
                     val sArr = obj.optJSONArray("seats")
                     if (sArr != null) {
+                        if (sArr.length() in 2..4) _roomPlayerCount.value = sArr.length()
                         val list = ArrayList<RmkSeat>()
                         for (i in 0 until sArr.length()) {
                             val so = sArr.getJSONObject(i)
@@ -455,13 +528,15 @@ class RummikubEngine(
                             val ms = ArrayList<RmkMeld>()
                             for (i in 0 until mArr.length()) {
                                 val mo = mArr.getJSONObject(i)
-                                val tArr = mo.optJSONArray("tiles") ?: continue
-                                val ts = (0 until tArr.length()).map { tileFromJson(tArr.getJSONObject(it)) }
+                                val tArr = mo.optJSONArray("tiles")
+                                val ts = ArrayList<RmkTile>()
+                                if (tArr != null) for (k in 0 until tArr.length()) ts.add(tileFromJson(tArr.getJSONObject(k)))
                                 ms.add(RmkMeld(mo.optString("id"), ts))
                             }
                             val pArr = obj.optJSONArray("committedHandIds") ?: return
-                            val ids = (0 until pArr.length()).map { pArr.getString(it) }
-                            executeCommitTurn(idx, ms, ids)
+                            val pids = HashSet<String>()
+                            for (i in 0 until pArr.length()) pids.add(pArr.getString(i))
+                            executeCommitTurn(idx, ms, pids)
                         }
                     }
                 }
@@ -472,10 +547,11 @@ class RummikubEngine(
     fun startNewRound() {
         if (_isServerConnected.value && !_isRoomAuthority.value) return
         rebuildLobbySeats()
+        val pCnt = _seats.value.size.coerceIn(2, 4)
         pool.clear()
         pool.addAll(build106Deck())
         val list = _seats.value.toMutableList()
-        for (i in 0 until 4) {
+        for (i in 0 until pCnt) {
             val dealt = pool.take(14)
             repeat(14) { pool.removeAt(0) }
             list[i] = list[i].copy(hand = sortHand(dealt), hasBrokenIce = false)
@@ -483,19 +559,24 @@ class RummikubEngine(
         _seats.value = list
         _poolCount.value = pool.size
         _tableMelds.value = emptyList()
-        _currentTurnSeat.value = (_currentRound.value - 1) % 4
+        _currentTurnSeat.value = (_currentRound.value - 1) % pCnt
         _phase.value = RmkGamePhase.PLAYING
         resetWorkspaceForNewTurn()
-        _statusBanner.value = "🔢 第 ${_currentRound.value} 局发牌完成！轮到 [${list[_currentTurnSeat.value].name}] 出牌 (≥30分破冰)"
+        _statusBanner.value = "🔢 第 ${_currentRound.value} 局发牌完成 (${pCnt}人局)！轮到 [${list[_currentTurnSeat.value].name}] 出牌 (需≥30分破冰)"
         startTurnTimer()
         broadcastFullState()
-        scheduleAIIfNeeded()
+        scheduleAiTurnIfNeeded()
+    }
+
+    fun nextRound() {
+        _currentRound.value += 1
+        startNewRound()
     }
 
     private fun startTurnTimer() {
         timerRunnable?.let { mainHandler.removeCallbacks(it) }
         _turnRemainingSeconds.value = 60
-        val tick = object : Runnable {
+        val r = object : Runnable {
             override fun run() {
                 if (_phase.value != RmkGamePhase.PLAYING) return
                 if (_turnRemainingSeconds.value > 0) {
@@ -503,15 +584,15 @@ class RummikubEngine(
                     mainHandler.postDelayed(this, 1000L)
                 } else if (!_isServerConnected.value || _isRoomAuthority.value) {
                     restoreWorkspaceSnapshot()
-                    executeDrawAndAdvance(_currentTurnSeat.value, "⏰ 60秒超时复原并罚抽1张")
+                    executeDrawAndAdvance(_currentTurnSeat.value, "⏰ 60秒超时复原桌面并罚抽1张")
                 }
             }
         }
-        timerRunnable = tick
-        mainHandler.postDelayed(tick, 1000L)
+        timerRunnable = r
+        mainHandler.postDelayed(r, 1000L)
     }
 
-    private fun resetWorkspaceForNewTurn() {
+    fun resetWorkspaceForNewTurn() {
         _selectedTileIds.value = emptySet()
         _isEditingTable.value = false
         val myHand = _seats.value.getOrNull(_mySeatIndex.value)?.hand ?: emptyList()
@@ -521,12 +602,13 @@ class RummikubEngine(
         _workingMelds.value = _tableMelds.value
     }
 
-    private fun beginOrEnsureWorkspace() {
+    private fun ensureWorkspace() {
         if (!_isEditingTable.value) {
-            snapshotHand = _seats.value.getOrNull(_mySeatIndex.value)?.hand ?: emptyList()
-            _workingHand.value = snapshotHand
+            val myHand = _seats.value.getOrNull(_mySeatIndex.value)?.hand ?: emptyList()
+            snapshotHand = myHand
+            _workingHand.value = myHand
             snapshotMelds = _tableMelds.value
-            _workingMelds.value = snapshotMelds
+            _workingMelds.value = _tableMelds.value
             _isEditingTable.value = true
         }
     }
@@ -548,9 +630,10 @@ class RummikubEngine(
     }
 
     fun placeSelectedAsNewMeld() {
-        if (_currentTurnSeat.value != _mySeatIndex.value || _phase.value != RmkGamePhase.PLAYING || _selectedTileIds.value.isEmpty()) return
-        beginOrEnsureWorkspace()
+        if (_currentTurnSeat.value != _mySeatIndex.value || _phase.value != RmkGamePhase.PLAYING) return
         val sel = _selectedTileIds.value
+        if (sel.isEmpty()) return
+        ensureWorkspace()
         val picked = _workingHand.value.filter { sel.contains(it.id) }
         if (RmkEvaluator.evaluateMeld(picked) == null) {
             _statusBanner.value = "⚠️ 所选牌未能组成有效顺组或群组 (需≥3张)"
@@ -563,95 +646,102 @@ class RummikubEngine(
     }
 
     fun addSelectedToTableMeld(meldId: String) {
-        if (_currentTurnSeat.value != _mySeatIndex.value || _phase.value != RmkGamePhase.PLAYING || _selectedTileIds.value.isEmpty()) return
-        if (!_seats.value[_mySeatIndex.value].hasBrokenIce) {
-            _statusBanner.value = "⚠️ 尚未破冰！首次出牌只能出自己牌架的牌且 ≥30 分"
+        if (_currentTurnSeat.value != _mySeatIndex.value || _phase.value != RmkGamePhase.PLAYING) return
+        val sel = _selectedTileIds.value
+        if (sel.isEmpty()) return
+        if (_seats.value.getOrNull(_mySeatIndex.value)?.hasBrokenIce != true) {
+            _statusBanner.value = "⚠️ 尚未破冰！首次出牌只能使用自己牌架的牌且总和 ≥30 分"
             return
         }
-        beginOrEnsureWorkspace()
-        val ms = _workingMelds.value.toMutableList()
-        val idx = ms.indexOfFirst { it.id == meldId }
+        ensureWorkspace()
+        val idx = _workingMelds.value.indexOfFirst { it.id == meldId }
         if (idx < 0) return
-        val sel = _selectedTileIds.value
         val picked = _workingHand.value.filter { sel.contains(it.id) }
-        val combined = ms[idx].tiles + picked
-        if (RmkEvaluator.evaluateMeld(combined) == null) {
-            _statusBanner.value = "⚠️ 添牌后不符合群组或顺组规则"
+        val comb = _workingMelds.value[idx].tiles + picked
+        if (RmkEvaluator.evaluateMeld(comb) == null) {
+            _statusBanner.value = "⚠️ 添牌后该牌组不符合群组或顺组规则"
             return
         }
         _workingHand.value = _workingHand.value.filterNot { sel.contains(it.id) }
-        ms[idx] = ms[idx].copy(tiles = combined.sortedBy { it.number })
+        val ms = _workingMelds.value.toMutableList()
+        ms[idx] = ms[idx].copy(tiles = comb.sortedBy { it.number })
         _workingMelds.value = ms
         _selectedTileIds.value = emptySet()
-        _statusBanner.value = "✅ 已并入桌面牌组（点击【确认出牌】完成回合）"
+        _statusBanner.value = "✅ 已将选牌并入桌面牌组（点击【确认出牌】完成回合）"
     }
 
     fun splitMeldToWorkspace(meldId: String) {
         if (_currentTurnSeat.value != _mySeatIndex.value || _phase.value != RmkGamePhase.PLAYING) return
-        if (!_seats.value[_mySeatIndex.value].hasBrokenIce) {
+        if (_seats.value.getOrNull(_mySeatIndex.value)?.hasBrokenIce != true) {
             _statusBanner.value = "⚠️ 尚未破冰，不能拆解桌面牌组！"
             return
         }
-        beginOrEnsureWorkspace()
-        val ms = _workingMelds.value.toMutableList()
-        val idx = ms.indexOfFirst { it.id == meldId }
-        if (idx < 0 || ms[idx].tiles.size < 4) {
-            _statusBanner.value = "⚠️ 只有 ≥4 张的牌组才可拆出端牌重组"
+        ensureWorkspace()
+        val idx = _workingMelds.value.indexOfFirst { it.id == meldId }
+        if (idx < 0 || _workingMelds.value[idx].tiles.size < 4) {
+            _statusBanner.value = "⚠️ 只有 ≥4 张的牌组才可直接拆出端牌重组"
             return
         }
+        val ms = _workingMelds.value.toMutableList()
         val popped = ms[idx].tiles.last()
         ms[idx] = ms[idx].copy(tiles = ms[idx].tiles.dropLast(1))
         _workingMelds.value = ms
         _workingHand.value = _workingHand.value + popped
         _selectedTileIds.value = _selectedTileIds.value + popped.id
-        _statusBanner.value = "🔄 已拆出 1 张端牌，请配合手牌重组后【确认出牌】"
+        _statusBanner.value = "🔄 已从牌组拆出 1 张牌，请配合手牌组成新牌组后【确认出牌】"
     }
 
     fun smartHint() {
         if (_currentTurnSeat.value != _mySeatIndex.value || _phase.value != RmkGamePhase.PLAYING) return
-        beginOrEnsureWorkspace()
+        ensureWorkspace()
         val best = RmkEvaluator.findBestMeld(_workingHand.value)
         if (best != null) {
             _selectedTileIds.value = best.map { it.id }.toSet()
-            _statusBanner.value = "💡 已选中推荐牌组（点【放上桌面】即可出牌）"
+            _statusBanner.value = "💡 已为您选中推荐牌组（点【放上桌面】即可出牌）"
         } else {
-            _statusBanner.value = "💡 暂无直出牌组，可拆解桌面或摸牌过"
+            _statusBanner.value = "💡 暂无可直出牌组，可尝试拆解桌面 ≥4 张牌组或摸牌"
         }
     }
 
     fun commitMyTurn() {
         if (_currentTurnSeat.value != _mySeatIndex.value || _phase.value != RmkGamePhase.PLAYING) return
-        beginOrEnsureWorkspace()
+        ensureWorkspace()
         val remIds = _workingHand.value.map { it.id }.toSet()
-        val playedIds = snapshotHand.map { it.id }.filter { !remIds.contains(it) }
-        if (playedIds.isEmpty()) { _statusBanner.value = "⚠️ 尚未打出牌架上的牌"; return }
+        val playedIds = snapshotHand.map { it.id }.filterNot { remIds.contains(it) }.toSet()
+        if (playedIds.isEmpty()) {
+            _statusBanner.value = "⚠️ 本回合尚未打出任何牌架上的牌（若不出请点【摸牌过】）"
+            return
+        }
         for (m in _workingMelds.value) {
             if (RmkEvaluator.evaluateMeld(m.tiles) == null) {
                 _statusBanner.value = "⚠️ 桌面存在无效牌组，请继续重组或点【复原】"
                 return
             }
         }
-        if (!_seats.value[_mySeatIndex.value].hasBrokenIce) {
+        if (_seats.value.getOrNull(_mySeatIndex.value)?.hasBrokenIce != true) {
             if (_workingMelds.value.size <= snapshotMelds.size) {
                 _statusBanner.value = "⚠️ 首次破冰只能出自己牌架的牌组！"
                 return
             }
-            var icePts = 0
+            var pts = 0
             for (i in snapshotMelds.size until _workingMelds.value.size) {
-                icePts += RmkEvaluator.evaluateMeld(_workingMelds.value[i].tiles) ?: 0
+                pts += RmkEvaluator.evaluateMeld(_workingMelds.value[i].tiles) ?: 0
             }
-            if (icePts < 30) {
-                _statusBanner.value = "⚠️ 破冰总分仅 $icePts 分，必须 ≥30 分！"
+            if (pts < 30) {
+                _statusBanner.value = "⚠️ 破冰总分仅 $pts 分，必须 ≥30 分才能首次出牌！"
                 return
             }
         }
+
         if (_isServerConnected.value && !_isRoomAuthority.value) {
             val mArr = JSONArray()
             _workingMelds.value.forEach { m ->
-                val tArr = JSONArray(); m.tiles.forEach { tArr.put(tileToJson(it)) }
+                val tArr = JSONArray()
+                m.tiles.forEach { tArr.put(tileToJson(it)) }
                 mArr.put(JSONObject().apply { put("id", m.id); put("tiles", tArr) })
             }
-            val pArr = JSONArray().apply { playedIds.forEach { put(it) } }
+            val pArr = JSONArray()
+            playedIds.forEach { pArr.put(it) }
             webSocket?.send(JSONObject().apply {
                 put("kind", "commitTurnAction"); put("roomCode", wireRoomCode())
                 put("senderPeerName", myPeerName); put("senderCharId", _myCharacter.value.charId)
@@ -676,23 +766,29 @@ class RummikubEngine(
         executeDrawAndAdvance(_mySeatIndex.value, "摸牌结束回合")
     }
 
-    private fun executeCommitTurn(seatIdx: Int, newMelds: List<RmkMeld>, playedIds: List<String>) {
+    private fun executeCommitTurn(seatIdx: Int, newMelds: List<RmkMeld>, playedIds: Set<String>) {
+        val pCnt = _seats.value.size.coerceAtLeast(2)
         _tableMelds.value = newMelds
         val list = _seats.value.toMutableList()
-        val pSet = playedIds.toSet()
-        list[seatIdx] = list[seatIdx].copy(hand = list[seatIdx].hand.filterNot { pSet.contains(it.id) }, hasBrokenIce = true)
+        val remHand = list[seatIdx].hand.filterNot { playedIds.contains(it.id) }
+        list[seatIdx] = list[seatIdx].copy(hand = remHand, hasBrokenIce = true)
         _seats.value = list
         _isEditingTable.value = false
-        if (list[seatIdx].hand.isEmpty()) { finishRound(seatIdx); return }
-        _currentTurnSeat.value = (seatIdx + 1) % 4
+
+        if (remHand.isEmpty()) {
+            finishRound(seatIdx)
+            return
+        }
+        _currentTurnSeat.value = (seatIdx + 1) % pCnt
         resetWorkspaceForNewTurn()
         _turnRemainingSeconds.value = 60
         _statusBanner.value = "✅ [${list[seatIdx].name}] 出牌 ${playedIds.size} 张！轮到 [${list[_currentTurnSeat.value].name}]"
         broadcastFullState()
-        scheduleAIIfNeeded()
+        scheduleAiTurnIfNeeded()
     }
 
     private fun executeDrawAndAdvance(seatIdx: Int, reason: String) {
+        val pCnt = _seats.value.size.coerceAtLeast(2)
         val list = _seats.value.toMutableList()
         if (pool.isNotEmpty()) {
             val t = pool.removeAt(0)
@@ -701,20 +797,21 @@ class RummikubEngine(
             _poolCount.value = pool.size
         }
         _isEditingTable.value = false
-        _currentTurnSeat.value = (seatIdx + 1) % 4
+        _currentTurnSeat.value = (seatIdx + 1) % pCnt
         resetWorkspaceForNewTurn()
         _turnRemainingSeconds.value = 60
         _statusBanner.value = "[${list[seatIdx].name}] $reason · 轮到 [${list[_currentTurnSeat.value].name}]"
         broadcastFullState()
-        scheduleAIIfNeeded()
+        scheduleAiTurnIfNeeded()
     }
 
     private fun finishRound(winner: Int) {
+        val pCnt = _seats.value.size.coerceAtLeast(2)
         _phase.value = RmkGamePhase.ROUND_OVER
         timerRunnable?.let { mainHandler.removeCallbacks(it) }
         val list = _seats.value.toMutableList()
         var gain = 0
-        for (i in 0 until 4) {
+        for (i in 0 until pCnt) {
             if (i == winner) continue
             val pen = list[i].hand.sumOf { if (it.isJoker) 30 else it.number }
             list[i] = list[i].copy(score = list[i].score - pen)
@@ -722,29 +819,30 @@ class RummikubEngine(
         }
         list[winner] = list[winner].copy(score = list[winner].score + gain)
         _seats.value = list
-        _statusBanner.value = "🏆 [${list[winner].name}] 清空牌架获胜！(+$gain 分)"
+        _statusBanner.value = "🏆 [${list[winner].name}] 清空牌架获胜！(赢得 +$gain 分)"
         broadcastFullState()
     }
 
-    private fun scheduleAIIfNeeded() {
+    private fun scheduleAiTurnIfNeeded() {
         aiRunnable?.let { mainHandler.removeCallbacks(it) }
         if (_isServerConnected.value && !_isRoomAuthority.value) return
-        val sIdx = _currentTurnSeat.value
-        if (_phase.value != RmkGamePhase.PLAYING || _seats.value.getOrNull(sIdx)?.isAI != true) return
-        val r = Runnable {
-            val seat = _seats.value.getOrNull(sIdx) ?: return@Runnable
-            val best = RmkEvaluator.findBestMeld(seat.hand)
-            val pts = best?.let { RmkEvaluator.evaluateMeld(it) } ?: 0
-            if (best != null && (seat.hasBrokenIce || pts >= 30)) {
-                val nm = _tableMelds.value + RmkMeld(UUID.randomUUID().toString(), best)
-                executeCommitTurn(sIdx, nm, best.map { it.id })
-            } else {
-                executeDrawAndAdvance(sIdx, "从共用牌堆摸1张牌")
+        val cur = _currentTurnSeat.value
+        if (_phase.value == RmkGamePhase.PLAYING && _seats.value.getOrNull(cur)?.isAI == true) {
+            val r = Runnable {
+                if (_phase.value == RmkGamePhase.PLAYING && _currentTurnSeat.value == cur) {
+                    val s = _seats.value[cur]
+                    val best = RmkEvaluator.findBestMeld(s.hand)
+                    val pts = if (best != null) RmkEvaluator.evaluateMeld(best) ?: 0 else 0
+                    if (best != null && (s.hasBrokenIce || pts >= 30)) {
+                        val nm = _tableMelds.value + RmkMeld(UUID.randomUUID().toString(), best)
+                        executeCommitTurn(cur, nm, best.map { it.id }.toSet())
+                    } else {
+                        executeDrawAndAdvance(cur, "从共用牌堆摸1张牌")
+                    }
+                }
             }
+            aiRunnable = r
+            mainHandler.postDelayed(r, 1500L)
         }
-        aiRunnable = r
-        mainHandler.postDelayed(r, 1500L)
     }
-
-    fun nextRound() { _currentRound.value += 1; startNewRound() }
 }

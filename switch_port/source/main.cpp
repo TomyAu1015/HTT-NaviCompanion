@@ -45,8 +45,7 @@ enum AppScreenMode {
     MODE_LOBBY = 0,
     MODE_DDZ_TABLE = 1,
     MODE_MJ_TABLE = 2,
-    MODE_LUDO_TABLE = 3,
-    MODE_RMK_TABLE = 4
+    MODE_RMK_TABLE = 3
 };
 
 static SDL_Window*   gWindow = nullptr;
@@ -60,7 +59,7 @@ static std::map<std::string, SDL_Texture*> gTexCache;
 static SwitchWsClient gWs;
 
 static AppScreenMode gScreen = MODE_LOBBY;
-static int gSelectedGame = 0; // 0 = 放课后斗地主(3P), 1 = 广东红中麻将(4P)
+static int gSelectedGame = 0; // 0 = 放课后斗地主(3P), 1 = 广东红中麻将(4P), 2 = 拉密数字牌(2-4P)
 static int gMyCharId = 1;     // 1..5
 static std::string gRoomCode = "";
 static std::string gMyDisplayName = "Switch";
@@ -126,51 +125,11 @@ static bool gMjCanHu = false, gMjCanKong = false, gMjCanPong = false;
 static uint32_t gMjDealStartTick = 0;
 static uint32_t gMjAiNextTick = 0;
 
-
 // ============================================================================
-// 3D 5-Player Aeroplane Chess Runtime State (Tsumugi = Pink, Extensible 2P/3P/4P/5P)
-// ============================================================================
-static LudoBoardConfig gLudoCfg;
-static std::string gLudoPhase = "lobby"; // lobby, rolling, choosing, roundOver
-static std::vector<LudoSeat> gLudoSeats(5);
-static int gLudoMySeat = 0;
-static int gLudoTurnSeat = 0;
-static int gLudoLastDice = 6;
-static int gLudoConsecSix = 0;
-static int gLudoWinnerSeat = -1;
-static int gLudoRound = 1;
-static int gLudoCursorPlane = 0;
-static bool gLudoKonEvents = true;
-static uint32_t gLudoAiNextTick = 0;
-
-static std::string ludoColorName(int charId) {
-    switch (charId) {
-        case 1: return "樱桃红";
-        case 2: return "皇家蓝";
-        case 3: return "柠檬黄";
-        case 4: return "草莓粉";
-        default: return "薄荷绿";
-    }
-}
-static SDL_Color ludoSeatColor(int charId) {
-    switch (charId) {
-        case 1: return {236, 72, 78, 255};
-        case 2: return {48, 138, 236, 255};
-        case 3: return {245, 198, 45, 255};
-        case 4: return {244, 114, 168, 255}; // Tsumugi Pink!
-        default: return {42, 188, 136, 255};
-    }
-}
-static int ludoCharOrder(int charId) {
-    return (charId >= 1 && charId <= 5) ? (charId - 1) : 0;
-}
-
-
-
-// ============================================================================
-// Rummikub Runtime State (106 Tiles · 30-Pt Icebreak · 60s Timer · RMK_ Sync)
+// Rummikub Runtime State (106 Tiles · 2~4 Players · 30-Pt Icebreak · 60s Timer)
 // ============================================================================
 static std::string gRmkPhase = "lobby";
+static int gRmkRoomPlayerCount = 4; // 2, 3, or 4 players selectable!
 static std::vector<RmkSeat> gRmkSeats(4);
 static std::vector<RmkTile> gRmkPool;
 static int gRmkPoolCount = 0;
@@ -191,8 +150,8 @@ static SDL_Color rmkTileColor(const std::string& c) {
     if (c == "R") return {220, 40, 50, 255};
     if (c == "B") return {30, 122, 230, 255};
     if (c == "Y") return {230, 149, 12, 255};
-    if (c == "K") return {30, 30, 36, 255};
-    return {224, 64, 148, 255};
+    if (c == "K") return {32, 146, 98, 255};
+    return {126, 72, 198, 255};
 }
 
 // ============================================================================
@@ -470,15 +429,18 @@ static void openSwitchNicknameKeyboard() {
 // Cross-Platform WebSocket Sync (wss://azusa.online/ddz)
 // ============================================================================
 static std::string wireRoomCode() {
-    return (gSelectedGame == 1) ? ("MJ_" + gRoomCode) : ((gSelectedGame == 2) ? ("FXQ_" + gRoomCode) : ((gSelectedGame == 3) ? ("RMK_" + gRoomCode) : gRoomCode));
+    return (gSelectedGame == 1) ? ("MJ_" + gRoomCode) : ((gSelectedGame == 2) ? ("RMK_" + gRoomCode) : gRoomCode);
 }
 
 static void sendJoinRequestPacket() {
     std::string rc = wireRoomCode();
-    std::string j = "{\"kind\":\"joinRequest\",\"roomCode\":\"" + MiniJson::esc(rc) +
-                    "\",\"senderPeerName\":\"" + MiniJson::esc(gMyPeerName) +
-                    "\",\"senderCharId\":" + std::to_string(gMyCharId) +
-                    (gSelectedGame == 1 ? ",\"maxPlayers\":4,\"gameType\":\"mahjong\"" : "") + "}";
+    int maxP = (gSelectedGame == 0) ? 3 : ((gSelectedGame == 1) ? 4 : gRmkRoomPlayerCount);
+    std::string gType = (gSelectedGame == 0) ? "doudizhu" : ((gSelectedGame == 1) ? "mahjong" : "rummikub");
+    std::string j = "{"kind":"joinRequest","roomCode":"" + MiniJson::esc(rc) +
+                    "","senderPeerName":"" + MiniJson::esc(gMyPeerName) +
+                    "","senderCharId":" + std::to_string(gMyCharId) +
+                    ","maxPlayers":" + std::to_string(maxP) +
+                    ","gameType":"" + gType + ""}";
     gWs.sendText(j);
 }
 
@@ -646,39 +608,25 @@ static void rebuildLobbySeats() {
         }
     }
 
-    // 3D Aeroplane Chess 5 seats
+    // Rummikub 2..4 seats (Dynamic gRmkRoomPlayerCount, humans replace AI!)
     usedChars.clear();
-    for (int i = 0; i < 5; ++i) {
-        int prevScore = (i < (int)gLudoSeats.size()) ? gLudoSeats[i].score : 1000;
-        if (i < (int)gRoomPeers.size()) {
-            if (gRoomPeers[i].name == gMyPeerName) gLudoMySeat = i;
-            usedChars.insert(gRoomPeers[i].charId);
-            std::string cleanDisp = cleanPeerLabel(gRoomPeers[i].displayName.empty() ? gRoomPeers[i].name : gRoomPeers[i].displayName);
-            std::string roleTag = (i == 0) ? "房主 " : (std::to_string(i + 1) + "号 ");
-            gLudoSeats[i] = {i, roleTag + cleanDisp, gRoomPeers[i].charId, false, gRoomPeers[i].name, {-1,-1,-1,-1}, prevScore, ludoColorName(gRoomPeers[i].charId)};
-        } else {
-            int aiChar = 1;
-            for (int c = 1; c <= 5; ++c) if (!usedChars.count(c)) { aiChar = c; usedChars.insert(c); break; }
-            gLudoSeats[i] = {i, getCharacterName(aiChar) + " (AI)", aiChar, true, "AI_" + std::to_string(i), {-1,-1,-1,-1}, prevScore, ludoColorName(aiChar)};
-        }
-    }
-
-    // Rummikub 4 seats
-    usedChars.clear();
-    for (int i = 0; i < 4; ++i) {
+    int rmkCnt = std::max(2, std::min(4, gRmkRoomPlayerCount));
+    std::vector<RmkSeat> newRmk(rmkCnt);
+    for (int i = 0; i < rmkCnt; ++i) {
         int prevScore = (i < (int)gRmkSeats.size()) ? gRmkSeats[i].score : 1000;
         if (i < (int)gRoomPeers.size()) {
             if (gRoomPeers[i].name == gMyPeerName) gRmkMySeat = i;
             usedChars.insert(gRoomPeers[i].charId);
             std::string cleanDisp = cleanPeerLabel(gRoomPeers[i].displayName.empty() ? gRoomPeers[i].name : gRoomPeers[i].displayName);
             std::string roleTag = (i == 0) ? "房主 " : (std::to_string(i + 1) + "号 ");
-            gRmkSeats[i] = {i, roleTag + cleanDisp, gRoomPeers[i].charId, false, gRoomPeers[i].name, {}, false, prevScore};
+            newRmk[i] = {i, roleTag + cleanDisp, gRoomPeers[i].charId, false, gRoomPeers[i].name, {}, false, prevScore};
         } else {
             int aiChar = 1;
             for (int c = 1; c <= 5; ++c) if (!usedChars.count(c)) { aiChar = c; usedChars.insert(c); break; }
-            gRmkSeats[i] = {i, getCharacterName(aiChar) + " (AI)", aiChar, true, "AI_" + std::to_string(i), {}, false, prevScore};
+            newRmk[i] = {i, getCharacterName(aiChar) + " (AI)", aiChar, true, "AI_" + std::to_string(i), {}, false, prevScore};
         }
     }
+    gRmkSeats = newRmk;
 }
 
 static void startNewDoudizhuRound() {
@@ -1075,173 +1023,6 @@ static void executeMjDiscard(int seatIdx, const std::string& tileId) {
 }
 
 
-static void broadcastLudoState() {
-    if (!gIsOnlineRoom || !gWs.isConnected()) return;
-    std::string peersArr = "[";
-    for (size_t i = 0; i < gRoomPeers.size(); ++i) {
-        if (i > 0) peersArr += ",";
-        std::string disp = cleanPeerLabel(gRoomPeers[i].displayName.empty() ? gRoomPeers[i].name : gRoomPeers[i].displayName);
-        peersArr += "{\"name\":\"" + MiniJson::esc(gRoomPeers[i].name) + "\",\"charId\":" + std::to_string(gRoomPeers[i].charId) + ",\"displayName\":\"" + MiniJson::esc(disp) + "\"}";
-    }
-    peersArr += "]";
-    std::string seatsArr = "[";
-    for (int i = 0; i < 5; ++i) {
-        if (i > 0) seatsArr += ",";
-        const auto& s = gLudoSeats[i];
-        seatsArr += "{\"id\":" + std::to_string(s.id) + ",\"name\":\"" + MiniJson::esc(s.name) + "\",\"characterId\":" + std::to_string(s.characterId) +
-                    ",\"isAI\":" + std::string(s.isAI ? "true" : "false") + ",\"peerDisplayName\":\"" + MiniJson::esc(s.peerDisplayName) +
-                    "\",\"planes\":[" + std::to_string(s.planes[0]) + "," + std::to_string(s.planes[1]) + "," + std::to_string(s.planes[2]) + "," + std::to_string(s.planes[3]) +
-                    "],\"score\":" + std::to_string(s.score) + ",\"colorName\":\"" + MiniJson::esc(s.colorName) + "\"}";
-    }
-    seatsArr += "]";
-    std::string pkt = "{\"kind\":\"stateSync\",\"roomCode\":\"FXQ_" + MiniJson::esc(gRoomCode) +
-                      "\",\"senderPeerName\":\"" + MiniJson::esc(gMyPeerName) +
-                      "\",\"senderCharId\":" + std::to_string(gMyCharId) +
-                      ",\"maxPlayers\":5,\"gameType\":\"ludo\",\"hostPeerName\":\"" + MiniJson::esc(gMyPeerName) +
-                      "\",\"roomPeers\":" + peersArr + ",\"seats\":" + seatsArr +
-                      ",\"phase\":\"" + gLudoPhase + "\",\"currentTurnSeat\":" + std::to_string(gLudoTurnSeat) +
-                      ",\"lastDice\":" + std::to_string(gLudoLastDice) + ",\"consecutiveSixes\":" + std::to_string(gLudoConsecSix) +
-                      (gLudoWinnerSeat >= 0 ? (",\"winnerSeat\":" + std::to_string(gLudoWinnerSeat)) : "") +
-                      ",\"currentRound\":" + std::to_string(gLudoRound) + ",\"statusBanner\":\"" + MiniJson::esc(gStatusBanner) + "\"}";
-    gWs.sendText(pkt);
-}
-
-static bool ludoCanMovePlane(int seatIdx, int pIdx, int dice) {
-    if (seatIdx < 0 || seatIdx >= 5 || pIdx < 0 || pIdx >= 4) return false;
-    int prog = gLudoSeats[seatIdx].planes[pIdx];
-    if (prog >= 60) return false;
-    return (prog == -1) ? (dice == 6) : true;
-}
-
-static int ludoOuterIndex(int seatIdx, int prog) {
-    if (prog < 0 || prog >= 53) return -1;
-    int co = ludoCharOrder(gLudoSeats[seatIdx].characterId);
-    return (co * 11 + prog) % 55;
-}
-
-static LudoPt ludoPlaneCoord(int seatIdx, int pIdx) {
-    int prog = gLudoSeats[seatIdx].planes[pIdx];
-    int co = ludoCharOrder(gLudoSeats[seatIdx].characterId);
-    if (prog < 0) return kLudoHangarCoords[co][pIdx];
-    if (prog >= 60) return {0.5f, 0.5f};
-    if (prog < 53) return kLudoOuterCoords[(co * 11 + prog) % 55];
-    int hi = std::min(6, prog - 53);
-    return kLudoHomeCoords[co][hi];
-}
-
-static void startNewLudoRound() {
-    if (gIsOnlineRoom && !gIsRoomAuthority) return;
-    rebuildLobbySeats();
-    for (int i = 0; i < 5; ++i) for (int p = 0; p < 4; ++p) gLudoSeats[i].planes[p] = -1;
-    gLudoTurnSeat = (gLudoRound - 1) % 5;
-    gLudoLastDice = 6;
-    gLudoConsecSix = 0;
-    gLudoWinnerSeat = -1;
-    gLudoPhase = "rolling";
-    gScreen = MODE_LUDO_TABLE;
-    gLudoAiNextTick = SDL_GetTicks() + 1400;
-    gStatusBanner = "3D 五人飞行棋第 " + std::to_string(gLudoRound) + " 局开始！轮到 [" + cleanPeerLabel(gLudoSeats[gLudoTurnSeat].name) + "] 掷骰子";
-    broadcastLudoState();
-}
-
-static void executeLudoMove(int seatIdx, int pIdx) {
-    int prog = gLudoSeats[seatIdx].planes[pIdx];
-    bool bonus = (gLudoLastDice == 6);
-    std::string msg;
-    if (prog == -1) {
-        prog = 0;
-        msg = "[" + cleanPeerLabel(gLudoSeats[seatIdx].name) + "] 掷出 6 点起飞！";
-    } else {
-        prog += gLudoLastDice;
-        if (prog > 60) {
-            prog = 60 - (prog - 60);
-            msg = "[" + cleanPeerLabel(gLudoSeats[seatIdx].name) + "] 反弹回第 " + std::to_string(prog) + " 格";
-        } else if (prog == 60) {
-            msg = "[" + cleanPeerLabel(gLudoSeats[seatIdx].name) + "] 1架飞机抵达茶室终点！";
-        } else {
-            msg = "[" + cleanPeerLabel(gLudoSeats[seatIdx].name) + "] 前进 " + std::to_string(gLudoLastDice) + " 步";
-        }
-        if (prog < 53) {
-            if (prog == 17) { prog = 29; msg += " · 轻音超级航线！"; }
-            else if (prog > 0 && prog % 5 == 0 && prog + 5 < 53) { prog += 5; msg += " · 同色连跳+5！"; }
-            if (gLudoKonEvents && prog % 11 == 5) { bonus = true; msg += " · 紬的草莓蛋糕(再投一次)！"; }
-        }
-    }
-    gLudoSeats[seatIdx].planes[pIdx] = prog;
-    int myOuter = ludoOuterIndex(seatIdx, prog);
-    if (myOuter >= 0) {
-        for (int o = 0; o < 5; ++o) {
-            if (o == seatIdx) continue;
-            for (int k = 0; k < 4; ++k) {
-                if (ludoOuterIndex(o, gLudoSeats[o].planes[k]) == myOuter) {
-                    gLudoSeats[o].planes[k] = -1;
-                    msg += " · 撞回 [" + cleanPeerLabel(gLudoSeats[o].name) + "]！";
-                }
-            }
-        }
-    }
-    bool allDone = true;
-    for (int k = 0; k < 4; ++k) if (gLudoSeats[seatIdx].planes[k] < 60) allDone = false;
-    if (allDone) {
-        gLudoPhase = "roundOver";
-        gLudoWinnerSeat = seatIdx;
-        for (int i = 0; i < 5; ++i) gLudoSeats[i].score += (i == seatIdx) ? 400 : -100;
-        gStatusBanner = "[" + cleanPeerLabel(gLudoSeats[seatIdx].name) + "] 四机齐入茶室获胜！按 [A] 下一局";
-        broadcastLudoState();
-        return;
-    }
-    gStatusBanner = msg;
-    if (bonus) {
-        gLudoPhase = "rolling";
-    } else {
-        gLudoTurnSeat = (gLudoTurnSeat + 1) % 5;
-        gLudoConsecSix = 0;
-        gLudoPhase = "rolling";
-        gStatusBanner += " · 轮到 [" + cleanPeerLabel(gLudoSeats[gLudoTurnSeat].name) + "]";
-    }
-    gLudoAiNextTick = SDL_GetTicks() + 1400;
-    broadcastLudoState();
-}
-
-static void executeLudoRoll(int seatIdx) {
-    if (gLudoPhase != "rolling" || seatIdx != gLudoTurnSeat) return;
-    int d = 1 + (rand() % 6);
-    gLudoLastDice = d;
-    gLudoConsecSix = (d == 6) ? (gLudoConsecSix + 1) : 0;
-    if (gLudoConsecSix >= 3) {
-        gLudoConsecSix = 0;
-        gLudoTurnSeat = (gLudoTurnSeat + 1) % 5;
-        gLudoPhase = "rolling";
-        gStatusBanner = "连续3个6！轮到 [" + cleanPeerLabel(gLudoSeats[gLudoTurnSeat].name) + "]";
-        gLudoAiNextTick = SDL_GetTicks() + 1400;
-        broadcastLudoState();
-        return;
-    }
-    std::vector<int> mov;
-    for (int p = 0; p < 4; ++p) if (ludoCanMovePlane(seatIdx, p, d)) mov.push_back(p);
-    if (mov.empty()) {
-        gStatusBanner = "[" + cleanPeerLabel(gLudoSeats[seatIdx].name) + "] 掷出 " + std::to_string(d) + " 点，暂无可飞飞机";
-        if (d != 6) gLudoTurnSeat = (gLudoTurnSeat + 1) % 5;
-        gLudoPhase = "rolling";
-        gLudoAiNextTick = SDL_GetTicks() + 1400;
-        broadcastLudoState();
-    } else if (mov.size() == 1 || gLudoSeats[seatIdx].isAI) {
-        int pick = mov[0];
-        if (d == 6) {
-            for (int p : mov) if (gLudoSeats[seatIdx].planes[p] == -1) { pick = p; break; }
-        } else {
-            for (int p : mov) if (gLudoSeats[seatIdx].planes[p] > gLudoSeats[seatIdx].planes[pick]) pick = p;
-        }
-        executeLudoMove(seatIdx, pick);
-    } else {
-        gLudoCursorPlane = mov[0];
-        gLudoPhase = "choosing";
-        gStatusBanner = "掷出 " + std::to_string(d) + " 点！摇杆/触屏选飞机，按 [A] 移动";
-        broadcastLudoState();
-    }
-}
-
-
 static void sortRmkHand(std::vector<RmkTile>& h) {
     std::sort(h.begin(), h.end(), [](const RmkTile& a, const RmkTile& b) {
         if (a.isJoker() != b.isJoker()) return !a.isJoker();
@@ -1256,12 +1037,36 @@ static void sortRmkHand(std::vector<RmkTile>& h) {
 
 static void resetRmkWorkspace() {
     gRmkEditing = false;
-    gRmkSnapHand = gRmkSeats[gRmkMySeat].hand;
+    if (gRmkMySeat >= 0 && gRmkMySeat < (int)gRmkSeats.size()) {
+        gRmkSnapHand = gRmkSeats[gRmkMySeat].hand;
+        for (auto& t : gRmkSeats[gRmkMySeat].hand) t.selected = false;
+    } else {
+        gRmkSnapHand.clear();
+    }
     gRmkWorkHand = gRmkSnapHand;
     gRmkSnapMelds = gRmkTableMelds;
     gRmkWorkMelds = gRmkSnapMelds;
     for (auto& t : gRmkWorkHand) t.selected = false;
-    for (auto& t : gRmkSeats[gRmkMySeat].hand) t.selected = false;
+}
+
+static void selectRmkHintForMe() {
+    auto& rack = gRmkEditing ? gRmkWorkHand : gRmkSeats[gRmkMySeat].hand;
+    for (auto& t : rack) t.selected = false;
+    auto best = RmkEvaluator::findBestMeld(rack);
+    if (best.empty()) {
+        gStatusBanner = "[提示] 当前牌架暂无可直出的3张以上顺组或群组，建议点击【摸牌过】";
+        return;
+    }
+    std::set<std::string> ids;
+    for (const auto& b : best) ids.insert(b.id);
+    for (size_t i = 0; i < rack.size(); ++i) {
+        if (ids.count(rack[i].id)) {
+            rack[i].selected = true;
+            gRmkCursor = (int)i;
+        }
+    }
+    int pts = RmkEvaluator::evaluateMeld(best);
+    gStatusBanner = "[提示] 已为您选中一组有效牌型 (" + std::to_string(pts) + "分)，点击【放上桌面】即可摆出！";
 }
 
 static void broadcastRmkState() {
@@ -1270,36 +1075,38 @@ static void broadcastRmkState() {
     for (size_t i = 0; i < gRoomPeers.size(); ++i) {
         if (i > 0) peersArr += ",";
         std::string disp = cleanPeerLabel(gRoomPeers[i].displayName.empty() ? gRoomPeers[i].name : gRoomPeers[i].displayName);
-        peersArr += "{\"name\":\"" + MiniJson::esc(gRoomPeers[i].name) + "\",\"charId\":" + std::to_string(gRoomPeers[i].charId) + ",\"displayName\":\"" + MiniJson::esc(disp) + "\"}";
+        peersArr += "{"name":"" + MiniJson::esc(gRoomPeers[i].name) + "","charId":" + std::to_string(gRoomPeers[i].charId) + ","displayName":"" + MiniJson::esc(disp) + ""}";
     }
     peersArr += "]";
     std::string seatsArr = "[";
-    for (int i = 0; i < 4; ++i) {
+    for (size_t i = 0; i < gRmkSeats.size(); ++i) {
         if (i > 0) seatsArr += ",";
         const auto& s = gRmkSeats[i];
         std::string hArr = "[";
         for (size_t k = 0; k < s.hand.size(); ++k) { if (k > 0) hArr += ","; hArr += s.hand[k].toJson(); }
         hArr += "]";
-        seatsArr += "{\"id\":" + std::to_string(s.id) + ",\"name\":\"" + MiniJson::esc(s.name) + "\",\"characterId\":" + std::to_string(s.characterId) +
-                    ",\"isAI\":" + std::string(s.isAI ? "true" : "false") + ",\"peerDisplayName\":\"" + MiniJson::esc(s.peerDisplayName) +
-                    "\",\"hand\":" + hArr + ",\"hasBrokenIce\":" + std::string(s.hasBrokenIce ? "true" : "false") + ",\"score\":" + std::to_string(s.score) + "}";
+        seatsArr += "{"id":" + std::to_string(s.id) + ","name":"" + MiniJson::esc(s.name) + "","characterId":" + std::to_string(s.characterId) +
+                    ","isAI":" + std::string(s.isAI ? "true" : "false") + ","peerDisplayName":"" + MiniJson::esc(s.peerDisplayName) +
+                    "","hand":" + hArr + ","hasBrokenIce":" + std::string(s.hasBrokenIce ? "true" : "false") + ","score":" + std::to_string(s.score) + "}";
     }
     seatsArr += "]";
     std::string meldsArr = "[";
     for (size_t i = 0; i < gRmkTableMelds.size(); ++i) { if (i > 0) meldsArr += ","; meldsArr += gRmkTableMelds[i].toJson(); }
     meldsArr += "]";
-    std::string pkt = "{\"kind\":\"stateSync\",\"roomCode\":\"RMK_" + MiniJson::esc(gRoomCode) +
-                      "\",\"senderPeerName\":\"" + MiniJson::esc(gMyPeerName) + "\",\"senderCharId\":" + std::to_string(gMyCharId) +
-                      ",\"hostPeerName\":\"" + MiniJson::esc(gMyPeerName) + "\",\"roomPeers\":" + peersArr +
-                      ",\"seats\":" + seatsArr + ",\"tableMelds\":" + meldsArr + ",\"poolCount\":" + std::to_string(gRmkPoolCount) +
-                      ",\"phase\":\"" + gRmkPhase + "\",\"currentTurnSeat\":" + std::to_string(gRmkTurnSeat) +
-                      ",\"currentRound\":" + std::to_string(gRmkRound) + ",\"statusBanner\":\"" + MiniJson::esc(gStatusBanner) + "\"}";
+    std::string pkt = "{"kind":"stateSync","roomCode":"RMK_" + MiniJson::esc(gRoomCode) +
+                      "","senderPeerName":"" + MiniJson::esc(gMyPeerName) + "","senderCharId":" + std::to_string(gMyCharId) +
+                      ","maxPlayers":" + std::to_string(gRmkRoomPlayerCount) + ","gameType":"rummikub"" +
+                      ","hostPeerName":"" + MiniJson::esc(gMyPeerName) + "","roomPeers":" + peersArr +
+                      ","seats":" + seatsArr + ","tableMelds":" + meldsArr + ","poolCount":" + std::to_string(gRmkPoolCount) +
+                      ","phase":"" + gRmkPhase + "","currentTurnSeat":" + std::to_string(gRmkTurnSeat) +
+                      ","currentRound":" + std::to_string(gRmkRound) + ","statusBanner":"" + MiniJson::esc(gStatusBanner) + ""}";
     gWs.sendText(pkt);
 }
 
 static void startNewRmkRound() {
     if (gIsOnlineRoom && !gIsRoomAuthority) return;
     rebuildLobbySeats();
+    int pCnt = (int)gRmkSeats.size();
     gRmkPool.clear();
     const char* cols[] = {"R", "B", "Y", "K"};
     for (int copy = 1; copy <= 2; ++copy) {
@@ -1314,7 +1121,7 @@ static void startNewRmkRound() {
     std::mt19937 rng((unsigned int)time(nullptr) ^ SDL_GetTicks());
     std::shuffle(gRmkPool.begin(), gRmkPool.end(), rng);
 
-    for (int i = 0; i < 4; ++i) {
+    for (int i = 0; i < pCnt; ++i) {
         gRmkSeats[i].hand.assign(gRmkPool.begin(), gRmkPool.begin() + 14);
         gRmkPool.erase(gRmkPool.begin(), gRmkPool.begin() + 14);
         sortRmkHand(gRmkSeats[i].hand);
@@ -1322,7 +1129,7 @@ static void startNewRmkRound() {
     }
     gRmkPoolCount = (int)gRmkPool.size();
     gRmkTableMelds.clear();
-    gRmkTurnSeat = (gRmkRound - 1) % 4;
+    gRmkTurnSeat = (gRmkRound - 1) % pCnt;
     gRmkWinnerSeat = -1;
     gRmkPhase = "playing";
     gRmkCursor = 0;
@@ -1330,18 +1137,19 @@ static void startNewRmkRound() {
     gRmkAiNextTick = SDL_GetTicks() + 1500;
     gScreen = MODE_RMK_TABLE;
     resetRmkWorkspace();
-    gStatusBanner = "第 " + std::to_string(gRmkRound) + " 局发牌完成！轮到 [" + cleanPeerLabel(gRmkSeats[gRmkTurnSeat].name) + "] 出牌 (需>=30分破冰)";
+    gStatusBanner = "第 " + std::to_string(gRmkRound) + " 局发牌完成 (" + std::to_string(pCnt) + "人局)！轮到 [" + cleanPeerLabel(gRmkSeats[gRmkTurnSeat].name) + "] 出牌 (需>=30分破冰)";
     broadcastRmkState();
 }
 
 static void executeRmkDraw(int seatIdx, const std::string& reason) {
+    int pCnt = std::max(2, (int)gRmkSeats.size());
     if (!gRmkPool.empty()) {
         gRmkSeats[seatIdx].hand.push_back(gRmkPool.front());
         gRmkPool.erase(gRmkPool.begin());
         sortRmkHand(gRmkSeats[seatIdx].hand);
         gRmkPoolCount = (int)gRmkPool.size();
     }
-    gRmkTurnSeat = (seatIdx + 1) % 4;
+    gRmkTurnSeat = (seatIdx + 1) % pCnt;
     gRmkTurnStartTick = SDL_GetTicks();
     gRmkAiNextTick = SDL_GetTicks() + 1500;
     resetRmkWorkspace();
@@ -1350,6 +1158,7 @@ static void executeRmkDraw(int seatIdx, const std::string& reason) {
 }
 
 static void executeRmkCommit(int seatIdx, const std::vector<RmkMeld>& newMelds, const std::set<std::string>& playedIds) {
+    int pCnt = std::max(2, (int)gRmkSeats.size());
     gRmkTableMelds = newMelds;
     auto& h = gRmkSeats[seatIdx].hand;
     h.erase(std::remove_if(h.begin(), h.end(), [&](const RmkTile& t) { return playedIds.count(t.id) > 0; }), h.end());
@@ -1358,7 +1167,7 @@ static void executeRmkCommit(int seatIdx, const std::vector<RmkMeld>& newMelds, 
         gRmkPhase = "roundOver";
         gRmkWinnerSeat = seatIdx;
         int gain = 0;
-        for (int i = 0; i < 4; ++i) {
+        for (int i = 0; i < pCnt; ++i) {
             if (i == seatIdx) continue;
             int pen = 0;
             for (const auto& t : gRmkSeats[i].hand) pen += t.isJoker() ? 30 : t.number;
@@ -1370,7 +1179,7 @@ static void executeRmkCommit(int seatIdx, const std::vector<RmkMeld>& newMelds, 
         broadcastRmkState();
         return;
     }
-    gRmkTurnSeat = (seatIdx + 1) % 4;
+    gRmkTurnSeat = (seatIdx + 1) % pCnt;
     gRmkTurnStartTick = SDL_GetTicks();
     gRmkAiNextTick = SDL_GetTicks() + 1500;
     resetRmkWorkspace();
@@ -1391,12 +1200,13 @@ static void processIncomingNetworkMessages() {
         if (sender == gMyPeerName) continue;
 
         bool isMjPkt = (rc.rfind("MJ_", 0) == 0);
-        bool isLudoPkt = (rc.rfind("FXQ_", 0) == 0);
         bool isRmkPkt = (rc.rfind("RMK_", 0) == 0);
-        std::string cleanRc = isMjPkt ? rc.substr(3) : ((isLudoPkt || isRmkPkt) ? rc.substr(4) : rc);
+        std::string cleanRc = isMjPkt ? rc.substr(3) : (isRmkPkt ? rc.substr(4) : rc);
         if (cleanRc != gRoomCode) continue;
 
         if (kind == "roomRoster") {
+            int mp = MiniJson::getInt(raw, "maxPlayers", 0);
+            if (isRmkPkt && mp >= 2 && mp <= 4) gRmkRoomPlayerCount = mp;
             auto rObjs = MiniJson::extractObjectsArray(raw, "roomPeers");
             if (!rObjs.empty()) {
                 gRoomPeers.clear();
@@ -1408,14 +1218,15 @@ static void processIncomingNetworkMessages() {
                 }
                 rebuildLobbySeats();
                 std::string hostDisp = cleanPeerLabel(gRoomPeers.front().displayName);
+                int cap = isMjPkt ? 4 : (isRmkPkt ? gRmkRoomPlayerCount : 3);
                 if (gIsRoomAuthority) {
-                    gStatusBanner = "您是房主 (当前 " + std::to_string(gRoomPeers.size()) + "/" + std::to_string(isMjPkt ? 4 : 3) + " 人)";
+                    gStatusBanner = "您是房主 (当前 " + std::to_string(gRoomPeers.size()) + "/" + std::to_string(cap) + " 人)";
                 } else {
-                    gStatusBanner = "已加入房间 " + gRoomCode + " (当前 " + std::to_string(gRoomPeers.size()) + "/" + std::to_string(isMjPkt ? 4 : 3) + " 人) · 房主: " + hostDisp;
+                    gStatusBanner = "已加入房间 " + gRoomCode + " (当前 " + std::to_string(gRoomPeers.size()) + "/" + std::to_string(cap) + " 人) · 房主: " + hostDisp;
                 }
             }
         } else if (kind == "joinRequest") {
-            int maxP = isLudoPkt ? 5 : ((isMjPkt || isRmkPkt) ? 4 : 3);
+            int maxP = isMjPkt ? 4 : (isRmkPkt ? gRmkRoomPlayerCount : 3);
             std::string cleanSender = cleanPeerLabel(sender);
             bool exists = false;
             for (auto& rp : gRoomPeers) {
@@ -1428,13 +1239,12 @@ static void processIncomingNetworkMessages() {
             if (!exists && (int)gRoomPeers.size() < maxP) {
                 gRoomPeers.push_back({sender, senderChar, cleanSender});
                 rebuildLobbySeats();
-                gStatusBanner = "跨平台玩家 [" + cleanSender + "] 已加入房间 " + gRoomCode + "！";
+                gStatusBanner = "跨平台玩家 [" + cleanSender + "] 已加入房间 " + gRoomCode + " (自动替换AI座位)！";
             }
             if (gIsRoomAuthority) {
                 broadcastRoomRoster();
                 if (gSelectedGame == 0) broadcastDdzState();
                 else if (gSelectedGame == 1) broadcastMjState();
-                else if (gSelectedGame == 2) broadcastLudoState();
                 else broadcastRmkState();
             }
         } else if (kind == "leaveRoom") {
@@ -1444,12 +1254,12 @@ static void processIncomingNetworkMessages() {
             }), gRoomPeers.end());
             rebuildLobbySeats();
             gStatusBanner = "玩家 [" + cleanSender + "] 已离开房间";
-        } else if (kind == "bidAction" && gIsRoomAuthority && !isMjPkt) {
+        } else if (kind == "bidAction" && gIsRoomAuthority && !isMjPkt && !isRmkPkt) {
             int bid = MiniJson::getInt(raw, "bidScore", 0);
             handleDdzBid(gDdzTurnSeat, bid);
-        } else if (kind == "passAction" && gIsRoomAuthority && !isMjPkt) {
+        } else if (kind == "passAction" && gIsRoomAuthority && !isMjPkt && !isRmkPkt) {
             handleDdzPass(gDdzTurnSeat);
-        } else if (kind == "playCardsAction" && gIsRoomAuthority && !isMjPkt) {
+        } else if (kind == "playCardsAction" && gIsRoomAuthority && !isMjPkt && !isRmkPkt) {
             auto cardObjs = MiniJson::extractObjectsArray(raw, "playedCards");
             std::vector<DdzCard> played;
             for (const auto& co : cardObjs) played.push_back(DdzCard::fromJson(co));
@@ -1458,11 +1268,6 @@ static void processIncomingNetworkMessages() {
         } else if (kind == "discardAction" && gIsRoomAuthority && isMjPkt) {
             std::string tid = MiniJson::getStr(raw, "tileId");
             executeMjDiscard(gMjTurnSeat, tid);
-        } else if (kind == "rollDiceAction" && gIsRoomAuthority && isLudoPkt) {
-            executeLudoRoll(gLudoTurnSeat);
-        } else if (kind == "movePlaneAction" && gIsRoomAuthority && isLudoPkt) {
-            int pi = MiniJson::getInt(raw, "planeIndex", 0);
-            executeLudoMove(gLudoTurnSeat, pi);
         } else if (kind == "drawTileAction" && gIsRoomAuthority && isRmkPkt) {
             executeRmkDraw(gRmkTurnSeat, "摸牌过");
         } else if (kind == "commitTurnAction" && gIsRoomAuthority && isRmkPkt) {
@@ -1475,7 +1280,7 @@ static void processIncomingNetworkMessages() {
                 nms.push_back(m);
             }
             std::set<std::string> pids;
-            size_t pPos = raw.find("\"committedHandIds\"");
+            size_t pPos = raw.find(""committedHandIds"");
             if (pPos != std::string::npos) {
                 size_t lb = raw.find('[', pPos), rb = raw.find(']', lb);
                 if (lb != std::string::npos && rb != std::string::npos) {
@@ -1508,14 +1313,17 @@ static void processIncomingNetworkMessages() {
             }
 
             if (isRmkPkt) {
-                gSelectedGame = 3;
+                gSelectedGame = 2;
                 gRmkPhase = MiniJson::getStr(raw, "phase", gRmkPhase);
                 gRmkTurnSeat = MiniJson::getInt(raw, "currentTurnSeat", gRmkTurnSeat);
                 gRmkPoolCount = MiniJson::getInt(raw, "poolCount", gRmkPoolCount);
                 gRmkRound = MiniJson::getInt(raw, "currentRound", gRmkRound);
                 auto sObjs = MiniJson::extractObjectsArray(raw, "seats");
-                if (sObjs.size() == 4) {
-                    for (int i = 0; i < 4; ++i) {
+                if (sObjs.size() >= 2 && sObjs.size() <= 4) {
+                    gRmkRoomPlayerCount = (int)sObjs.size();
+                    gRmkSeats.resize(gRmkRoomPlayerCount);
+                    for (int i = 0; i < gRmkRoomPlayerCount; ++i) {
+                        gRmkSeats[i].id = i;
                         gRmkSeats[i].name = cleanPeerLabel(MiniJson::getStr(sObjs[i], "name", gRmkSeats[i].name));
                         gRmkSeats[i].characterId = MiniJson::getInt(sObjs[i], "characterId", 1);
                         gRmkSeats[i].isAI = MiniJson::getBool(sObjs[i], "isAI", false);
@@ -1540,41 +1348,6 @@ static void processIncomingNetworkMessages() {
                 resetRmkWorkspace();
                 if (gRmkPhase != "lobby") gScreen = MODE_RMK_TABLE;
                 else if (gScreen == MODE_RMK_TABLE) gScreen = MODE_LOBBY;
-            } else if (isLudoPkt) {
-                gSelectedGame = 2;
-                gLudoPhase = MiniJson::getStr(raw, "phase", gLudoPhase);
-                gLudoTurnSeat = MiniJson::getInt(raw, "currentTurnSeat", gLudoTurnSeat);
-                gLudoLastDice = MiniJson::getInt(raw, "lastDice", gLudoLastDice);
-                gLudoConsecSix = MiniJson::getInt(raw, "consecutiveSixes", gLudoConsecSix);
-                gLudoWinnerSeat = MiniJson::getInt(raw, "winnerSeat", gLudoWinnerSeat);
-                gLudoRound = MiniJson::getInt(raw, "currentRound", gLudoRound);
-                auto seatObjs = MiniJson::extractObjectsArray(raw, "seats");
-                if (seatObjs.size() == 5) {
-                    for (int i = 0; i < 5; ++i) {
-                        gLudoSeats[i].name = cleanPeerLabel(MiniJson::getStr(seatObjs[i], "name", gLudoSeats[i].name));
-                        gLudoSeats[i].characterId = MiniJson::getInt(seatObjs[i], "characterId", 1);
-                        gLudoSeats[i].isAI = MiniJson::getBool(seatObjs[i], "isAI", false);
-                        gLudoSeats[i].peerDisplayName = MiniJson::getStr(seatObjs[i], "peerDisplayName");
-                        gLudoSeats[i].score = MiniJson::getInt(seatObjs[i], "score", 1000);
-                        gLudoSeats[i].colorName = MiniJson::getStr(seatObjs[i], "colorName", ludoColorName(gLudoSeats[i].characterId));
-                        if (gLudoSeats[i].peerDisplayName == gMyPeerName) gLudoMySeat = i;
-                        size_t pPos = seatObjs[i].find("\"planes\"");
-                        if (pPos != std::string::npos) {
-                            size_t lb = seatObjs[i].find('[', pPos);
-                            size_t rb = seatObjs[i].find(']', lb);
-                            if (lb != std::string::npos && rb != std::string::npos) {
-                                std::string arrS = seatObjs[i].substr(lb + 1, rb - lb - 1);
-                                std::stringstream ss(arrS);
-                                std::string tok; int idx = 0;
-                                while (std::getline(ss, tok, ',') && idx < 4) {
-                                    gLudoSeats[i].planes[idx++] = std::atoi(tok.c_str());
-                                }
-                            }
-                        }
-                    }
-                }
-                if (gLudoPhase != "lobby") gScreen = MODE_LUDO_TABLE;
-                else if (gScreen == MODE_LUDO_TABLE) gScreen = MODE_LOBBY;
             } else if (!isMjPkt) {
                 gSelectedGame = 0;
                 gDdzPhase = MiniJson::getStr(raw, "phase", gDdzPhase);
@@ -1905,41 +1678,38 @@ static void renderLobbyScreen() {
     bool wsConn = gWs.isConnected();
     bool inJoinedRoom = gIsOnlineRoom && wsConn;
 
-    // 0. Game Switcher Bar (or Current Room Game Badge when connected!)
+    // 0. Game Switcher Bar (3 Clean Tabs: NO [L]/[R] labels, NO Aeroplane Chess, Consistent Player Count Brackets!)
     if (inJoinedRoom) {
-        SDL_Color bgC = (gSelectedGame == 0) ? COL_CRIMSON : ((gSelectedGame == 1) ? COL_GREEN_BTN : SDL_Color{230, 88, 142, 255});
+        SDL_Color bgC = (gSelectedGame == 0) ? COL_CRIMSON : ((gSelectedGame == 1) ? COL_GREEN_BTN : SDL_Color{225, 118, 22, 255});
         drawRoundedRectFill(36, 58, 1208, 44, 12, bgC);
         drawRoundedRectOutline(36, 58, 1208, 44, 12, COL_GOLD, 2);
-        const char* ic = (gSelectedGame == 0) ? "romfs:/cards/icon_poker.png" : ((gSelectedGame == 1) ? "romfs:/cards/icon_mahjong.png" : "romfs:/cards/ludo_plane_4.png");
+        const char* ic = (gSelectedGame == 0) ? "romfs:/cards/icon_poker.png" : ((gSelectedGame == 1) ? "romfs:/cards/icon_mahjong.png" : "romfs:/cards/icon_rummikub.png");
         drawImage(ic, 52, 62, 36, 36);
-        std::string badge = (gSelectedGame == 0 ? "当前房间：放课后斗地主 (3人)" : (gSelectedGame == 1 ? "当前房间：广东红中麻将 (4人 · 136张)" : (gSelectedGame == 2 ? "当前房间：3D轻音五人飞行棋 (5人 · 60步)" : "当前房间：拉密数字牌 (106张 · 30分破冰)")));
+        std::string badge = (gSelectedGame == 0 ? "当前房间：放课后斗地主 (3人)" : (gSelectedGame == 1 ? "当前房间：广东红中麻将 (4人 · 136张)" : ("当前房间：拉密数字牌 (" + std::to_string(gRmkRoomPlayerCount) + "人 · 30分破冰)")));
         drawText(gFontMed, badge, 98, 68, COL_WHITE);
         drawText(gFontMed, "房号: " + gRoomCode, 1224, 68, COL_GOLD, false, true);
     } else {
-        drawRoundedRectFill(36, 58, 293, 44, 12, gSelectedGame == 0 ? COL_CRIMSON : COL_PANEL);
-        drawRoundedRectOutline(36, 58, 293, 44, 12, gSelectedGame == 0 ? COL_GOLD : COL_GOLD_DIM, gSelectedGame == 0 ? 2 : 1);
-        drawImage("romfs:/cards/icon_poker.png", 48, 63, 32, 32);
-        drawText(gFontMed, "[L] 斗地主 (3人)", 196, 68, COL_WHITE, true);
+        drawRoundedRectFill(36, 58, 392, 44, 12, gSelectedGame == 0 ? COL_CRIMSON : COL_PANEL);
+        drawRoundedRectOutline(36, 58, 392, 44, 12, gSelectedGame == 0 ? COL_GOLD : COL_GOLD_DIM, gSelectedGame == 0 ? 2 : 1);
+        drawImage("romfs:/cards/icon_poker.png", 54, 63, 32, 32);
+        drawText(gFontMed, "放课后斗地主 (3人)", 246, 68, COL_WHITE, true);
 
-        drawRoundedRectFill(341, 58, 293, 44, 12, gSelectedGame == 1 ? COL_GREEN_BTN : COL_PANEL);
-        drawRoundedRectOutline(341, 58, 293, 44, 12, gSelectedGame == 1 ? COL_GOLD : COL_GOLD_DIM, gSelectedGame == 1 ? 2 : 1);
-        drawImage("romfs:/cards/icon_mahjong.png", 353, 63, 32, 32);
-        drawText(gFontMed, "红中麻将 (4人)", 501, 68, COL_WHITE, true);
+        drawRoundedRectFill(444, 58, 392, 44, 12, gSelectedGame == 1 ? COL_GREEN_BTN : COL_PANEL);
+        drawRoundedRectOutline(444, 58, 392, 44, 12, gSelectedGame == 1 ? COL_GOLD : COL_GOLD_DIM, gSelectedGame == 1 ? 2 : 1);
+        drawImage("romfs:/cards/icon_mahjong.png", 462, 63, 32, 32);
+        drawText(gFontMed, "广东红中麻将 (4人)", 654, 68, COL_WHITE, true);
 
-        drawRoundedRectFill(646, 58, 293, 44, 12, gSelectedGame == 2 ? SDL_Color{230, 88, 142, 255} : COL_PANEL);
-        drawRoundedRectOutline(646, 58, 293, 44, 12, gSelectedGame == 2 ? COL_GOLD : COL_GOLD_DIM, gSelectedGame == 2 ? 2 : 1);
-        drawImage("romfs:/cards/ludo_plane_4.png", 658, 63, 32, 32);
-        drawText(gFontMed, "五人飞行棋 (5人)", 806, 68, COL_WHITE, true);
-
-        drawRoundedRectFill(951, 58, 293, 44, 12, gSelectedGame == 3 ? SDL_Color{235, 130, 20, 255} : COL_PANEL);
-        drawRoundedRectOutline(951, 58, 293, 44, 12, gSelectedGame == 3 ? COL_GOLD : COL_GOLD_DIM, gSelectedGame == 3 ? 2 : 1);
-        drawText(gFontMed, "[R] 拉密数字牌 (106)", 1098, 68, COL_WHITE, true);
+        drawRoundedRectFill(852, 58, 392, 44, 12, gSelectedGame == 2 ? SDL_Color{225, 118, 22, 255} : COL_PANEL);
+        drawRoundedRectOutline(852, 58, 392, 44, 12, gSelectedGame == 2 ? COL_GOLD : COL_GOLD_DIM, gSelectedGame == 2 ? 2 : 1);
+        drawImage("romfs:/cards/icon_rummikub.png", 870, 63, 32, 32);
+        drawText(gFontMed, "拉密数字牌 (2-4人)", 1062, 68, COL_WHITE, true);
     }
 
     // Status Banner (with real Game Icon + Crown Icon, zero '☒' boxes!)
     drawRoundedRectFill(36, 108, 1208, 38, 10, COL_PANEL);
     drawRoundedRectOutline(36, 108, 1208, 38, 10, COL_GOLD, 1);
-    drawImage(gSelectedGame == 0 ? "romfs:/cards/icon_poker.png" : "romfs:/cards/icon_mahjong.png", 48, 113, 28, 28);
+    const char* bannerIc = (gSelectedGame == 0) ? "romfs:/cards/icon_poker.png" : ((gSelectedGame == 1) ? "romfs:/cards/icon_mahjong.png" : "romfs:/cards/icon_rummikub.png");
+    drawImage(bannerIc, 48, 113, 28, 28);
     int bannerTextX = 82;
     if (gIsRoomAuthority && inJoinedRoom) {
         drawImage("romfs:/cards/icon_crown.png", 80, 115, 24, 24);
@@ -1968,7 +1738,6 @@ static void renderLobbyScreen() {
         } else {
             drawRoundedRectOutline(bx, by, 168, 82, 12, isSel ? COL_GOLD : COL_GOLD_DIM, isSel ? 2 : 1);
         }
-        // Live Animated Desktop Mascot Sprite!
         drawCharAvatar(kCharacters[i].charId, bx + 10, by + 9, 64, 64, isSel || isFoc);
         drawText(gFontMed, kCharacters[i].nameZh, bx + 116, by + 28, COL_WHITE, true);
     }
@@ -2007,43 +1776,53 @@ static void renderLobbyScreen() {
     drawText(gFontMed, wsConn ? ("[X] 已连(" + gRoomCode + ") · 按[X]退出房间") : "[X] 连接跨平台联机房间", 625, 353, COL_WHITE, true);
 
     drawText(gFontSmall, "同房号即与 iOS / Android 同桌对局", 840, 344, COL_CREAM);
-    drawText(gFontSmall, "不足人数由轻音部 AI 自动补位", 840, 368, COL_GOLD);
+    drawText(gFontSmall, "真人进房自动替换轻音部 AI 座位", 840, 368, COL_GOLD);
 
-    // 3. Seat Preview (1:1 with iOS Seat Cards — Crown/Gamepad/AI Icons + Animated Avatars + Green Human Text)
+    // 3. Seat Preview (Supports 2P / 3P / 4P selector for Rummikub!)
     drawRoundedRectFill(36, 416, 1208, 174, 14, COL_PANEL);
     drawRoundedRectOutline(36, 416, 1208, 174, 14, COL_GOLD_DIM, 1);
-    int seatCnt = (gSelectedGame == 0) ? 3 : ((gSelectedGame == 2) ? 5 : 4);
-    drawText(gFontMed, std::string("3. 牌桌座位预览 (1号为房主，不足") + std::to_string(seatCnt) + "人由轻音AI补位)", 54, 424, COL_GOLD);
+    int seatCnt = (gSelectedGame == 0) ? 3 : ((gSelectedGame == 1) ? 4 : gRmkRoomPlayerCount);
+    drawText(gFontMed, std::string("3. 牌桌座位预览 (1号为房主，不足") + std::to_string(seatCnt) + "人由轻音AI补位，真人进房自动替换AI)", 54, 424, COL_GOLD);
+
+    // If Rummikub is selected, render [2人局] [3人局] [4人局] selector buttons in header!
+    if (gSelectedGame == 2) {
+        int pCounts[3] = {2, 3, 4};
+        for (int idx = 0; idx < 3; ++idx) {
+            int cntVal = pCounts[idx];
+            int pbx = 918 + idx * 102;
+            bool isCntSel = (gRmkRoomPlayerCount == cntVal);
+            drawRoundedRectFill(pbx, 421, 94, 28, 8, isCntSel ? SDL_Color{225, 118, 22, 255} : COL_PANEL_INNER);
+            drawRoundedRectOutline(pbx, 421, 94, 28, 8, isCntSel ? COL_GOLD : COL_GOLD_DIM, isCntSel ? 2 : 1);
+            drawText(gFontSmall, std::to_string(cntVal) + "人局", pbx + 47, 426, COL_WHITE, true);
+        }
+    }
+
     int sw = (1172 - (seatCnt - 1) * 14) / seatCnt;
     for (int i = 0; i < seatCnt; ++i) {
         int sx = 54 + i * (sw + 14);
         int sy = 458;
-        std::string rawName = (gSelectedGame == 0) ? gDdzSeats[i].name : ((gSelectedGame == 1) ? gMjSeats[i].name : ((gSelectedGame == 2) ? gLudoSeats[i].name : gRmkSeats[i].name));
-        std::string sName = truncateUtf8(rawName, (seatCnt == 3) ? 14 : ((seatCnt == 4) ? 10 : 7));
-        int sChar = (gSelectedGame == 0) ? gDdzSeats[i].characterId : ((gSelectedGame == 1) ? gMjSeats[i].characterId : ((gSelectedGame == 2) ? gLudoSeats[i].characterId : gRmkSeats[i].characterId));
-        bool isAI = (gSelectedGame == 0) ? gDdzSeats[i].isAI : ((gSelectedGame == 1) ? gMjSeats[i].isAI : ((gSelectedGame == 2) ? gLudoSeats[i].isAI : gRmkSeats[i].isAI));
-        int sc = (gSelectedGame == 0) ? gDdzSeats[i].score : ((gSelectedGame == 1) ? gMjSeats[i].score : ((gSelectedGame == 2) ? gLudoSeats[i].score : gRmkSeats[i].score));
+        std::string rawName = (gSelectedGame == 0) ? gDdzSeats[i].name : ((gSelectedGame == 1) ? gMjSeats[i].name : gRmkSeats[i].name);
+        std::string sName = truncateUtf8(rawName, (seatCnt <= 3) ? 14 : 10);
+        int sChar = (gSelectedGame == 0) ? gDdzSeats[i].characterId : ((gSelectedGame == 1) ? gMjSeats[i].characterId : gRmkSeats[i].characterId);
+        bool isAI = (gSelectedGame == 0) ? gDdzSeats[i].isAI : ((gSelectedGame == 1) ? gMjSeats[i].isAI : gRmkSeats[i].isAI);
+        int sc = (gSelectedGame == 0) ? gDdzSeats[i].score : ((gSelectedGame == 1) ? gMjSeats[i].score : gRmkSeats[i].score);
 
         drawRoundedRectFill(sx, sy, sw, 118, 12, COL_PANEL_INNER);
         drawRoundedRectOutline(sx, sy, sw, 118, 12, isAI ? COL_GOLD_DIM : COL_HUMAN_GREEN, isAI ? 1 : 2);
 
-        // Live Animated Character Avatar on Left
         drawCharAvatar(sChar, sx + 10, sy + 18, 68, 76, !isAI);
 
-        // Row 1: Host Crown / Human Gamepad / AI Icon + Clean Name
         std::string roleIcon = (i == 0 && !isAI) ? "romfs:/cards/icon_crown.png" : (isAI ? "romfs:/cards/icon_ai.png" : "romfs:/cards/icon_human.png");
         drawImage(roleIcon, sx + 84, sy + 18, 22, 22);
         drawText(gFontMed, sName, sx + 110, sy + 16, COL_WHITE);
 
-        // Row 2: Green '真人' or Gold 'AI' Badge
         drawImage(isAI ? "romfs:/cards/icon_ai.png" : "romfs:/cards/icon_human.png", sx + 84, sy + 52, 18, 18);
         drawText(gFontSmall, isAI ? "AI 补位" : "真人玩家", sx + 106, sy + 51, isAI ? COL_GOLD : COL_HUMAN_GREEN);
 
-        // Row 3: Score
         drawText(gFontSmall, "积分: " + std::to_string(sc) + " 分", sx + 84, sy + 82, COL_CREAM);
     }
 
-    // 4. Bottom Start Button (gLobbyFocus == 7 — Unmistakable Selected vs Unselected Visual State!)
+    // 4. Bottom Start Button (gLobbyFocus == 7 — ZERO '☒' boxes, dynamically measured icon + text so it NEVER overlaps!)
     bool canStart = !wsConn || gIsRoomAuthority;
     bool focStart = (gLobbyFocus == 7);
     SDL_Color btnBg = canStart ? (focStart ? COL_CRIMSON_HI : COL_CRIMSON_DIM) : SDL_Color{85, 92, 90, 230};
@@ -2051,20 +1830,28 @@ static void renderLobbyScreen() {
     if (focStart) {
         drawRoundedRectOutline(33, 597, 1214, 74, 16, COL_WHITE, 3);
         drawRoundedRectOutline(36, 600, 1208, 68, 14, COL_GOLD, 3);
-        // Selected Left & Right Highlight Badges
+        // Clean Left & Right Highlight Badges (with real PNG icon instead of '▶'/'◀'!)
         drawRoundedRectFill(54, 616, 136, 36, 10, COL_GOLD);
-        drawText(gFontSmall, "▶ 当前选中", 122, 624, COL_BLACK, true);
+        drawImage("romfs:/cards/icon_crown.png", 62, 623, 20, 20);
+        drawText(gFontSmall, "当前选中", 132, 624, COL_BLACK, true);
+
         drawRoundedRectFill(1090, 616, 136, 36, 10, COL_GOLD);
-        drawText(gFontSmall, "按 [A] 确认 ◀", 1158, 624, COL_BLACK, true);
+        drawText(gFontSmall, "按 [A] 确认", 1158, 624, COL_BLACK, true);
     } else {
         drawRoundedRectOutline(36, 600, 1208, 68, 14, COL_GOLD_DIM, 1);
     }
 
     std::string startTxt = canStart
-        ? (std::string("[A] 立即开始") + (gSelectedGame == 0 ? "放课后斗地主 (底分 100)" : (gSelectedGame == 1 ? "广东红中麻将 (底分 100)" : (gSelectedGame == 2 ? "3D轻音五人飞行棋 (60步)" : "拉密数字牌 (106张 · 30分破冰)"))))
+        ? (std::string("[A] 立即开始") + (gSelectedGame == 0 ? "放课后斗地主 (3人 · 底分100)" : (gSelectedGame == 1 ? "广东红中麻将 (4人 · 底分100)" : ("拉密数字牌 (" + std::to_string(gRmkRoomPlayerCount) + "人 · 30分破冰)"))))
         : "等待 1 号房主开始对局...";
-    drawImage(gSelectedGame == 0 ? "romfs:/cards/icon_poker.png" : (gSelectedGame == 1 ? "romfs:/cards/icon_mahjong.png" : "romfs:/cards/ludo_plane_4.png"), SCREEN_W / 2 - 220, 615, 38, 38);
-    drawText(gFontLarge, startTxt, SCREEN_W / 2 + 16, 618, focStart ? COL_WHITE : COL_CREAM, true);
+    const char* startIc = (gSelectedGame == 0) ? "romfs:/cards/icon_poker.png" : ((gSelectedGame == 1) ? "romfs:/cards/icon_mahjong.png" : "romfs:/cards/icon_rummikub.png");
+
+    int txtW = 0, txtH = 0;
+    if (gFontLarge) TTF_SizeUTF8(gFontLarge, sanitizeForSwitchFont(startTxt).c_str(), &txtW, &txtH);
+    int totalGroupW = 38 + 12 + txtW;
+    int groupStartX = (SCREEN_W - totalGroupW) / 2;
+    drawImage(startIc, groupStartX, 615, 38, 38);
+    drawText(gFontLarge, startTxt, groupStartX + 50, 618, focStart ? COL_WHITE : COL_CREAM, false);
 }
 
 static void renderDoudizhuTable() {
@@ -2352,128 +2139,121 @@ static void renderMahjongTable() {
 }
 
 
-static void renderLudoTable() {
-    int boardSide = 640;
-    int bx = 36, by = 64;
-    drawImage("romfs:/cards/ludo_board_5p.jpg", bx, by, boardSide, boardSide);
-    drawRoundedRectOutline(bx, by, boardSide, boardSide, 14, COL_GOLD, 2);
-
-    // Draw 5x4 3D Airplane Tokens
-    for (int s = 0; s < 5; ++s) {
-        for (int p = 0; p < 4; ++p) {
-            if (gLudoSeats[s].planes[p] >= 60) continue;
-            LudoPt pt = ludoPlaneCoord(s, p);
-            bool movable = (gLudoPhase == "choosing" && gLudoTurnSeat == gLudoMySeat && s == gLudoMySeat && ludoCanMovePlane(s, p, gLudoLastDice));
-            bool isCur = (movable && p == gLudoCursorPlane);
-            int sz = movable ? 32 : 24;
-            int px = bx + (int)(pt.x * boardSide) - sz / 2;
-            int py = by + (int)(pt.y * boardSide) - sz / 2;
-            drawImage("romfs:/cards/ludo_plane_" + std::to_string(gLudoSeats[s].characterId) + ".png", px, py, sz, sz);
-            if (isCur) drawRoundedRectOutline(px - 3, py - 3, sz + 6, sz + 6, 18, COL_GOLD, 3);
-            else if (movable) drawRoundedRectOutline(px - 2, py - 2, sz + 4, sz + 4, 16, COL_WHITE, 2);
-        }
-    }
-
-    // Right Panel: Status Banner + 5 Seats + 3D Dice & Action Button
-    int rx = 700, rw = 548;
-    drawRoundedRectFill(rx, 64, rw, 52, 12, COL_PANEL);
-    drawRoundedRectOutline(rx, 64, rw, 52, 12, COL_GOLD, 1);
-    drawImage("romfs:/cards/ludo_plane_4.png", rx + 10, 74, 32, 32);
-    drawText(gFontSmall, truncateUtf8(gStatusBanner, 34), rx + 50, 79, COL_GOLD);
-
-    for (int i = 0; i < 5; ++i) {
-        int sy = 128 + i * 82;
-        const auto& s = gLudoSeats[i];
-        bool isTurn = (gLudoTurnSeat == i);
-        SDL_Color sc = ludoSeatColor(s.characterId);
-        drawRoundedRectFill(rx, sy, rw, 74, 12, isTurn ? SDL_Color{sc.r/3, sc.g/3, sc.b/3, 235} : COL_PANEL);
-        drawRoundedRectOutline(rx, sy, rw, 74, 12, isTurn ? COL_GOLD : sc, isTurn ? 2 : 1);
-        drawCharAvatar(s.characterId, rx + 10, sy + 9, 54, 56, isTurn);
-        drawText(gFontMed, truncateUtf8(s.name, 14), rx + 76, sy + 12, COL_WHITE);
-        int doneCnt = 0; for (int k = 0; k < 4; ++k) if (s.planes[k] >= 60) doneCnt++;
-        drawText(gFontSmall, s.colorName + " · 到点 " + std::to_string(doneCnt) + "/4 · " + std::to_string(s.score) + "分", rx + 76, sy + 42, sc);
-    }
-
-    // Bottom 3D Dice + Action Prompt
-    drawRoundedRectFill(rx, 550, 96, 96, 16, COL_WHITE);
-    drawRoundedRectOutline(rx, 550, 96, 96, 16, COL_GOLD, 3);
-    drawText(gFontHuge, std::to_string(gLudoLastDice), rx + 48, 574, gLudoLastDice == 6 ? COL_CRIMSON : COL_BLACK, true);
-
-    bool myTurn = (gLudoTurnSeat == gLudoMySeat);
-    SDL_Color actCol = (gLudoPhase == "roundOver") ? COL_CRIMSON : ((myTurn && gLudoPhase == "rolling") ? SDL_Color{230, 88, 142, 255} : COL_PANEL);
-    drawRoundedRectFill(rx + 112, 558, rw - 112, 80, 14, actCol);
-    drawRoundedRectOutline(rx + 112, 558, rw - 112, 80, 14, COL_GOLD, 2);
-    std::string actTxt = (gLudoPhase == "roundOver") ? "[A] 再来一局" :
-                         (myTurn ? (gLudoPhase == "rolling" ? "[A] / 触屏 掷骰子" : "[摇杆/触屏] 选飞机 · [A] 移动") : "等待其他玩家...");
-    drawText(gFontMed, actTxt, rx + 112 + (rw - 112) / 2, 585, COL_WHITE, true);
-}
-
-
 static void drawRmkTileBox(const RmkTile& t, int x, int y, int w, int h, bool isCursor, bool isSel) {
-    int dy = y - (isSel ? 14 : 0);
-    drawRoundedRectFill(x, dy, w, h, 8, {252, 247, 235, 255});
-    SDL_Color tc = rmkTileColor(t.color);
-    drawText(gFontMed, t.isJoker() ? "鬼" : std::to_string(t.number), x + w / 2, dy + 6, tc, true);
-    drawText(gFontSmall, t.isJoker() ? "百搭" : t.colorZh(), x + w / 2, dy + h - 22, tc, true);
-    if (isCursor) drawRoundedRectOutline(x - 2, dy - 2, w + 4, h + 4, 9, COL_GOLD, 3);
-    else if (isSel) drawRoundedRectOutline(x, dy, w, h, 8, COL_HUMAN_GREEN, 2);
-    else drawRoundedRectOutline(x, dy, w, h, 8, {180, 170, 150, 255}, 1);
+    int dy = y - (isSel ? 16 : 0);
+    SDL_Texture* tex = getTexture(t.romfsImagePath());
+    if (tex) {
+        drawRoundedRectFill(x - 1, dy - 1, w + 2, h + 2, 7, COL_WHITE);
+        SDL_Rect dst = {x, dy, w, h};
+        SDL_RenderCopy(gRenderer, tex, nullptr, &dst);
+    } else {
+        drawRoundedRectFill(x, dy, w, h, 8, {252, 247, 235, 255});
+        SDL_Color tc = rmkTileColor(t.color);
+        drawText(gFontMed, t.isJoker() ? "鬼" : std::to_string(t.number), x + w / 2, dy + 6, tc, true);
+        drawText(gFontSmall, t.isJoker() ? "百搭" : t.colorZh(), x + w / 2, dy + h - 22, tc, true);
+    }
+    if (isCursor) {
+        drawRoundedRectOutline(x - 2, dy - 2, w + 4, h + 4, 9, COL_GOLD, 3);
+        drawText(gFontSmall, "▲", x + w / 2, dy + h + 1, COL_GOLD, true);
+    } else if (isSel) {
+        drawRoundedRectOutline(x - 2, dy - 2, w + 4, h + 4, 9, COL_HUMAN_GREEN, 3);
+    } else {
+        drawRoundedRectOutline(x, dy, w, h, 7, {210, 185, 145, 220}, 1);
+    }
 }
 
 static void renderRummikubTable() {
     int remSec = std::max(0, 60 - (int)((SDL_GetTicks() - gRmkTurnStartTick) / 1000));
     drawRoundedRectFill(20, 54, 1240, 34, 10, COL_PANEL);
     drawRoundedRectOutline(20, 54, 1240, 34, 10, COL_GOLD, 1);
-    drawText(gFontSmall, gStatusBanner, 36, 61, COL_GOLD);
-    drawText(gFontSmall, "牌堆: " + std::to_string(gRmkPoolCount) + "张   限时: " + std::to_string(remSec) + "s", 1240, 61, remSec <= 10 ? COL_CRIMSON_HI : COL_HUMAN_GREEN, false, true);
+    drawImage("romfs:/cards/icon_rummikub.png", 30, 57, 28, 28);
+    drawText(gFontSmall, gStatusBanner, 66, 61, COL_GOLD);
+    drawText(gFontSmall, "牌堆: " + std::to_string(gRmkPoolCount) + "张   限时: " + std::to_string(remSec) + "s", 1244, 61, remSec <= 10 ? COL_CRIMSON_HI : COL_HUMAN_GREEN, false, true);
 
-    for (int i = 0; i < 4; ++i) {
-        int sx = 20 + i * 312;
+    // 2..4 Dynamic Seats Row
+    int seatCnt = std::max(2, (int)gRmkSeats.size());
+    int badgeW = (1240 - (seatCnt - 1) * 12) / seatCnt;
+    for (int i = 0; i < seatCnt; ++i) {
+        int sx = 20 + i * (badgeW + 12);
         const auto& s = gRmkSeats[i];
         bool iturn = (gRmkTurnSeat == i);
-        drawCompactSeatBadge(sx, 94, 300, 52, s.characterId, s.name, s.score, (int)s.hand.size(), s.isAI, iturn, false, s.hasBrokenIce ? "已破冰" : "未破冰");
+        drawCompactSeatBadge(sx, 94, badgeW, 52, s.characterId, s.name, s.score, (int)s.hand.size(), s.isAI, iturn, (i == 0), s.hasBrokenIce ? "已破冰" : "未破冰");
     }
 
-    // Center Table Melds
-    drawRoundedRectFill(20, 154, 1240, 316, 12, {7, 30, 19, 180});
-    drawRoundedRectOutline(20, 154, 1240, 316, 12, COL_GOLD_DIM, 1);
+    // Center Table Melds (with K-ON! Character Rummikub Tiles + Click-to-return in workspace!)
+    drawRoundedRectFill(20, 152, 1240, 314, 12, {7, 30, 19, 195});
+    drawRoundedRectOutline(20, 152, 1240, 314, 12, COL_GOLD_DIM, 1);
     const auto& melds = gRmkEditing ? gRmkWorkMelds : gRmkTableMelds;
     if (melds.empty()) {
-        drawText(gFontMed, "桌面暂无牌组 · 首次破冰需选牌 >=30 分后按 [Y] 放上桌面", SCREEN_W / 2, 298, COL_CREAM, true);
+        drawText(gFontMed, "桌面暂无牌组 · 首次破冰需选牌总和 >=30 分后点【放上桌面】", SCREEN_W / 2, 294, COL_CREAM, true);
     } else {
-        int mx = 34, my = 166;
+        int mx = 34, my = 164;
         for (size_t i = 0; i < melds.size(); ++i) {
-            int mw = (int)melds[i].tiles.size() * 38 + 10;
-            if (mx + mw > 1240) { mx = 34; my += 68; }
-            if (my > 410) break;
+            int mw = (int)melds[i].tiles.size() * 44 + 12;
+            if (mx + mw > 1240) { mx = 34; my += 74; }
+            if (my > 400) break;
             bool ok = (RmkEvaluator::evaluateMeld(melds[i].tiles) >= 0);
-            drawRoundedRectFill(mx, my, mw, 58, 8, {12, 48, 30, 220});
-            drawRoundedRectOutline(mx, my, mw, 58, 8, ok ? COL_GOLD_DIM : COL_CRIMSON_HI, 1);
+            drawRoundedRectFill(mx, my, mw, 64, 8, {12, 48, 30, 230});
+            drawRoundedRectOutline(mx, my, mw, 64, 8, ok ? COL_GOLD : COL_CRIMSON_HI, ok ? 1 : 2);
             for (size_t k = 0; k < melds[i].tiles.size(); ++k) {
-                drawRmkTileBox(melds[i].tiles[k], mx + 5 + (int)k * 38, my + 5, 34, 48, false, false);
+                drawRmkTileBox(melds[i].tiles[k], mx + 6 + (int)k * 44, my + 5, 40, 54, false, false);
             }
             mx += mw + 12;
         }
     }
 
-    // Action Bar
+    // 6 Individual Action Boxes (1:1 matching iOS layout: 按数排/按色排 | 提示 | 放上桌面 | 复原 | 摸牌过 | 确认出牌)
     bool myTurn = (gRmkTurnSeat == gRmkMySeat && gRmkPhase == "playing");
-    drawRoundedRectFill(20, 478, 1240, 44, 10, myTurn ? COL_GREEN_BTN : COL_PANEL);
-    drawRoundedRectOutline(20, 478, 1240, 44, 10, COL_GOLD, 1);
-    std::string act = (gRmkPhase == "roundOver")
-        ? "本局结束！按 [A] 再来一局，按 [-] 返回大厅"
-        : (myTurn ? "[摇杆/触屏] 选牌  [A] 选中  [Y] 放上桌面  [X] 确认出牌  [B] 摸牌过  [ZL] 理牌" : "等待其他玩家出牌...");
-    drawText(gFontMed, act, SCREEN_W / 2, 489, COL_WHITE, true);
+    drawRoundedRectFill(20, 472, 1240, 48, 12, COL_PANEL);
+    drawRoundedRectOutline(20, 472, 1240, 48, 12, COL_GOLD_DIM, 1);
 
-    // Bottom Rack (牌架)
-    drawRoundedRectFill(20, 530, 1240, 148, 12, {86, 52, 28, 240});
-    drawRoundedRectOutline(20, 530, 1240, 148, 12, COL_GOLD, 2);
+    if (gRmkPhase == "roundOver") {
+        drawRoundedRectFill(28, 476, 1224, 40, 10, COL_CRIMSON);
+        drawRoundedRectOutline(28, 476, 1224, 40, 10, COL_GOLD, 2);
+        drawText(gFontMed, "本局结束！点击此处或按 [A] 开始下一局，按 [-] 返回大厅", SCREEN_W / 2, 484, COL_WHITE, true);
+    } else {
+        // Box 1: 按数排 / 按色排 [ZL] (x=28, w=134)
+        drawRoundedRectFill(28, 476, 134, 40, 9, {24, 118, 210, 255});
+        drawRoundedRectOutline(28, 476, 134, 40, 9, COL_GOLD_DIM, 1);
+        drawText(gFontSmall, gRmkSortByColor ? "[ZL] 按色排" : "[ZL] 按数排", 95, 486, COL_WHITE, true);
+
+        // Box 2: 提示 [L] (x=170, w=116)
+        drawRoundedRectFill(170, 476, 116, 40, 9, myTurn ? SDL_Color{146, 52, 182, 255} : SDL_Color{75, 82, 80, 200});
+        drawRoundedRectOutline(170, 476, 116, 40, 9, COL_GOLD_DIM, 1);
+        drawText(gFontSmall, "[L] 提示", 228, 486, COL_WHITE, true);
+
+        // Box 3: 放上桌面 [Y] (x=294, w=150)
+        drawRoundedRectFill(294, 476, 150, 40, 9, myTurn ? SDL_Color{235, 132, 18, 255} : SDL_Color{75, 82, 80, 200});
+        drawRoundedRectOutline(294, 476, 150, 40, 9, myTurn ? COL_GOLD : COL_GOLD_DIM, 1);
+        drawText(gFontSmall, "[Y] 放上桌面", 369, 486, COL_WHITE, true);
+
+        // Box 4: 复原 [R] (x=452, w=116)
+        drawRoundedRectFill(452, 476, 116, 40, 9, (myTurn && gRmkEditing) ? SDL_Color{110, 122, 135, 255} : SDL_Color{62, 70, 68, 190});
+        drawRoundedRectOutline(452, 476, 116, 40, 9, COL_GOLD_DIM, 1);
+        drawText(gFontSmall, "[R] 复原", 510, 486, (myTurn && gRmkEditing) ? COL_WHITE : COL_GRAY, true);
+
+        // Box 5: 摸牌过 [B] (x=576, w=134)
+        drawRoundedRectFill(576, 476, 134, 40, 9, myTurn ? SDL_Color{22, 148, 156, 255} : SDL_Color{75, 82, 80, 200});
+        drawRoundedRectOutline(576, 476, 134, 40, 9, COL_GOLD_DIM, 1);
+        drawText(gFontSmall, "[B] 摸牌过", 643, 486, COL_WHITE, true);
+
+        // Box 6: 确认出牌 [X] (x=718, w=534)
+        bool canCommit = (myTurn && gRmkEditing);
+        drawRoundedRectFill(718, 476, 534, 40, 9, canCommit ? COL_GREEN_BTN : SDL_Color{45, 72, 58, 210});
+        drawRoundedRectOutline(718, 476, 534, 40, 9, canCommit ? COL_GOLD : COL_GOLD_DIM, canCommit ? 2 : 1);
+        std::string commitTxt = myTurn ? (gRmkEditing ? "[X] 确认出牌 (完成本回合)" : "请点选牌架上的牌 -> 点【放上桌面】-> 点【确认出牌】") : ("等待 [" + cleanPeerLabel(gRmkSeats[gRmkTurnSeat].name) + "] 出牌...");
+        drawText(gFontSmall, commitTxt, 985, 486, canCommit ? COL_WHITE : COL_GOLD, true);
+    }
+
+    // Bottom Wooden Rack (牌架) with K-ON! Character Rummikub Tiles
+    drawRoundedRectFill(20, 526, 1240, 158, 12, {92, 56, 30, 244});
+    drawRoundedRectOutline(20, 526, 1240, 158, 12, COL_GOLD, 2);
     auto& rack = gRmkEditing ? gRmkWorkHand : gRmkSeats[gRmkMySeat].hand;
     int cnt = (int)rack.size();
-    int tw = 50, th = 72;
-    int step = (cnt > 1) ? std::min(54, (1180 - tw) / (cnt - 1)) : 0;
+    int tw = 58, th = 84;
+    int step = (cnt > 1) ? std::min(62, (1184 - tw) / (cnt - 1)) : 0;
     for (int i = 0; i < cnt; ++i) {
-        drawRmkTileBox(rack[i], 38 + i * step, 566, tw, th, (i == gRmkCursor), rack[i].selected);
+        drawRmkTileBox(rack[i], 38 + i * step, 568, tw, th, (i == gRmkCursor), rack[i].selected);
     }
 }
 
@@ -2530,12 +2310,6 @@ static void updateAiTurns() {
                 if (!ai.hand[i].isLaizi()) { discardId = ai.hand[i].id; break; }
             }
             executeMjDiscard(gMjTurnSeat, discardId);
-        }
-    }
-
-    if (gScreen == MODE_LUDO_TABLE && now >= gLudoAiNextTick) {
-        if (gLudoPhase == "rolling" && gLudoSeats[gLudoTurnSeat].isAI) {
-            executeLudoRoll(gLudoTurnSeat);
         }
     }
 
@@ -2639,7 +2413,6 @@ int main(int argc, char* argv[]) {
             if ((kDown & HidNpadButton_ZR) || (tapped && pointInRect(tx, ty, SCREEN_W - 148, 9, 132, 32))) {
                 if (gScreen == MODE_DDZ_TABLE) { gDdzRound++; startNewDoudizhuRound(); }
                 else if (gScreen == MODE_MJ_TABLE) { gMjRound++; startNewMahjongRound(); }
-                else if (gScreen == MODE_LUDO_TABLE) { gLudoRound++; startNewLudoRound(); }
                 else if (gScreen == MODE_RMK_TABLE) { gRmkRound++; startNewRmkRound(); }
                 tapped = false;
             }
@@ -2653,14 +2426,16 @@ int main(int argc, char* argv[]) {
             running = false;
             tapped = false;
         }
-        // Touch mapping for Lobby, Doudizhu, and Mahjong
+        // Touch mapping for Lobby, Doudizhu, Mahjong, and Rummikub
         if (tapped) {
             if (gScreen == MODE_LOBBY) {
                 bool inJoinedRoom = gIsOnlineRoom && gWs.isConnected();
-                if (!inJoinedRoom && pointInRect(tx, ty, 36, 58, 293, 44)) { gSelectedGame = 0; rebuildLobbySeats(); }
-                else if (!inJoinedRoom && pointInRect(tx, ty, 341, 58, 293, 44)) { gSelectedGame = 1; rebuildLobbySeats(); }
-                else if (!inJoinedRoom && pointInRect(tx, ty, 646, 58, 293, 44)) { gSelectedGame = 2; rebuildLobbySeats(); }
-                else if (!inJoinedRoom && pointInRect(tx, ty, 951, 58, 293, 44)) { gSelectedGame = 3; rebuildLobbySeats(); }
+                if (!inJoinedRoom && pointInRect(tx, ty, 36, 58, 392, 44)) { gSelectedGame = 0; rebuildLobbySeats(); }
+                else if (!inJoinedRoom && pointInRect(tx, ty, 444, 58, 392, 44)) { gSelectedGame = 1; rebuildLobbySeats(); }
+                else if (!inJoinedRoom && pointInRect(tx, ty, 852, 58, 392, 44)) { gSelectedGame = 2; rebuildLobbySeats(); }
+                else if (gSelectedGame == 2 && pointInRect(tx, ty, 918, 421, 94, 28)) { gRmkRoomPlayerCount = 2; rebuildLobbySeats(); if (gIsRoomAuthority) broadcastRoomRoster(); }
+                else if (gSelectedGame == 2 && pointInRect(tx, ty, 1020, 421, 94, 28)) { gRmkRoomPlayerCount = 3; rebuildLobbySeats(); if (gIsRoomAuthority) broadcastRoomRoster(); }
+                else if (gSelectedGame == 2 && pointInRect(tx, ty, 1122, 421, 94, 28)) { gRmkRoomPlayerCount = 4; rebuildLobbySeats(); if (gIsRoomAuthority) broadcastRoomRoster(); }
                 else if (pointInRect(tx, ty, 756, 158, 168, 28)) kDown |= HidNpadButton_ZL;
                 else if (pointInRect(tx, ty, 54, 338, 360, 56)) { gLobbyFocus = 5; kDown |= HidNpadButton_Y; }
                 else if (pointInRect(tx, ty, 432, 338, 386, 56)) { gLobbyFocus = 6; kDown |= HidNpadButton_X; }
@@ -2743,19 +2518,65 @@ int main(int argc, char* argv[]) {
                         }
                     }
                 }
-            } else if (gScreen == MODE_LUDO_TABLE) {
-                if (pointInRect(tx, ty, 700, 550, 548, 96)) {
+            } else if (gScreen == MODE_RMK_TABLE) {
+                if (gRmkPhase == "roundOver" && pointInRect(tx, ty, 20, 472, 1240, 48)) {
                     kDown |= HidNpadButton_A;
-                } else if (gLudoPhase == "choosing" && gLudoTurnSeat == gLudoMySeat && pointInRect(tx, ty, 36, 64, 640, 640)) {
-                    for (int p = 0; p < 4; ++p) {
-                        if (!ludoCanMovePlane(gLudoMySeat, p, gLudoLastDice)) continue;
-                        LudoPt pt = ludoPlaneCoord(gLudoMySeat, p);
-                        int px = 36 + (int)(pt.x * 640), py = 64 + (int)(pt.y * 640);
-                        if (std::abs(tx - px) <= 28 && std::abs(ty - py) <= 28) {
-                            gLudoCursorPlane = p;
-                            kDown |= HidNpadButton_A;
-                            break;
+                } else if (pointInRect(tx, ty, 28, 476, 134, 40)) {
+                    kDown |= HidNpadButton_ZL; // 按数排 / 按色排
+                } else if (pointInRect(tx, ty, 170, 476, 116, 40)) {
+                    kDown |= HidNpadButton_L;  // 提示
+                } else if (pointInRect(tx, ty, 294, 476, 150, 40)) {
+                    kDown |= HidNpadButton_Y;  // 放上桌面
+                } else if (pointInRect(tx, ty, 452, 476, 116, 40)) {
+                    kDown |= HidNpadButton_R;  // 复原
+                } else if (pointInRect(tx, ty, 576, 476, 134, 40)) {
+                    kDown |= HidNpadButton_B;  // 摸牌过
+                } else if (pointInRect(tx, ty, 718, 476, 534, 40)) {
+                    kDown |= HidNpadButton_X;  // 确认出牌
+                } else if (ty >= 526) {
+                    // Touch on bottom Rummikub rack tiles!
+                    auto& rack = gRmkEditing ? gRmkWorkHand : gRmkSeats[gRmkMySeat].hand;
+                    int cnt = (int)rack.size();
+                    if (cnt > 0) {
+                        int tw = 58;
+                        int step = (cnt > 1) ? std::min(62, (1184 - tw) / (cnt - 1)) : 0;
+                        for (int i = cnt - 1; i >= 0; --i) {
+                            int rx = 38 + i * step;
+                            if (tx >= rx && tx <= rx + tw) {
+                                gRmkCursor = i;
+                                rack[i].selected = !rack[i].selected;
+                                break;
+                            }
                         }
+                    }
+                } else if (pointInRect(tx, ty, 20, 152, 1240, 314) && gRmkPhase == "playing" && gRmkTurnSeat == gRmkMySeat && gRmkSeats[gRmkMySeat].hasBrokenIce) {
+                    // Touch on table meld tile after Icebreak -> pick up to rack for rearrange!
+                    if (!gRmkEditing) {
+                        gRmkSnapHand = gRmkSeats[gRmkMySeat].hand;
+                        gRmkWorkHand = gRmkSnapHand;
+                        gRmkSnapMelds = gRmkTableMelds;
+                        gRmkWorkMelds = gRmkSnapMelds;
+                        gRmkEditing = true;
+                    }
+                    int mx = 34, my = 164;
+                    bool hit = false;
+                    for (size_t i = 0; i < gRmkWorkMelds.size() && !hit; ++i) {
+                        int mw = (int)gRmkWorkMelds[i].tiles.size() * 44 + 12;
+                        if (mx + mw > 1240) { mx = 34; my += 74; }
+                        for (size_t k = 0; k < gRmkWorkMelds[i].tiles.size(); ++k) {
+                            int trx = mx + 6 + (int)k * 44;
+                            if (pointInRect(tx, ty, trx, my + 5, 40, 54)) {
+                                RmkTile picked = gRmkWorkMelds[i].tiles[k];
+                                picked.selected = true;
+                                gRmkWorkMelds[i].tiles.erase(gRmkWorkMelds[i].tiles.begin() + k);
+                                if (gRmkWorkMelds[i].tiles.empty()) gRmkWorkMelds.erase(gRmkWorkMelds.begin() + i);
+                                gRmkWorkHand.push_back(picked);
+                                gStatusBanner = "已从桌面取回1张牌重组（回合结束前桌面所有牌组须满3张合法）";
+                                hit = true;
+                                break;
+                            }
+                        }
+                        mx += mw + 12;
                     }
                 }
             }
@@ -2766,8 +2587,8 @@ int main(int argc, char* argv[]) {
                 running = false;
             }
             if (!gIsOnlineRoom || !gWs.isConnected()) {
-                if (kDown & HidNpadButton_L) { gSelectedGame = (gSelectedGame + 3) % 4; rebuildLobbySeats(); }
-                if (kDown & HidNpadButton_R) { gSelectedGame = (gSelectedGame + 1) % 4; rebuildLobbySeats(); }
+                if (kDown & HidNpadButton_L) { gSelectedGame = (gSelectedGame + 2) % 3; rebuildLobbySeats(); }
+                if (kDown & HidNpadButton_R) { gSelectedGame = (gSelectedGame + 1) % 3; rebuildLobbySeats(); }
             }
             if (kDown & HidNpadButton_ZL) {
                 openSwitchNicknameKeyboard();
@@ -2804,9 +2625,9 @@ int main(int argc, char* argv[]) {
             }
             if (kDown & HidNpadButton_X) {
                 if (gWs.isConnected()) {
-                    std::string leavePkt = "{\"kind\":\"leaveRoom\",\"roomCode\":\"" + MiniJson::esc(wireRoomCode()) +
-                                           "\",\"senderPeerName\":\"" + MiniJson::esc(gMyPeerName) +
-                                           "\",\"senderCharId\":" + std::to_string(gMyCharId) + "}";
+                    std::string leavePkt = "{"kind":"leaveRoom","roomCode":"" + MiniJson::esc(wireRoomCode()) +
+                                           "","senderPeerName":"" + MiniJson::esc(gMyPeerName) +
+                                           "","senderCharId":" + std::to_string(gMyCharId) + "}";
                     gWs.sendText(leavePkt);
                     gWs.disconnect();
                     gIsOnlineRoom = false;
@@ -2832,11 +2653,10 @@ int main(int argc, char* argv[]) {
             if (kDown & HidNpadButton_A) {
                 if (gLobbyFocus == 5) openSwitchRoomCodeKeyboard();
                 else if (gLobbyFocus == 6) {
-                    // Simulate X press
                     if (gWs.isConnected()) {
-                        std::string leavePkt = "{\"kind\":\"leaveRoom\",\"roomCode\":\"" + MiniJson::esc(wireRoomCode()) +
-                                               "\",\"senderPeerName\":\"" + MiniJson::esc(gMyPeerName) +
-                                               "\",\"senderCharId\":" + std::to_string(gMyCharId) + "}";
+                        std::string leavePkt = "{"kind":"leaveRoom","roomCode":"" + MiniJson::esc(wireRoomCode()) +
+                                               "","senderPeerName":"" + MiniJson::esc(gMyPeerName) +
+                                               "","senderCharId":" + std::to_string(gMyCharId) + "}";
                         gWs.sendText(leavePkt);
                         gWs.disconnect();
                         gIsOnlineRoom = false;
@@ -2857,7 +2677,6 @@ int main(int argc, char* argv[]) {
                 } else {
                     if (gSelectedGame == 0) startNewDoudizhuRound();
                     else if (gSelectedGame == 1) startNewMahjongRound();
-                    else if (gSelectedGame == 2) startNewLudoRound();
                     else startNewRmkRound();
                 }
             }
@@ -2915,10 +2734,10 @@ int main(int argc, char* argv[]) {
                             std::string arr = "[";
                             for (size_t i = 0; i < chosen.size(); ++i) { if (i > 0) arr += ","; arr += chosen[i].toJson(); }
                             arr += "]";
-                            std::string pkt = "{\"kind\":\"playCardsAction\",\"roomCode\":\"" + MiniJson::esc(gRoomCode) +
-                                              "\",\"senderPeerName\":\"" + MiniJson::esc(gMyPeerName) +
-                                              "\",\"senderCharId\":" + std::to_string(gMyCharId) +
-                                              ",\"playedCards\":" + arr + "}";
+                            std::string pkt = "{"kind":"playCardsAction","roomCode":"" + MiniJson::esc(gRoomCode) +
+                                              "","senderPeerName":"" + MiniJson::esc(gMyPeerName) +
+                                              "","senderCharId":" + std::to_string(gMyCharId) +
+                                              ","playedCards":" + arr + "}";
                             gWs.sendText(pkt);
                         } else {
                             executeDdzPlay(gDdzMySeat, ev);
@@ -2952,10 +2771,10 @@ int main(int argc, char* argv[]) {
                 if ((kDown & HidNpadButton_Y) && (gMjCanKong || gMjCanPong)) {
                     if (gIsOnlineRoom && !gIsRoomAuthority) {
                         std::string act = gMjCanKong ? "kong" : "pong";
-                        std::string pkt = "{\"kind\":\"claimAction\",\"roomCode\":\"MJ_" + MiniJson::esc(gRoomCode) +
-                                          "\",\"senderPeerName\":\"" + MiniJson::esc(gMyPeerName) +
-                                          "\",\"senderCharId\":" + std::to_string(gMyCharId) +
-                                          ",\"actionType\":\"" + act + "\"}";
+                        std::string pkt = "{"kind":"claimAction","roomCode":"MJ_" + MiniJson::esc(gRoomCode) +
+                                          "","senderPeerName":"" + MiniJson::esc(gMyPeerName) +
+                                          "","senderCharId":" + std::to_string(gMyCharId) +
+                                          ","actionType":"" + act + ""}";
                         gWs.sendText(pkt);
                         gMjHasClaim = false;
                     } else {
@@ -2979,10 +2798,10 @@ int main(int argc, char* argv[]) {
                     }
                 } else if (kDown & HidNpadButton_B) {
                     if (gIsOnlineRoom && !gIsRoomAuthority) {
-                        std::string pkt = "{\"kind\":\"claimAction\",\"roomCode\":\"MJ_" + MiniJson::esc(gRoomCode) +
-                                          "\",\"senderPeerName\":\"" + MiniJson::esc(gMyPeerName) +
-                                          "\",\"senderCharId\":" + std::to_string(gMyCharId) +
-                                          ",\"actionType\":\"pass\"}";
+                        std::string pkt = "{"kind":"claimAction","roomCode":"MJ_" + MiniJson::esc(gRoomCode) +
+                                          "","senderPeerName":"" + MiniJson::esc(gMyPeerName) +
+                                          "","senderCharId":" + std::to_string(gMyCharId) +
+                                          ","actionType":"pass"}";
                         gWs.sendText(pkt);
                         gMjHasClaim = false;
                     } else {
@@ -3000,10 +2819,10 @@ int main(int argc, char* argv[]) {
                     if (idx >= 0 && idx < (int)myHand.size()) {
                         std::string tid = myHand[idx].id;
                         if (gIsOnlineRoom && !gIsRoomAuthority) {
-                            std::string pkt = "{\"kind\":\"discardAction\",\"roomCode\":\"MJ_" + MiniJson::esc(gRoomCode) +
-                                              "\",\"senderPeerName\":\"" + MiniJson::esc(gMyPeerName) +
-                                              "\",\"senderCharId\":" + std::to_string(gMyCharId) +
-                                              ",\"tileId\":\"" + MiniJson::esc(tid) + "\"}";
+                            std::string pkt = "{"kind":"discardAction","roomCode":"MJ_" + MiniJson::esc(gRoomCode) +
+                                              "","senderPeerName":"" + MiniJson::esc(gMyPeerName) +
+                                              "","senderCharId":" + std::to_string(gMyCharId) +
+                                              ","tileId":"" + MiniJson::esc(tid) + ""}";
                             gWs.sendText(pkt);
                             gMjSelectedIdx = -1;
                         } else {
@@ -3014,10 +2833,10 @@ int main(int argc, char* argv[]) {
                 if (kDown & HidNpadButton_X) {
                     if (MjEvaluator::canHu(myHand, (int)gMjSeats[gMjMySeat].melds.size())) {
                         if (gIsOnlineRoom && !gIsRoomAuthority) {
-                            std::string pkt = "{\"kind\":\"selfAction\",\"roomCode\":\"MJ_" + MiniJson::esc(gRoomCode) +
-                                              "\",\"senderPeerName\":\"" + MiniJson::esc(gMyPeerName) +
-                                              "\",\"senderCharId\":" + std::to_string(gMyCharId) +
-                                              ",\"actionType\":\"selfHu\"}";
+                            std::string pkt = "{"kind":"selfAction","roomCode":"MJ_" + MiniJson::esc(gRoomCode) +
+                                              "","senderPeerName":"" + MiniJson::esc(gMyPeerName) +
+                                              "","senderCharId":" + std::to_string(gMyCharId) +
+                                              ","actionType":"selfHu"}";
                             gWs.sendText(pkt);
                         } else {
                             executeMjWin(gMjMySeat, -1, "自摸胡牌");
@@ -3032,54 +2851,7 @@ int main(int argc, char* argv[]) {
                     startNewMahjongRound();
                 }
             }
-        }
-
-        else if (gScreen == MODE_LUDO_TABLE) {
-            if (kDown & HidNpadButton_Minus) {
-                gLudoPhase = "lobby";
-                gScreen = MODE_LOBBY;
-                gStatusBanner = "已退出飞行棋房间返回大厅";
-            }
-            if (gLudoPhase == "choosing" && gLudoTurnSeat == gLudoMySeat) {
-                if (kDown & (HidNpadButton_Left | HidNpadButton_StickLLeft | HidNpadButton_Up | HidNpadButton_StickLUp)) {
-                    for (int step = 1; step <= 4; ++step) {
-                        int cand = (gLudoCursorPlane + 4 - step) % 4;
-                        if (ludoCanMovePlane(gLudoMySeat, cand, gLudoLastDice)) { gLudoCursorPlane = cand; break; }
-                    }
-                }
-                if (kDown & (HidNpadButton_Right | HidNpadButton_StickLRight | HidNpadButton_Down | HidNpadButton_StickLDown)) {
-                    for (int step = 1; step <= 4; ++step) {
-                        int cand = (gLudoCursorPlane + step) % 4;
-                        if (ludoCanMovePlane(gLudoMySeat, cand, gLudoLastDice)) { gLudoCursorPlane = cand; break; }
-                    }
-                }
-            }
-            if (kDown & HidNpadButton_A) {
-                if (gLudoPhase == "roundOver") {
-                    gLudoRound++;
-                    startNewLudoRound();
-                } else if (gLudoTurnSeat == gLudoMySeat) {
-                    if (gLudoPhase == "rolling") {
-                        if (gIsOnlineRoom && !gIsRoomAuthority) {
-                            gWs.sendText("{\"kind\":\"rollDiceAction\",\"roomCode\":\"FXQ_" + MiniJson::esc(gRoomCode) +
-                                         "\",\"senderPeerName\":\"" + MiniJson::esc(gMyPeerName) + "\",\"senderCharId\":" + std::to_string(gMyCharId) + "}");
-                        } else {
-                            executeLudoRoll(gLudoMySeat);
-                        }
-                    } else if (gLudoPhase == "choosing") {
-                        if (gIsOnlineRoom && !gIsRoomAuthority) {
-                            gWs.sendText("{\"kind\":\"movePlaneAction\",\"roomCode\":\"FXQ_" + MiniJson::esc(gRoomCode) +
-                                         "\",\"senderPeerName\":\"" + MiniJson::esc(gMyPeerName) + "\",\"senderCharId\":" + std::to_string(gMyCharId) +
-                                         ",\"planeIndex\":" + std::to_string(gLudoCursorPlane) + "}");
-                        } else {
-                            executeLudoMove(gLudoMySeat, gLudoCursorPlane);
-                        }
-                    }
-                }
-            }
-        }
-
-        else if (gScreen == MODE_RMK_TABLE) {
+        } else if (gScreen == MODE_RMK_TABLE) {
             if (kDown & HidNpadButton_Minus) {
                 gRmkPhase = "lobby";
                 gScreen = MODE_LOBBY;
@@ -3104,6 +2876,13 @@ int main(int argc, char* argv[]) {
                 if (kDown & HidNpadButton_A && gRmkCursor >= 0 && gRmkCursor < (int)rack.size()) {
                     rack[gRmkCursor].selected = !rack[gRmkCursor].selected;
                 }
+                if (kDown & HidNpadButton_L) {
+                    selectRmkHintForMe();
+                }
+                if (kDown & HidNpadButton_R) {
+                    resetRmkWorkspace();
+                    gStatusBanner = "已复原牌架与桌面";
+                }
                 if (kDown & HidNpadButton_Y) {
                     if (!gRmkEditing) {
                         gRmkSnapHand = gRmkSeats[gRmkMySeat].hand;
@@ -3118,7 +2897,7 @@ int main(int argc, char* argv[]) {
                         gRmkWorkHand.erase(std::remove_if(gRmkWorkHand.begin(), gRmkWorkHand.end(), [](const RmkTile& t){ return t.selected; }), gRmkWorkHand.end());
                         gRmkWorkMelds.push_back({"m_" + std::to_string(SDL_GetTicks()), picked});
                         gRmkCursor = std::min(gRmkCursor, std::max(0, (int)gRmkWorkHand.size() - 1));
-                        gStatusBanner = "已暂放牌组到桌面，按 [X] 确认出牌！";
+                        gStatusBanner = "已暂放牌组到桌面，点击【确认出牌】或按 [X] 完成出牌！";
                     } else {
                         gStatusBanner = "[注意] 所选牌未能组成有效顺组或群组 (需>=3张)";
                     }
@@ -3126,8 +2905,8 @@ int main(int argc, char* argv[]) {
                 if (kDown & HidNpadButton_B) {
                     resetRmkWorkspace();
                     if (gIsOnlineRoom && !gIsRoomAuthority) {
-                        gWs.sendText("{\"kind\":\"drawTileAction\",\"roomCode\":\"RMK_" + MiniJson::esc(gRoomCode) +
-                                     "\",\"senderPeerName\":\"" + MiniJson::esc(gMyPeerName) + "\",\"senderCharId\":" + std::to_string(gMyCharId) + "}");
+                        gWs.sendText("{"kind":"drawTileAction","roomCode":"RMK_" + MiniJson::esc(gRoomCode) +
+                                     "","senderPeerName":"" + MiniJson::esc(gMyPeerName) + "","senderCharId":" + std::to_string(gMyCharId) + "}");
                     } else {
                         executeRmkDraw(gRmkMySeat, "摸牌结束回合");
                     }
@@ -3154,11 +2933,11 @@ int main(int argc, char* argv[]) {
                             mArr += "]";
                             std::string pArr = "[";
                             bool first = true;
-                            for (const auto& pid : playedIds) { if (!first) pArr += ","; first = false; pArr += "\"" + MiniJson::esc(pid) + "\""; }
+                            for (const auto& pid : playedIds) { if (!first) pArr += ","; first = false; pArr += """ + MiniJson::esc(pid) + """; }
                             pArr += "]";
-                            gWs.sendText("{\"kind\":\"commitTurnAction\",\"roomCode\":\"RMK_" + MiniJson::esc(gRoomCode) +
-                                         "\",\"senderPeerName\":\"" + MiniJson::esc(gMyPeerName) + "\",\"senderCharId\":" + std::to_string(gMyCharId) +
-                                         ",\"tableMelds\":" + mArr + ",\"committedHandIds\":" + pArr + "}");
+                            gWs.sendText("{"kind":"commitTurnAction","roomCode":"RMK_" + MiniJson::esc(gRoomCode) +
+                                         "","senderPeerName":"" + MiniJson::esc(gMyPeerName) + "","senderCharId":" + std::to_string(gMyCharId) +
+                                         ","tableMelds":" + mArr + ","committedHandIds":" + pArr + "}");
                             gRmkEditing = false;
                         } else {
                             executeRmkCommit(gRmkMySeat, gRmkWorkMelds, playedIds);
@@ -3179,7 +2958,6 @@ int main(int argc, char* argv[]) {
         if (gScreen == MODE_LOBBY) renderLobbyScreen();
         else if (gScreen == MODE_DDZ_TABLE) renderDoudizhuTable();
         else if (gScreen == MODE_MJ_TABLE) renderMahjongTable();
-        else if (gScreen == MODE_LUDO_TABLE) renderLudoTable();
         else if (gScreen == MODE_RMK_TABLE) renderRummikubTable();
 
         SDL_RenderPresent(gRenderer);

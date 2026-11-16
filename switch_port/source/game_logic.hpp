@@ -572,48 +572,6 @@ namespace MjEvaluator {
 
 
 // ============================================================================
-// 3. 3D 轻音部五人飞行棋 (Extensible 2P/3P/4P/5P Board Config, Tsumugi = Pink)
-// ============================================================================
-struct LudoBoardConfig {
-    std::string mapId = "kon_5p_pentagon";
-    int playerCount = 5;       // 5 ready; 2, 3, 4 reserved for future maps
-    int outerRingCount = 55;
-    int sectorLength = 11;
-    int outerTravelSteps = 53;
-    int homeStretchSteps = 7;
-    int totalStepsToFinish = 60;
-};
-
-struct LudoPt { float x; float y; };
-static const LudoPt kLudoOuterCoords[55] = {{0.5f, 0.1767f}, {0.5369f, 0.1788f}, {0.5719f, 0.1906f}, {0.6025f, 0.2128f}, {0.631f, 0.2336f}, {0.6584f, 0.2535f}, {0.6855f, 0.2732f}, {0.7129f, 0.2931f}, {0.7415f, 0.3138f}, {0.772f, 0.336f}, {0.7941f, 0.3657f}, {0.8075f, 0.4001f}, {0.8169f, 0.4358f}, {0.8164f, 0.4728f}, {0.8048f, 0.5087f}, {0.7939f, 0.5423f}, {0.7834f, 0.5745f}, {0.7731f, 0.6063f}, {0.7626f, 0.6386f}, {0.7517f, 0.6721f}, {0.74f, 0.708f}, {0.7186f, 0.7382f}, {0.6901f, 0.7616f}, {0.659f, 0.7815f}, {0.6236f, 0.7926f}, {0.5859f, 0.7926f}, {0.5506f, 0.7926f}, {0.5167f, 0.7926f}, {0.4833f, 0.7926f}, {0.4494f, 0.7926f}, {0.4141f, 0.7926f}, {0.3764f, 0.7926f}, {0.341f, 0.7815f}, {0.3099f, 0.7616f}, {0.2814f, 0.7382f}, {0.26f, 0.708f}, {0.2483f, 0.6721f}, {0.2374f, 0.6386f}, {0.2269f, 0.6063f}, {0.2166f, 0.5745f}, {0.2061f, 0.5423f}, {0.1952f, 0.5087f}, {0.1836f, 0.4728f}, {0.1831f, 0.4358f}, {0.1925f, 0.4001f}, {0.2059f, 0.3657f}, {0.228f, 0.336f}, {0.2585f, 0.3138f}, {0.2871f, 0.2931f}, {0.3145f, 0.2732f}, {0.3416f, 0.2535f}, {0.369f, 0.2336f}, {0.3975f, 0.2128f}, {0.4281f, 0.1906f}, {0.4631f, 0.1788f}};
-static const LudoPt kLudoHomeCoords[5][7] = {
-    {{0.4083f, 0.2388f}, {0.4192f, 0.2647f}, {0.43f, 0.2907f}, {0.4408f, 0.3166f}, {0.4516f, 0.3426f}, {0.4624f, 0.3685f}, {0.4732f, 0.3945f}},
-    {{0.7201f, 0.3321f}, {0.6988f, 0.3504f}, {0.6774f, 0.3687f}, {0.6561f, 0.387f}, {0.6348f, 0.4053f}, {0.6134f, 0.4236f}, {0.5921f, 0.4419f}},
-    {{0.7277f, 0.6575f}, {0.7037f, 0.6428f}, {0.6797f, 0.6282f}, {0.6557f, 0.6136f}, {0.6317f, 0.5989f}, {0.6077f, 0.5843f}, {0.5837f, 0.5696f}},
-    {{0.4206f, 0.7652f}, {0.4271f, 0.7379f}, {0.4336f, 0.7105f}, {0.4401f, 0.6832f}, {0.4466f, 0.6558f}, {0.4531f, 0.6285f}, {0.4596f, 0.6011f}},
-    {{0.2232f, 0.5064f}, {0.2513f, 0.5042f}, {0.2793f, 0.5019f}, {0.3073f, 0.4996f}, {0.3353f, 0.4974f}, {0.3633f, 0.4951f}, {0.3914f, 0.4929f}}
-};
-static const LudoPt kLudoHangarCoords[5][4] = {
-    {{0.6032f, 0.0803f}, {0.6532f, 0.0803f}, {0.6032f, 0.127f}, {0.6532f, 0.127f}},
-    {{0.89f, 0.475f}, {0.94f, 0.475f}, {0.89f, 0.5217f}, {0.94f, 0.5217f}},
-    {{0.6032f, 0.8697f}, {0.6532f, 0.8697f}, {0.6032f, 0.9164f}, {0.6532f, 0.9164f}},
-    {{0.1393f, 0.7189f}, {0.1893f, 0.7189f}, {0.1393f, 0.7656f}, {0.1893f, 0.7656f}},
-    {{0.1393f, 0.2311f}, {0.1893f, 0.2311f}, {0.1393f, 0.2777f}, {0.1893f, 0.2777f}}
-};
-
-struct LudoSeat {
-    int id = 0;
-    std::string name;
-    int characterId = 1; // 1=Yui(Red), 2=Mio(Blue), 3=Ritsu(Yellow), 4=Mugi(Pink), 5=Azusa(Mint)
-    bool isAI = true;
-    std::string peerDisplayName;
-    int planes[4] = {-1, -1, -1, -1};
-    int score = 1000;
-    std::string colorName = "樱桃红";
-};
-
-
-// ============================================================================
 // 4. 拉密数字牌 (Rummikub · 106 Tiles · 30-Pt Icebreak · Table Rearrange)
 // ============================================================================
 struct RmkTile {
@@ -627,8 +585,14 @@ struct RmkTile {
         if (color == "R") return "红";
         if (color == "B") return "蓝";
         if (color == "Y") return "黄";
-        if (color == "K") return "黑";
-        return "鬼";
+        if (color == "K") return "绿";
+        return "百搭";
+    }
+    std::string romfsImagePath() const {
+        if (isJoker()) return "romfs:/cards/rmk_joker.png";
+        int cIdx = (color == "R") ? 1 : ((color == "B") ? 2 : ((color == "Y") ? 3 : 4));
+        int n = std::max(1, std::min(13, number));
+        return "romfs:/cards/rmk_" + std::to_string(cIdx) + "_" + std::to_string(n) + ".png";
     }
     std::string toJson() const {
         return "{\"id\":\"" + MiniJson::esc(id) + "\",\"color\":\"" + color + "\",\"number\":" + std::to_string(number) + "}";
