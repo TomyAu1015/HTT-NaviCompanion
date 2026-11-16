@@ -611,3 +611,151 @@ struct LudoSeat {
     int score = 1000;
     std::string colorName = "樱桃红";
 };
+
+
+// ============================================================================
+// 4. 拉密数字牌 (Rummikub · 106 Tiles · 30-Pt Icebreak · Table Rearrange)
+// ============================================================================
+struct RmkTile {
+    std::string id;
+    std::string color; // "R", "B", "Y", "K", "J"
+    int number = 0;    // 1..13, 0 = Joker
+    bool selected = false;
+
+    bool isJoker() const { return color == "J"; }
+    std::string colorZh() const {
+        if (color == "R") return "红";
+        if (color == "B") return "蓝";
+        if (color == "Y") return "黄";
+        if (color == "K") return "黑";
+        return "鬼";
+    }
+    std::string toJson() const {
+        return "{\"id\":\"" + MiniJson::esc(id) + "\",\"color\":\"" + color + "\",\"number\":" + std::to_string(number) + "}";
+    }
+    static RmkTile fromJson(const std::string& j) {
+        RmkTile t;
+        t.id = MiniJson::getStr(j, "id");
+        t.color = MiniJson::getStr(j, "color", "R");
+        t.number = MiniJson::getInt(j, "number", 1);
+        return t;
+    }
+};
+
+struct RmkMeld {
+    std::string id;
+    std::vector<RmkTile> tiles;
+
+    std::string toJson() const {
+        std::string arr = "[";
+        for (size_t i = 0; i < tiles.size(); ++i) { if (i > 0) arr += ","; arr += tiles[i].toJson(); }
+        arr += "]";
+        return "{\"id\":\"" + MiniJson::esc(id) + "\",\"tiles\":" + arr + "}";
+    }
+};
+
+struct RmkSeat {
+    int id = 0;
+    std::string name;
+    int characterId = 1;
+    bool isAI = true;
+    std::string peerDisplayName;
+    std::vector<RmkTile> hand;
+    bool hasBrokenIce = false;
+    int score = 1000;
+};
+
+namespace RmkEvaluator {
+    inline int evaluateMeld(const std::vector<RmkTile>& tiles) {
+        if (tiles.size() < 3) return -1;
+        int jokers = 0;
+        std::vector<RmkTile> norms;
+        for (const auto& t : tiles) {
+            if (t.isJoker()) jokers++;
+            else norms.push_back(t);
+        }
+        if (norms.empty()) return -1;
+
+        // Group (max 4, same number, distinct colors)
+        if (tiles.size() <= 4) {
+            int num = norms[0].number;
+            bool sameNum = true;
+            std::set<std::string> cols;
+            for (const auto& t : norms) {
+                if (t.number != num) sameNum = false;
+                cols.insert(t.color);
+            }
+            if (sameNum && cols.size() == norms.size()) return num * (int)tiles.size();
+        }
+
+        // Run (same color, strictly consecutive 1..13)
+        std::string col = norms[0].color;
+        bool sameCol = true;
+        std::vector<int> nums;
+        std::set<int> uniqN;
+        for (const auto& t : norms) {
+            if (t.color != col) sameCol = false;
+            nums.push_back(t.number);
+            uniqN.insert(t.number);
+        }
+        if (sameCol && uniqN.size() == norms.size() && tiles.size() <= 13) {
+            std::sort(nums.begin(), nums.end());
+            int span = nums.back() - nums.front() + 1;
+            int gaps = span - (int)nums.size();
+            if (gaps <= jokers) {
+                int remJ = jokers - gaps;
+                int low = nums.front(), high = nums.back();
+                while (remJ > 0 && high < 13) { high++; remJ--; }
+                while (remJ > 0 && low > 1) { low--; remJ--; }
+                if ((high - low + 1) == (int)tiles.size() && low >= 1 && high <= 13) {
+                    return (low + high) * (int)tiles.size() / 2;
+                }
+            }
+        }
+        return -1;
+    }
+
+    inline std::vector<RmkTile> findBestMeld(const std::vector<RmkTile>& hand) {
+        std::vector<RmkTile> jokers;
+        std::map<int, std::vector<RmkTile>> byNum;
+        std::map<std::string, std::vector<RmkTile>> byCol;
+        for (const auto& t : hand) {
+            if (t.isJoker()) jokers.push_back(t);
+            else { byNum[t.number].push_back(t); byCol[t.color].push_back(t); }
+        }
+        std::vector<RmkTile> best;
+        int bestPts = 0;
+
+        for (auto& kv : byNum) {
+            std::vector<RmkTile> uniq;
+            std::set<std::string> seen;
+            for (const auto& t : kv.second) if (seen.insert(t.color).second) uniq.push_back(t);
+            if (uniq.size() >= 3) {
+                int pts = evaluateMeld(uniq);
+                if (pts > bestPts) { bestPts = pts; best = uniq; }
+            } else if (uniq.size() == 2 && !jokers.empty()) {
+                auto cand = uniq; cand.push_back(jokers[0]);
+                int pts = evaluateMeld(cand);
+                if (pts > bestPts) { bestPts = pts; best = cand; }
+            }
+        }
+
+        for (auto& kv : byCol) {
+            auto vec = kv.second;
+            std::sort(vec.begin(), vec.end(), [](const RmkTile& a, const RmkTile& b) { return a.number < b.number; });
+            std::vector<RmkTile> uniq;
+            std::set<int> seen;
+            for (const auto& t : vec) if (seen.insert(t.number).second) uniq.push_back(t);
+            std::vector<RmkTile> cur;
+            for (const auto& t : uniq) {
+                if (cur.empty() || t.number == cur.back().number + 1) cur.push_back(t);
+                else {
+                    if (cur.size() >= 3) { int pts = evaluateMeld(cur); if (pts > bestPts) { bestPts = pts; best = cur; } }
+                    cur = {t};
+                }
+            }
+            if (cur.size() >= 3) { int pts = evaluateMeld(cur); if (pts > bestPts) { bestPts = pts; best = cur; } }
+        }
+        return best;
+    }
+}
