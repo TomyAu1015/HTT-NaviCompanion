@@ -10117,6 +10117,17 @@ struct KOnMahjongSheetView: View {
 }
 
 
+extension View {
+    @ViewBuilder
+    func httDefersSystemGestures() -> some View {
+        if #available(iOS 16.0, *) {
+            self.httDefersSystemGestures()
+        } else {
+            self
+        }
+    }
+}
+
 // MARK: - Unified Ho-kago Game Room (放课后棋牌室：斗地主(3人) + 广东红中麻将(4人) + 拉密数字牌(2-4人))
 struct KOnGameRoomSheetView: View {
     @ObservedObject var manager: AudioPlayerManager
@@ -10331,7 +10342,7 @@ struct KOnGameRoomSheetView: View {
             let inGame = (selectedGame == 0 && ddz.phase != .lobby) || (selectedGame == 1 && mj.phase != .lobby) || (selectedGame == 2 && newPhase != .lobby)
             AppDelegate.setOrientation(inGame ? .landscape : .all, preferred: inGame ? .landscapeRight : .portrait)
         }
-        .defersSystemGestures(on: .all)
+        .httDefersSystemGestures()
         .onDisappear {
             AppDelegate.setOrientation(.all, preferred: .portrait)
         }
@@ -10603,8 +10614,6 @@ struct KOnRummikubSheetView: View {
         let myTurn = (rmk.currentTurnSeat == rmk.mySeatIndex && rmk.phase == .playing)
         let displayMelds = rmk.isEditingTable ? rmk.workingMelds : rmk.tableMelds
         let cols = max(10, rmk.rackCols)
-        let slotW: CGFloat = 46
-        let slotH: CGFloat = 60
 
         return ZStack {
             VStack(spacing: 4) {
@@ -10911,7 +10920,7 @@ struct KOnRummikubSheetView: View {
             }
             .padding(.horizontal, 12)
             .padding(.bottom, 16)
-            .defersSystemGestures(on: .all)
+            .httDefersSystemGestures()
 
             // 1.5s Flying Draw Tile Animation Overlay (Flies from right '+' Draw button into the 2-row Wooden Rack!)
             if rmk.isDrawingAnimation, let animTile = rmk.drawingAnimatedTile {

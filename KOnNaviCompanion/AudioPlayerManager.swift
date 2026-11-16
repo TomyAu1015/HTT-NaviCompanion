@@ -12335,7 +12335,7 @@ class KOnMahjongManager: NSObject, ObservableObject, MCSessionDelegate, MCNearby
         AudioPlayerManager.shared.playMascotVoice(for: characterFilter(for: seats[actor].characterId))
 
         // Check claims from the other 3 seats (NO Chow in Guangdong Mahjong; Hongzhong cannot be ponged/konged/claimed)
-        var huSeats: [Int] = []
+        let huSeats: [Int] = []
         var kongSeats: [Int] = []
         var pongSeats: [Int] = []
 
