@@ -9973,6 +9973,13 @@ protocol DoudizhuTransportProtocol: AnyObject {
     func sendPacket(_ packet: DoudizhuNetPacket)
 }
 
+func makeSafeMCPeerID(_ raw: String) -> MCPeerID {
+    var s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    if s.isEmpty { s = "HTT-Player" }
+    while s.utf8.count > 55 && s.count > 1 { s.removeLast() }
+    return MCPeerID(displayName: s.isEmpty ? "HTT-Player" : s)
+}
+
 class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearbyServiceAdvertiserDelegate, MCNearbyServiceBrowserDelegate {
     static let shared = KOnDoudizhuManager()
     private static let pokerCardImagesBase64: [String: String] = [
@@ -10171,7 +10178,7 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
         if myNickname == "轻音车友" && !devName.isEmpty && devName != "iPhone" {
             self.myNickname = devName
         }
-        self.myPeerID = MCPeerID(displayName: makeUniquePeerKey())
+        self.myPeerID = makeSafeMCPeerID(makeUniquePeerKey())
     }
     
     private func cleanNickname() -> String {
@@ -10196,7 +10203,7 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
         let oldKey = myPeerID.displayName
         let newKey = makeUniquePeerKey()
         if oldKey != newKey && !isHostingRoom && !isOnlineConnected && connectedPeerNames.isEmpty {
-            myPeerID = MCPeerID(displayName: newKey)
+            myPeerID = makeSafeMCPeerID(newKey)
         }
         if let idx = orderedRoomPeers.firstIndex(where: { $0.name == oldKey || $0.name == myPeerID.displayName }) {
             orderedRoomPeers[idx] = DoudizhuRoomPeer(name: myPeerID.displayName, charId: myCharacter.charId, displayName: cleanNickname())
@@ -10244,7 +10251,7 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
         mySeatIndex = 0
         currentRound = 1
         
-        myPeerID = MCPeerID(displayName: makeUniquePeerKey())
+        myPeerID = makeSafeMCPeerID(makeUniquePeerKey())
         orderedRoomPeers = [DoudizhuRoomPeer(name: myPeerID.displayName, charId: myCharacter.charId, displayName: cleanNickname())]
         let session = MCSession(peer: myPeerID, securityIdentity: nil, encryptionPreference: .optional)
         session.delegate = self
@@ -10278,7 +10285,7 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
         isBrowsingRooms = true
         discoveredRooms.removeAll()
         
-        myPeerID = MCPeerID(displayName: makeUniquePeerKey())
+        myPeerID = makeSafeMCPeerID(makeUniquePeerKey())
         let session = MCSession(peer: myPeerID, securityIdentity: nil, encryptionPreference: .optional)
         session.delegate = self
         self.mcSession = session
@@ -10327,7 +10334,7 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
         activeConnectedRoomCode = code
         roomCode = code
         currentRound = 1
-        myPeerID = MCPeerID(displayName: makeUniquePeerKey())
+        myPeerID = makeSafeMCPeerID(makeUniquePeerKey())
         orderedRoomPeers = [DoudizhuRoomPeer(name: myPeerID.displayName, charId: myCharacter.charId, displayName: cleanNickname())]
         isRoomAuthority = false
         isOnlineConnected = true
@@ -11828,7 +11835,7 @@ class KOnMahjongManager: NSObject, ObservableObject, MCSessionDelegate, MCNearby
         if myNickname == "轻音雀友" && !devName.isEmpty && devName != "iPhone" {
             self.myNickname = devName
         }
-        self.myPeerID = MCPeerID(displayName: makePeerKey())
+        self.myPeerID = makeSafeMCPeerID(makePeerKey())
         rebuildLobbySeats()
     }
 
@@ -11857,7 +11864,7 @@ class KOnMahjongManager: NSObject, ObservableObject, MCSessionDelegate, MCNearby
         let oldKey = myPeerID.displayName
         let newKey = makePeerKey()
         if oldKey != newKey && !isHostingRoom && !isOnlineConnected && connectedPeerNames.isEmpty {
-            myPeerID = MCPeerID(displayName: newKey)
+            myPeerID = makeSafeMCPeerID(newKey)
         }
         if let idx = orderedRoomPeers.firstIndex(where: { $0.name == oldKey || $0.name == myPeerID.displayName }) {
             orderedRoomPeers[idx] = DoudizhuRoomPeer(name: myPeerID.displayName, charId: myCharacter.charId, displayName: cleanNickname())
@@ -11901,7 +11908,7 @@ class KOnMahjongManager: NSObject, ObservableObject, MCSessionDelegate, MCNearby
         isRoomAuthority = true
         isBrowsingRooms = false
         mySeatIndex = 0
-        myPeerID = MCPeerID(displayName: makePeerKey())
+        myPeerID = makeSafeMCPeerID(makePeerKey())
         orderedRoomPeers = [DoudizhuRoomPeer(name: myPeerID.displayName, charId: myCharacter.charId, displayName: cleanNickname())]
 
         let session = MCSession(peer: myPeerID, securityIdentity: nil, encryptionPreference: .optional)
@@ -11929,7 +11936,7 @@ class KOnMahjongManager: NSObject, ObservableObject, MCSessionDelegate, MCNearby
         isHostingRoom = false
         isBrowsingRooms = true
         discoveredRooms.removeAll()
-        myPeerID = MCPeerID(displayName: makePeerKey())
+        myPeerID = makeSafeMCPeerID(makePeerKey())
         let session = MCSession(peer: myPeerID, securityIdentity: nil, encryptionPreference: .optional)
         session.delegate = self
         self.mcSession = session
@@ -11968,7 +11975,7 @@ class KOnMahjongManager: NSObject, ObservableObject, MCSessionDelegate, MCNearby
         activeConnectedRoomCode = code
         roomCode = code
         currentRound = 1
-        myPeerID = MCPeerID(displayName: makePeerKey())
+        myPeerID = makeSafeMCPeerID(makePeerKey())
         orderedRoomPeers = [DoudizhuRoomPeer(name: myPeerID.displayName, charId: myCharacter.charId, displayName: cleanNickname())]
         isRoomAuthority = false
         isOnlineConnected = true
@@ -13536,7 +13543,7 @@ final class RummikubEngine: NSObject, ObservableObject {
         roomCode = code
         currentRound = 1
         myPeerName = "\(cleanNick())#\(Int.random(in: 100...999))"
-        myPeerID = MCPeerID(displayName: myPeerName)
+        myPeerID = makeSafeMCPeerID(myPeerName)
         orderedRoomPeers = [DoudizhuRoomPeer(name: myPeerName, charId: myCharacter.charId, displayName: cleanNick())]
         isHostingRoom = true
         isRoomAuthority = true
@@ -13567,7 +13574,7 @@ final class RummikubEngine: NSObject, ObservableObject {
         isBrowsingRooms = true
         discoveredRooms.removeAll()
         myPeerName = "\(cleanNick())#\(Int.random(in: 100...999))"
-        myPeerID = MCPeerID(displayName: myPeerName)
+        myPeerID = makeSafeMCPeerID(myPeerName)
         let session = MCSession(peer: myPeerID, securityIdentity: nil, encryptionPreference: .optional)
         session.delegate = self
         self.mcSession = session

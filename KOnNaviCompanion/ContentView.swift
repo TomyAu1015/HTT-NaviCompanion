@@ -10121,7 +10121,7 @@ extension View {
     @ViewBuilder
     func httDefersSystemGestures() -> some View {
         if #available(iOS 16.0, *) {
-            self.httDefersSystemGestures()
+            self.defersSystemGestures(on: .bottom)
         } else {
             self
         }
@@ -10846,7 +10846,7 @@ struct KOnRummikubSheetView: View {
                                     ForEach(0..<cols, id: \.self) { col in
                                         let slotIdx = row * cols + col
                                         let tileOpt: RmkTile? = (slotIdx < rmk.rackSlots.count) ? rmk.rackSlots[slotIdx] : nil
-                                        let ordinal = (0...min(slotIdx, max(0, rmk.rackSlots.count - 1))).reduce(0) { acc, idx in
+                                        let ordinal: Int = rmk.rackSlots.isEmpty ? 0 : (0...min(slotIdx, rmk.rackSlots.count - 1)).reduce(0) { acc, idx in
                                             acc + (rmk.rackSlots[idx] != nil ? 1 : 0)
                                         }
                                         let isDealtVisible = !rmk.isDealingAnimation || ordinal <= rmk.dealingVisibleCount
