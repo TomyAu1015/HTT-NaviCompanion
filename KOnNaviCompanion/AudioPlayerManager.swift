@@ -13673,7 +13673,7 @@ extension RummikubEngine: MCSessionDelegate, MCNearbyServiceAdvertiserDelegate, 
             guard let self = self else { return }
             if code == self.roomCode.trimmingCharacters(in: .whitespacesAndNewlines) &&
                !self.discoveredRooms.contains(where: { $0.peerID == peerID }) {
-                self.discoveredRooms.append(DoudizhuDiscoveredRoom(peerID: peerID, roomCode: code, hostName: host, charId: charId))
+                self.discoveredRooms.append(DoudizhuDiscoveredRoom(id: "\(peerID.displayName)_\(code)", roomCode: code, hostName: host, hostCharId: charId, peerID: peerID))
             }
         }
     }
