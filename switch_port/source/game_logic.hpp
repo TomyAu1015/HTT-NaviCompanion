@@ -630,6 +630,39 @@ struct RmkSeat {
 };
 
 namespace RmkEvaluator {
+    inline std::vector<RmkTile> sortMeldForDisplay(const std::vector<RmkTile>& tiles) {
+        std::vector<RmkTile> jokers;
+        std::vector<RmkTile> norms;
+        for (const auto& t : tiles) {
+            if (t.isJoker()) jokers.push_back(t);
+            else norms.push_back(t);
+        }
+        if (norms.empty()) return tiles;
+        std::sort(norms.begin(), norms.end(), [](const RmkTile& a, const RmkTile& b) {
+            if (a.number != b.number) return a.number < b.number;
+            return a.color < b.color;
+        });
+        bool sameNum = true;
+        for (const auto& t : norms) if (t.number != norms[0].number) sameNum = false;
+        if (sameNum) {
+            norms.insert(norms.end(), jokers.begin(), jokers.end());
+            return norms;
+        }
+        std::vector<RmkTile> res;
+        size_t jIdx = 0;
+        for (size_t i = 0; i < norms.size(); ++i) {
+            res.push_back(norms[i]);
+            if (i + 1 < norms.size()) {
+                int gap = norms[i + 1].number - norms[i].number - 1;
+                for (int g = 0; g < gap && jIdx < jokers.size(); ++g) {
+                    res.push_back(jokers[jIdx++]);
+                }
+            }
+        }
+        while (jIdx < jokers.size()) res.push_back(jokers[jIdx++]);
+        return res;
+    }
+
     inline int evaluateMeld(const std::vector<RmkTile>& tiles) {
         if (tiles.size() < 3) return -1;
         int jokers = 0;

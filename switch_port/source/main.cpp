@@ -1059,14 +1059,20 @@ static void syncRmkHandFromRackSlots() {
     }
 }
 
+// Strictly 10 columns per row (2 rows = 20 slots total); ONLY expands beyond 10 columns when > 20 tiles!
 static void syncRmkRackFromHand(bool preserveLayout = true) {
     auto& hand = activeRmkHandRef();
+    int targetCols = ((int)hand.size() <= 20) ? 10 : (((int)hand.size() + 1) / 2);
     if (!preserveLayout || gRmkRackSlots.empty()) {
-        int neededCols = std::max(10, ((int)hand.size() + 3) / 2);
-        gRmkRackCols = neededCols;
-        gRmkRackSlots.assign(neededCols * 2, RmkTile{});
-        for (size_t i = 0; i < hand.size() && i < gRmkRackSlots.size(); ++i) {
-            gRmkRackSlots[i] = hand[i];
+        gRmkRackCols = targetCols;
+        gRmkRackSlots.assign(targetCols * 2, RmkTile{});
+        int topCnt = std::min(targetCols, ((int)hand.size() + 1) / 2);
+        for (int i = 0; i < (int)hand.size(); ++i) {
+            if (i < topCnt) gRmkRackSlots[i] = hand[i];
+            else {
+                int bIdx = targetCols + (i - topCnt);
+                if (bIdx < (int)gRmkRackSlots.size()) gRmkRackSlots[bIdx] = hand[i];
+            }
         }
         gRmkLiftedSlot = -1;
         return;
@@ -1075,60 +1081,65 @@ static void syncRmkRackFromHand(bool preserveLayout = true) {
     std::map<std::string, RmkTile> byId;
     for (const auto& t : hand) byId[t.id] = t;
     std::set<std::string> placed;
-    int cols = std::max(10, gRmkRackCols);
-    if ((int)gRmkRackSlots.size() < cols * 2) gRmkRackSlots.resize(cols * 2, RmkTile{});
+    int oldCols = std::max(1, (int)gRmkRackSlots.size() / 2);
+    int finalCols = std::max(targetCols, (int)hand.size() > 20 ? oldCols : 10);
+    std::vector<RmkTile> updated(finalCols * 2, RmkTile{});
 
-    for (size_t i = 0; i < gRmkRackSlots.size(); ++i) {
-        if (!gRmkRackSlots[i].id.empty()) {
-            auto it = byId.find(gRmkRackSlots[i].id);
-            if (it != byId.end()) {
-                gRmkRackSlots[i] = it->second;
-                placed.insert(it->first);
-            } else {
-                gRmkRackSlots[i] = RmkTile{};
+    for (int r = 0; r < 2; ++r) {
+        for (int c = 0; c < std::min(oldCols, finalCols); ++c) {
+            int oldIdx = r * oldCols + c;
+            int newIdx = r * finalCols + c;
+            if (oldIdx < (int)gRmkRackSlots.size() && !gRmkRackSlots[oldIdx].id.empty()) {
+                auto it = byId.find(gRmkRackSlots[oldIdx].id);
+                if (it != byId.end() && placed.insert(it->first).second) {
+                    updated[newIdx] = it->second;
+                }
             }
         }
     }
-
+    for (const auto& sl : gRmkRackSlots) {
+        if (!sl.id.empty()) {
+            auto it = byId.find(sl.id);
+            if (it != byId.end() && !placed.count(it->first)) {
+                for (size_t i = 0; i < updated.size(); ++i) {
+                    if (updated[i].id.empty()) {
+                        updated[i] = it->second;
+                        placed.insert(it->first);
+                        break;
+                    }
+                }
+            }
+        }
+    }
     for (const auto& t : hand) {
         if (placed.count(t.id)) continue;
         int emptyIdx = -1;
-        for (size_t i = 0; i < gRmkRackSlots.size(); ++i) {
-            if (gRmkRackSlots[i].id.empty()) { emptyIdx = (int)i; break; }
+        for (size_t i = 0; i < updated.size(); ++i) {
+            if (updated[i].id.empty()) { emptyIdx = (int)i; break; }
         }
         if (emptyIdx >= 0) {
-            gRmkRackSlots[emptyIdx] = t;
+            updated[emptyIdx] = t;
+            placed.insert(t.id);
         } else {
-            gRmkRackSlots.insert(gRmkRackSlots.begin() + cols, RmkTile{});
-            gRmkRackSlots.push_back(RmkTile{});
-            cols += 1;
-            gRmkRackSlots[cols - 1] = t;
+            updated.insert(updated.begin() + finalCols, RmkTile{});
+            updated.push_back(RmkTile{});
+            finalCols += 1;
+            updated[finalCols - 1] = t;
+            placed.insert(t.id);
         }
     }
-
-    int emptyCnt = 0;
-    for (const auto& sl : gRmkRackSlots) if (sl.id.empty()) emptyCnt++;
-    if (emptyCnt < 2) {
-        gRmkRackSlots.insert(gRmkRackSlots.begin() + cols, RmkTile{});
-        gRmkRackSlots.push_back(RmkTile{});
-        cols += 1;
-    }
-    gRmkRackCols = cols;
+    gRmkRackCols = std::max(10, (int)updated.size() / 2);
+    gRmkRackSlots = updated;
 }
 
 static void moveRmkRackSlot(int fromIdx, int toIdx) {
-    if (fromIdx < 0 || toIdx < 0 || fromIdx >= (int)gRmkRackSlots.size() || toIdx >= (int)gRmkRackSlots.size()) return;
+    if (fromIdx < 0 || toIdx < 0 || fromIdx >= (int)gRmkRackSlots.size() || toIdx >= (int)gRmkRackSlots.size()) {
+        gRmkLiftedSlot = -1;
+        return;
+    }
     if (fromIdx == toIdx) { gRmkLiftedSlot = -1; return; }
     std::swap(gRmkRackSlots[fromIdx], gRmkRackSlots[toIdx]);
     gRmkLiftedSlot = -1;
-    int col = toIdx % gRmkRackCols;
-    int emptyCnt = 0;
-    for (const auto& sl : gRmkRackSlots) if (sl.id.empty()) emptyCnt++;
-    if (col == gRmkRackCols - 1 || emptyCnt < 2) {
-        gRmkRackSlots.insert(gRmkRackSlots.begin() + gRmkRackCols, RmkTile{});
-        gRmkRackSlots.push_back(RmkTile{});
-        gRmkRackCols += 1;
-    }
     syncRmkHandFromRackSlots();
 }
 
@@ -1136,15 +1147,7 @@ static void shuffleRmkRackRandomly() {
     auto& hand = activeRmkHandRef();
     std::mt19937 rng((unsigned int)time(nullptr) ^ SDL_GetTicks());
     std::shuffle(hand.begin(), hand.end(), rng);
-    int cols = std::max(10, ((int)hand.size() + 4) / 2);
-    std::vector<int> indices(cols * 2);
-    for (int i = 0; i < cols * 2; ++i) indices[i] = i;
-    std::shuffle(indices.begin(), indices.begin() + std::min((int)indices.size(), std::max((int)hand.size() + 3, 16)), rng);
-    std::vector<int> chosen(indices.begin(), indices.begin() + std::min((int)hand.size(), cols * 2));
-    std::sort(chosen.begin(), chosen.end());
-    gRmkRackCols = cols;
-    gRmkRackSlots.assign(cols * 2, RmkTile{});
-    for (size_t i = 0; i < chosen.size(); ++i) gRmkRackSlots[chosen[i]] = hand[i];
+    syncRmkRackFromHand(false);
     gRmkLiftedSlot = -1;
     gStatusBanner = "已随机打乱双层牌架上的牌（点选任意牌可跨槽位移动换位）";
 }
@@ -1152,38 +1155,55 @@ static void shuffleRmkRackRandomly() {
 static void organizeRmkRack(bool preferRuns) {
     gRmkSortByColor = preferRuns;
     auto& hand = activeRmkHandRef();
-    std::vector<std::vector<RmkTile>> melds;
+    std::vector<std::vector<RmkTile>> rawMelds;
     std::vector<RmkTile> leftovers;
-    RmkEvaluator::organizeHandIntoGroups(hand, preferRuns, melds, leftovers);
+    RmkEvaluator::organizeHandIntoGroups(hand, preferRuns, rawMelds, leftovers);
 
-    int minNeeded = (int)hand.size() + (int)melds.size() + 3;
-    int cols = std::max(10, (minNeeded + 1) / 2);
+    int targetCols = ((int)hand.size() <= 20) ? 10 : (((int)hand.size() + 1) / 2);
+    int spareGaps = std::max(0, targetCols * 2 - (int)hand.size());
     std::vector<RmkTile> row0, row1;
-    auto appendGroup = [&](const std::vector<RmkTile>& grp, bool addGap) {
-        if ((int)row0.size() + (int)grp.size() <= cols) {
-            for (const auto& t : grp) row0.push_back(t);
-            if (addGap && (int)row0.size() < cols) row0.push_back(RmkTile{});
+
+    for (const auto& rm : rawMelds) {
+        auto m = RmkEvaluator::sortMeldForDisplay(rm);
+        if ((int)row0.size() + (int)m.size() <= targetCols) {
+            for (const auto& t : m) row0.push_back(t);
+            if (spareGaps > 0 && (int)row0.size() < targetCols) { row0.push_back(RmkTile{}); spareGaps--; }
+        } else if ((int)row1.size() + (int)m.size() <= targetCols) {
+            for (const auto& t : m) row1.push_back(t);
+            if (spareGaps > 0 && (int)row1.size() < targetCols) { row1.push_back(RmkTile{}); spareGaps--; }
         } else {
-            for (const auto& t : grp) row1.push_back(t);
-            if (addGap) row1.push_back(RmkTile{});
+            for (const auto& t : m) {
+                if ((int)row0.size() < targetCols) row0.push_back(t);
+                else row1.push_back(t);
+            }
+            if (spareGaps > 0 && (int)row1.size() < targetCols) { row1.push_back(RmkTile{}); spareGaps--; }
         }
-    };
-    for (const auto& m : melds) appendGroup(m, true);
-    for (const auto& t : leftovers) {
-        if ((int)row0.size() < cols) row0.push_back(t);
-        else row1.push_back(t);
     }
-    cols = std::max({cols, (int)row0.size() + 1, (int)row1.size() + 1});
-    while ((int)row0.size() < cols) row0.push_back(RmkTile{});
-    while ((int)row1.size() < cols) row1.push_back(RmkTile{});
-    gRmkRackCols = cols;
+    for (const auto& t : leftovers) {
+        if ((int)row0.size() < targetCols) row0.push_back(t);
+        else if ((int)row1.size() < targetCols) row1.push_back(t);
+        else {
+            bool placedInGap = false;
+            for (int i = (int)row0.size() - 1; i >= 0 && !placedInGap; --i) {
+                if (row0[i].id.empty()) { row0[i] = t; placedInGap = true; }
+            }
+            for (int i = (int)row1.size() - 1; i >= 0 && !placedInGap; --i) {
+                if (row1[i].id.empty()) { row1[i] = t; placedInGap = true; }
+            }
+            if (!placedInGap) row1.push_back(t);
+        }
+    }
+    int finalCols = ((int)hand.size() <= 20) ? 10 : std::max({targetCols, (int)row0.size(), (int)row1.size()});
+    while ((int)row0.size() < finalCols) row0.push_back(RmkTile{});
+    while ((int)row1.size() < finalCols) row1.push_back(RmkTile{});
+    gRmkRackCols = finalCols;
     gRmkRackSlots.clear();
-    gRmkRackSlots.insert(gRmkRackSlots.end(), row0.begin(), row0.end());
-    gRmkRackSlots.insert(gRmkRackSlots.end(), row1.begin(), row1.end());
+    gRmkRackSlots.insert(gRmkRackSlots.end(), row0.begin(), row0.begin() + finalCols);
+    gRmkRackSlots.insert(gRmkRackSlots.end(), row1.begin(), row1.begin() + finalCols);
     gRmkLiftedSlot = -1;
     syncRmkHandFromRackSlots();
-    if (!melds.empty()) {
-        gStatusBanner = std::string(preferRuns ? "[789 顺子理牌] " : "[777 群组理牌] ") + "已整理出 " + std::to_string(melds.size()) + " 组可出牌型，并用空位与其他牌隔开！";
+    if (!rawMelds.empty()) {
+        gStatusBanner = std::string(preferRuns ? "[789 顺子理牌] " : "[777 群组理牌] ") + "已整理出 " + std::to_string(rawMelds.size()) + " 组可出牌型，并用空位与其他牌隔开！";
     } else {
         gStatusBanner = std::string(preferRuns ? "[789 顺子理牌] " : "[777 群组理牌] ") + "已整理牌架（当前暂无满3张直出牌组）";
     }
@@ -1309,6 +1329,7 @@ static void startNewRmkRound() {
 }
 
 static void executeRmkDraw(int seatIdx, const std::string& reason) {
+    gRmkDealStartTick = 0;
     int pCnt = std::max(2, (int)gRmkSeats.size());
     if (!gRmkPool.empty()) {
         gRmkSeats[seatIdx].hand.push_back(gRmkPool.front());
@@ -3201,9 +3222,10 @@ int main(int argc, char* argv[]) {
                     std::vector<RmkTile> picked;
                     for (const auto& t : gRmkWorkHand) if (t.selected) picked.push_back(t);
                     if (RmkEvaluator::evaluateMeld(picked) >= 0) {
+                        auto orderedPicked = RmkEvaluator::sortMeldForDisplay(picked);
                         gRmkWorkHand.erase(std::remove_if(gRmkWorkHand.begin(), gRmkWorkHand.end(), [](const RmkTile& t){ return t.selected; }), gRmkWorkHand.end());
                         for (auto& sl : gRmkRackSlots) if (sl.selected) sl = RmkTile{};
-                        gRmkWorkMelds.push_back({"m_" + std::to_string(SDL_GetTicks()), picked});
+                        gRmkWorkMelds.push_back({"m_" + std::to_string(SDL_GetTicks()), orderedPicked});
                         gRmkLiftedSlot = -1;
                         gStatusBanner = "已暂放牌组到桌面，点击【确认出牌】或按 [X] 完成出牌！";
                     } else {
