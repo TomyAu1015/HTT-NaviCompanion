@@ -151,6 +151,112 @@ object RmkEvaluator {
         }
         return best
     }
+
+    fun organizeHandIntoGroups(hand: List<RmkTile>, preferRuns: Boolean): Pair<List<List<RmkTile>>, List<RmkTile>> {
+        val remaining = hand.toMutableList()
+        val melds = ArrayList<List<RmkTile>>()
+
+        fun extractRuns() {
+            var changed = true
+            while (changed) {
+                changed = false
+                val byCol = remaining.filter { !it.isJoker }.groupBy { it.color }
+                for (col in listOf(RmkColor.RED, RmkColor.BLUE, RmkColor.YELLOW, RmkColor.BLACK)) {
+                    val grp = byCol[col] ?: continue
+                    val uniq = ArrayList<RmkTile>()
+                    val seen = HashSet<Int>()
+                    for (t in grp.sortedBy { it.number }) if (seen.add(t.number)) uniq.add(t)
+                    val run = ArrayList<RmkTile>()
+                    for (t in uniq) {
+                        if (run.isEmpty() || t.number == run.last().number + 1) run.add(t)
+                        else {
+                            if (run.size >= 3) break
+                            run.clear(); run.add(t)
+                        }
+                    }
+                    if (run.size >= 3) {
+                        val copy = run.toList()
+                        melds.add(copy)
+                        val ids = copy.map { it.id }.toSet()
+                        remaining.removeAll { ids.contains(it.id) }
+                        changed = true
+                        break
+                    }
+                }
+            }
+        }
+
+        fun extractGroups() {
+            var changed = true
+            while (changed) {
+                changed = false
+                val byNum = remaining.filter { !it.isJoker }.groupBy { it.number }
+                for (num in 13 downTo 1) {
+                    val grp = byNum[num] ?: continue
+                    val uniq = ArrayList<RmkTile>()
+                    val seen = HashSet<RmkColor>()
+                    for (t in grp) if (seen.add(t.color)) uniq.add(t)
+                    if (uniq.size >= 3) {
+                        val pick = uniq.take(4)
+                        melds.add(pick)
+                        val ids = pick.map { it.id }.toSet()
+                        remaining.removeAll { ids.contains(it.id) }
+                        changed = true
+                        break
+                    }
+                }
+            }
+        }
+
+        if (preferRuns) { extractRuns(); extractGroups() }
+        else { extractGroups(); extractRuns() }
+
+        while (true) {
+            val jIdx = remaining.indexOfFirst { it.isJoker }
+            if (jIdx < 0) break
+            val joker = remaining[jIdx]
+            var paired: List<RmkTile>? = null
+            if (preferRuns) {
+                val byCol = remaining.filter { !it.isJoker }.groupBy { it.color }
+                for (col in listOf(RmkColor.RED, RmkColor.BLUE, RmkColor.YELLOW, RmkColor.BLACK)) {
+                    val s = (byCol[col] ?: emptyList()).sortedBy { it.number }
+                    if (s.size >= 2) {
+                        for (i in 0 until s.size - 1) {
+                            if (s[i + 1].number - s[i].number in 1..2) {
+                                paired = listOf(s[i], s[i + 1], joker)
+                                break
+                            }
+                        }
+                    }
+                    if (paired != null) break
+                }
+            }
+            if (paired == null) {
+                val byNum = remaining.filter { !it.isJoker }.groupBy { it.number }
+                for (num in 13 downTo 1) {
+                    val uniq = ArrayList<RmkTile>()
+                    val seen = HashSet<RmkColor>()
+                    for (t in (byNum[num] ?: emptyList())) if (seen.add(t.color)) uniq.add(t)
+                    if (uniq.size == 2) { paired = listOf(uniq[0], uniq[1], joker); break }
+                }
+            }
+            if (paired != null) {
+                melds.add(paired)
+                val ids = paired.map { it.id }.toSet()
+                remaining.removeAll { ids.contains(it.id) }
+            } else break
+        }
+
+        val sortedLeft = remaining.sortedWith(Comparator { a, b ->
+            if (a.isJoker != b.isJoker) return@Comparator if (a.isJoker) 1 else -1
+            if (preferRuns) {
+                if (a.color != b.color) a.color.code.compareTo(b.color.code) else a.number - b.number
+            } else {
+                if (a.number != b.number) a.number - b.number else a.color.code.compareTo(b.color.code)
+            }
+        })
+        return melds to sortedLeft
+    }
 }
 
 class RummikubEngine(
@@ -252,8 +358,30 @@ class RummikubEngine(
     private val _workingHand = MutableStateFlow<List<RmkTile>>(emptyList())
     val workingHand: StateFlow<List<RmkTile>> = _workingHand.asStateFlow()
 
+    private val _rackCols = MutableStateFlow(10)
+    val rackCols: StateFlow<Int> = _rackCols.asStateFlow()
+
+    private val _rackSlots = MutableStateFlow<List<RmkTile?>>(List(20) { null })
+    val rackSlots: StateFlow<List<RmkTile?>> = _rackSlots.asStateFlow()
+
+    private val _liftedSlotIndex = MutableStateFlow<Int?>(null)
+    val liftedSlotIndex: StateFlow<Int?> = _liftedSlotIndex.asStateFlow()
+
+    private val _dealingVisibleCount = MutableStateFlow(99)
+    val dealingVisibleCount: StateFlow<Int> = _dealingVisibleCount.asStateFlow()
+
+    private val _isDealingAnimation = MutableStateFlow(false)
+    val isDealingAnimation: StateFlow<Boolean> = _isDealingAnimation.asStateFlow()
+
+    private val _isDrawingAnimation = MutableStateFlow(false)
+    val isDrawingAnimation: StateFlow<Boolean> = _isDrawingAnimation.asStateFlow()
+
+    private val _drawingAnimatedTile = MutableStateFlow<RmkTile?>(null)
+    val drawingAnimatedTile: StateFlow<RmkTile?> = _drawingAnimatedTile.asStateFlow()
+
     private var snapshotMelds: List<RmkMeld> = emptyList()
     private var snapshotHand: List<RmkTile> = emptyList()
+    private var snapshotRackSlots: List<RmkTile?> = emptyList()
     private val pool = ArrayList<RmkTile>()
     private var myPeerName: String = ""
     private var orderedRoomPeers = mutableListOf<Triple<String, Int, String>>()
@@ -336,15 +464,119 @@ class RummikubEngine(
         }
     })
 
-    fun toggleSortMode() {
-        _sortByColor.value = !_sortByColor.value
-        val curSeats = _seats.value.toMutableList()
-        val idx = _mySeatIndex.value
-        if (idx < curSeats.size) {
-            curSeats[idx] = curSeats[idx].copy(hand = sortHand(curSeats[idx].hand))
-            _seats.value = curSeats
-            if (_isEditingTable.value) _workingHand.value = sortHand(_workingHand.value)
+    fun syncRackFromHand(tiles: List<RmkTile>, preserveExistingPositions: Boolean = true) {
+        val minCols = maxOf(10, (tiles.size + 1) / 2 + 2)
+        if (!preserveExistingPositions || _rackSlots.value.isEmpty()) {
+            _rackCols.value = minCols
+            val next = MutableList<RmkTile?>(minCols * 2) { null }
+            val topCnt = minOf(minCols, (tiles.size + 1) / 2)
+            for (i in tiles.indices) {
+                if (i < topCnt) next[i] = tiles[i]
+                else {
+                    val bIdx = minCols + (i - topCnt)
+                    if (bIdx < next.size) next[bIdx] = tiles[i]
+                }
+            }
+            _rackSlots.value = next
+            return
         }
+        val handMap = tiles.associateBy { it.id }
+        val placedIds = HashSet<String>()
+        var updated = _rackSlots.value.map { slot ->
+            val keep = slot?.let { handMap[it.id] }
+            if (keep != null) placedIds.add(keep.id)
+            keep
+        }.toMutableList()
+
+        val missing = tiles.filterNot { placedIds.contains(it.id) }
+        for (m in missing) {
+            var emptyIdx = updated.indexOfFirst { it == null }
+            if (emptyIdx < 0) {
+                updated = extendRackColumnsInternal(2, updated)
+                emptyIdx = updated.indexOfFirst { it == null }
+            }
+            if (emptyIdx >= 0) updated[emptyIdx] = m
+        }
+        if (updated.count { it == null } < 2) {
+            updated = extendRackColumnsInternal(2, updated)
+        }
+        _rackSlots.value = updated
+    }
+
+    private fun extendRackColumnsInternal(extraCols: Int, cur: MutableList<RmkTile?>): MutableList<RmkTile?> {
+        val oldCols = maxOf(1, cur.size / 2)
+        val newCols = oldCols + extraCols
+        val next = MutableList<RmkTile?>(newCols * 2) { null }
+        for (c in 0 until oldCols) {
+            next[c] = cur[c]
+            next[newCols + c] = cur[oldCols + c]
+        }
+        _rackCols.value = newCols
+        return next
+    }
+
+    fun setLiftedSlot(idx: Int?) { _liftedSlotIndex.value = idx }
+
+    fun moveRackSlot(srcIdx: Int, dstIdx: Int) {
+        val cur = _rackSlots.value.toMutableList()
+        if (srcIdx !in cur.indices || dstIdx !in cur.indices || srcIdx == dstIdx) return
+        val tmp = cur[dstIdx]
+        cur[dstIdx] = cur[srcIdx]
+        cur[srcIdx] = tmp
+        _liftedSlotIndex.value = null
+        val cols = _rackCols.value
+        val finalSlots = if (dstIdx == cols - 1 || dstIdx == cols * 2 - 1 || cur.count { it == null } < 2) {
+            extendRackColumnsInternal(1, cur)
+        } else cur
+        _rackSlots.value = finalSlots
+    }
+
+    fun shuffleRackRandomly() {
+        val active = _rackSlots.value.filterNotNull().shuffled()
+        syncRackFromHand(active, preserveExistingPositions = false)
+        _selectedTileIds.value = emptySet()
+        _liftedSlotIndex.value = null
+        _statusBanner.value = "🎲 已随机打乱牌架顺序（可点击或拖拽任意牌自由移动位置）"
+    }
+
+    fun organizeRack(preferRuns: Boolean) {
+        _sortByColor.value = preferRuns
+        val active = _rackSlots.value.filterNotNull()
+        val (melds, leftovers) = RmkEvaluator.organizeHandIntoGroups(active, preferRuns)
+        val row0 = ArrayList<RmkTile?>()
+        val row1 = ArrayList<RmkTile?>()
+        for (meld in melds) {
+            if (row0.size <= row1.size) {
+                if (row0.isNotEmpty()) row0.add(null)
+                row0.addAll(meld)
+            } else {
+                if (row1.isNotEmpty()) row1.add(null)
+                row1.addAll(meld)
+            }
+        }
+        if (melds.isNotEmpty()) {
+            if (row0.isNotEmpty()) row0.add(null)
+            if (row1.isNotEmpty()) row1.add(null)
+        }
+        for (t in leftovers) {
+            if (row0.size <= row1.size) row0.add(t) else row1.add(t)
+        }
+        val neededCols = maxOf(10, maxOf(row0.size, row1.size) + 2)
+        _rackCols.value = neededCols
+        val next = MutableList<RmkTile?>(neededCols * 2) { null }
+        for (i in row0.indices) if (i < neededCols) next[i] = row0[i]
+        for (i in row1.indices) if (i < neededCols) next[neededCols + i] = row1[i]
+        _rackSlots.value = next
+        _liftedSlotIndex.value = null
+        _statusBanner.value = if (melds.isNotEmpty()) {
+            "✨ 已按【${if (preferRuns) "789顺组" else "777群组"}】整理牌架：共识别 ${melds.size} 组可出牌型（已自动留空隔开）"
+        } else {
+            if (preferRuns) "🔢 已按 789 同色顺子方向整理牌架" else "🔢 已按 777 同数群组方向整理牌架"
+        }
+    }
+
+    fun toggleSortMode() {
+        organizeRack(!_sortByColor.value)
     }
 
     fun rebuildLobbySeats() {
@@ -769,15 +1001,16 @@ class RummikubEngine(
         for (i in 0 until pCnt) {
             val dealt = pool.take(14)
             repeat(14) { pool.removeAt(0) }
-            list[i] = list[i].copy(hand = sortHand(dealt), hasBrokenIce = false)
+            list[i] = list[i].copy(hand = dealt, hasBrokenIce = false)
         }
         _seats.value = list
         _poolCount.value = pool.size
         _tableMelds.value = emptyList()
         _currentTurnSeat.value = (_currentRound.value - 1) % pCnt
         _phase.value = RmkGamePhase.PLAYING
-        resetWorkspaceForNewTurn()
-        _statusBanner.value = "🔢 第 ${_currentRound.value} 局发牌完成 (${pCnt}人局)！轮到 [${list[_currentTurnSeat.value].name}] 出牌 (需≥30分破冰)"
+        resetWorkspaceForNewTurn(preserveRackLayout = false)
+        trigger15sDealAnimation()
+        _statusBanner.value = "🔢 正在派发 14 张初始手牌 (1.5秒发牌动画)... 轮到 [${list[_currentTurnSeat.value].name}] 出牌 (需≥30分破冰)"
         startTurnTimer()
         broadcastFullState()
         scheduleAiTurnIfNeeded()
@@ -807,12 +1040,29 @@ class RummikubEngine(
         mainHandler.postDelayed(r, 1000L)
     }
 
-    fun resetWorkspaceForNewTurn() {
+    fun trigger15sDealAnimation() {
+        _isDealingAnimation.value = true
+        _dealingVisibleCount.value = 0
+        for (step in 1..14) {
+            mainHandler.postDelayed({
+                _dealingVisibleCount.value = step
+                if (step == 14) {
+                    _dealingVisibleCount.value = 99
+                    _isDealingAnimation.value = false
+                }
+            }, (step * 105).toLong())
+        }
+    }
+
+    fun resetWorkspaceForNewTurn(preserveRackLayout: Boolean = true) {
         _selectedTileIds.value = emptySet()
+        _liftedSlotIndex.value = null
         _isEditingTable.value = false
         val myHand = _seats.value.getOrNull(_mySeatIndex.value)?.hand ?: emptyList()
         snapshotHand = myHand
         _workingHand.value = myHand
+        syncRackFromHand(myHand, preserveExistingPositions = preserveRackLayout)
+        snapshotRackSlots = _rackSlots.value
         snapshotMelds = _tableMelds.value
         _workingMelds.value = _tableMelds.value
     }
@@ -824,6 +1074,7 @@ class RummikubEngine(
             _workingHand.value = myHand
             snapshotMelds = _tableMelds.value
             _workingMelds.value = _tableMelds.value
+            snapshotRackSlots = _rackSlots.value
             _isEditingTable.value = true
         }
     }
@@ -832,9 +1083,11 @@ class RummikubEngine(
         if (_isEditingTable.value) {
             _workingHand.value = snapshotHand
             _workingMelds.value = snapshotMelds
+            _rackSlots.value = snapshotRackSlots
             _selectedTileIds.value = emptySet()
+            _liftedSlotIndex.value = null
             _isEditingTable.value = false
-            _statusBanner.value = "↩️ 已复原到本回合初始牌面"
+            _statusBanner.value = "↩️ 已复原到本回合初始牌面与牌架位置"
         }
     }
 
@@ -855,6 +1108,7 @@ class RummikubEngine(
             return
         }
         _workingHand.value = _workingHand.value.filterNot { sel.contains(it.id) }
+        _rackSlots.value = _rackSlots.value.map { if (it != null && sel.contains(it.id)) null else it }
         _workingMelds.value = _workingMelds.value + RmkMeld(UUID.randomUUID().toString(), picked)
         _selectedTileIds.value = emptySet()
         _statusBanner.value = "✅ 已暂放牌组到桌面（点击【确认出牌】完成回合）"
@@ -878,6 +1132,7 @@ class RummikubEngine(
             return
         }
         _workingHand.value = _workingHand.value.filterNot { sel.contains(it.id) }
+        _rackSlots.value = _rackSlots.value.map { if (it != null && sel.contains(it.id)) null else it }
         val ms = _workingMelds.value.toMutableList()
         ms[idx] = ms[idx].copy(tiles = comb.sortedBy { it.number })
         _workingMelds.value = ms
@@ -902,6 +1157,7 @@ class RummikubEngine(
         ms[idx] = ms[idx].copy(tiles = ms[idx].tiles.dropLast(1))
         _workingMelds.value = ms
         _workingHand.value = _workingHand.value + popped
+        syncRackFromHand(_workingHand.value, preserveExistingPositions = true)
         _selectedTileIds.value = _selectedTileIds.value + popped.id
         _statusBanner.value = "🔄 已从牌组拆出 1 张牌，请配合手牌组成新牌组后【确认出牌】"
     }
@@ -969,16 +1225,23 @@ class RummikubEngine(
     }
 
     fun drawTilePassTapped() {
-        if (_currentTurnSeat.value != _mySeatIndex.value || _phase.value != RmkGamePhase.PLAYING) return
+        if (_currentTurnSeat.value != _mySeatIndex.value || _phase.value != RmkGamePhase.PLAYING || _isDrawingAnimation.value) return
         restoreWorkspaceSnapshot()
-        if ((_isServerConnected.value || _connectedPeerNames.value.isNotEmpty() || lanWriters.isNotEmpty()) && !_isRoomAuthority.value) {
-            sendPacketText(JSONObject().apply {
-                put("kind", "drawTileAction"); put("roomCode", wireRoomCode())
-                put("senderPeerName", myPeerName); put("senderCharId", _myCharacter.value.charId)
-            }.toString())
-            return
-        }
-        executeDrawAndAdvance(_mySeatIndex.value, "摸牌结束回合")
+        _isDrawingAnimation.value = true
+        _drawingAnimatedTile.value = pool.firstOrNull() ?: RmkTile("anim_draw", RmkColor.RED, 7)
+        _statusBanner.value = "🃏 正在从牌堆摸取 1 张新牌 (1.5秒摸牌动画)..."
+        mainHandler.postDelayed({
+            _isDrawingAnimation.value = false
+            _drawingAnimatedTile.value = null
+            if ((_isServerConnected.value || _connectedPeerNames.value.isNotEmpty() || lanWriters.isNotEmpty()) && !_isRoomAuthority.value) {
+                sendPacketText(JSONObject().apply {
+                    put("kind", "drawTileAction"); put("roomCode", wireRoomCode())
+                    put("senderPeerName", myPeerName); put("senderCharId", _myCharacter.value.charId)
+                }.toString())
+            } else {
+                executeDrawAndAdvance(_mySeatIndex.value, "摸牌结束回合")
+            }
+        }, 1500L)
     }
 
     private fun executeCommitTurn(seatIdx: Int, newMelds: List<RmkMeld>, playedIds: Set<String>) {
@@ -1007,7 +1270,7 @@ class RummikubEngine(
         val list = _seats.value.toMutableList()
         if (pool.isNotEmpty()) {
             val t = pool.removeAt(0)
-            list[seatIdx] = list[seatIdx].copy(hand = sortHand(list[seatIdx].hand + t))
+            list[seatIdx] = list[seatIdx].copy(hand = list[seatIdx].hand + t)
             _seats.value = list
             _poolCount.value = pool.size
         }
