@@ -80,7 +80,7 @@ class MainActivity : ComponentActivity() {
             val client = fusedLocationClient
             if (client != null) {
                 client.lastLocation.addOnSuccessListener { loc ->
-                    if (loc != null) {
+                    if (loc != null && kotlin.math.abs(System.currentTimeMillis() - loc.time) < 45000L) {
                         HTTNaviApp.instance.audioPlayerManager.updateRealLocation(
                             loc.latitude, loc.longitude, loc.speed, loc.bearing, if (loc.hasAccuracy()) loc.accuracy else 25f
                         )
@@ -126,9 +126,11 @@ class MainActivity : ComponentActivity() {
             for (prov in listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER)) {
                 if (lm.isProviderEnabled(prov)) {
                     lm.getLastKnownLocation(prov)?.let { loc ->
-                        HTTNaviApp.instance.audioPlayerManager.updateRealLocation(
-                            loc.latitude, loc.longitude, loc.speed, loc.bearing, if (loc.hasAccuracy()) loc.accuracy else 25f
-                        )
+                        if (kotlin.math.abs(System.currentTimeMillis() - loc.time) < 45000L) {
+                            HTTNaviApp.instance.audioPlayerManager.updateRealLocation(
+                                loc.latitude, loc.longitude, loc.speed, loc.bearing, if (loc.hasAccuracy()) loc.accuracy else 25f
+                            )
+                        }
                     }
                     lm.requestLocationUpdates(prov, 1500L, 1f, listener, Looper.getMainLooper())
                 }

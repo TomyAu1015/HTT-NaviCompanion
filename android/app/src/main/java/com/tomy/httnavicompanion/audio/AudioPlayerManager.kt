@@ -608,11 +608,16 @@ class AudioPlayerManager(
         if (pts.isEmpty()) return
 
         val dest = _destinationCoord.value
-        if (dest != null && CoordinateConverter.distanceMeters(coord, dest) <= 40.0) {
+        if (dest != null && CoordinateConverter.distanceMeters(coord, dest) <= 38.0) {
             _distanceToNextStepMeters.value = 0
             _remainingRouteDistanceKm.value = 0.0
-            _currentStepInstruction.value = "🎉 已到达目的地：${_destinationName.value}"
+            _remainingRouteMinutes.value = 0
+            _currentStepInstruction.value = "🎉 已抵达目的地：${_destinationName.value}"
             _hasActiveNavigation.value = false
+            _activeRoutePoints.value = emptyList()
+            _candidateRoutes.value = emptyList()
+            _destinationCoord.value = null
+            _isDemoSimulating.value = false
             return
         }
 
@@ -626,7 +631,7 @@ class AudioPlayerManager(
             minSegDist = CoordinateConverter.distanceMeters(coord, pts[0])
         }
 
-        if (minSegDist > 95.0) {
+        if (minSegDist > 90.0) {
             offRouteStrikeCount += 1
             val now = System.currentTimeMillis()
             if (offRouteStrikeCount >= 3 && dest != null && now - lastRerouteMillis > 20000L) {
@@ -639,15 +644,6 @@ class AudioPlayerManager(
             offRouteStrikeCount = 0
         }
 
-        if (dest != null && CoordinateConverter.distanceMeters(coord, dest) <= 25.0) {
-            _distanceToNextStepMeters.value = 0
-            _currentStepInstruction.value = "🎉 已抵达目的地：${_destinationName.value}"
-            _activeRoutePoints.value = emptyList()
-            _candidateRoutes.value = emptyList()
-            _destinationCoord.value = null
-            _isDemoSimulating.value = false
-            return
-        }
         val steps = route.steps
         if (steps.isNotEmpty()) {
             if (currentRouteStepIdx >= steps.size) currentRouteStepIdx = steps.lastIndex
@@ -655,7 +651,14 @@ class AudioPlayerManager(
             val distToManeuver = CoordinateConverter.distanceMeters(coord, step.maneuverLocation).toInt()
             _distanceToNextStepMeters.value = distToManeuver
             _currentStepInstruction.value = step.instruction
-            if (distToManeuver <= 18 && currentRouteStepIdx < steps.lastIndex) {
+            var futureDist = distToManeuver.toDouble()
+            for (idx in (currentRouteStepIdx + 1) until steps.size) {
+                futureDist += steps[idx].distanceMeters
+            }
+            _remainingRouteDistanceKm.value = (futureDist / 1000.0).coerceAtLeast(0.01)
+            val ratio = if (route.totalDistanceMeters > 1.0) (futureDist / route.totalDistanceMeters).coerceIn(0.02, 1.0) else 1.0
+            _remainingRouteMinutes.value = ((route.durationSeconds * ratio) / 60.0).toInt().coerceAtLeast(1)
+            if (distToManeuver <= 20 && currentRouteStepIdx < steps.lastIndex) {
                 currentRouteStepIdx += 1
             }
         }
@@ -663,8 +666,19 @@ class AudioPlayerManager(
 
     fun handleMapTap(coord: LatLng) {
         _tappedCoord.value = coord
-        _tappedTitle.value = "正在解析位置..."
-        _tappedAddress.value = String.format("%.5f, %.5f", coord.latitude, coord.longitude)
+        val nearestLocal = MapAndRouteEngine.domesticLandmarksDatabase.minByOrNull {
+            CoordinateConverter.distanceMeters(coord, it.coordinate)
+        }
+        val nearDist = nearestLocal?.let { CoordinateConverter.distanceMeters(coord, it.coordinate) } ?: 999999.0
+        if (nearestLocal != null && nearDist <= 260.0) {
+            _tappedTitle.value = nearestLocal.name
+            _tappedAddress.value = nearestLocal.address
+            _tappedCategory.value = nearestLocal.category
+            _isReverseGeocoding.value = false
+            return
+        }
+        _tappedTitle.value = String.format("地图选点 (%.4f, %.4f)", coord.latitude, coord.longitude)
+        _tappedAddress.value = String.format("坐标: %.5f, %.5f (可立即点击导航)", coord.latitude, coord.longitude)
         _tappedCategory.value = "地图兴趣点"
         _isReverseGeocoding.value = true
 

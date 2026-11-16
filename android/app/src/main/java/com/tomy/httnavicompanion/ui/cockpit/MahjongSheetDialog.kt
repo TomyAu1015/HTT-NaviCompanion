@@ -1376,21 +1376,23 @@ fun KOnRummikubContent() {
                     }
                 }
 
-                // Bottom 2-Row Dynamic Extending Wooden Rack (1:1 like Video!)
-                Box(
+                // Bottom Fixed 2-Row Wooden Rack (Stationary rack, 10x2=20 slots, only expands if >20 tiles, only tiles move!)
+                BoxWithConstraints(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(126.dp)
+                        .height(124.dp)
+                        .padding(bottom = 8.dp)
                         .clip(RoundedCornerShape(10.dp))
                         .background(Color(0xFFA8703E))
                         .border(2.dp, Color(0xFFD9A35C), RoundedCornerShape(10.dp))
-                        .horizontalScroll(rememberScrollState())
                         .padding(horizontal = 8.dp, vertical = 4.dp)
                 ) {
-                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    val slotW = ((maxWidth - 8.dp - 4.dp * (cols - 1)) / cols).coerceIn(26.dp, 52.dp)
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.fillMaxWidth()) {
                         for (row in 0..1) {
                             Box(
                                 modifier = Modifier
+                                    .fillMaxWidth()
                                     .clip(RoundedCornerShape(6.dp))
                                     .background(if (row == 0) Color(0xFF8C582B) else Color(0xFF7D4D25))
                                     .padding(horizontal = 4.dp, vertical = 2.dp)
@@ -1408,7 +1410,7 @@ fun KOnRummikubContent() {
 
                                         Box(
                                             modifier = Modifier
-                                                .size(width = 40.dp, height = 52.dp)
+                                                .size(width = slotW, height = 50.dp)
                                                 .clip(RoundedCornerShape(5.dp))
                                                 .background(if (liftedIdx != null && tileOpt == null) Color.Yellow.copy(alpha = 0.16f) else Color.Black.copy(alpha = 0.12f))
                                                 .border(1.dp, if (liftedIdx != null) Color.Yellow.copy(alpha = 0.55f) else Color.Black.copy(alpha = 0.22f), RoundedCornerShape(5.dp))
@@ -1429,8 +1431,9 @@ fun KOnRummikubContent() {
                                                         onDragEnd = {
                                                             val curDrag = dragSlotIdx
                                                             if (curDrag != null) {
-                                                                val colShift = (dragOffsetX / 110f).roundToInt()
-                                                                val rowShift = (dragOffsetY / 130f).roundToInt()
+                                                                val stepPx = (size.width + 10).coerceAtLeast(40)
+                                                                val colShift = (dragOffsetX / stepPx).roundToInt()
+                                                                val rowShift = (dragOffsetY / 110f).roundToInt()
                                                                 val dstRow = (row + rowShift).coerceIn(0, 1)
                                                                 val dstCol = (col + colShift).coerceIn(0, cols - 1)
                                                                 rmk.moveRackSlot(curDrag, dstRow * cols + dstCol)

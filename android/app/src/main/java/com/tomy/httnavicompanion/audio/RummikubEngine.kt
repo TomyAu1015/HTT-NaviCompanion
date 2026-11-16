@@ -73,6 +73,29 @@ enum class RmkGamePhase { LOBBY, PLAYING, ROUND_OVER }
 enum class RmkNetworkMode { LOCAL_LAN, ONLINE_SERVER }
 
 object RmkEvaluator {
+    fun sortMeldForDisplay(tiles: List<RmkTile>): List<RmkTile> {
+        val jokers = tiles.filter { it.isJoker }.toMutableList()
+        val normals = tiles.filter { !it.isJoker }.sortedWith(Comparator { a, b ->
+            if (a.number != b.number) a.number - b.number else a.color.code.compareTo(b.color.code)
+        })
+        if (normals.isEmpty()) return tiles
+        if (normals.all { it.number == normals[0].number }) {
+            return normals + jokers
+        }
+        val res = ArrayList<RmkTile>(tiles.size)
+        for (i in normals.indices) {
+            res.add(normals[i])
+            if (i + 1 < normals.size) {
+                val gap = normals[i + 1].number - normals[i].number - 1
+                if (gap > 0) {
+                    repeat(gap) { if (jokers.isNotEmpty()) res.add(jokers.removeAt(0)) }
+                }
+            }
+        }
+        while (jokers.isNotEmpty()) res.add(jokers.removeAt(0))
+        return res
+    }
+
     fun evaluateMeld(tiles: List<RmkTile>): Int? {
         if (tiles.size < 3) return null
         val jokers = tiles.filter { it.isJoker }
@@ -464,16 +487,24 @@ class RummikubEngine(
         }
     })
 
+    private fun currentCanonicalHand(): List<RmkTile> {
+        if (_isEditingTable.value) return _workingHand.value
+        val s = _seats.value.getOrNull(_mySeatIndex.value)
+        if (s != null && s.hand.isNotEmpty()) return s.hand
+        return _rackSlots.value.filterNotNull()
+    }
+
+    // Strictly 10 columns per row (2 rows = 20 slots total); ONLY expands beyond 10 columns when > 20 tiles!
     fun syncRackFromHand(tiles: List<RmkTile>, preserveExistingPositions: Boolean = true) {
-        val minCols = maxOf(10, (tiles.size + 1) / 2 + 2)
+        val targetCols = if (tiles.size <= 20) 10 else ((tiles.size + 1) / 2)
         if (!preserveExistingPositions || _rackSlots.value.isEmpty()) {
-            _rackCols.value = minCols
-            val next = MutableList<RmkTile?>(minCols * 2) { null }
-            val topCnt = minOf(minCols, (tiles.size + 1) / 2)
+            _rackCols.value = targetCols
+            val next = MutableList<RmkTile?>(targetCols * 2) { null }
+            val topCnt = minOf(targetCols, (tiles.size + 1) / 2)
             for (i in tiles.indices) {
                 if (i < topCnt) next[i] = tiles[i]
                 else {
-                    val bIdx = minCols + (i - topCnt)
+                    val bIdx = targetCols + (i - topCnt)
                     if (bIdx < next.size) next[bIdx] = tiles[i]
                 }
             }
@@ -482,24 +513,43 @@ class RummikubEngine(
         }
         val handMap = tiles.associateBy { it.id }
         val placedIds = HashSet<String>()
-        var updated = _rackSlots.value.map { slot ->
-            val keep = slot?.let { handMap[it.id] }
-            if (keep != null) placedIds.add(keep.id)
-            keep
-        }.toMutableList()
+        val oldCols = maxOf(1, _rackSlots.value.size / 2)
+        val finalCols = maxOf(targetCols, if (tiles.size > 20) oldCols else 10)
+        var updated = MutableList<RmkTile?>(finalCols * 2) { null }
 
+        for (r in 0..1) {
+            for (c in 0 until minOf(oldCols, finalCols)) {
+                val oldIdx = r * oldCols + c
+                val newIdx = r * finalCols + c
+                val keep = _rackSlots.value.getOrNull(oldIdx)?.let { handMap[it.id] }
+                if (keep != null && placedIds.add(keep.id)) {
+                    updated[newIdx] = keep
+                }
+            }
+        }
+        for (slot in _rackSlots.value) {
+            val keep = slot?.let { handMap[it.id] }
+            if (keep != null && !placedIds.contains(keep.id)) {
+                val emptyIdx = updated.indexOfFirst { it == null }
+                if (emptyIdx >= 0) {
+                    updated[emptyIdx] = keep
+                    placedIds.add(keep.id)
+                }
+            }
+        }
         val missing = tiles.filterNot { placedIds.contains(it.id) }
         for (m in missing) {
             var emptyIdx = updated.indexOfFirst { it == null }
             if (emptyIdx < 0) {
-                updated = extendRackColumnsInternal(2, updated)
+                updated = extendRackColumnsInternal(1, updated)
                 emptyIdx = updated.indexOfFirst { it == null }
             }
-            if (emptyIdx >= 0) updated[emptyIdx] = m
+            if (emptyIdx >= 0) {
+                updated[emptyIdx] = m
+                placedIds.add(m.id)
+            }
         }
-        if (updated.count { it == null } < 2) {
-            updated = extendRackColumnsInternal(2, updated)
-        }
+        _rackCols.value = maxOf(10, updated.size / 2)
         _rackSlots.value = updated
     }
 
@@ -517,22 +567,23 @@ class RummikubEngine(
 
     fun setLiftedSlot(idx: Int?) { _liftedSlotIndex.value = idx }
 
+    // Move or swap a tile on the fixed 2-row rack (NEVER stretches rack length unless > 20 tiles!)
     fun moveRackSlot(srcIdx: Int, dstIdx: Int) {
         val cur = _rackSlots.value.toMutableList()
-        if (srcIdx !in cur.indices || dstIdx !in cur.indices || srcIdx == dstIdx) return
+        if (srcIdx !in cur.indices || dstIdx !in cur.indices || srcIdx == dstIdx) {
+            _liftedSlotIndex.value = null
+            return
+        }
         val tmp = cur[dstIdx]
         cur[dstIdx] = cur[srcIdx]
         cur[srcIdx] = tmp
         _liftedSlotIndex.value = null
-        val cols = _rackCols.value
-        val finalSlots = if (dstIdx == cols - 1 || dstIdx == cols * 2 - 1 || cur.count { it == null } < 2) {
-            extendRackColumnsInternal(1, cur)
-        } else cur
-        _rackSlots.value = finalSlots
+        _rackSlots.value = cur
     }
 
     fun shuffleRackRandomly() {
-        val active = _rackSlots.value.filterNotNull().shuffled()
+        val active = currentCanonicalHand().shuffled()
+        if (_isEditingTable.value) _workingHand.value = active
         syncRackFromHand(active, preserveExistingPositions = false)
         _selectedTileIds.value = emptySet()
         _liftedSlotIndex.value = null
@@ -541,31 +592,44 @@ class RummikubEngine(
 
     fun organizeRack(preferRuns: Boolean) {
         _sortByColor.value = preferRuns
-        val active = _rackSlots.value.filterNotNull()
-        val (melds, leftovers) = RmkEvaluator.organizeHandIntoGroups(active, preferRuns)
+        val active = currentCanonicalHand()
+        val (rawMelds, leftovers) = RmkEvaluator.organizeHandIntoGroups(active, preferRuns)
+        val melds = rawMelds.map { RmkEvaluator.sortMeldForDisplay(it) }
+        val targetCols = if (active.size <= 20) 10 else ((active.size + 1) / 2)
+        var spareGaps = maxOf(0, targetCols * 2 - active.size)
         val row0 = ArrayList<RmkTile?>()
         val row1 = ArrayList<RmkTile?>()
+
         for (meld in melds) {
-            if (row0.size <= row1.size) {
-                if (row0.isNotEmpty()) row0.add(null)
+            if (row0.size + meld.size <= targetCols) {
                 row0.addAll(meld)
-            } else {
-                if (row1.isNotEmpty()) row1.add(null)
+                if (spareGaps > 0 && row0.size < targetCols) { row0.add(null); spareGaps-- }
+            } else if (row1.size + meld.size <= targetCols) {
                 row1.addAll(meld)
+                if (spareGaps > 0 && row1.size < targetCols) { row1.add(null); spareGaps-- }
+            } else {
+                for (t in meld) {
+                    if (row0.size < targetCols) row0.add(t) else row1.add(t)
+                }
+                if (spareGaps > 0 && row1.size < targetCols) { row1.add(null); spareGaps-- }
             }
         }
-        if (melds.isNotEmpty()) {
-            if (row0.isNotEmpty()) row0.add(null)
-            if (row1.isNotEmpty()) row1.add(null)
-        }
         for (t in leftovers) {
-            if (row0.size <= row1.size) row0.add(t) else row1.add(t)
+            if (row0.size < targetCols) row0.add(t)
+            else if (row1.size < targetCols) row1.add(t)
+            else {
+                val n0 = row0.lastIndexOf(null)
+                val n1 = row1.lastIndexOf(null)
+                if (n0 >= 0) row0[n0] = t
+                else if (n1 >= 0) row1[n1] = t
+                else row1.add(t)
+            }
         }
-        val neededCols = maxOf(10, maxOf(row0.size, row1.size) + 2)
-        _rackCols.value = neededCols
-        val next = MutableList<RmkTile?>(neededCols * 2) { null }
-        for (i in row0.indices) if (i < neededCols) next[i] = row0[i]
-        for (i in row1.indices) if (i < neededCols) next[neededCols + i] = row1[i]
+        val finalCols = if (active.size <= 20) 10 else maxOf(targetCols, maxOf(row0.size, row1.size))
+        _rackCols.value = finalCols
+        val next = MutableList<RmkTile?>(finalCols * 2) { null }
+        for (i in row0.indices) if (i < finalCols) next[i] = row0[i]
+        for (i in row1.indices) if (i < finalCols) next[finalCols + i] = row1[i]
         _rackSlots.value = next
         _liftedSlotIndex.value = null
         _statusBanner.value = if (melds.isNotEmpty()) {
@@ -1103,28 +1167,43 @@ class RummikubEngine(
         if (sel.isEmpty()) return
         ensureWorkspace()
         val picked = _workingHand.value.filter { sel.contains(it.id) }
-        if (RmkEvaluator.evaluateMeld(picked) == null) {
+        val pts = RmkEvaluator.evaluateMeld(picked)
+        if (pts == null) {
             _statusBanner.value = "⚠️ 所选牌未能组成有效顺组或群组 (需≥3张)"
             return
         }
+        val ordered = RmkEvaluator.sortMeldForDisplay(picked)
         _workingHand.value = _workingHand.value.filterNot { sel.contains(it.id) }
         _rackSlots.value = _rackSlots.value.map { if (it != null && sel.contains(it.id)) null else it }
-        _workingMelds.value = _workingMelds.value + RmkMeld(UUID.randomUUID().toString(), picked)
+        _workingMelds.value = _workingMelds.value + RmkMeld(UUID.randomUUID().toString(), ordered)
         _selectedTileIds.value = emptySet()
-        _statusBanner.value = "✅ 已暂放牌组到桌面（点击【确认出牌】完成回合）"
+        _liftedSlotIndex.value = null
+        if (_seats.value.getOrNull(_mySeatIndex.value)?.hasBrokenIce != true) {
+            var icePts = 0
+            for (i in snapshotMelds.size until _workingMelds.value.size) {
+                icePts += RmkEvaluator.evaluateMeld(_workingMelds.value[i].tiles) ?: 0
+            }
+            _statusBanner.value = if (icePts >= 30) {
+                "✅ 已暂放牌组 (${pts}分，累计 ${icePts}分 ≥30分)，点【确认出牌】完成破冰！"
+            } else {
+                "ℹ️ 已暂放 ${pts} 分牌组（本回合累计 ${icePts}/30 分，点击该牌组可撤回牌架）"
+            }
+        } else {
+            _statusBanner.value = "✅ 已暂放牌组到桌面（点击【确认出牌】完成回合，点击该牌组可撤回）"
+        }
     }
 
     fun addSelectedToTableMeld(meldId: String) {
         if (_currentTurnSeat.value != _mySeatIndex.value || _phase.value != RmkGamePhase.PLAYING) return
         val sel = _selectedTileIds.value
         if (sel.isEmpty()) return
-        if (_seats.value.getOrNull(_mySeatIndex.value)?.hasBrokenIce != true) {
-            _statusBanner.value = "⚠️ 尚未破冰！首次出牌只能使用自己牌架的牌且总和 ≥30 分"
-            return
-        }
         ensureWorkspace()
         val idx = _workingMelds.value.indexOfFirst { it.id == meldId }
         if (idx < 0) return
+        if (_seats.value.getOrNull(_mySeatIndex.value)?.hasBrokenIce != true && idx < snapshotMelds.size) {
+            _statusBanner.value = "⚠️ 尚未破冰！首次出牌只能操作自己牌架摆出的牌组且总和 ≥30 分"
+            return
+        }
         val picked = _workingHand.value.filter { sel.contains(it.id) }
         val comb = _workingMelds.value[idx].tiles + picked
         if (RmkEvaluator.evaluateMeld(comb) == null) {
@@ -1134,21 +1213,33 @@ class RummikubEngine(
         _workingHand.value = _workingHand.value.filterNot { sel.contains(it.id) }
         _rackSlots.value = _rackSlots.value.map { if (it != null && sel.contains(it.id)) null else it }
         val ms = _workingMelds.value.toMutableList()
-        ms[idx] = ms[idx].copy(tiles = comb.sortedBy { it.number })
+        ms[idx] = ms[idx].copy(tiles = RmkEvaluator.sortMeldForDisplay(comb))
         _workingMelds.value = ms
         _selectedTileIds.value = emptySet()
+        _liftedSlotIndex.value = null
         _statusBanner.value = "✅ 已将选牌并入桌面牌组（点击【确认出牌】完成回合）"
     }
 
     fun splitMeldToWorkspace(meldId: String) {
         if (_currentTurnSeat.value != _mySeatIndex.value || _phase.value != RmkGamePhase.PLAYING) return
-        if (_seats.value.getOrNull(_mySeatIndex.value)?.hasBrokenIce != true) {
-            _statusBanner.value = "⚠️ 尚未破冰，不能拆解桌面牌组！"
-            return
-        }
         ensureWorkspace()
         val idx = _workingMelds.value.indexOfFirst { it.id == meldId }
-        if (idx < 0 || _workingMelds.value[idx].tiles.size < 4) {
+        if (idx < 0) return
+        if (idx >= snapshotMelds.size) {
+            val ms = _workingMelds.value.toMutableList()
+            val returned = ms.removeAt(idx).tiles
+            _workingMelds.value = ms
+            _workingHand.value = _workingHand.value + returned
+            syncRackFromHand(_workingHand.value, preserveExistingPositions = true)
+            _selectedTileIds.value = emptySet()
+            _statusBanner.value = "↩️ 已将该组牌撤回牌架"
+            return
+        }
+        if (_seats.value.getOrNull(_mySeatIndex.value)?.hasBrokenIce != true) {
+            _statusBanner.value = "⚠️ 尚未破冰，不能拆解其他玩家的桌面牌组！"
+            return
+        }
+        if (_workingMelds.value[idx].tiles.size < 4) {
             _statusBanner.value = "⚠️ 只有 ≥4 张的牌组才可直接拆出端牌重组"
             return
         }
@@ -1165,12 +1256,19 @@ class RummikubEngine(
     fun smartHint() {
         if (_currentTurnSeat.value != _mySeatIndex.value || _phase.value != RmkGamePhase.PLAYING) return
         ensureWorkspace()
-        val best = RmkEvaluator.findBestMeld(_workingHand.value)
+        val (allMelds, _) = RmkEvaluator.organizeHandIntoGroups(_workingHand.value, _sortByColor.value)
+        val best = allMelds.maxByOrNull { RmkEvaluator.evaluateMeld(it) ?: 0 } ?: RmkEvaluator.findBestMeld(_workingHand.value)
         if (best != null) {
+            val bestPts = RmkEvaluator.evaluateMeld(best) ?: 0
+            val totalPts = allMelds.sumOf { RmkEvaluator.evaluateMeld(it) ?: 0 }
             _selectedTileIds.value = best.map { it.id }.toSet()
-            _statusBanner.value = "💡 已为您选中推荐牌组（点【放上桌面】即可出牌）"
+            if (_seats.value.getOrNull(_mySeatIndex.value)?.hasBrokenIce != true && totalPts < 30 && bestPts < 30) {
+                _statusBanner.value = "💡 当前牌架可出牌组最高 ${maxOf(bestPts, totalPts)} 分（首次破冰需满30分），建议点右侧【+】摸牌"
+            } else {
+                _statusBanner.value = "💡 已为您选中推荐牌组 (${bestPts}分，点【放上桌面】即可出牌)"
+            }
         } else {
-            _statusBanner.value = "💡 暂无可直出牌组，可尝试拆解桌面 ≥4 张牌组或摸牌"
+            _statusBanner.value = "💡 暂无可直出牌组，建议点击右侧【+】摸牌"
         }
     }
 
@@ -1266,6 +1364,8 @@ class RummikubEngine(
     }
 
     private fun executeDrawAndAdvance(seatIdx: Int, reason: String) {
+        _isDealingAnimation.value = false
+        _dealingVisibleCount.value = 999
         val pCnt = _seats.value.size.coerceAtLeast(2)
         val list = _seats.value.toMutableList()
         if (pool.isNotEmpty()) {
@@ -1309,11 +1409,17 @@ class RummikubEngine(
             val r = Runnable {
                 if (_phase.value == RmkGamePhase.PLAYING && _currentTurnSeat.value == cur) {
                     val s = _seats.value[cur]
-                    val best = RmkEvaluator.findBestMeld(s.hand)
-                    val pts = if (best != null) RmkEvaluator.evaluateMeld(best) ?: 0 else 0
-                    if (best != null && (s.hasBrokenIce || pts >= 30)) {
-                        val nm = _tableMelds.value + RmkMeld(UUID.randomUUID().toString(), best)
-                        executeCommitTurn(cur, nm, best.map { it.id }.toSet())
+                    val (aiMelds, _) = RmkEvaluator.organizeHandIntoGroups(s.hand, true)
+                    val totalPts = aiMelds.sumOf { RmkEvaluator.evaluateMeld(it) ?: 0 }
+                    if (aiMelds.isNotEmpty() && (s.hasBrokenIce || totalPts >= 30)) {
+                        val nm = _tableMelds.value.toMutableList()
+                        val playedIds = HashSet<String>()
+                        for (m in aiMelds) {
+                            val sortedM = RmkEvaluator.sortMeldForDisplay(m)
+                            nm.add(RmkMeld(UUID.randomUUID().toString(), sortedM))
+                            sortedM.forEach { playedIds.add(it.id) }
+                        }
+                        executeCommitTurn(cur, nm, playedIds)
                     } else {
                         executeDrawAndAdvance(cur, "从共用牌堆摸1张牌")
                     }
