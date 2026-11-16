@@ -10104,8 +10104,6 @@ struct KOnGameRoomSheetView: View {
     @ObservedObject var manager: AudioPlayerManager
     @ObservedObject private var ddz = KOnDoudizhuManager.shared
     @ObservedObject private var mj = KOnMahjongManager.shared
-    @ObservedObject private var ludo = AeroplaneChessEngine.shared
-    @ObservedObject private var rmk = RummikubEngine.shared
     @Environment(\.dismiss) private var dismiss
     @State private var selectedGame: Int = 0 // 0 = 斗地主, 1 = 广东红中麻将
 
@@ -10208,7 +10206,7 @@ struct KOnGameRoomSheetView: View {
                 // Game Switcher Bar (Hidden once user enters/hosts a room or starts an active game; show current room game badge instead)
                 if isInJoinedRoom && isInLobby {
                     HStack(spacing: 6) {
-                        Text(selectedGame == 0 ? "🃏 当前房间：放课后斗地主 (3人)" : (selectedGame == 1 ? "🀄 当前房间：广东红中麻将 (4人)" : (selectedGame == 2 ? "✈️ 当前房间：3D轻音五人飞行棋 (5人)" : "🔢 当前房间：拉密数字牌 (4人)")))
+                        Text(selectedGame == 0 ? "🃏 当前房间：放课后斗地主 (3人)" : (selectedGame == 1 ? "🀄 当前房间：广东红中麻将 (4人)" : "✈️ 当前房间：3D轻音五人飞行棋 (5人)"))
                             .font(.system(size: 12, weight: .black))
                             .foregroundColor(.white)
                         Spacer()
@@ -10320,11 +10318,11 @@ struct KOnGameRoomSheetView: View {
             }
         }
         .onChange(of: ddz.phase) { newPhase in
-            let inGame = (selectedGame == 0 && newPhase != .lobby) || (selectedGame == 1 && mj.phase != .lobby) || (selectedGame == 2 && ludo.phase != .lobby) || (selectedGame == 3 && rmk.phase != .lobby)
+            let inGame = (selectedGame == 0 && newPhase != .lobby) || (selectedGame == 1 && mj.phase != .lobby)
             AppDelegate.setOrientation(inGame ? .landscape : .all, preferred: inGame ? .landscapeRight : .portrait)
         }
         .onChange(of: mj.phase) { newPhase in
-            let inGame = (selectedGame == 0 && ddz.phase != .lobby) || (selectedGame == 1 && newPhase != .lobby) || (selectedGame == 2 && ludo.phase != .lobby) || (selectedGame == 3 && rmk.phase != .lobby)
+            let inGame = (selectedGame == 0 && ddz.phase != .lobby) || (selectedGame == 1 && newPhase != .lobby) || (selectedGame == 2 && ludo.phase != .lobby)
             AppDelegate.setOrientation(inGame ? .landscape : .all, preferred: inGame ? .landscapeRight : .portrait)
         }
         .onChange(of: ludo.phase) { newPhase in
