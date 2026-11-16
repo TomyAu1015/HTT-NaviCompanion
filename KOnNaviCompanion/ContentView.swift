@@ -454,11 +454,15 @@ struct HTTSmoothMapView: UIViewRepresentable {
                     }
                 }
                 if !unionRect.isNull {
-                    // Zoom out to show the ENTIRE route(s) in the upper map area above the bottom route selection sheet!
+                    // Responsive edgePadding for both Landscape & Portrait so route overview never shrinks to a tiny dot!
                     mapView.camera.pitch = 0
+                    let isLandscapeMap = mapView.bounds.width > mapView.bounds.height && mapView.bounds.height > 0
+                    let topPad: CGFloat = isLandscapeMap ? 46 : 88
+                    let botPad: CGFloat = isLandscapeMap ? min(115, mapView.bounds.height * 0.30) : min(275, max(180, mapView.bounds.height * 0.35))
+                    let sidePad: CGFloat = isLandscapeMap ? 60 : 48
                     mapView.setVisibleMapRect(
                         unionRect,
-                        edgePadding: UIEdgeInsets(top: 95, left: 52, bottom: 325, right: 52),
+                        edgePadding: UIEdgeInsets(top: topPad, left: sidePad, bottom: botPad, right: sidePad),
                         animated: true
                     )
                 }
@@ -10044,8 +10048,8 @@ struct KOnMahjongSheetView: View {
                 }
                 Button(action: {
                     if mj.phase == .playing && mj.currentTurnSeat == mj.mySeatIndex {
-                        if mj.selectedTileId == tile.id {
-                            mj.selectedTileId = nil
+                        if mj.selectedTileId == tile.id && mj.pendingClaim == nil {
+                            mj.discardTile(tile)
                         } else {
                             mj.selectedTileId = tile.id
                         }
@@ -10327,6 +10331,7 @@ struct KOnGameRoomSheetView: View {
             let inGame = (selectedGame == 0 && ddz.phase != .lobby) || (selectedGame == 1 && mj.phase != .lobby) || (selectedGame == 2 && newPhase != .lobby)
             AppDelegate.setOrientation(inGame ? .landscape : .all, preferred: inGame ? .landscapeRight : .portrait)
         }
+        .defersSystemGestures(on: .all)
         .onDisappear {
             AppDelegate.setOrientation(.all, preferred: .portrait)
         }
@@ -10559,9 +10564,9 @@ struct KOnRummikubSheetView: View {
         .padding(.horizontal, 10).padding(.bottom, 6)
     }
 
-    private func tileChip(_ tile: RmkTile, selected: Bool, compact: Bool = false) -> some View {
-        let w: CGFloat = compact ? 34 : 46
-        let h: CGFloat = compact ? 48 : 64
+    private func tileChip(_ tile: RmkTile, selected: Bool, compact: Bool = false, customW: CGFloat? = nil, customH: CGFloat? = nil) -> some View {
+        let w: CGFloat = customW ?? (compact ? 34 : 44)
+        let h: CGFloat = customH ?? (compact ? 48 : 54)
         return Group {
             if let img = RummikubEngine.tileImage(for: tile.assetKey) {
                 Image(uiImage: img)
@@ -10790,46 +10795,48 @@ struct KOnRummikubSheetView: View {
                     }
                 }
 
-                // Bottom 2-Row Dynamic Extending Wooden Rack (1:1 like Video: 2 shelves, empty slot gaps, drag/tap-to-move, auto-extending!)
-                ScrollView(.horizontal, showsIndicators: true) {
+                // Bottom Fixed 2-Row Wooden Rack (Stationary rack, 10 slots per row = 20 slots total, only expands if >20 tiles, only tiles move!)
+                GeometryReader { rackGeo in
+                    let rackW = max(320, rackGeo.size.width)
+                    let hSpacing: CGFloat = 4
+                    let fitSlotW = max(28, min(52, floor((rackW - 20 - CGFloat(cols - 1) * hSpacing) / CGFloat(cols))))
+                    let fitSlotH: CGFloat = 54
+
                     ZStack(alignment: .bottom) {
-                        // 3D Two-Shelf Wooden Rack Background that dynamically extends with `cols`!
+                        // Stationary 3D Two-Shelf Wooden Rack Background (never scrolls or shifts!)
                         VStack(spacing: 0) {
-                            // Upper shelf backboard & ledge
                             ZStack(alignment: .bottom) {
                                 LinearGradient(colors: [Color(red: 0.76, green: 0.54, blue: 0.32), Color(red: 0.62, green: 0.41, blue: 0.21)], startPoint: .top, endPoint: .bottom)
-                                Rectangle().fill(Color(red: 0.45, green: 0.28, blue: 0.13)).frame(height: 6)
+                                Rectangle().fill(Color(red: 0.45, green: 0.28, blue: 0.13)).frame(height: 5)
                             }
-                            .frame(height: slotH + 8)
-                            // Lower shelf backboard & ledge
+                            .frame(height: fitSlotH + 6)
                             ZStack(alignment: .bottom) {
                                 LinearGradient(colors: [Color(red: 0.72, green: 0.50, blue: 0.29), Color(red: 0.56, green: 0.36, blue: 0.18)], startPoint: .top, endPoint: .bottom)
                                 HStack {
                                     Spacer()
-                                    Text("K-ON! Rummikub")
-                                        .font(.system(size: 9, weight: .black, design: .serif))
-                                        .foregroundColor(Color(red: 0.38, green: 0.22, blue: 0.09).opacity(0.75))
+                                    Text("K-ON! Rummikub · 2×\(cols)格")
+                                        .font(.system(size: 8.5, weight: .black, design: .serif))
+                                        .foregroundColor(Color(red: 0.38, green: 0.22, blue: 0.09).opacity(0.8))
                                         .padding(.trailing, 10)
                                         .padding(.bottom, 1)
                                 }
-                                .frame(height: 8)
+                                .frame(height: 7)
                                 .background(Color(red: 0.42, green: 0.25, blue: 0.11))
                             }
-                            .frame(height: slotH + 8)
+                            .frame(height: fitSlotH + 6)
                         }
-                        .frame(width: CGFloat(cols) * (slotW + 4) + 20, height: (slotH + 8) * 2)
+                        .frame(width: rackW, height: (fitSlotH + 6) * 2)
                         .cornerRadius(10)
                         .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color(red: 0.85, green: 0.64, blue: 0.36), lineWidth: 2))
                         .shadow(color: .black.opacity(0.45), radius: 4, y: 2)
 
-                        // 2 Rows of Interactive Slots (Row 0 & Row 1)
-                        VStack(spacing: 8) {
+                        // 2 Rows of Fixed Interactive Slots (Row 0 & Row 1, 10 columns each by default)
+                        VStack(spacing: 6) {
                             ForEach(0..<2, id: \.self) { row in
-                                HStack(spacing: 4) {
+                                HStack(spacing: hSpacing) {
                                     ForEach(0..<cols, id: \.self) { col in
                                         let slotIdx = row * cols + col
                                         let tileOpt: RmkTile? = (slotIdx < rmk.rackSlots.count) ? rmk.rackSlots[slotIdx] : nil
-                                        // Count how many non-nil tiles appear up to this slot for the 1.5s initial deal animation
                                         let ordinal = (0...min(slotIdx, max(0, rmk.rackSlots.count - 1))).reduce(0) { acc, idx in
                                             acc + (rmk.rackSlots[idx] != nil ? 1 : 0)
                                         }
@@ -10837,37 +10844,35 @@ struct KOnRummikubSheetView: View {
                                         let isLifted = (rmk.liftedSlotIndex == slotIdx) || (dragSlotIndex == slotIdx)
 
                                         ZStack {
-                                            // Subtle empty slot guide so user sees the gap between 789/777 melds and can tap/drop into any empty slot!
                                             RoundedRectangle(cornerRadius: 6)
                                                 .strokeBorder(
-                                                    rmk.liftedSlotIndex != nil ? Color.yellow.opacity(0.55) : Color.black.opacity(0.18),
+                                                    rmk.liftedSlotIndex != nil ? Color.yellow.opacity(0.60) : Color.black.opacity(0.20),
                                                     style: StrokeStyle(lineWidth: 1, dash: [3, 3])
                                                 )
                                                 .background(
                                                     RoundedRectangle(cornerRadius: 6)
-                                                        .fill(rmk.liftedSlotIndex != nil && tileOpt == nil ? Color.yellow.opacity(0.12) : Color.black.opacity(0.06))
+                                                        .fill(rmk.liftedSlotIndex != nil && tileOpt == nil ? Color.yellow.opacity(0.14) : Color.black.opacity(0.07))
                                                 )
-                                                .frame(width: slotW, height: slotH)
+                                                .frame(width: fitSlotW, height: fitSlotH)
 
                                             if let tile = tileOpt, isDealtVisible {
-                                                tileChip(tile, selected: rmk.selectedTileIds.contains(tile.id) || isLifted)
-                                                    .scaleEffect(isLifted ? 1.12 : 1.0)
+                                                tileChip(tile, selected: rmk.selectedTileIds.contains(tile.id) || isLifted, compact: cols > 10, customW: max(26, fitSlotW - 2), customH: fitSlotH - 2)
+                                                    .scaleEffect(isLifted ? 1.10 : 1.0)
                                                     .offset(dragSlotIndex == slotIdx ? dragOffset : .zero)
-                                                    .zIndex(dragSlotIndex == slotIdx ? 50 : 1)
-                                                    .transition(.asymmetric(insertion: .move(edge: .top).combined(with: .opacity), removal: .opacity))
-                                                    .gesture(
-                                                        DragGesture(minimumDistance: 6)
+                                                    .zIndex(dragSlotIndex == slotIdx ? 80 : 2)
+                                                    .highPriorityGesture(
+                                                        DragGesture(minimumDistance: 2, coordinateSpace: .local)
                                                             .onChanged { val in
                                                                 dragSlotIndex = slotIdx
                                                                 dragOffset = val.translation
                                                             }
                                                             .onEnded { val in
-                                                                let colShift = Int(round(val.translation.width / (slotW + 4)))
-                                                                let rowShift = Int(round(val.translation.height / (slotH + 8)))
+                                                                let colShift = Int(round(val.translation.width / (fitSlotW + hSpacing)))
+                                                                let rowShift = Int(round(val.translation.height / (fitSlotH + 6)))
                                                                 let targetRow = max(0, min(1, row + rowShift))
                                                                 let targetCol = max(0, min(cols - 1, col + colShift))
                                                                 let dstIdx = targetRow * cols + targetCol
-                                                                withAnimation(.spring(response: 0.26, dampingFraction: 0.78)) {
+                                                                withAnimation(.spring(response: 0.24, dampingFraction: 0.80)) {
                                                                     rmk.moveRackSlot(from: slotIdx, to: dstIdx)
                                                                     dragSlotIndex = nil
                                                                     dragOffset = .zero
@@ -10876,27 +10881,21 @@ struct KOnRummikubSheetView: View {
                                                     )
                                             }
                                         }
-                                        .frame(width: slotW, height: slotH)
+                                        .frame(width: fitSlotW, height: fitSlotH)
+                                        .zIndex(dragSlotIndex == slotIdx ? 80 : 1)
                                         .contentShape(Rectangle())
                                         .onTapGesture {
-                                            withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
+                                            withAnimation(.spring(response: 0.24, dampingFraction: 0.82)) {
                                                 if let lifted = rmk.liftedSlotIndex {
                                                     if lifted == slotIdx {
-                                                        // Tap again on lifted tile -> toggle selection for playing to table
                                                         rmk.liftedSlotIndex = nil
                                                         if let t = tileOpt, myTurn { rmk.toggleSelectHandTile(t.id) }
                                                     } else {
-                                                        // Move lifted tile to this empty or occupied slot!
                                                         rmk.moveRackSlot(from: lifted, to: slotIdx)
                                                     }
                                                 } else if let t = tileOpt {
-                                                    if rmk.selectedTileIds.contains(t.id) {
-                                                        // Second tap on selected tile lifts it so user can tap any slot to move it!
-                                                        rmk.liftedSlotIndex = slotIdx
-                                                    } else {
-                                                        rmk.toggleSelectHandTile(t.id)
-                                                        rmk.liftedSlotIndex = slotIdx
-                                                    }
+                                                    rmk.toggleSelectHandTile(t.id)
+                                                    rmk.liftedSlotIndex = slotIdx
                                                 }
                                             }
                                         }
@@ -10904,13 +10903,15 @@ struct KOnRummikubSheetView: View {
                                 }
                             }
                         }
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 4)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
                     }
                 }
-                .frame(height: (slotH + 8) * 2 + 4)
+                .frame(height: 122)
             }
-            .padding(.horizontal, 10).padding(.bottom, 4)
+            .padding(.horizontal, 12)
+            .padding(.bottom, 16)
+            .defersSystemGestures(on: .all)
 
             // 1.5s Flying Draw Tile Animation Overlay (Flies from right '+' Draw button into the 2-row Wooden Rack!)
             if rmk.isDrawingAnimation, let animTile = rmk.drawingAnimatedTile {

@@ -2226,9 +2226,21 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             return
         }
         
-        // Always reset for a genuinely new map tap so tapping a 2nd/3rd place always updates cleanly!
-        self.tappedMapTitle = cleanExplicit ?? "正在获取地点..."
-        self.tappedMapAddress = "定位解析中..."
+        // Instant <1ms Local Station / Landmark Fast-Path so tapping near stations/hubs has 0ms latency!
+        let nearSt = findNearestStation(to: coord)
+        let stDist = metersBetween(coord, CLLocationCoordinate2D(latitude: nearSt.lat, longitude: nearSt.lon))
+        if cleanExplicit == nil && stDist <= 165 {
+            self.currentTapResolvedByPOI = true
+            self.isReverseGeocoding = false
+            let stTitle = "\(nearSt.name)地铁站 (\(nearSt.exit))"
+            self.tappedMapTitle = stTitle
+            self.populatePOIDetails(name: stTitle, coord: coord, address: "\(nearSt.line) · 距离约\(stDist)米", phone: nil, rawCategory: "MKPOICategoryPublicTransport")
+            return
+        }
+
+        // Always reset for a genuinely new map tap with immediately readable coordinates so user can start navigation at 0ms without waiting!
+        self.tappedMapTitle = cleanExplicit ?? String(format: "地图选点 (%.4f, %.4f)", coord.latitude, coord.longitude)
+        self.tappedMapAddress = String(format: "经度 %.5f · 纬度 %.5f (正在精准匹配周边商户...)", coord.longitude, coord.latitude)
         self.isReverseGeocoding = true
         
         // Only clear candidate routes if not actively previewing
@@ -6559,16 +6571,32 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         locationManager.desiredAccuracy = kCLLocationAccuracyBestForNavigation
         locationManager.distanceFilter = 1.5
         locationManager.allowsBackgroundLocationUpdates = false
-        locationManager.pausesLocationUpdatesAutomatically = true
+        locationManager.pausesLocationUpdatesAutomatically = false
         locationManager.requestWhenInUseAuthorization()
         locationManager.requestAlwaysAuthorization()
         locationManager.startUpdatingLocation()
-        if let current = locationManager.location {
+        // Only apply cached location if fresh (< 30s old) and accurate (<= 100m) to prevent stale cross-city location jumps!
+        if let current = locationManager.location,
+           abs(current.timestamp.timeIntervalSinceNow) < 30.0,
+           current.horizontalAccuracy >= 0,
+           current.horizontalAccuracy <= 100.0 {
             self.userCoordinate = CoordinateConverter.wgs84ToGCJ02(current.coordinate)
         }
         if CLLocationManager.headingAvailable() {
-            locationManager.headingFilter = 3.0
+            locationManager.headingFilter = 2.5
             locationManager.startUpdatingHeading()
+        }
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self = self else { return }
+            self.locationManager.stopUpdatingLocation()
+            self.locationManager.startUpdatingLocation()
+            if CLLocationManager.headingAvailable() {
+                self.locationManager.startUpdatingHeading()
+            }
         }
     }
     
@@ -8936,7 +8964,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                 if let snapH = self.snappedRouteHeading, self.currentSpeedKmh > 2.0 {
                     self.headingDegrees = snapH
                 }
-            } else if !self.hasMapUserLocation {
+            } else if loc.horizontalAccuracy >= 0 && loc.horizontalAccuracy <= 65.0 {
                 self.userCoordinate = rawMapCoord
             }
             self.updateNavigationProgress(location: loc)
@@ -12845,6 +12873,37 @@ struct RmkNetPacket: Codable {
 }
 
 struct RmkEvaluator {
+    static func sortMeldForDisplay(_ tiles: [RmkTile]) -> [RmkTile] {
+        let jokers = tiles.filter { $0.isJoker }
+        let normals = tiles.filter { !$0.isJoker }.sorted {
+            if $0.number != $1.number { return $0.number < $1.number }
+            return $0.color.rawValue < $1.color.rawValue
+        }
+        guard !normals.isEmpty else { return tiles }
+        let sameNum = normals.allSatisfy { $0.number == normals[0].number }
+        if sameNum {
+            return normals + jokers
+        }
+        // Run: insert jokers into gaps first, then append remaining jokers at high/low end
+        var remJ = jokers
+        var result: [RmkTile] = []
+        for i in 0..<normals.count {
+            result.append(normals[i])
+            if i + 1 < normals.count {
+                let gap = normals[i + 1].number - normals[i].number - 1
+                if gap > 0 {
+                    for _ in 0..<gap where !remJ.isEmpty {
+                        result.append(remJ.removeFirst())
+                    }
+                }
+            }
+        }
+        while !remJ.isEmpty {
+            result.append(remJ.removeFirst())
+        }
+        return result
+    }
+
     static func evaluateMeld(_ tiles: [RmkTile]) -> Int? {
         guard tiles.count >= 3 else { return nil }
         let jokers = tiles.filter { $0.isJoker }
@@ -13256,47 +13315,72 @@ final class RummikubEngine: NSObject, ObservableObject {
         }
     }
 
+    private func currentCanonicalHand() -> [RmkTile] {
+        if isEditingTable { return workingHand }
+        if mySeatIndex >= 0 && mySeatIndex < seats.count { return seats[mySeatIndex].hand }
+        return rackSlots.compactMap { $0 }
+    }
+
+    /// Strictly 10 columns per row (2 rows = 20 slots total); ONLY expands beyond 10 columns when > 20 tiles!
     func syncRackFromHand(_ tiles: [RmkTile], preserveExistingPositions: Bool = true) {
-        let minCols = max(10, (tiles.count + 1) / 2 + 2)
+        let targetCols = tiles.count <= 20 ? 10 : ((tiles.count + 1) / 2)
         if !preserveExistingPositions || rackSlots.isEmpty {
-            rackCols = minCols
-            var nextSlots: [RmkTile?] = Array(repeating: nil, count: rackCols * 2)
-            // Fill initial 14 tiles raw (unsorted) across top row (first 8) and bottom row (next 6) like video!
-            let topCount = min(rackCols, (tiles.count + 1) / 2)
+            rackCols = targetCols
+            var nextSlots: [RmkTile?] = Array(repeating: nil, count: targetCols * 2)
+            let topCount = min(targetCols, (tiles.count + 1) / 2)
             for i in 0..<tiles.count {
                 if i < topCount {
                     nextSlots[i] = tiles[i]
                 } else {
-                    let botIdx = rackCols + (i - topCount)
+                    let botIdx = targetCols + (i - topCount)
                     if botIdx < nextSlots.count { nextSlots[botIdx] = tiles[i] }
                 }
             }
             rackSlots = nextSlots
             return
         }
-        // Preserve existing positions of tiles still in hand, place newly drawn/returned tiles in first empty slot
+
+        // Preserve existing positions of tiles still in hand, and ALWAYS place newly drawn/returned tiles in the first empty slot!
         let handMap = Dictionary(uniqueKeysWithValues: tiles.map { ($0.id, $0) })
         var placedIds = Set<String>()
-        var updated = rackSlots.map { slot -> RmkTile? in
-            guard let t = slot, let keep = handMap[t.id] else { return nil }
-            placedIds.insert(keep.id)
-            return keep
+        let oldCols = max(1, rackSlots.count / 2)
+        let finalCols = max(targetCols, tiles.count > 20 ? oldCols : 10)
+        var updated: [RmkTile?] = Array(repeating: nil, count: finalCols * 2)
+
+        for r in 0..<2 {
+            for c in 0..<min(oldCols, finalCols) {
+                let oldIdx = r * oldCols + c
+                let newIdx = r * finalCols + c
+                if oldIdx < rackSlots.count, let t = rackSlots[oldIdx], let keep = handMap[t.id], !placedIds.contains(keep.id) {
+                    updated[newIdx] = keep
+                    placedIds.insert(keep.id)
+                }
+            }
+        }
+        // Any tile that was in columns >= finalCols (if rack shrunk back to 10 cols) or newly drawn:
+        for slot in rackSlots {
+            if let t = slot, let keep = handMap[t.id], !placedIds.contains(keep.id) {
+                if let emptyIdx = updated.firstIndex(where: { $0 == nil }) {
+                    updated[emptyIdx] = keep
+                    placedIds.insert(keep.id)
+                }
+            }
         }
         let missing = tiles.filter { !placedIds.contains($0.id) }
         for m in missing {
             if let emptyIdx = updated.firstIndex(where: { $0 == nil }) {
                 updated[emptyIdx] = m
+                placedIds.insert(m.id)
             } else {
-                extendRackColumns(by: 2, slots: &updated)
+                extendRackColumns(by: 1, slots: &updated)
                 if let emptyIdx = updated.firstIndex(where: { $0 == nil }) {
                     updated[emptyIdx] = m
+                    placedIds.insert(m.id)
                 }
             }
         }
-        // Auto-extend rack if fewer than 2 empty slots remain
-        if updated.filter({ $0 == nil }).count < 2 {
-            extendRackColumns(by: 2, slots: &updated)
-        }
+        rackCols = max(10, updated.count / 2)
+        rackSlots = updated
     }
 
     private func extendRackColumns(by extraCols: Int, slots: inout [RmkTile?]) {
@@ -13311,71 +13395,94 @@ final class RummikubEngine: NSObject, ObservableObject {
         slots = newSlots
     }
 
-    /// Move or swap a tile on the 2-row rack (supports dragging or tap-to-lift & tap-any-slot to place, auto-extending rack!)
+    /// Move or swap a tile on the fixed 2-row rack (NEVER stretches rack length unless > 20 tiles!)
     func moveRackSlot(from srcIdx: Int, to dstIdx: Int) {
-        guard srcIdx >= 0, srcIdx < rackSlots.count, dstIdx >= 0, dstIdx < rackSlots.count, srcIdx != dstIdx else { return }
-        let temp = rackSlots[dstIdx]
-        rackSlots[dstIdx] = rackSlots[srcIdx]
-        rackSlots[srcIdx] = temp
-        liftedSlotIndex = nil
-        // If user placed a tile into the last column of either row, automatically extend rack by 1 column!
-        let cols = rackCols
-        if dstIdx == cols - 1 || dstIdx == cols * 2 - 1 || rackSlots.filter({ $0 == nil }).count < 2 {
-            var cur = rackSlots
-            extendRackColumns(by: 1, slots: &cur)
-            rackSlots = cur
+        guard srcIdx >= 0, srcIdx < rackSlots.count, dstIdx >= 0, dstIdx < rackSlots.count, srcIdx != dstIdx else {
+            liftedSlotIndex = nil
+            return
         }
+        var updated = rackSlots
+        let temp = updated[dstIdx]
+        updated[dstIdx] = updated[srcIdx]
+        updated[srcIdx] = temp
+        rackSlots = updated
+        liftedSlotIndex = nil
     }
 
     /// Shuffle tiles randomly across the 2-row rack ("牌型可以打乱")
     func shuffleRackRandomly() {
-        let activeTiles = rackSlots.compactMap { $0 }.shuffled()
+        let activeTiles = currentCanonicalHand().shuffled()
+        if isEditingTable {
+            workingHand = activeTiles
+        } else if mySeatIndex < seats.count {
+            seats[mySeatIndex].hand = activeTiles
+        }
         syncRackFromHand(activeTiles, preserveExistingPositions: false)
         selectedTileIds.removeAll()
         liftedSlotIndex = nil
         statusBanner = "🎲 已随机打乱牌架顺序（可点击或拖拽任意牌自由移动位置）"
     }
 
-    /// Smart 789 (Runs) or 777 (Groups) rack organizer: places valid playable melds first with an empty slot ('nil') gap between each group!
+    /// Smart 789 (Runs) or 777 (Groups) rack organizer: keeps 10x2=20 slots unless >20 tiles, separating playable melds with an empty slot!
     func organizeRack(preferRuns: Bool) {
         sortByColor = preferRuns
-        let activeTiles = rackSlots.compactMap { $0 }
-        let (melds, leftovers) = RmkEvaluator.organizeHandIntoGroups(activeTiles, preferRuns: preferRuns)
+        let activeTiles = currentCanonicalHand()
+        let (rawMelds, leftovers) = RmkEvaluator.organizeHandIntoGroups(activeTiles, preferRuns: preferRuns)
+        let melds = rawMelds.map { RmkEvaluator.sortMeldForDisplay($0) }
 
-        // Build row 0 and row 1 sequences with 1 empty slot gap between each valid meld and before leftovers
+        let targetCols = activeTiles.count <= 20 ? 10 : ((activeTiles.count + 1) / 2)
+        var spareGaps = max(0, targetCols * 2 - activeTiles.count)
         var row0: [RmkTile?] = []
         var row1: [RmkTile?] = []
 
         for meld in melds {
-            // Put on whichever row currently has fewer items
-            if row0.count <= row1.count {
-                if !row0.isEmpty { row0.append(nil) } // Empty slot gap!
-                for t in meld { row0.append(t) }
+            let sortedMeld = RmkEvaluator.sortMeldForDisplay(meld)
+            if row0.count + sortedMeld.count <= targetCols {
+                for t in sortedMeld { row0.append(t) }
+                if spareGaps > 0 && row0.count < targetCols {
+                    row0.append(nil)
+                    spareGaps -= 1
+                }
+            } else if row1.count + sortedMeld.count <= targetCols {
+                for t in sortedMeld { row1.append(t) }
+                if spareGaps > 0 && row1.count < targetCols {
+                    row1.append(nil)
+                    spareGaps -= 1
+                }
             } else {
-                if !row1.isEmpty { row1.append(nil) } // Empty slot gap!
-                for t in meld { row1.append(t) }
+                for t in sortedMeld {
+                    if row0.count < targetCols { row0.append(t) }
+                    else { row1.append(t) }
+                }
+                if spareGaps > 0 && row1.count < targetCols {
+                    row1.append(nil)
+                    spareGaps -= 1
+                }
             }
-        }
-
-        // Separate playable melds from leftovers with an empty slot gap!
-        if !melds.isEmpty {
-            if !row0.isEmpty { row0.append(nil) }
-            if !row1.isEmpty { row1.append(nil) }
         }
 
         for t in leftovers {
-            if row0.count <= row1.count {
+            if row0.count < targetCols {
                 row0.append(t)
-            } else {
+            } else if row1.count < targetCols {
                 row1.append(t)
+            } else {
+                // In case early nil gaps pushed a leftover past targetCols, fill any trailing nil slot first
+                if let nilIdx0 = row0.lastIndex(where: { $0 == nil }) {
+                    row0[nilIdx0] = t
+                } else if let nilIdx1 = row1.lastIndex(where: { $0 == nil }) {
+                    row1[nilIdx1] = t
+                } else {
+                    row1.append(t)
+                }
             }
         }
 
-        let neededCols = max(10, max(row0.count, row1.count) + 2)
-        rackCols = neededCols
-        var nextSlots: [RmkTile?] = Array(repeating: nil, count: neededCols * 2)
-        for (i, t) in row0.enumerated() where i < neededCols { nextSlots[i] = t }
-        for (i, t) in row1.enumerated() where i < neededCols { nextSlots[neededCols + i] = t }
+        let finalCols = activeTiles.count <= 20 ? 10 : max(targetCols, max(row0.count, row1.count))
+        rackCols = finalCols
+        var nextSlots: [RmkTile?] = Array(repeating: nil, count: finalCols * 2)
+        for (i, t) in row0.enumerated() where i < finalCols { nextSlots[i] = t }
+        for (i, t) in row1.enumerated() where i < finalCols { nextSlots[finalCols + i] = t }
         rackSlots = nextSlots
         liftedSlotIndex = nil
 
@@ -13750,25 +13857,40 @@ final class RummikubEngine: NSObject, ObservableObject {
         guard currentTurnSeat == mySeatIndex, phase == .playing, !selectedTileIds.isEmpty else { return }
         beginOrEnsureWorkspace()
         let picked = workingHand.filter { selectedTileIds.contains($0.id) }
-        guard RmkEvaluator.evaluateMeld(picked) != nil else {
-            statusBanner = "⚠️ 所选牌未能组成有效顺组或群组 (需≥3张)"
+        guard let pts = RmkEvaluator.evaluateMeld(picked) else {
+            statusBanner = "⚠️ 所选牌未能组成有效顺组或群组 (需≥3张同色顺子或同数不同色群组)"
             return
         }
+        let orderedMeld = RmkEvaluator.sortMeldForDisplay(picked)
         workingHand.removeAll { selectedTileIds.contains($0.id) }
         for i in 0..<rackSlots.count { if let t = rackSlots[i], selectedTileIds.contains(t.id) { rackSlots[i] = nil } }
-        workingMelds.append(RmkMeld(id: UUID().uuidString, tiles: picked))
+        workingMelds.append(RmkMeld(id: UUID().uuidString, tiles: orderedMeld))
         selectedTileIds.removeAll()
-        statusBanner = "✅ 已暂放牌组到桌面（点击【确认出牌】完成回合）"
+        liftedSlotIndex = nil
+        if !seats[mySeatIndex].hasBrokenIce {
+            var icePts = 0
+            for i in snapshotMelds.count..<workingMelds.count {
+                icePts += RmkEvaluator.evaluateMeld(workingMelds[i].tiles) ?? 0
+            }
+            if icePts >= 30 {
+                statusBanner = "✅ 已暂放牌组 (\(pts)分，本回合累计 \(icePts)分 ≥30分)，点击【确认出牌】完成破冰！"
+            } else {
+                statusBanner = "ℹ️ 已暂放 \(pts) 分牌组（本回合累计 \(icePts)/30 分，首次破冰需满30分；点击该牌组可撤回牌架）"
+            }
+        } else {
+            statusBanner = "✅ 已暂放牌组到桌面（点击【确认出牌】完成回合，点击该牌组可撤回）"
+        }
     }
 
     func addSelectedToTableMeld(_ meldId: String) {
         guard currentTurnSeat == mySeatIndex, phase == .playing, !selectedTileIds.isEmpty else { return }
-        guard seats[mySeatIndex].hasBrokenIce else {
-            statusBanner = "⚠️ 尚未破冰！首次出牌只能使用自己牌架的牌且总和 ≥30 分"
-            return
-        }
         beginOrEnsureWorkspace()
         guard let idx = workingMelds.firstIndex(where: { $0.id == meldId }) else { return }
+        // Allow adding to a meld placed during this turn even before breaking ice, or any meld after breaking ice
+        guard seats[mySeatIndex].hasBrokenIce || idx >= snapshotMelds.count else {
+            statusBanner = "⚠️ 尚未破冰！首次出牌只能操作自己牌架摆出的牌组且总和 ≥30 分"
+            return
+        }
         let picked = workingHand.filter { selectedTileIds.contains($0.id) }
         let combined = workingMelds[idx].tiles + picked
         guard RmkEvaluator.evaluateMeld(combined) != nil else {
@@ -13777,19 +13899,31 @@ final class RummikubEngine: NSObject, ObservableObject {
         }
         workingHand.removeAll { selectedTileIds.contains($0.id) }
         for i in 0..<rackSlots.count { if let t = rackSlots[i], selectedTileIds.contains(t.id) { rackSlots[i] = nil } }
-        workingMelds[idx].tiles = combined.sorted { $0.number < $1.number }
+        workingMelds[idx].tiles = RmkEvaluator.sortMeldForDisplay(combined)
         selectedTileIds.removeAll()
-        statusBanner = "✅ 已将选牌并入桌面牌组（点击【确认出牌】完成回合）"
+        liftedSlotIndex = nil
+        statusBanner = "✅ 已将选牌并入牌组（点击【确认出牌】完成回合）"
     }
 
     func splitMeldToWorkspace(_ meldId: String) {
         guard currentTurnSeat == mySeatIndex, phase == .playing else { return }
-        guard seats[mySeatIndex].hasBrokenIce else {
-            statusBanner = "⚠️ 尚未破冰，不能拆解桌面牌组！"
+        beginOrEnsureWorkspace()
+        guard let idx = workingMelds.firstIndex(where: { $0.id == meldId }) else { return }
+        // If this meld was placed from the player's rack during the current turn, tapping it returns the whole meld to the rack!
+        if idx >= snapshotMelds.count {
+            let returnedTiles = workingMelds[idx].tiles
+            workingMelds.remove(at: idx)
+            workingHand.append(contentsOf: returnedTiles)
+            syncRackFromHand(workingHand, preserveExistingPositions: true)
+            selectedTileIds.removeAll()
+            statusBanner = "↩️ 已将该组牌撤回牌架"
             return
         }
-        beginOrEnsureWorkspace()
-        guard let idx = workingMelds.firstIndex(where: { $0.id == meldId }), workingMelds[idx].tiles.count >= 4 else {
+        guard seats[mySeatIndex].hasBrokenIce else {
+            statusBanner = "⚠️ 尚未破冰，不能拆解其他玩家的桌面牌组！（点击【复原】可退回本回合牌组）"
+            return
+        }
+        guard workingMelds[idx].tiles.count >= 4 else {
             statusBanner = "⚠️ 只有 ≥4 张的牌组才可直接拆出端牌重组"
             return
         }
@@ -13797,17 +13931,34 @@ final class RummikubEngine: NSObject, ObservableObject {
         workingHand.append(popped)
         syncRackFromHand(workingHand, preserveExistingPositions: true)
         selectedTileIds.insert(popped.id)
-        statusBanner = "🔄 已从牌组拆出 1 张牌，请配合手牌组成新牌组后【确认出牌】"
+        statusBanner = "🔄 已从牌组拆出 1 张牌回到牌架，请配合手牌重组后【确认出牌】"
     }
 
     func smartHintOrAutoPlace() {
         guard currentTurnSeat == mySeatIndex, phase == .playing else { return }
         beginOrEnsureWorkspace()
-        if let best = RmkEvaluator.findBestMeld(in: workingHand) {
+        let (allMelds, _) = RmkEvaluator.organizeHandIntoGroups(workingHand, preferRuns: sortByColor)
+        if let best = allMelds.max(by: { (RmkEvaluator.evaluateMeld($0) ?? 0) < (RmkEvaluator.evaluateMeld($1) ?? 0) }) ?? RmkEvaluator.findBestMeld(in: workingHand) {
+            let bestPts = RmkEvaluator.evaluateMeld(best) ?? 0
+            let totalPts = allMelds.reduce(0) { $0 + (RmkEvaluator.evaluateMeld($1) ?? 0) }
             selectedTileIds = Set(best.map { $0.id })
-            statusBanner = "💡 已为您选中推荐牌组（点【放上桌面】即可出牌）"
+            if !seats[mySeatIndex].hasBrokenIce {
+                var alreadyOnTablePts = 0
+                for i in snapshotMelds.count..<workingMelds.count {
+                    alreadyOnTablePts += RmkEvaluator.evaluateMeld(workingMelds[i].tiles) ?? 0
+                }
+                if alreadyOnTablePts + bestPts >= 30 {
+                    statusBanner = "💡 已选中推荐牌组 (\(bestPts)分)，点【放上桌面】即可达标破冰！"
+                } else if alreadyOnTablePts + totalPts >= 30 {
+                    statusBanner = "💡 已选中第1组 (\(bestPts)分)，牌架可出牌组共 \(totalPts) 分 ≥30 分，可分批点【放上桌面】联合破冰！"
+                } else {
+                    statusBanner = "💡 当前牌架可出牌组最高 \(max(bestPts, totalPts)) 分（首次破冰需满30分），建议点右侧【+】摸牌"
+                }
+            } else {
+                statusBanner = "💡 已为您选中推荐牌组 (\(bestPts)分，点【放上桌面】即可出牌)"
+            }
         } else {
-            statusBanner = "💡 暂无可直出牌组，可尝试拆解桌面 ≥4 张牌组或摸牌"
+            statusBanner = "💡 牌架暂无可直出牌组，建议点击右侧【+】摸牌"
         }
     }
 
@@ -13888,6 +14039,8 @@ final class RummikubEngine: NSObject, ObservableObject {
 
     private func executeDrawAndAdvance(seatIdx: Int, reason: String) {
         let pCnt = max(2, seats.count)
+        isDealingAnimation = false
+        dealingVisibleCount = 999
         if !pool.isEmpty {
             let t = pool.removeFirst()
             seats[seatIdx].hand.append(t)
@@ -13895,7 +14048,7 @@ final class RummikubEngine: NSObject, ObservableObject {
         }
         isEditingTable = false
         currentTurnSeat = (seatIdx + 1) % pCnt
-        resetWorkspaceForNewTurn()
+        resetWorkspaceForNewTurn(preserveRackLayout: true)
         turnRemainingSeconds = 60
         statusBanner = "[\(seats[seatIdx].name)] \(reason) · 轮到 [\(seats[currentTurnSeat].name)]"
         broadcastFullState()
@@ -13925,14 +14078,18 @@ final class RummikubEngine: NSObject, ObservableObject {
         let seatIdx = currentTurnSeat
         let work = DispatchWorkItem { [weak self] in
             guard let self = self, self.phase == .playing, self.currentTurnSeat == seatIdx else { return }
-            if let best = RmkEvaluator.findBestMeld(in: self.seats[seatIdx].hand),
-               let pts = RmkEvaluator.evaluateMeld(best) {
-                if self.seats[seatIdx].hasBrokenIce || pts >= 30 {
-                    var nextMelds = self.tableMelds
-                    nextMelds.append(RmkMeld(id: UUID().uuidString, tiles: best))
-                    self.executeCommitTurn(seatIdx: seatIdx, newMelds: nextMelds, playedHandIds: best.map { $0.id })
-                    return
+            let (aiMelds, _) = RmkEvaluator.organizeHandIntoGroups(self.seats[seatIdx].hand, preferRuns: true)
+            let totalPts = aiMelds.reduce(0) { $0 + (RmkEvaluator.evaluateMeld($1) ?? 0) }
+            if !aiMelds.isEmpty && (self.seats[seatIdx].hasBrokenIce || totalPts >= 30) {
+                var nextMelds = self.tableMelds
+                var playedIds: [String] = []
+                for m in aiMelds {
+                    let sortedM = RmkEvaluator.sortMeldForDisplay(m)
+                    nextMelds.append(RmkMeld(id: UUID().uuidString, tiles: sortedM))
+                    playedIds.append(contentsOf: sortedM.map { $0.id })
                 }
+                self.executeCommitTurn(seatIdx: seatIdx, newMelds: nextMelds, playedHandIds: playedIds)
+                return
             }
             self.executeDrawAndAdvance(seatIdx: seatIdx, reason: "从共用牌堆摸1张牌")
         }
