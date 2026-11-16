@@ -495,6 +495,7 @@ class AudioPlayerManager(
 
     val doudizhuEngine: DoudizhuEngine by lazy { DoudizhuEngine(context, this) }
     val mahjongEngine: MahjongEngine by lazy { MahjongEngine(context, this) }
+    val ludoEngine: AeroplaneChessEngine by lazy { AeroplaneChessEngine(context, this) }
 
     @Volatile var isAppInForeground: Boolean = true
     val appVersion = "1.7.1"
@@ -546,7 +547,22 @@ class AudioPlayerManager(
     private var offRouteStrikeCount: Int = 0
     private var lastRerouteMillis: Long = 0L
 
-    fun updateRealLocation(lat: Double, lon: Double, speedMps: Float, bearingDeg: Float) {
+    private var lastGpsFixMillis: Long = 0L
+    private var lastGpsAccuracyMeters: Float = 999f
+
+    fun setMapTracking(enabled: Boolean) {
+        _mapTrackingUser.value = enabled
+    }
+
+    fun updateRealLocation(lat: Double, lon: Double, speedMps: Float, bearingDeg: Float, accuracyMeters: Float = 15f) {
+        val nowMs = System.currentTimeMillis()
+        if (accuracyMeters > 65f && (nowMs - lastGpsFixMillis) < 4000L && lastGpsAccuracyMeters <= 35f) {
+            return // Ignore coarse cell/network fix when a fresh high-accuracy GPS fix is active
+        }
+        if (accuracyMeters in 0.1f..35f) {
+            lastGpsFixMillis = nowMs
+            lastGpsAccuracyMeters = accuracyMeters
+        }
         val newCoord = LatLng(lat, lon)
         if (!_isDemoSimulating.value) {
             var movedMeters = 0.0

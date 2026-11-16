@@ -82,7 +82,7 @@ class MainActivity : ComponentActivity() {
                 client.lastLocation.addOnSuccessListener { loc ->
                     if (loc != null) {
                         HTTNaviApp.instance.audioPlayerManager.updateRealLocation(
-                            loc.latitude, loc.longitude, loc.speed, loc.bearing
+                            loc.latitude, loc.longitude, loc.speed, loc.bearing, if (loc.hasAccuracy()) loc.accuracy else 25f
                         )
                     }
                 }
@@ -95,7 +95,7 @@ class MainActivity : ComponentActivity() {
                     override fun onLocationResult(result: LocationResult) {
                         result.lastLocation?.let { loc ->
                             HTTNaviApp.instance.audioPlayerManager.updateRealLocation(
-                                loc.latitude, loc.longitude, loc.speed, loc.bearing
+                                loc.latitude, loc.longitude, loc.speed, loc.bearing, if (loc.hasAccuracy()) loc.accuracy else 25f
                             )
                         }
                     }
@@ -114,7 +114,7 @@ class MainActivity : ComponentActivity() {
             val listener = object : LocationListener {
                 override fun onLocationChanged(loc: Location) {
                     HTTNaviApp.instance.audioPlayerManager.updateRealLocation(
-                        loc.latitude, loc.longitude, loc.speed, loc.bearing
+                        loc.latitude, loc.longitude, loc.speed, loc.bearing, if (loc.hasAccuracy()) loc.accuracy else 25f
                     )
                 }
                 @Deprecated("Deprecated in Java")
@@ -127,7 +127,7 @@ class MainActivity : ComponentActivity() {
                 if (lm.isProviderEnabled(prov)) {
                     lm.getLastKnownLocation(prov)?.let { loc ->
                         HTTNaviApp.instance.audioPlayerManager.updateRealLocation(
-                            loc.latitude, loc.longitude, loc.speed, loc.bearing
+                            loc.latitude, loc.longitude, loc.speed, loc.bearing, if (loc.hasAccuracy()) loc.accuracy else 25f
                         )
                     }
                     lm.requestLocationUpdates(prov, 1500L, 1f, listener, Looper.getMainLooper())

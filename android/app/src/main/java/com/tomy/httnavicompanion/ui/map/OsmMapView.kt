@@ -1,8 +1,11 @@
 package com.tomy.httnavicompanion.ui.map
 
+import android.annotation.SuppressLint
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.Color as AndroidColor
 import android.graphics.drawable.BitmapDrawable
+import android.view.MotionEvent
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -45,6 +48,7 @@ private val CartoDarkTileSource = XYTileSource(
     arrayOf("https://basemaps.cartocdn.com/dark_all/")
 )
 
+@SuppressLint("ClickableViewAccessibility")
 @Composable
 fun OsmMapView(
     manager: AudioPlayerManager,
@@ -82,6 +86,8 @@ fun OsmMapView(
     val tappedMarkerHolder = remember { arrayOfNulls<Marker>(1) }
     val outerPolyHolder = remember { arrayOfNulls<Polyline>(1) }
     val innerPolyHolder = remember { arrayOfNulls<Polyline>(1) }
+    val lastAnimatedCoord = remember { arrayOfNulls<LatLng>(1) }
+    val lastArrowBmp = remember { arrayOfNulls<Bitmap>(1) }
 
     AndroidView(
         modifier = modifier,
@@ -94,6 +100,26 @@ fun OsmMapView(
                 controller.setZoom(16.0)
                 val initPt = if (useAmapTiles) CoordinateConverter.wgs84ToGCJ02(userCoord) else userCoord
                 controller.setCenter(GeoPoint(initPt.latitude, initPt.longitude))
+
+                // Pause auto-follow when user manually drags/pans the map
+                var downX = 0f
+                var downY = 0f
+                setOnTouchListener { _, ev ->
+                    when (ev.actionMasked) {
+                        MotionEvent.ACTION_DOWN -> {
+                            downX = ev.x
+                            downY = ev.y
+                        }
+                        MotionEvent.ACTION_MOVE -> {
+                            val dx = ev.x - downX
+                            val dy = ev.y - downY
+                            if (dx * dx + dy * dy > 400f) {
+                                manager.setMapTracking(false)
+                            }
+                        }
+                    }
+                    false
+                }
 
                 val eventsOverlay = MapEventsOverlay(object : MapEventsReceiver {
                     override fun singleTapConfirmedHelper(p: GeoPoint): Boolean {
@@ -145,7 +171,7 @@ fun OsmMapView(
             }
         },
         update = { mapView ->
-            // 1. Update Tile Source
+            // 1. Update Tile Source only when changed
             val desiredSource = when {
                 mapTileMode == MapTileSourceMode.CARTODB_DARK -> CartoDarkTileSource
                 useAmapTiles -> AmapTileSource
@@ -155,12 +181,13 @@ fun OsmMapView(
                 mapView.setTileSource(desiredSource)
             }
 
-            // 2. Update User Marker & Arrow
+            // 2. Update User Marker & Arrow (only allocate BitmapDrawable when bitmap actually changes)
             val dispUser = if (useAmapTiles) CoordinateConverter.wgs84ToGCJ02(userCoord) else userCoord
             val userGeo = GeoPoint(dispUser.latitude, dispUser.longitude)
             userMarkerHolder[0]?.apply {
                 position = userGeo
-                if (navArrowBmp != null) {
+                if (navArrowBmp != null && navArrowBmp !== lastArrowBmp[0]) {
+                    lastArrowBmp[0] = navArrowBmp
                     icon = BitmapDrawable(context.resources, navArrowBmp)
                 }
             }
@@ -193,11 +220,18 @@ fun OsmMapView(
                 tMarker?.setVisible(false)
             }
 
-            // 6. Camera follow & orientation
+            // 6. Smooth Camera follow (only animate when coordinate actually moved >= 2m to stop 240ms jitter!)
             if (trackingUser) {
-                mapView.controller.animateTo(userGeo)
+                val prev = lastAnimatedCoord[0]
+                if (prev == null || CoordinateConverter.distanceMeters(prev, dispUser) >= 2.0) {
+                    lastAnimatedCoord[0] = dispUser
+                    mapView.controller.animateTo(userGeo)
+                }
             }
-            mapView.mapOrientation = if (camMode == NavigationCameraMode.HEADING_UP) -heading.toFloat() else 0f
+            val targetOrient = if (camMode == NavigationCameraMode.HEADING_UP) -heading.toFloat() else 0f
+            if (kotlin.math.abs(mapView.mapOrientation - targetOrient) >= 1.5f) {
+                mapView.mapOrientation = targetOrient
+            }
 
             mapView.invalidate()
         }
@@ -207,6 +241,7 @@ fun OsmMapView(
     LaunchedEffect(recenterTrigger) {
         if (recenterTrigger > 0) {
             val dispUser = if (useAmapTiles) CoordinateConverter.wgs84ToGCJ02(userCoord) else userCoord
+            lastAnimatedCoord[0] = dispUser
             mapViewHolder[0]?.controller?.animateTo(GeoPoint(dispUser.latitude, dispUser.longitude))
             mapViewHolder[0]?.controller?.setZoom(16.5)
         }
