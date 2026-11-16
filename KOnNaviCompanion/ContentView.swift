@@ -9227,6 +9227,7 @@ struct KOnMahjongSheetView: View {
     @ObservedObject var manager: AudioPlayerManager
     var embeddedInGameRoom: Bool = false
     @ObservedObject private var mj = KOnMahjongManager.shared
+    @ObservedObject private var ludo = AeroplaneChessEngine.shared
     @Environment(\.dismiss) private var dismiss
     @State private var showTingPopup: Bool = false
     @State private var mjDealtCount: Int = 99
@@ -10126,10 +10127,11 @@ struct KOnGameRoomSheetView: View {
             )
             .ignoresSafeArea()
 
-            let isInLobby = (selectedGame == 0 && ddz.phase == .lobby) || (selectedGame == 1 && mj.phase == .lobby)
+            let isInLobby = (selectedGame == 0 && ddz.phase == .lobby) || (selectedGame == 1 && mj.phase == .lobby) || (selectedGame == 2 && ludo.phase == .lobby)
             let isInJoinedRoom = !isInLobby
                 || (selectedGame == 0 && (ddz.isHostingRoom || ddz.isOnlineConnected || !ddz.connectedPeerNames.isEmpty))
                 || (selectedGame == 1 && (mj.isHostingRoom || mj.isOnlineConnected || !mj.connectedPeerNames.isEmpty))
+                || (selectedGame == 2 && (ludo.isHostingRoom || ludo.isOnlineConnected || !ludo.connectedPeerNames.isEmpty))
             VStack(spacing: 4) {
                 // Unified Top Bar
                 HStack {
@@ -10137,8 +10139,10 @@ struct KOnGameRoomSheetView: View {
                         Button(action: {
                             if selectedGame == 0 {
                                 ddz.leaveCurrentRoomAndReset()
-                            } else {
+                            } else if selectedGame == 1 {
                                 mj.leaveCurrentRoomAndReset()
+                            } else {
+                                ludo.leaveCurrentRoomAndReset()
                             }
                         }) {
                             HStack(spacing: 4) {
@@ -10171,6 +10175,7 @@ struct KOnGameRoomSheetView: View {
                         Button(action: {
                             ddz.leaveCurrentRoomAndReset()
                             mj.leaveCurrentRoomAndReset()
+                            ludo.leaveCurrentRoomAndReset()
                             dismiss()
                         }) {
                             HStack(spacing: 3) {
@@ -10196,11 +10201,11 @@ struct KOnGameRoomSheetView: View {
                 // Game Switcher Bar (Hidden once user enters/hosts a room or starts an active game; show current room game badge instead)
                 if isInJoinedRoom && isInLobby {
                     HStack(spacing: 6) {
-                        Text(selectedGame == 0 ? "🃏 当前房间：放课后斗地主 (3人)" : "🀄 当前房间：广东红中麻将 (4人)")
+                        Text(selectedGame == 0 ? "🃏 当前房间：放课后斗地主 (3人)" : (selectedGame == 1 ? "🀄 当前房间：广东红中麻将 (4人)" : "✈️ 当前房间：3D轻音五人飞行棋 (5人)"))
                             .font(.system(size: 12, weight: .black))
                             .foregroundColor(.white)
                         Spacer()
-                        Text("房号: \(selectedGame == 0 ? ddz.roomCode : mj.roomCode)")
+                        Text("房号: \(selectedGame == 0 ? ddz.roomCode : (selectedGame == 1 ? mj.roomCode : ludo.roomCode))")
                             .font(.system(size: 11, weight: .bold, design: .monospaced))
                             .foregroundColor(httGold)
                     }
@@ -10249,6 +10254,26 @@ struct KOnGameRoomSheetView: View {
                             .overlay(RoundedRectangle(cornerRadius: 9).stroke(selectedGame == 1 ? httGold : httGold.opacity(0.35), lineWidth: selectedGame == 1 ? 1.5 : 1))
                         }
                         .buttonStyle(PlainButtonStyle())
+
+                        Button(action: {
+                            if selectedGame != 2 {
+                                ddz.leaveCurrentRoomAndReset()
+                                mj.leaveCurrentRoomAndReset()
+                                selectedGame = 2
+                            }
+                        }) {
+                            HStack(spacing: 4) {
+                                Text("✈️")
+                                Text(tr("五人飞行棋 (5人)", "五人飛行棋 (5人)", "Ludo (5P)"))
+                                    .font(.system(size: 11, weight: .black))
+                            }
+                            .frame(maxWidth: .infinity, minHeight: 28)
+                            .background(selectedGame == 2 ? Color(red: 0.94, green: 0.38, blue: 0.57) : Color.black.opacity(0.42))
+                            .foregroundColor(.white)
+                            .cornerRadius(9)
+                            .overlay(RoundedRectangle(cornerRadius: 9).stroke(selectedGame == 2 ? httGold : httGold.opacity(0.35), lineWidth: selectedGame == 2 ? 1.5 : 1))
+                        }
+                        .buttonStyle(PlainButtonStyle())
                     }
                     .padding(.horizontal, 10)
                     .padding(.bottom, 2)
@@ -10256,8 +10281,10 @@ struct KOnGameRoomSheetView: View {
 
                 if selectedGame == 0 {
                     KOnDoudizhuSheetView(manager: manager, embeddedInGameRoom: true)
-                } else {
+                } else if selectedGame == 1 {
                     KOnMahjongSheetView(manager: manager, embeddedInGameRoom: true)
+                } else {
+                    KOnAeroplaneChessSheetView(manager: manager)
                 }
             }
         }
@@ -10266,11 +10293,283 @@ struct KOnGameRoomSheetView: View {
             AppDelegate.setOrientation(inGame ? .landscape : .all, preferred: inGame ? .landscapeRight : .portrait)
         }
         .onChange(of: mj.phase) { newPhase in
-            let inGame = (selectedGame == 0 && ddz.phase != .lobby) || (selectedGame == 1 && newPhase != .lobby)
+            let inGame = (selectedGame == 0 && ddz.phase != .lobby) || (selectedGame == 1 && newPhase != .lobby) || (selectedGame == 2 && ludo.phase != .lobby)
+            AppDelegate.setOrientation(inGame ? .landscape : .all, preferred: inGame ? .landscapeRight : .portrait)
+        }
+        .onChange(of: ludo.phase) { newPhase in
+            let inGame = (selectedGame == 0 && ddz.phase != .lobby) || (selectedGame == 1 && mj.phase != .lobby) || (selectedGame == 2 && newPhase != .lobby)
             AppDelegate.setOrientation(inGame ? .landscape : .all, preferred: inGame ? .landscapeRight : .portrait)
         }
         .onDisappear {
             AppDelegate.setOrientation(.all, preferred: .portrait)
+        }
+    }
+}
+
+
+// MARK: - 3D K-ON! 5-Player Aeroplane Chess View (Tsumugi = Sakura Pink, Extensible 2P/3P/4P/5P)
+struct KOnAeroplaneChessSheetView: View {
+    @ObservedObject var manager: AudioPlayerManager
+    @ObservedObject private var ludo = AeroplaneChessEngine.shared
+
+    private let httGold = Color(red: 0.91, green: 0.72, blue: 0.28)
+    private let httCrimson = Color(red: 0.80, green: 0.18, blue: 0.23)
+
+    private func seatColor(_ charId: Int) -> Color {
+        switch charId {
+        case 1: return Color(red: 0.92, green: 0.28, blue: 0.30)
+        case 2: return Color(red: 0.19, green: 0.54, blue: 0.92)
+        case 3: return Color(red: 0.96, green: 0.78, blue: 0.18)
+        case 4: return Color(red: 0.95, green: 0.45, blue: 0.66) // Mugi PINK!
+        default: return Color(red: 0.16, green: 0.74, blue: 0.53)
+        }
+    }
+
+    var body: some View {
+        if ludo.phase == .lobby { lobbyView } else { tableView }
+    }
+
+    private var lobbyView: some View {
+        VStack(spacing: 8) {
+            HStack(spacing: 6) {
+                Text("✈️")
+                Text(ludo.statusBanner).font(.system(size: 11, weight: .bold)).foregroundColor(httGold).lineLimit(2)
+                Spacer()
+            }
+            .padding(8).background(Color.black.opacity(0.45)).cornerRadius(9)
+            .overlay(RoundedRectangle(cornerRadius: 9).stroke(httGold.opacity(0.55), lineWidth: 1))
+
+            ScrollView(showsIndicators: false) {
+                VStack(spacing: 8) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack(spacing: 8) {
+                            Text("1. 昵称与阵营").font(.system(size: 12, weight: .black)).foregroundColor(httGold)
+                            TextField("输入房间昵称", text: $ludo.myNickname)
+                                .font(.system(size: 12, weight: .bold)).foregroundColor(.white)
+                                .padding(.horizontal, 8).padding(.vertical, 5)
+                                .background(Color.white.opacity(0.12)).cornerRadius(6)
+                        }
+                        HStack(spacing: 6) {
+                            ForEach(AudioPlayerManager.CharacterFilter.fiveIndividuals, id: \.self) { char in
+                                Button(action: {
+                                    ludo.myCharacter = char
+                                    manager.playMascotVoice(for: char)
+                                }) {
+                                    VStack(spacing: 2) {
+                                        if let sprite = manager.allMemberFrames[char.charId] {
+                                            Image(uiImage: sprite).interpolation(.none).resizable().scaledToFit().frame(width: 30, height: 34)
+                                        }
+                                        Text(char.displayName(manager.language)).font(.system(size: 9, weight: .bold)).foregroundColor(.white).lineLimit(1)
+                                        Circle().fill(seatColor(char.charId)).frame(width: 8, height: 8)
+                                    }
+                                    .frame(maxWidth: .infinity).padding(.vertical, 4)
+                                    .background(ludo.myCharacter == char ? seatColor(char.charId).opacity(0.45) : Color.white.opacity(0.08))
+                                    .cornerRadius(8)
+                                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(ludo.myCharacter == char ? httGold : .clear, lineWidth: 1.5))
+                                }.buttonStyle(PlainButtonStyle())
+                            }
+                        }
+                    }
+                    .padding(8).background(Color.black.opacity(0.45)).cornerRadius(10)
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Text("2. 跨平台远程联机 (5人飞行棋 · iOS / Android / Switch)")
+                                .font(.system(size: 12, weight: .black)).foregroundColor(httGold)
+                            Spacer()
+                            Text("房号:").font(.system(size: 11, weight: .bold)).foregroundColor(.white)
+                            TextField("必填房号", text: $ludo.roomCode)
+                                .font(.system(size: 12, weight: .black, design: .monospaced))
+                                .foregroundColor(httGold)
+                                .frame(width: 72).padding(4)
+                                .background(Color.white.opacity(0.14)).cornerRadius(6)
+                        }
+                        HStack(spacing: 6) {
+                            TextField("wss://azusa.online/ddz", text: $ludo.customServerURL)
+                                .font(.system(size: 11, design: .monospaced)).foregroundColor(.white)
+                                .padding(6).background(Color.white.opacity(0.12)).cornerRadius(6)
+                            Button(action: { ludo.connectOnlineServerRoom() }) {
+                                Text(ludo.isOnlineConnected ? "已连(\(ludo.roomCode))" : "连接房间")
+                                    .font(.system(size: 11, weight: .black)).padding(.horizontal, 10).frame(height: 30)
+                                    .background(ludo.isOnlineConnected ? Color.green : Color.blue)
+                                    .foregroundColor(.white).cornerRadius(8)
+                            }.buttonStyle(PlainButtonStyle())
+                            if ludo.isOnlineConnected {
+                                Button(action: { ludo.leaveCurrentRoomAndReset() }) {
+                                    Text("退出").font(.system(size: 11, weight: .black)).padding(.horizontal, 9).frame(height: 30)
+                                        .background(httCrimson).foregroundColor(.white).cornerRadius(8)
+                                }.buttonStyle(PlainButtonStyle())
+                            }
+                        }
+                    }
+                    .padding(8).background(Color.black.opacity(0.45)).cornerRadius(10)
+
+                    VStack(alignment: .leading, spacing: 5) {
+                        HStack {
+                            Text("3. 3D 棋盘地图与规则 (60步 · 紬=粉色)").font(.system(size: 11, weight: .black)).foregroundColor(httGold)
+                            Spacer()
+                            Toggle("轻音彩蛋格", isOn: $ludo.enableKonEvents).labelsHidden().scaleEffect(0.75)
+                            Text("轻音彩蛋").font(.system(size: 10, weight: .bold)).foregroundColor(.pink)
+                        }
+                        HStack(spacing: 6) {
+                            ForEach(LudoBoardConfig.reservedMapCounts, id: \.self) { cnt in
+                                let ready = (cnt == 5)
+                                Button(action: { if ready { ludo.reservedMapPlayerCount = cnt } }) {
+                                    Text(ready ? "5人茶会图 (已就绪)" : "\(cnt)人图 (预留)")
+                                        .font(.system(size: 10, weight: .bold))
+                                        .frame(maxWidth: .infinity).padding(.vertical, 5)
+                                        .background(ready ? Color(red: 0.94, green: 0.38, blue: 0.57) : Color.white.opacity(0.08))
+                                        .foregroundColor(ready ? .white : .gray)
+                                        .cornerRadius(6)
+                                }.buttonStyle(PlainButtonStyle()).disabled(!ready)
+                            }
+                        }
+                    }
+                    .padding(8).background(Color.black.opacity(0.45)).cornerRadius(10)
+
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text("4. 五人牌桌座位预览 (不足5人由轻音AI补位)").font(.system(size: 11, weight: .black)).foregroundColor(httGold)
+                        HStack(spacing: 4) {
+                            ForEach(ludo.seats) { seat in
+                                VStack(spacing: 2) {
+                                    if let sprite = manager.allMemberFrames[seat.characterId] {
+                                        Image(uiImage: sprite).interpolation(.none).resizable().scaledToFit().frame(width: 26, height: 30)
+                                    }
+                                    Text(seat.name).font(.system(size: 8, weight: .black)).foregroundColor(.white).lineLimit(1)
+                                    Text(seat.colorName).font(.system(size: 8, weight: .bold)).foregroundColor(seatColor(seat.characterId))
+                                    Text(seat.isAI ? "🤖 AI" : "📱 真人").font(.system(size: 7, weight: .bold)).foregroundColor(seat.isAI ? httGold : .green)
+                                }
+                                .frame(maxWidth: .infinity).padding(.vertical, 4)
+                                .background(Color.white.opacity(0.09)).cornerRadius(7)
+                                .overlay(RoundedRectangle(cornerRadius: 7).stroke(seat.isAI ? seatColor(seat.characterId).opacity(0.4) : Color.green, lineWidth: 1))
+                            }
+                        }
+                    }
+                    .padding(8).background(Color.black.opacity(0.45)).cornerRadius(10)
+                }
+            }
+
+            let isGuestWait = ludo.isOnlineConnected && !ludo.isRoomAuthority
+            Button(action: { if !isGuestWait { ludo.startNewRound() } }) {
+                Text(isGuestWait ? "⏳ 等待 1 号房主开始 3D 飞行棋..." : "✈️ 立即开始 3D 轻音五人飞行棋")
+                    .font(.system(size: 14, weight: .black))
+                    .frame(maxWidth: .infinity, minHeight: 42)
+                    .background(isGuestWait ? Color.gray : Color(red: 0.94, green: 0.38, blue: 0.57))
+                    .foregroundColor(.white).cornerRadius(10)
+                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(httGold, lineWidth: 1.5))
+            }
+            .buttonStyle(PlainButtonStyle()).disabled(isGuestWait)
+        }
+        .padding(.horizontal, 10).padding(.bottom, 6)
+    }
+
+    private var tableView: some View {
+        GeometryReader { geo in
+            let boardSide = min(geo.size.height - 16, geo.size.width * 0.54)
+            HStack(spacing: 10) {
+                ZStack {
+                    if let bImg = ludo.assetImage("board_5p") {
+                        Image(uiImage: bImg)
+                            .resizable().scaledToFit()
+                            .frame(width: boardSide, height: boardSide)
+                            .cornerRadius(16)
+                            .shadow(color: .black.opacity(0.45), radius: 8, y: 4)
+                    }
+
+                    ForEach(ludo.seats) { seat in
+                        ForEach(0..<4, id: \.self) { pIdx in
+                            let pt = ludo.planeCoordinate(seatIdx: seat.id, planeIdx: pIdx)
+                            let movable = (ludo.phase == .choosing && ludo.currentTurnSeat == ludo.mySeatIndex && seat.id == ludo.mySeatIndex && ludo.canMovePlane(seatIdx: seat.id, planeIdx: pIdx, dice: ludo.lastDice))
+                            let isDone = seat.planes[pIdx] >= ludo.config.totalStepsToFinish
+                            if !isDone {
+                                Button(action: { ludo.movePlaneTapped(pIdx) }) {
+                                    ZStack {
+                                        if let pImg = ludo.assetImage("plane_\(seat.characterId)") {
+                                            Image(uiImage: pImg).resizable().scaledToFit()
+                                                .frame(width: movable ? 30 : 22, height: movable ? 30 : 22)
+                                                .shadow(color: movable ? .yellow : .black.opacity(0.6), radius: movable ? 6 : 2)
+                                        }
+                                        if movable {
+                                            Circle().stroke(Color.yellow, lineWidth: 2).frame(width: 32, height: 32)
+                                        }
+                                    }
+                                }
+                                .buttonStyle(PlainButtonStyle())
+                                .position(x: pt.x * boardSide, y: pt.y * boardSide)
+                            }
+                        }
+                    }
+                }
+                .frame(width: boardSide, height: boardSide)
+
+                VStack(spacing: 6) {
+                    HStack {
+                        Text(ludo.statusBanner).font(.system(size: 11, weight: .bold)).foregroundColor(httGold).lineLimit(2)
+                        Spacer()
+                        if !ludo.isOnlineConnected || ludo.isRoomAuthority {
+                            Button(action: { ludo.currentRound += 1; ludo.startNewRound() }) {
+                                Image(systemName: "arrow.clockwise.circle.fill").font(.system(size: 20)).foregroundColor(httGold)
+                            }.buttonStyle(PlainButtonStyle())
+                        }
+                    }
+                    .padding(7).background(Color.black.opacity(0.45)).cornerRadius(9)
+
+                    ForEach(ludo.seats) { seat in
+                        let isTurn = (ludo.currentTurnSeat == seat.id)
+                        let finishedCnt = seat.planes.filter { $0 >= ludo.config.totalStepsToFinish }.count
+                        HStack(spacing: 6) {
+                            if let sprite = manager.allMemberFrames[seat.characterId] {
+                                Image(uiImage: sprite).interpolation(.none).resizable().scaledToFit().frame(width: 24, height: 26)
+                            }
+                            Text(seat.name).font(.system(size: 11, weight: .black)).foregroundColor(.white).lineLimit(1)
+                            Text(seat.colorName).font(.system(size: 9, weight: .bold)).foregroundColor(seatColor(seat.characterId))
+                            Spacer()
+                            Text("到点 \(finishedCnt)/4").font(.system(size: 10, weight: .bold)).foregroundColor(httGold)
+                            Text("\(seat.score)分").font(.system(size: 10, design: .monospaced)).foregroundColor(.green)
+                        }
+                        .padding(.horizontal, 8).padding(.vertical, 4)
+                        .background(isTurn ? seatColor(seat.characterId).opacity(0.32) : Color.black.opacity(0.35))
+                        .cornerRadius(8)
+                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(isTurn ? httGold : seatColor(seat.characterId).opacity(0.35), lineWidth: isTurn ? 1.8 : 1))
+                    }
+
+                    Spacer()
+
+                    HStack(spacing: 12) {
+                        ZStack {
+                            RoundedRectangle(cornerRadius: 12)
+                                .fill(LinearGradient(colors: [.white, Color(white: 0.86)], startPoint: .topLeading, endPoint: .bottomTrailing))
+                                .frame(width: 56, height: 56)
+                                .shadow(color: .black.opacity(0.5), radius: 5, y: 3)
+                                .overlay(RoundedRectangle(cornerRadius: 12).stroke(httGold, lineWidth: 2))
+                            Text("\(ludo.lastDice)")
+                                .font(.system(size: 26, weight: .black, design: .rounded))
+                                .foregroundColor(ludo.lastDice == 6 ? httCrimson : .black)
+                        }
+                        .rotationEffect(.degrees(ludo.isRollingAnim ? 360 : 0))
+                        .animation(.easeOut(duration: 0.28), value: ludo.isRollingAnim)
+
+                        if ludo.phase == .roundOver {
+                            Button(action: { ludo.currentRound += 1; ludo.startNewRound() }) {
+                                Text("🏆 再来一局").font(.system(size: 14, weight: .black))
+                                    .frame(maxWidth: .infinity, minHeight: 52)
+                                    .background(httCrimson).foregroundColor(.white).cornerRadius(12)
+                            }.buttonStyle(PlainButtonStyle())
+                        } else {
+                            let myTurn = (ludo.currentTurnSeat == ludo.mySeatIndex)
+                            Button(action: { ludo.rollDiceTapped() }) {
+                                Text(myTurn ? (ludo.phase == .rolling ? "🎲 点击掷骰子" : "✈️ 请在棋盘点选飞机") : "⏳ 等待他人...")
+                                    .font(.system(size: 14, weight: .black))
+                                    .frame(maxWidth: .infinity, minHeight: 52)
+                                    .background(myTurn && ludo.phase == .rolling ? Color(red: 0.94, green: 0.38, blue: 0.57) : Color.gray.opacity(0.65))
+                                    .foregroundColor(.white).cornerRadius(12)
+                                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(httGold, lineWidth: 1.5))
+                            }.buttonStyle(PlainButtonStyle()).disabled(!(myTurn && ludo.phase == .rolling))
+                        }
+                    }
+                }
+            }
+            .padding(.horizontal, 10).padding(.bottom, 6)
         }
     }
 }
