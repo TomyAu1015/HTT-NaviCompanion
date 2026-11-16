@@ -722,4 +722,139 @@ namespace RmkEvaluator {
         }
         return best;
     }
+
+    inline void extractRunsFromPool(std::vector<RmkTile>& pool, std::vector<std::vector<RmkTile>>& extracted) {
+        const char* cols[] = {"R", "B", "Y", "K"};
+        for (int c = 0; c < 4; ++c) {
+            std::string col = cols[c];
+            bool found = true;
+            while (found) {
+                found = false;
+                std::vector<RmkTile> colTiles;
+                for (const auto& t : pool) if (t.color == col) colTiles.push_back(t);
+                std::sort(colTiles.begin(), colTiles.end(), [](const RmkTile& a, const RmkTile& b) { return a.number < b.number; });
+                std::vector<RmkTile> uniq;
+                std::set<int> seen;
+                for (const auto& t : colTiles) if (seen.insert(t.number).second) uniq.push_back(t);
+                if (uniq.size() < 3) break;
+                std::vector<RmkTile> bestRun;
+                std::vector<RmkTile> cur;
+                for (const auto& t : uniq) {
+                    if (cur.empty() || t.number == cur.back().number + 1) {
+                        cur.push_back(t);
+                    } else {
+                        if (cur.size() >= 3 && cur.size() > bestRun.size()) bestRun = cur;
+                        cur = {t};
+                    }
+                }
+                if (cur.size() >= 3 && cur.size() > bestRun.size()) bestRun = cur;
+                if (bestRun.size() >= 3) {
+                    extracted.push_back(bestRun);
+                    std::set<std::string> usedIds;
+                    for (const auto& t : bestRun) usedIds.insert(t.id);
+                    pool.erase(std::remove_if(pool.begin(), pool.end(), [&](const RmkTile& t) { return usedIds.count(t.id) > 0; }), pool.end());
+                    found = true;
+                }
+            }
+        }
+    }
+
+    inline void extractGroupsFromPool(std::vector<RmkTile>& pool, std::vector<std::vector<RmkTile>>& extracted) {
+        for (int num = 13; num >= 1; --num) {
+            bool found = true;
+            while (found) {
+                found = false;
+                std::vector<RmkTile> sameNum;
+                for (const auto& t : pool) if (!t.isJoker() && t.number == num) sameNum.push_back(t);
+                std::vector<RmkTile> uniq;
+                std::set<std::string> seen;
+                for (const auto& t : sameNum) if (seen.insert(t.color).second) uniq.push_back(t);
+                if (uniq.size() >= 3) {
+                    std::vector<RmkTile> grp(uniq.begin(), uniq.begin() + std::min((size_t)4, uniq.size()));
+                    extracted.push_back(grp);
+                    std::set<std::string> usedIds;
+                    for (const auto& t : grp) usedIds.insert(t.id);
+                    pool.erase(std::remove_if(pool.begin(), pool.end(), [&](const RmkTile& t) { return usedIds.count(t.id) > 0; }), pool.end());
+                    found = true;
+                }
+            }
+        }
+    }
+
+    // 789 (preferRuns=true) or 777 (preferRuns=false) smart organizer with empty-slot separation
+    inline void organizeHandIntoGroups(
+        const std::vector<RmkTile>& hand,
+        bool preferRuns,
+        std::vector<std::vector<RmkTile>>& outMelds,
+        std::vector<RmkTile>& outLeftovers
+    ) {
+        outMelds.clear();
+        outLeftovers.clear();
+        std::vector<RmkTile> pool = hand;
+        if (preferRuns) {
+            extractRunsFromPool(pool, outMelds);
+            extractGroupsFromPool(pool, outMelds);
+        } else {
+            extractGroupsFromPool(pool, outMelds);
+            extractRunsFromPool(pool, outMelds);
+        }
+
+        // Try pairing 1 Joker with a 2-tile near-meld
+        while (true) {
+            int jIdx = -1;
+            for (size_t i = 0; i < pool.size(); ++i) if (pool[i].isJoker()) { jIdx = (int)i; break; }
+            if (jIdx < 0) break;
+            RmkTile joker = pool[jIdx];
+            std::vector<RmkTile> bestPair;
+            if (preferRuns) {
+                const char* cols[] = {"R", "B", "Y", "K"};
+                for (int c = 0; c < 4 && bestPair.empty(); ++c) {
+                    std::string col = cols[c];
+                    std::vector<RmkTile> ct;
+                    for (const auto& t : pool) if (t.color == col) ct.push_back(t);
+                    std::sort(ct.begin(), ct.end(), [](const RmkTile& a, const RmkTile& b) { return a.number < b.number; });
+                    for (size_t i = 0; i + 1 < ct.size(); ++i) {
+                        int diff = ct[i + 1].number - ct[i].number;
+                        if (diff == 1 || diff == 2) {
+                            bestPair = {ct[i], ct[i + 1], joker};
+                            break;
+                        }
+                    }
+                }
+            }
+            if (bestPair.empty()) {
+                for (int num = 13; num >= 1; --num) {
+                    std::vector<RmkTile> sn;
+                    std::set<std::string> seen;
+                    for (const auto& t : pool) {
+                        if (!t.isJoker() && t.number == num && seen.insert(t.color).second) sn.push_back(t);
+                    }
+                    if (sn.size() >= 2) {
+                        bestPair = {sn[0], sn[1], joker};
+                        break;
+                    }
+                }
+            }
+            if (!bestPair.empty()) {
+                outMelds.push_back(bestPair);
+                std::set<std::string> usedIds;
+                for (const auto& t : bestPair) usedIds.insert(t.id);
+                pool.erase(std::remove_if(pool.begin(), pool.end(), [&](const RmkTile& t) { return usedIds.count(t.id) > 0; }), pool.end());
+            } else {
+                break;
+            }
+        }
+
+        std::sort(pool.begin(), pool.end(), [preferRuns](const RmkTile& a, const RmkTile& b) {
+            if (a.isJoker() != b.isJoker()) return !a.isJoker();
+            if (preferRuns) {
+                if (a.color != b.color) return a.color < b.color;
+                return a.number < b.number;
+            } else {
+                if (a.number != b.number) return a.number < b.number;
+                return a.color < b.color;
+            }
+        });
+        outLeftovers = pool;
+    }
 }
