@@ -436,11 +436,11 @@ static void sendJoinRequestPacket() {
     std::string rc = wireRoomCode();
     int maxP = (gSelectedGame == 0) ? 3 : ((gSelectedGame == 1) ? 4 : gRmkRoomPlayerCount);
     std::string gType = (gSelectedGame == 0) ? "doudizhu" : ((gSelectedGame == 1) ? "mahjong" : "rummikub");
-    std::string j = "{"kind":"joinRequest","roomCode":"" + MiniJson::esc(rc) +
-                    "","senderPeerName":"" + MiniJson::esc(gMyPeerName) +
-                    "","senderCharId":" + std::to_string(gMyCharId) +
-                    ","maxPlayers":" + std::to_string(maxP) +
-                    ","gameType":"" + gType + ""}";
+    std::string j = "{\"kind\":\"joinRequest\",\"roomCode\":\"" + MiniJson::esc(rc) +
+                    "\",\"senderPeerName\":\"" + MiniJson::esc(gMyPeerName) +
+                    "\",\"senderCharId\":" + std::to_string(gMyCharId) +
+                    ",\"maxPlayers\":" + std::to_string(maxP) +
+                    ",\"gameType\":\"" + gType + "\"}";
     gWs.sendText(j);
 }
 
@@ -1075,7 +1075,7 @@ static void broadcastRmkState() {
     for (size_t i = 0; i < gRoomPeers.size(); ++i) {
         if (i > 0) peersArr += ",";
         std::string disp = cleanPeerLabel(gRoomPeers[i].displayName.empty() ? gRoomPeers[i].name : gRoomPeers[i].displayName);
-        peersArr += "{"name":"" + MiniJson::esc(gRoomPeers[i].name) + "","charId":" + std::to_string(gRoomPeers[i].charId) + ","displayName":"" + MiniJson::esc(disp) + ""}";
+        peersArr += "{\"name\":\"" + MiniJson::esc(gRoomPeers[i].name) + "\",\"charId\":" + std::to_string(gRoomPeers[i].charId) + ",\"displayName\":\"" + MiniJson::esc(disp) + "\"}";
     }
     peersArr += "]";
     std::string seatsArr = "[";
@@ -1085,21 +1085,21 @@ static void broadcastRmkState() {
         std::string hArr = "[";
         for (size_t k = 0; k < s.hand.size(); ++k) { if (k > 0) hArr += ","; hArr += s.hand[k].toJson(); }
         hArr += "]";
-        seatsArr += "{"id":" + std::to_string(s.id) + ","name":"" + MiniJson::esc(s.name) + "","characterId":" + std::to_string(s.characterId) +
-                    ","isAI":" + std::string(s.isAI ? "true" : "false") + ","peerDisplayName":"" + MiniJson::esc(s.peerDisplayName) +
-                    "","hand":" + hArr + ","hasBrokenIce":" + std::string(s.hasBrokenIce ? "true" : "false") + ","score":" + std::to_string(s.score) + "}";
+        seatsArr += "{\"id\":" + std::to_string(s.id) + ",\"name\":\"" + MiniJson::esc(s.name) + "\",\"characterId\":" + std::to_string(s.characterId) +
+                    ",\"isAI\":" + std::string(s.isAI ? "true" : "false") + ",\"peerDisplayName\":\"" + MiniJson::esc(s.peerDisplayName) +
+                    "\",\"hand\":" + hArr + ",\"hasBrokenIce\":" + std::string(s.hasBrokenIce ? "true" : "false") + ",\"score\":" + std::to_string(s.score) + "}";
     }
     seatsArr += "]";
     std::string meldsArr = "[";
     for (size_t i = 0; i < gRmkTableMelds.size(); ++i) { if (i > 0) meldsArr += ","; meldsArr += gRmkTableMelds[i].toJson(); }
     meldsArr += "]";
-    std::string pkt = "{"kind":"stateSync","roomCode":"RMK_" + MiniJson::esc(gRoomCode) +
-                      "","senderPeerName":"" + MiniJson::esc(gMyPeerName) + "","senderCharId":" + std::to_string(gMyCharId) +
-                      ","maxPlayers":" + std::to_string(gRmkRoomPlayerCount) + ","gameType":"rummikub"" +
-                      ","hostPeerName":"" + MiniJson::esc(gMyPeerName) + "","roomPeers":" + peersArr +
-                      ","seats":" + seatsArr + ","tableMelds":" + meldsArr + ","poolCount":" + std::to_string(gRmkPoolCount) +
-                      ","phase":"" + gRmkPhase + "","currentTurnSeat":" + std::to_string(gRmkTurnSeat) +
-                      ","currentRound":" + std::to_string(gRmkRound) + ","statusBanner":"" + MiniJson::esc(gStatusBanner) + ""}";
+    std::string pkt = "{\"kind\":\"stateSync\",\"roomCode\":\"RMK_" + MiniJson::esc(gRoomCode) +
+                      "\",\"senderPeerName\":\"" + MiniJson::esc(gMyPeerName) + "\",\"senderCharId\":" + std::to_string(gMyCharId) +
+                      ",\"maxPlayers\":" + std::to_string(gRmkRoomPlayerCount) + ",\"gameType\":\"rummikub\"" +
+                      ",\"hostPeerName\":\"" + MiniJson::esc(gMyPeerName) + "\",\"roomPeers\":" + peersArr +
+                      ",\"seats\":" + seatsArr + ",\"tableMelds\":" + meldsArr + ",\"poolCount\":" + std::to_string(gRmkPoolCount) +
+                      ",\"phase\":\"" + gRmkPhase + "\",\"currentTurnSeat\":" + std::to_string(gRmkTurnSeat) +
+                      ",\"currentRound\":" + std::to_string(gRmkRound) + ",\"statusBanner\":\"" + MiniJson::esc(gStatusBanner) + "\"}";
     gWs.sendText(pkt);
 }
 
@@ -1280,7 +1280,7 @@ static void processIncomingNetworkMessages() {
                 nms.push_back(m);
             }
             std::set<std::string> pids;
-            size_t pPos = raw.find(""committedHandIds"");
+            size_t pPos = raw.find("\"committedHandIds\"");
             if (pPos != std::string::npos) {
                 size_t lb = raw.find('[', pPos), rb = raw.find(']', lb);
                 if (lb != std::string::npos && rb != std::string::npos) {
@@ -2625,9 +2625,9 @@ int main(int argc, char* argv[]) {
             }
             if (kDown & HidNpadButton_X) {
                 if (gWs.isConnected()) {
-                    std::string leavePkt = "{"kind":"leaveRoom","roomCode":"" + MiniJson::esc(wireRoomCode()) +
-                                           "","senderPeerName":"" + MiniJson::esc(gMyPeerName) +
-                                           "","senderCharId":" + std::to_string(gMyCharId) + "}";
+                    std::string leavePkt = "{\"kind\":\"leaveRoom\",\"roomCode\":\"" + MiniJson::esc(wireRoomCode()) +
+                                           "\",\"senderPeerName\":\"" + MiniJson::esc(gMyPeerName) +
+                                           "\",\"senderCharId\":" + std::to_string(gMyCharId) + "}";
                     gWs.sendText(leavePkt);
                     gWs.disconnect();
                     gIsOnlineRoom = false;
@@ -2654,9 +2654,9 @@ int main(int argc, char* argv[]) {
                 if (gLobbyFocus == 5) openSwitchRoomCodeKeyboard();
                 else if (gLobbyFocus == 6) {
                     if (gWs.isConnected()) {
-                        std::string leavePkt = "{"kind":"leaveRoom","roomCode":"" + MiniJson::esc(wireRoomCode()) +
-                                               "","senderPeerName":"" + MiniJson::esc(gMyPeerName) +
-                                               "","senderCharId":" + std::to_string(gMyCharId) + "}";
+                        std::string leavePkt = "{\"kind\":\"leaveRoom\",\"roomCode\":\"" + MiniJson::esc(wireRoomCode()) +
+                                               "\",\"senderPeerName\":\"" + MiniJson::esc(gMyPeerName) +
+                                               "\",\"senderCharId\":" + std::to_string(gMyCharId) + "}";
                         gWs.sendText(leavePkt);
                         gWs.disconnect();
                         gIsOnlineRoom = false;
@@ -2734,10 +2734,10 @@ int main(int argc, char* argv[]) {
                             std::string arr = "[";
                             for (size_t i = 0; i < chosen.size(); ++i) { if (i > 0) arr += ","; arr += chosen[i].toJson(); }
                             arr += "]";
-                            std::string pkt = "{"kind":"playCardsAction","roomCode":"" + MiniJson::esc(gRoomCode) +
-                                              "","senderPeerName":"" + MiniJson::esc(gMyPeerName) +
-                                              "","senderCharId":" + std::to_string(gMyCharId) +
-                                              ","playedCards":" + arr + "}";
+                            std::string pkt = "{\"kind\":\"playCardsAction\",\"roomCode\":\"" + MiniJson::esc(gRoomCode) +
+                                              "\",\"senderPeerName\":\"" + MiniJson::esc(gMyPeerName) +
+                                              "\",\"senderCharId\":" + std::to_string(gMyCharId) +
+                                              ",\"playedCards\":" + arr + "}";
                             gWs.sendText(pkt);
                         } else {
                             executeDdzPlay(gDdzMySeat, ev);
@@ -2771,10 +2771,10 @@ int main(int argc, char* argv[]) {
                 if ((kDown & HidNpadButton_Y) && (gMjCanKong || gMjCanPong)) {
                     if (gIsOnlineRoom && !gIsRoomAuthority) {
                         std::string act = gMjCanKong ? "kong" : "pong";
-                        std::string pkt = "{"kind":"claimAction","roomCode":"MJ_" + MiniJson::esc(gRoomCode) +
-                                          "","senderPeerName":"" + MiniJson::esc(gMyPeerName) +
-                                          "","senderCharId":" + std::to_string(gMyCharId) +
-                                          ","actionType":"" + act + ""}";
+                        std::string pkt = "{\"kind\":\"claimAction\",\"roomCode\":\"MJ_" + MiniJson::esc(gRoomCode) +
+                                          "\",\"senderPeerName\":\"" + MiniJson::esc(gMyPeerName) +
+                                          "\",\"senderCharId\":" + std::to_string(gMyCharId) +
+                                          ",\"actionType\":\"" + act + "\"}";
                         gWs.sendText(pkt);
                         gMjHasClaim = false;
                     } else {
@@ -2798,10 +2798,10 @@ int main(int argc, char* argv[]) {
                     }
                 } else if (kDown & HidNpadButton_B) {
                     if (gIsOnlineRoom && !gIsRoomAuthority) {
-                        std::string pkt = "{"kind":"claimAction","roomCode":"MJ_" + MiniJson::esc(gRoomCode) +
-                                          "","senderPeerName":"" + MiniJson::esc(gMyPeerName) +
-                                          "","senderCharId":" + std::to_string(gMyCharId) +
-                                          ","actionType":"pass"}";
+                        std::string pkt = "{\"kind\":\"claimAction\",\"roomCode\":\"MJ_" + MiniJson::esc(gRoomCode) +
+                                          "\",\"senderPeerName\":\"" + MiniJson::esc(gMyPeerName) +
+                                          "\",\"senderCharId\":" + std::to_string(gMyCharId) +
+                                          ",\"actionType\":\"pass\"}";
                         gWs.sendText(pkt);
                         gMjHasClaim = false;
                     } else {
@@ -2819,10 +2819,10 @@ int main(int argc, char* argv[]) {
                     if (idx >= 0 && idx < (int)myHand.size()) {
                         std::string tid = myHand[idx].id;
                         if (gIsOnlineRoom && !gIsRoomAuthority) {
-                            std::string pkt = "{"kind":"discardAction","roomCode":"MJ_" + MiniJson::esc(gRoomCode) +
-                                              "","senderPeerName":"" + MiniJson::esc(gMyPeerName) +
-                                              "","senderCharId":" + std::to_string(gMyCharId) +
-                                              ","tileId":"" + MiniJson::esc(tid) + ""}";
+                            std::string pkt = "{\"kind\":\"discardAction\",\"roomCode\":\"MJ_" + MiniJson::esc(gRoomCode) +
+                                              "\",\"senderPeerName\":\"" + MiniJson::esc(gMyPeerName) +
+                                              "\",\"senderCharId\":" + std::to_string(gMyCharId) +
+                                              ",\"tileId\":\"" + MiniJson::esc(tid) + "\"}";
                             gWs.sendText(pkt);
                             gMjSelectedIdx = -1;
                         } else {
@@ -2833,10 +2833,10 @@ int main(int argc, char* argv[]) {
                 if (kDown & HidNpadButton_X) {
                     if (MjEvaluator::canHu(myHand, (int)gMjSeats[gMjMySeat].melds.size())) {
                         if (gIsOnlineRoom && !gIsRoomAuthority) {
-                            std::string pkt = "{"kind":"selfAction","roomCode":"MJ_" + MiniJson::esc(gRoomCode) +
-                                              "","senderPeerName":"" + MiniJson::esc(gMyPeerName) +
-                                              "","senderCharId":" + std::to_string(gMyCharId) +
-                                              ","actionType":"selfHu"}";
+                            std::string pkt = "{\"kind\":\"selfAction\",\"roomCode\":\"MJ_" + MiniJson::esc(gRoomCode) +
+                                              "\",\"senderPeerName\":\"" + MiniJson::esc(gMyPeerName) +
+                                              "\",\"senderCharId\":" + std::to_string(gMyCharId) +
+                                              ",\"actionType\":\"selfHu\"}";
                             gWs.sendText(pkt);
                         } else {
                             executeMjWin(gMjMySeat, -1, "自摸胡牌");
@@ -2905,8 +2905,8 @@ int main(int argc, char* argv[]) {
                 if (kDown & HidNpadButton_B) {
                     resetRmkWorkspace();
                     if (gIsOnlineRoom && !gIsRoomAuthority) {
-                        gWs.sendText("{"kind":"drawTileAction","roomCode":"RMK_" + MiniJson::esc(gRoomCode) +
-                                     "","senderPeerName":"" + MiniJson::esc(gMyPeerName) + "","senderCharId":" + std::to_string(gMyCharId) + "}");
+                        gWs.sendText("{\"kind\":\"drawTileAction\",\"roomCode\":\"RMK_" + MiniJson::esc(gRoomCode) +
+                                     "\",\"senderPeerName\":\"" + MiniJson::esc(gMyPeerName) + "\",\"senderCharId\":" + std::to_string(gMyCharId) + "}");
                     } else {
                         executeRmkDraw(gRmkMySeat, "摸牌结束回合");
                     }
@@ -2933,11 +2933,11 @@ int main(int argc, char* argv[]) {
                             mArr += "]";
                             std::string pArr = "[";
                             bool first = true;
-                            for (const auto& pid : playedIds) { if (!first) pArr += ","; first = false; pArr += """ + MiniJson::esc(pid) + """; }
+                            for (const auto& pid : playedIds) { if (!first) pArr += ","; first = false; pArr += "\"" + MiniJson::esc(pid) + "\""; }
                             pArr += "]";
-                            gWs.sendText("{"kind":"commitTurnAction","roomCode":"RMK_" + MiniJson::esc(gRoomCode) +
-                                         "","senderPeerName":"" + MiniJson::esc(gMyPeerName) + "","senderCharId":" + std::to_string(gMyCharId) +
-                                         ","tableMelds":" + mArr + ","committedHandIds":" + pArr + "}");
+                            gWs.sendText("{\"kind\":\"commitTurnAction\",\"roomCode\":\"RMK_" + MiniJson::esc(gRoomCode) +
+                                         "\",\"senderPeerName\":\"" + MiniJson::esc(gMyPeerName) + "\",\"senderCharId\":" + std::to_string(gMyCharId) +
+                                         ",\"tableMelds\":" + mArr + ",\"committedHandIds\":" + pArr + "}");
                             gRmkEditing = false;
                         } else {
                             executeRmkCommit(gRmkMySeat, gRmkWorkMelds, playedIds);
