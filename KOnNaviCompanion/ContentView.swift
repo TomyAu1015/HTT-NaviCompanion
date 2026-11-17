@@ -10226,7 +10226,8 @@ struct KOnGameRoomSheetView: View {
                 || (selectedGame == 2 && (rmk.isHostingRoom || rmk.isOnlineConnected || !rmk.connectedPeerNames.isEmpty))
 
             VStack(spacing: 4) {
-                // Unified Top Bar
+                // Unified Top Bar (Hidden when inside Rummikub playing room so Rummikub table is 1:1 full-screen like the video!)
+                if !(selectedGame == 2 && !isInLobby) {
                 HStack {
                     if !isInLobby {
                         Button(action: {
@@ -10293,6 +10294,7 @@ struct KOnGameRoomSheetView: View {
                 .padding(.top, 4)
                 .layoutPriority(10)
                 .zIndex(200)
+                }
 
                 // Game Switcher Bar
                 if isInJoinedRoom && isInLobby {
@@ -10642,39 +10644,64 @@ struct KOnRummikubSheetView: View {
         .padding(.horizontal, 10).padding(.bottom, 6)
     }
 
-    private func tileChip(_ tile: RmkTile, selected: Bool, compact: Bool = false, customW: CGFloat? = nil, customH: CGFloat? = nil) -> some View {
-        let w: CGFloat = customW ?? (compact ? 34 : 44)
-        let h: CGFloat = customH ?? (compact ? 48 : 54)
+    private func tileChip(
+        _ tile: RmkTile,
+        selected: Bool,
+        highlighted: Bool = false,
+        compact: Bool = false,
+        customW: CGFloat? = nil,
+        customH: CGFloat? = nil
+    ) -> some View {
+        let w: CGFloat = customW ?? (compact ? 42 : 46)
+        let h: CGFloat = customH ?? (compact ? 58 : 62)
+        let borderColor: Color = selected
+            ? Color.cyan
+            : (highlighted ? Color(red: 1.0, green: 0.56, blue: 0.12) : Color.gray.opacity(0.38))
+        let borderWidth: CGFloat = (selected || highlighted) ? 2.6 : 1.0
+
         return Group {
             if let img = RummikubEngine.tileImage(for: tile.assetKey) {
                 Image(uiImage: img)
                     .resizable()
                     .scaledToFit()
                     .frame(width: w, height: h)
-                    .background(Color.white)
-                    .cornerRadius(6)
+                    .background(Color(red: 0.99, green: 0.98, blue: 0.95))
+                    .cornerRadius(7)
             } else {
                 VStack(spacing: 1) {
                     Text(tile.isJoker ? "JOKER" : "\(tile.number)")
-                        .font(.system(size: compact ? 13 : 16, weight: .black, design: .rounded))
+                        .font(.system(size: compact ? 16 : 18, weight: .black, design: .rounded))
                         .foregroundColor(tileColor(tile.color))
                     Text(tile.isJoker ? "百搭" : tile.color.labelZh)
-                        .font(.system(size: compact ? 7 : 8, weight: .bold))
+                        .font(.system(size: compact ? 8 : 9, weight: .bold))
                         .foregroundColor(tileColor(tile.color).opacity(0.85))
                 }
                 .frame(width: w, height: h)
-                .background(Color(red: 0.99, green: 0.97, blue: 0.92))
-                .cornerRadius(6)
+                .background(Color(red: 0.99, green: 0.98, blue: 0.95))
+                .cornerRadius(7)
             }
         }
-        .shadow(color: .black.opacity(0.38), radius: 2, y: 2)
-        .overlay(RoundedRectangle(cornerRadius: 6).stroke(selected ? Color.yellow : Color.gray.opacity(0.35), lineWidth: selected ? 2.5 : 1))
-        .offset(y: selected ? -9 : 0)
+        .shadow(color: highlighted ? Color.orange.opacity(0.65) : .black.opacity(0.42), radius: highlighted ? 4 : 2, y: 2)
+        .overlay(RoundedRectangle(cornerRadius: 7).stroke(borderColor, lineWidth: borderWidth))
+        .offset(y: selected ? -8 : 0)
     }
 
     @State private var dragSlotIndex: Int? = nil
     @State private var dragOffset: CGSize = .zero
     @State private var drawAnimProgress: CGFloat = 0.0
+
+    // Order seats so opponents are at top-left and local player (me) is anchored at bottom-left next to the rack (1:1 like video!)
+    private var orderedVerticalSeats: [RmkSeat] {
+        guard !rmk.seats.isEmpty else { return [] }
+        var opponents: [RmkSeat] = []
+        var meOpt: RmkSeat? = nil
+        for s in rmk.seats {
+            if s.id == rmk.mySeatIndex { meOpt = s }
+            else { opponents.append(s) }
+        }
+        if let me = meOpt { opponents.append(me) }
+        return opponents
+    }
 
     private var tableView: some View {
         let myTurn = (rmk.currentTurnSeat == rmk.mySeatIndex && rmk.phase == .playing)
@@ -10682,265 +10709,314 @@ struct KOnRummikubSheetView: View {
         let cols = max(10, rmk.rackCols)
 
         return ZStack {
-            VStack(spacing: 4) {
-                // Top Status + Compact Seat Badges + 60s Timer
-                HStack(spacing: 6) {
-                    if let ic = RummikubEngine.tileImage(for: "icon_rummikub") {
-                        Image(uiImage: ic).resizable().scaledToFit().frame(width: 18, height: 18)
-                    }
-                    Text(rmk.statusBanner).font(.system(size: 11, weight: .bold)).foregroundColor(httGold).lineLimit(1)
-                    Spacer()
-                    Text("⏱ \(rmk.turnRemainingSeconds)s")
-                        .font(.system(size: 11, weight: .black, design: .monospaced))
-                        .foregroundColor(rmk.turnRemainingSeconds <= 10 ? .red : .green)
-                        .padding(.horizontal, 7).padding(.vertical, 3).background(Color.black.opacity(0.5)).cornerRadius(6)
-                    if !(rmk.isOnlineConnected || !rmk.connectedPeerNames.isEmpty) || rmk.isRoomAuthority {
-                        Button(action: { rmk.currentRound += 1; rmk.startNewRound() }) {
-                            Image(systemName: "arrow.clockwise.circle.fill").font(.system(size: 18)).foregroundColor(httGold)
-                        }.buttonStyle(PlainButtonStyle())
-                    }
-                }
-                .padding(.horizontal, 10).padding(.vertical, 4).background(Color.black.opacity(0.45)).cornerRadius(8)
+            // Deep Royal-Blue & K-ON! Star Felt Table Background (1:1 Rummikub Video Aesthetic)
+            LinearGradient(
+                colors: [
+                    Color(red: 0.05, green: 0.16, blue: 0.36),
+                    Color(red: 0.08, green: 0.24, blue: 0.48),
+                    Color(red: 0.04, green: 0.13, blue: 0.30)
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .ignoresSafeArea()
 
-                // Seats Row
-                HStack(spacing: 6) {
-                    ForEach(rmk.seats) { s in
-                        let isTurn = (rmk.currentTurnSeat == s.id)
-                        HStack(spacing: 4) {
-                            if let sprite = manager.allMemberFrames[s.characterId] {
-                                Image(uiImage: sprite).interpolation(.none).resizable().scaledToFit().frame(width: 22, height: 24)
+            // Subtle K-ON! HTT Watermark in Center of Table
+            VStack(spacing: 2) {
+                Text("放課後ティータイム")
+                    .font(.system(size: 13, weight: .heavy, design: .rounded))
+                    .foregroundColor(Color.white.opacity(0.07))
+                Text("K-ON! Rummikub")
+                    .font(.system(size: 28, weight: .black, design: .serif))
+                    .foregroundColor(Color.white.opacity(0.08))
+            }
+            .offset(y: -48)
+            .allowsHitTesting(false)
+
+            // Main 3-Column Layout: [Left Vertical Player Avatars] + [Center Table & Bottom Rack] + [Right Action Column]
+            HStack(spacing: 6) {
+                // 1. LEFT VERTICAL PLAYER COLUMN (1:1 like Video: Circular Avatar + Countdown Ring + Star Badge + Name + Tile Count)
+                VStack(spacing: 8) {
+                    ForEach(orderedVerticalSeats) { s in
+                        let isTurn = (rmk.currentTurnSeat == s.id && rmk.phase == .playing)
+                        let isMe = (s.id == rmk.mySeatIndex)
+                        let progress = max(0.0, min(1.0, CGFloat(rmk.turnRemainingSeconds) / 60.0))
+
+                        VStack(spacing: 2) {
+                            ZStack {
+                                // Avatar Base Circle
+                                Circle()
+                                    .fill(
+                                        LinearGradient(
+                                            colors: isTurn
+                                                ? [Color(red: 0.18, green: 0.38, blue: 0.68), Color(red: 0.09, green: 0.20, blue: 0.42)]
+                                                : [Color.black.opacity(0.55), Color(red: 0.08, green: 0.16, blue: 0.30)],
+                                            startPoint: .top,
+                                            endPoint: .bottom
+                                        )
+                                    )
+                                    .frame(width: 48, height: 48)
+
+                                // K-ON! Character Sprite
+                                if let sprite = manager.allMemberFrames[s.characterId] {
+                                    Image(uiImage: sprite)
+                                        .interpolation(.none)
+                                        .resizable()
+                                        .scaledToFit()
+                                        .frame(width: 36, height: 40)
+                                        .clipShape(Circle())
+                                }
+
+                                // Darkened overlay + centered countdown seconds when active turn (1:1 like Rummikub video!)
+                                if isTurn {
+                                    Circle()
+                                        .fill(Color.black.opacity(0.38))
+                                        .frame(width: 48, height: 48)
+                                    Text("\(rmk.turnRemainingSeconds)")
+                                        .font(.system(size: 16, weight: .black, design: .rounded))
+                                        .foregroundColor(.white)
+                                        .shadow(color: .black, radius: 2)
+                                }
+
+                                // Circular Countdown Progress Ring
+                                Circle()
+                                    .stroke(Color.white.opacity(0.22), lineWidth: 3.5)
+                                    .frame(width: 50, height: 50)
+
+                                if isTurn {
+                                    Circle()
+                                        .trim(from: 0.0, to: progress)
+                                        .stroke(
+                                            rmk.turnRemainingSeconds <= 10 ? Color.red : Color(red: 0.35, green: 0.96, blue: 0.45),
+                                            style: StrokeStyle(lineWidth: 4.0, lineCap: .round)
+                                        )
+                                        .rotationEffect(.degrees(-90))
+                                        .frame(width: 50, height: 50)
+                                }
+
+                                // Top-Right Star / Icebreak Badge
+                                ZStack {
+                                    Circle()
+                                        .fill(s.hasBrokenIce ? Color.orange : Color(red: 0.22, green: 0.34, blue: 0.56))
+                                        .frame(width: 17, height: 17)
+                                    Text(s.hasBrokenIce ? "★" : "❄")
+                                        .font(.system(size: 9, weight: .black))
+                                        .foregroundColor(.white)
+                                }
+                                .offset(x: 19, y: -17)
                             }
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text(s.name).font(.system(size: 9, weight: .black)).foregroundColor(.white).lineLimit(1)
-                                Text("🃏\(s.hand.count)张 · \(s.hasBrokenIce ? "已破冰" : "未破冰") · \(s.score)分")
-                                    .font(.system(size: 8, weight: .bold)).foregroundColor(s.hasBrokenIce ? .green : httGold)
+
+                            // Player Name & Remaining Tile Count Badge
+                            HStack(spacing: 3) {
+                                Text(s.name.replacingOccurrences(of: "👑房主 ", with: "").replacingOccurrences(of: " (AI)", with: ""))
+                                    .font(.system(size: 9.5, weight: .heavy))
+                                    .foregroundColor(isMe ? httGold : .white)
+                                    .lineLimit(1)
+                                HStack(spacing: 1) {
+                                    Image(systemName: "rectangle.portrait.on.rectangle.portrait.fill")
+                                        .font(.system(size: 7.5))
+                                        .foregroundColor(.cyan)
+                                    Text("\(s.hand.count)")
+                                        .font(.system(size: 10, weight: .black, design: .monospaced))
+                                        .foregroundColor(.white)
+                                }
+                                .padding(.horizontal, 4)
+                                .padding(.vertical, 1)
+                                .background(Color.black.opacity(0.45))
+                                .cornerRadius(4)
                             }
                         }
-                        .frame(maxWidth: .infinity, alignment: .leading).padding(4)
-                        .background(isTurn ? Color.orange.opacity(0.32) : Color.black.opacity(0.35)).cornerRadius(8)
-                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(isTurn ? httGold : (s.isAI ? Color.white.opacity(0.15) : Color.green.opacity(0.75)), lineWidth: isTurn ? 1.5 : 1))
+                        .frame(width: 76)
+                        if s.id != orderedVerticalSeats.last?.id {
+                            Spacer(minLength: 2)
+                        }
                     }
                 }
+                .padding(.vertical, 6)
+                .padding(.leading, 4)
 
-                // Middle Area: Center Table Melds + Right-Side 789 / 777 /Shuffle / +Draw Tower (1:1 like Video!)
-                HStack(spacing: 8) {
-                    // Center Table Melds
-                    ScrollView {
-                        if displayMelds.isEmpty {
-                            VStack(spacing: 6) {
-                                Text("桌面暂无牌组 · 首次破冰需选牌总和 ≥30 分后点【放上桌面】")
-                                    .font(.system(size: 12, weight: .bold)).foregroundColor(.white.opacity(0.68))
-                                Text("💡 提示：点击【789】或【777】可自动识别可出牌组并在牌架上留空隔开；长按或点选牌架可自由拖拽/移动位置")
-                                    .font(.system(size: 10, weight: .medium)).foregroundColor(httGold.opacity(0.85))
+                // 2. CENTER COLUMN: Full-Height Large-Tile Table + Bottom Fixed 2-Row Wooden Rack
+                VStack(spacing: 4) {
+                    // Compact Floating Status Pill at Top of Table
+                    HStack(spacing: 6) {
+                        Text(rmk.statusBanner)
+                            .font(.system(size: 10.5, weight: .bold))
+                            .foregroundColor(httGold)
+                            .lineLimit(1)
+                        Spacer()
+                        if myTurn {
+                            Button(action: { rmk.smartHintOrAutoPlace() }) {
+                                Text("💡提示")
+                                    .font(.system(size: 10, weight: .black))
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 3)
+                                    .background(Color.purple.opacity(0.85))
+                                    .foregroundColor(.white)
+                                    .cornerRadius(6)
                             }
-                            .padding(.top, 26)
+                            .buttonStyle(PlainButtonStyle())
+
+                            if !rmk.selectedTileIds.isEmpty {
+                                Button(action: {
+                                    if rmk.selectedTableTileSource != nil && rmk.seats[rmk.mySeatIndex].hasBrokenIce {
+                                        _ = rmk.combineSelectedRackTilesWithTableTile()
+                                    } else {
+                                        rmk.placeSelectedAsNewMeld()
+                                    }
+                                }) {
+                                    Text("⬆️出到桌面")
+                                        .font(.system(size: 10, weight: .black))
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 3)
+                                        .background(Color.orange)
+                                        .foregroundColor(.white)
+                                        .cornerRadius(6)
+                                }
+                                .buttonStyle(PlainButtonStyle())
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 3)
+                    .background(Color.black.opacity(0.32))
+                    .cornerRadius(8)
+
+                    // Full-Height Table Area with LARGE K-ON! Tiles (40x56 pt!)
+                    ScrollView(showsIndicators: false) {
+                        if displayMelds.isEmpty {
+                            VStack(spacing: 8) {
+                                Text("桌面暂无牌组 · 首次破冰需从牌架拖出 ≥30 分牌组")
+                                    .font(.system(size: 13, weight: .bold))
+                                    .foregroundColor(.white.opacity(0.75))
+                                Text("💡 长按牌架上的牌可自动连选整组顺子/群组，向上拖到桌面即可出牌；破冰后可任意点选/拆解桌面牌重组")
+                                    .font(.system(size: 10.5, weight: .medium))
+                                    .foregroundColor(httGold.opacity(0.9))
+                                    .multilineTextAlignment(.center)
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.top, 42)
                         } else {
-                            LazyVGrid(columns: [GridItem(.adaptive(minimum: 125), spacing: 8)], spacing: 8) {
+                            LazyVGrid(columns: [GridItem(.adaptive(minimum: 155), spacing: 10)], alignment: .leading, spacing: 10) {
                                 ForEach(displayMelds) { meld in
                                     let isValid = RmkEvaluator.evaluateMeld(meld.tiles) != nil
                                     HStack(spacing: 2) {
                                         ForEach(meld.tiles) { t in
-                                            tileChip(t, selected: false, compact: true)
-                                                .onTapGesture {
-                                                    if !rmk.selectedTileIds.isEmpty {
-                                                        rmk.addSelectedToTableMeld(meld.id)
-                                                    } else {
-                                                        rmk.splitMeldToWorkspace(meld.id, tileId: t.id)
-                                                    }
+                                            let isPickedTableTile = (rmk.selectedTableTileSource?.meldId == meld.id && rmk.selectedTableTileSource?.tileId == t.id)
+                                            let isHigh = rmk.lastTurnHighlightedTileIds.contains(t.id)
+                                            tileChip(
+                                                t,
+                                                selected: isPickedTableTile,
+                                                highlighted: isHigh,
+                                                compact: true,
+                                                customW: 40,
+                                                customH: 56
+                                            )
+                                            .onTapGesture {
+                                                withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
+                                                    rmk.handleTableTileTapOrMove(meldId: meld.id, tileId: t.id)
                                                 }
+                                            }
                                         }
                                     }
                                     .padding(4)
-                                    .background(Color.black.opacity(0.35)).cornerRadius(8)
-                                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(isValid ? httGold.opacity(0.65) : Color.red, lineWidth: 1.5))
+                                    .background(Color.black.opacity(0.28))
+                                    .cornerRadius(8)
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 8)
+                                            .stroke(isValid ? Color.white.opacity(0.18) : Color.red, lineWidth: isValid ? 1 : 2.5)
+                                    )
                                 }
                             }
-                            .padding(6)
+                            .padding(8)
                         }
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(Color.black.opacity(0.25)).cornerRadius(10)
-
-                    // Right-Side Video-Style Control Tower: [789] [777] [打乱] + [+ 摸牌 (余X张)]
-                    VStack(spacing: 5) {
-                        Button(action: {
-                            withAnimation(.spring(response: 0.32, dampingFraction: 0.8)) {
-                                rmk.organizeRack(preferRuns: true)
-                            }
-                        }) {
-                            Text("789")
-                                .font(.system(size: 13, weight: .black, design: .rounded))
-                                .frame(width: 54, height: 28)
-                                .background(rmk.sortByColor ? Color(red: 0.16, green: 0.45, blue: 0.88) : Color(red: 0.15, green: 0.24, blue: 0.42))
-                                .foregroundColor(.white).cornerRadius(8)
-                                .overlay(RoundedRectangle(cornerRadius: 8).stroke(rmk.sortByColor ? Color.cyan : Color.white.opacity(0.25), lineWidth: rmk.sortByColor ? 2 : 1))
-                        }.buttonStyle(PlainButtonStyle())
-
-                        Button(action: {
-                            withAnimation(.spring(response: 0.32, dampingFraction: 0.8)) {
-                                rmk.organizeRack(preferRuns: false)
-                            }
-                        }) {
-                            Text("777")
-                                .font(.system(size: 13, weight: .black, design: .rounded))
-                                .frame(width: 54, height: 28)
-                                .background(!rmk.sortByColor ? Color(red: 0.16, green: 0.45, blue: 0.88) : Color(red: 0.15, green: 0.24, blue: 0.42))
-                                .foregroundColor(.white).cornerRadius(8)
-                                .overlay(RoundedRectangle(cornerRadius: 8).stroke(!rmk.sortByColor ? Color.cyan : Color.white.opacity(0.25), lineWidth: !rmk.sortByColor ? 2 : 1))
-                        }.buttonStyle(PlainButtonStyle())
-
-                        Button(action: {
-                            withAnimation(.spring(response: 0.32, dampingFraction: 0.78)) {
-                                rmk.shuffleRackRandomly()
-                            }
-                        }) {
-                            Text("🔀打乱")
-                                .font(.system(size: 10, weight: .black))
-                                .frame(width: 54, height: 24)
-                                .background(Color.purple.opacity(0.75))
-                                .foregroundColor(.white).cornerRadius(7)
-                                .overlay(RoundedRectangle(cornerRadius: 7).stroke(httGold.opacity(0.5), lineWidth: 1))
-                        }.buttonStyle(PlainButtonStyle())
-
-                        // Tall '+' Draw Tile Button (1:1 like Rummikub Video!)
-                        Button(action: {
-                            if myTurn && !rmk.isDrawingAnimation {
-                                drawAnimProgress = 0.0
-                                withAnimation(.easeInOut(duration: 1.45)) {
-                                    drawAnimProgress = 1.0
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        if myTurn && !rmk.selectedTileIds.isEmpty {
+                            withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
+                                if rmk.selectedTableTileSource != nil && rmk.seats[rmk.mySeatIndex].hasBrokenIce {
+                                    _ = rmk.combineSelectedRackTilesWithTableTile()
+                                } else {
+                                    rmk.placeSelectedAsNewMeld()
                                 }
-                                rmk.drawTilePassTapped()
                             }
-                        }) {
-                            VStack(spacing: 2) {
-                                Text("+")
-                                    .font(.system(size: 24, weight: .bold))
-                                    .foregroundColor(myTurn ? Color.orange : Color.gray)
-                                HStack(spacing: 2) {
-                                    Image(systemName: "rectangle.portrait.on.rectangle.portrait.fill")
-                                        .font(.system(size: 9))
-                                    Text("\(rmk.poolCount)")
-                                        .font(.system(size: 11, weight: .black, design: .monospaced))
+                        }
+                    }
+
+                    // Bottom Fixed 2-Row × 10-Column Wooden Rack (1:1 like Rummikub Video!)
+                    GeometryReader { rackGeo in
+                        let rackW = max(300, rackGeo.size.width)
+                        let hSpacing: CGFloat = 3.5
+                        let fitSlotW = max(28, min(50, floor((rackW - 18 - CGFloat(cols - 1) * hSpacing) / CGFloat(cols))))
+                        let fitSlotH: CGFloat = 48
+
+                        ZStack(alignment: .bottom) {
+                            // Stationary 3D Two-Shelf Wooden Rack Background
+                            VStack(spacing: 0) {
+                                ZStack(alignment: .bottom) {
+                                    LinearGradient(colors: [Color(red: 0.82, green: 0.62, blue: 0.38), Color(red: 0.68, green: 0.47, blue: 0.25)], startPoint: .top, endPoint: .bottom)
+                                    Rectangle().fill(Color(red: 0.48, green: 0.30, blue: 0.14)).frame(height: 5)
                                 }
-                                .foregroundColor(.white.opacity(0.9))
+                                .frame(height: fitSlotH + 6)
+                                ZStack(alignment: .bottom) {
+                                    LinearGradient(colors: [Color(red: 0.78, green: 0.57, blue: 0.34), Color(red: 0.62, green: 0.41, blue: 0.20)], startPoint: .top, endPoint: .bottom)
+                                    HStack {
+                                        Spacer()
+                                        Text("K-ON! Rummikub")
+                                            .font(.system(size: 9, weight: .black, design: .serif))
+                                            .foregroundColor(Color(red: 0.38, green: 0.22, blue: 0.09).opacity(0.85))
+                                            .padding(.trailing, 12)
+                                            .padding(.bottom, 1)
+                                    }
+                                    .frame(height: 7)
+                                    .background(Color(red: 0.44, green: 0.26, blue: 0.12))
+                                }
+                                .frame(height: fitSlotH + 6)
                             }
-                            .frame(width: 54, height: 56)
-                            .background(Color(red: 0.14, green: 0.23, blue: 0.40))
+                            .frame(width: rackW, height: (fitSlotH + 6) * 2)
                             .cornerRadius(10)
-                            .overlay(RoundedRectangle(cornerRadius: 10).stroke(myTurn ? Color.orange : Color.white.opacity(0.22), lineWidth: myTurn ? 2 : 1))
-                        }
-                        .buttonStyle(PlainButtonStyle())
-                        .disabled(!myTurn || rmk.isDrawingAnimation)
-                    }
-                }
+                            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color(red: 0.88, green: 0.68, blue: 0.42), lineWidth: 2))
+                            .shadow(color: .black.opacity(0.5), radius: 5, y: 2)
 
-                // Action Bar: 提示 | 放上桌面 | 复原 | 摸牌过 | 确认出牌
-                HStack(spacing: 6) {
-                    if rmk.phase == .roundOver {
-                        Button(action: { rmk.currentRound += 1; rmk.startNewRound() }) {
-                            Text("🏆 再来一局").font(.system(size: 12, weight: .black)).frame(maxWidth: .infinity, minHeight: 30)
-                                .background(httCrimson).foregroundColor(.white).cornerRadius(8)
-                        }.buttonStyle(PlainButtonStyle())
-                    } else {
-                        Button(action: { rmk.smartHintOrAutoPlace() }) {
-                            Text("💡 提示").font(.system(size: 10, weight: .black)).padding(.horizontal, 10).padding(.vertical, 6)
-                                .background(Color.purple).foregroundColor(.white).cornerRadius(7)
-                        }.buttonStyle(PlainButtonStyle()).disabled(!myTurn)
+                            // 2 Rows of Fixed Interactive Slots (Row 0 & Row 1, 10 columns each by default)
+                            VStack(spacing: 6) {
+                                ForEach(0..<2, id: \.self) { row in
+                                    HStack(spacing: hSpacing) {
+                                        ForEach(0..<cols, id: \.self) { col in
+                                            let slotIdx = row * cols + col
+                                            let tileOpt: RmkTile? = (slotIdx < rmk.rackSlots.count) ? rmk.rackSlots[slotIdx] : nil
+                                            let ordinal: Int = rmk.rackSlots.isEmpty ? 0 : (0...min(slotIdx, rmk.rackSlots.count - 1)).reduce(0) { acc, idx in
+                                                acc + (rmk.rackSlots[idx] != nil ? 1 : 0)
+                                            }
+                                            let isDealtVisible = !rmk.isDealingAnimation || ordinal <= rmk.dealingVisibleCount
+                                            let isLifted = (rmk.liftedSlotIndex == slotIdx) || (dragSlotIndex == slotIdx)
 
-                        Button(action: { rmk.placeSelectedAsNewMeld() }) {
-                            Text("⬆️ 放上桌面").font(.system(size: 10, weight: .black)).padding(.horizontal, 10).padding(.vertical, 6)
-                                .background(myTurn && !rmk.selectedTileIds.isEmpty ? Color.orange : Color.gray.opacity(0.5)).foregroundColor(.white).cornerRadius(7)
-                        }.buttonStyle(PlainButtonStyle()).disabled(!myTurn || rmk.selectedTileIds.isEmpty)
+                                            ZStack {
+                                                RoundedRectangle(cornerRadius: 6)
+                                                    .strokeBorder(
+                                                        rmk.liftedSlotIndex != nil ? Color.yellow.opacity(0.55) : Color.black.opacity(0.18),
+                                                        style: StrokeStyle(lineWidth: 1, dash: [3, 3])
+                                                    )
+                                                    .background(
+                                                        RoundedRectangle(cornerRadius: 6)
+                                                            .fill(rmk.liftedSlotIndex != nil && tileOpt == nil ? Color.yellow.opacity(0.14) : Color.black.opacity(0.06))
+                                                    )
+                                                    .frame(width: fitSlotW, height: fitSlotH)
 
-                        Button(action: { rmk.restoreWorkspaceSnapshot() }) {
-                            Text("↩️ 复原").font(.system(size: 10, weight: .black)).padding(.horizontal, 10).padding(.vertical, 6)
-                                .background(rmk.isEditingTable ? Color.brown : Color.gray.opacity(0.5)).foregroundColor(.white).cornerRadius(7)
-                        }.buttonStyle(PlainButtonStyle()).disabled(!myTurn || !rmk.isEditingTable)
-
-                        Button(action: {
-                            if myTurn && !rmk.isDrawingAnimation {
-                                drawAnimProgress = 0.0
-                                withAnimation(.easeInOut(duration: 1.45)) { drawAnimProgress = 1.0 }
-                                rmk.drawTilePassTapped()
-                            }
-                        }) {
-                            Text("🃏 摸牌过").font(.system(size: 10, weight: .black)).padding(.horizontal, 10).padding(.vertical, 6)
-                                .background(myTurn ? Color.teal : Color.gray.opacity(0.5)).foregroundColor(.white).cornerRadius(7)
-                        }.buttonStyle(PlainButtonStyle()).disabled(!myTurn || rmk.isDrawingAnimation)
-
-                        Button(action: { rmk.commitMyTurn() }) {
-                            Text("✅ 确认出牌").font(.system(size: 11, weight: .black)).frame(maxWidth: .infinity, minHeight: 28)
-                                .background(myTurn && rmk.isEditingTable ? Color.green : Color.gray.opacity(0.5)).foregroundColor(.white).cornerRadius(7)
-                        }.buttonStyle(PlainButtonStyle()).disabled(!myTurn || !rmk.isEditingTable)
-                    }
-                }
-
-                // Bottom Fixed 2-Row Wooden Rack (Stationary rack, 10 slots per row = 20 slots total, only expands if >20 tiles, only tiles move!)
-                GeometryReader { rackGeo in
-                    let rackW = max(320, rackGeo.size.width)
-                    let hSpacing: CGFloat = 4
-                    let fitSlotW = max(26, min(48, floor((rackW - 20 - CGFloat(cols - 1) * hSpacing) / CGFloat(cols))))
-                    let fitSlotH: CGFloat = 46
-
-                    ZStack(alignment: .bottom) {
-                        // Stationary 3D Two-Shelf Wooden Rack Background (never scrolls or shifts!)
-                        VStack(spacing: 0) {
-                            ZStack(alignment: .bottom) {
-                                LinearGradient(colors: [Color(red: 0.76, green: 0.54, blue: 0.32), Color(red: 0.62, green: 0.41, blue: 0.21)], startPoint: .top, endPoint: .bottom)
-                                Rectangle().fill(Color(red: 0.45, green: 0.28, blue: 0.13)).frame(height: 5)
-                            }
-                            .frame(height: fitSlotH + 6)
-                            ZStack(alignment: .bottom) {
-                                LinearGradient(colors: [Color(red: 0.72, green: 0.50, blue: 0.29), Color(red: 0.56, green: 0.36, blue: 0.18)], startPoint: .top, endPoint: .bottom)
-                                HStack {
-                                    Spacer()
-                                    Text("K-ON! Rummikub · 2×\(cols)格")
-                                        .font(.system(size: 8.5, weight: .black, design: .serif))
-                                        .foregroundColor(Color(red: 0.38, green: 0.22, blue: 0.09).opacity(0.8))
-                                        .padding(.trailing, 10)
-                                        .padding(.bottom, 1)
-                                }
-                                .frame(height: 7)
-                                .background(Color(red: 0.42, green: 0.25, blue: 0.11))
-                            }
-                            .frame(height: fitSlotH + 6)
-                        }
-                        .frame(width: rackW, height: (fitSlotH + 6) * 2)
-                        .cornerRadius(10)
-                        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color(red: 0.85, green: 0.64, blue: 0.36), lineWidth: 2))
-                        .shadow(color: .black.opacity(0.45), radius: 4, y: 2)
-
-                        // 2 Rows of Fixed Interactive Slots (Row 0 & Row 1, 10 columns each by default)
-                        VStack(spacing: 6) {
-                            ForEach(0..<2, id: \.self) { row in
-                                HStack(spacing: hSpacing) {
-                                    ForEach(0..<cols, id: \.self) { col in
-                                        let slotIdx = row * cols + col
-                                        let tileOpt: RmkTile? = (slotIdx < rmk.rackSlots.count) ? rmk.rackSlots[slotIdx] : nil
-                                        let ordinal: Int = rmk.rackSlots.isEmpty ? 0 : (0...min(slotIdx, rmk.rackSlots.count - 1)).reduce(0) { acc, idx in
-                                            acc + (rmk.rackSlots[idx] != nil ? 1 : 0)
-                                        }
-                                        let isDealtVisible = !rmk.isDealingAnimation || ordinal <= rmk.dealingVisibleCount
-                                        let isLifted = (rmk.liftedSlotIndex == slotIdx) || (dragSlotIndex == slotIdx)
-
-                                        ZStack {
-                                            RoundedRectangle(cornerRadius: 6)
-                                                .strokeBorder(
-                                                    rmk.liftedSlotIndex != nil ? Color.yellow.opacity(0.60) : Color.black.opacity(0.20),
-                                                    style: StrokeStyle(lineWidth: 1, dash: [3, 3])
-                                                )
-                                                .background(
-                                                    RoundedRectangle(cornerRadius: 6)
-                                                        .fill(rmk.liftedSlotIndex != nil && tileOpt == nil ? Color.yellow.opacity(0.14) : Color.black.opacity(0.07))
-                                                )
-                                                .frame(width: fitSlotW, height: fitSlotH)
-
-                                            if let tile = tileOpt, isDealtVisible {
-                                                tileChip(tile, selected: rmk.selectedTileIds.contains(tile.id) || isLifted, compact: cols > 10, customW: max(26, fitSlotW - 2), customH: fitSlotH - 2)
-                                                    .scaleEffect(isLifted ? 1.10 : 1.0)
+                                                if let tile = tileOpt, isDealtVisible {
+                                                    tileChip(
+                                                        tile,
+                                                        selected: rmk.selectedTileIds.contains(tile.id) || isLifted,
+                                                        highlighted: rmk.lastTurnHighlightedTileIds.contains(tile.id),
+                                                        compact: cols > 10,
+                                                        customW: max(26, fitSlotW - 2),
+                                                        customH: fitSlotH - 2
+                                                    )
+                                                    .scaleEffect(isLifted ? 1.08 : 1.0)
                                                     .offset(dragSlotIndex == slotIdx ? dragOffset : .zero)
                                                     .zIndex(dragSlotIndex == slotIdx ? 80 : 2)
-                                                    .onLongPressGesture(minimumDuration: 0.30) {
+                                                    .onLongPressGesture(minimumDuration: 0.28) {
                                                         withAnimation(.spring(response: 0.24, dampingFraction: 0.78)) {
                                                             rmk.startLongPressCascadeSelect(fromSlotIndex: slotIdx)
                                                         }
@@ -10952,7 +11028,7 @@ struct KOnRummikubSheetView: View {
                                                                 dragOffset = val.translation
                                                             }
                                                             .onEnded { val in
-                                                                if val.translation.height < -65 {
+                                                                if val.translation.height < -55 {
                                                                     withAnimation(.spring(response: 0.25, dampingFraction: 0.80)) {
                                                                         rmk.dropRackTilesToTable(primaryTileId: tile.id)
                                                                         dragSlotIndex = nil
@@ -10972,42 +11048,269 @@ struct KOnRummikubSheetView: View {
                                                                 }
                                                             }
                                                     )
+                                                }
                                             }
-                                        }
-                                        .frame(width: fitSlotW, height: fitSlotH)
-                                        .zIndex(dragSlotIndex == slotIdx ? 80 : 1)
-                                        .contentShape(Rectangle())
-                                        .onTapGesture {
-                                            withAnimation(.spring(response: 0.24, dampingFraction: 0.82)) {
-                                                if let lifted = rmk.liftedSlotIndex {
-                                                    if lifted == slotIdx {
-                                                        rmk.liftedSlotIndex = nil
-                                                        if let t = tileOpt, myTurn { rmk.toggleSelectHandTile(t.id) }
-                                                    } else {
-                                                        rmk.moveRackSlot(from: lifted, to: slotIdx)
+                                            .frame(width: fitSlotW, height: fitSlotH)
+                                            .zIndex(dragSlotIndex == slotIdx ? 80 : 1)
+                                            .contentShape(Rectangle())
+                                            .onTapGesture {
+                                                withAnimation(.spring(response: 0.24, dampingFraction: 0.82)) {
+                                                    if let lifted = rmk.liftedSlotIndex {
+                                                        if lifted == slotIdx {
+                                                            rmk.liftedSlotIndex = nil
+                                                            if let t = tileOpt, myTurn { rmk.toggleSelectHandTile(t.id) }
+                                                        } else {
+                                                            rmk.moveRackSlot(from: lifted, to: slotIdx)
+                                                        }
+                                                    } else if let t = tileOpt {
+                                                        rmk.toggleSelectHandTile(t.id)
+                                                        rmk.liftedSlotIndex = slotIdx
                                                     }
-                                                } else if let t = tileOpt {
-                                                    rmk.toggleSelectHandTile(t.id)
-                                                    rmk.liftedSlotIndex = slotIdx
                                                 }
                                             }
                                         }
                                     }
                                 }
                             }
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3)
                         }
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 3)
+                    }
+                    .frame(height: 110)
+                }
+
+                // 3. RIGHT VERTICAL CONTROL COLUMN (1:1 like Video: Top `«` Exit, Middle `789`/`777`, Bottom Dynamic `+` ⇄ `↺` + `✓`)
+                VStack(spacing: 8) {
+                    // Top-Right `«` Exit Room Button
+                    Button(action: {
+                        rmk.leaveCurrentRoomAndReset()
+                    }) {
+                        Text("«")
+                            .font(.system(size: 20, weight: .black, design: .rounded))
+                            .foregroundColor(.white.opacity(0.9))
+                            .frame(width: 44, height: 34)
+                            .background(Color.white.opacity(0.12))
+                            .clipShape(Capsule())
+                            .overlay(Capsule().stroke(Color.white.opacity(0.25), lineWidth: 1))
+                    }
+                    .buttonStyle(PlainButtonStyle())
+
+                    Spacer()
+
+                    // Middle-Right Unified `789` / `777` Capsule (1:1 like Video!)
+                    VStack(spacing: 0) {
+                        Button(action: {
+                            withAnimation(.spring(response: 0.30, dampingFraction: 0.8)) {
+                                rmk.organizeRack(preferRuns: true)
+                            }
+                        }) {
+                            Text("789")
+                                .font(.system(size: 14, weight: .black, design: .rounded))
+                                .frame(width: 58, height: 38)
+                                .background(rmk.sortByColor ? Color(red: 0.16, green: 0.46, blue: 0.92) : Color(red: 0.11, green: 0.22, blue: 0.42))
+                                .foregroundColor(.white)
+                        }
+                        .buttonStyle(PlainButtonStyle())
+
+                        Rectangle()
+                            .fill(Color.white.opacity(0.22))
+                            .frame(width: 58, height: 1)
+
+                        Button(action: {
+                            withAnimation(.spring(response: 0.30, dampingFraction: 0.8)) {
+                                rmk.organizeRack(preferRuns: false)
+                            }
+                        }) {
+                            Text("777")
+                                .font(.system(size: 14, weight: .black, design: .rounded))
+                                .frame(width: 58, height: 38)
+                                .background(!rmk.sortByColor ? Color(red: 0.16, green: 0.46, blue: 0.92) : Color(red: 0.11, green: 0.22, blue: 0.42))
+                                .foregroundColor(.white)
+                        }
+                        .buttonStyle(PlainButtonStyle())
+                    }
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.cyan.opacity(0.65), lineWidth: 1.5))
+                    .shadow(color: .black.opacity(0.35), radius: 3, y: 2)
+
+                    Spacer()
+
+                    // Bottom-Right Dynamic Action Area (1:1 like Video: `+ (50)` when not editing table; transforms into Circular `↺` + Tall Green `✓` when editing table!)
+                    if rmk.isEditingTable && myTurn {
+                        VStack(spacing: 8) {
+                            // Circular Red/Orange Undo `↺` Button
+                            Button(action: {
+                                withAnimation(.spring(response: 0.28, dampingFraction: 0.8)) {
+                                    rmk.restoreWorkspaceSnapshot()
+                                }
+                            }) {
+                                Image(systemName: "arrow.counterclockwise")
+                                    .font(.system(size: 20, weight: .black))
+                                    .foregroundColor(Color(red: 1.0, green: 0.36, blue: 0.28))
+                                    .frame(width: 48, height: 48)
+                                    .background(Color(red: 0.12, green: 0.22, blue: 0.42))
+                                    .clipShape(Circle())
+                                    .overlay(Circle().stroke(Color(red: 1.0, green: 0.36, blue: 0.28), lineWidth: 2))
+                                    .shadow(color: .black.opacity(0.4), radius: 3, y: 2)
+                            }
+                            .buttonStyle(PlainButtonStyle())
+
+                            // Tall Green Confirm `✓` Button
+                            Button(action: {
+                                withAnimation(.spring(response: 0.28, dampingFraction: 0.8)) {
+                                    rmk.commitMyTurn()
+                                }
+                            }) {
+                                Image(systemName: "checkmark")
+                                    .font(.system(size: 26, weight: .black))
+                                    .foregroundColor(Color(red: 0.28, green: 0.95, blue: 0.52))
+                                    .frame(width: 58, height: 84)
+                                    .background(
+                                        LinearGradient(
+                                            colors: [Color(red: 0.14, green: 0.32, blue: 0.48), Color(red: 0.09, green: 0.22, blue: 0.36)],
+                                            startPoint: .top,
+                                            endPoint: .bottom
+                                        )
+                                    )
+                                    .cornerRadius(14)
+                                    .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color(red: 0.28, green: 0.95, blue: 0.52), lineWidth: 2))
+                                    .shadow(color: .black.opacity(0.45), radius: 4, y: 2)
+                            }
+                            .buttonStyle(PlainButtonStyle())
+                        }
+                    } else {
+                        // Tall `+` Draw Tile Button with Remaining Pool Count (1:1 like Video!)
+                        Button(action: {
+                            if myTurn && !rmk.isDrawingAnimation {
+                                drawAnimProgress = 0.0
+                                withAnimation(.easeInOut(duration: 1.45)) {
+                                    drawAnimProgress = 1.0
+                                }
+                                rmk.drawTilePassTapped()
+                            }
+                        }) {
+                            VStack(spacing: 10) {
+                                Text("+")
+                                    .font(.system(size: 32, weight: .bold, design: .rounded))
+                                    .foregroundColor(myTurn ? Color.orange : Color.white.opacity(0.45))
+                                HStack(spacing: 3) {
+                                    Image(systemName: "rectangle.portrait.on.rectangle.portrait.fill")
+                                        .font(.system(size: 10))
+                                    Text("\(rmk.poolCount)")
+                                        .font(.system(size: 12, weight: .black, design: .monospaced))
+                                }
+                                .foregroundColor(.white.opacity(0.9))
+                            }
+                            .frame(width: 58, height: 104)
+                            .background(
+                                LinearGradient(
+                                    colors: myTurn
+                                        ? [Color(red: 0.22, green: 0.36, blue: 0.58), Color(red: 0.12, green: 0.22, blue: 0.40)]
+                                        : [Color(red: 0.12, green: 0.21, blue: 0.38), Color(red: 0.08, green: 0.15, blue: 0.28)],
+                                    startPoint: .top,
+                                    endPoint: .bottom
+                                )
+                            )
+                            .cornerRadius(14)
+                            .overlay(RoundedRectangle(cornerRadius: 14).stroke(myTurn ? Color.orange : Color.white.opacity(0.25), lineWidth: myTurn ? 2.2 : 1))
+                            .shadow(color: .black.opacity(0.45), radius: 4, y: 2)
+                        }
+                        .buttonStyle(PlainButtonStyle())
+                        .disabled(!myTurn || rmk.isDrawingAnimation)
                     }
                 }
-                .frame(height: 106)
+                .padding(.vertical, 8)
+                .padding(.trailing, 6)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .padding(.horizontal, 10)
-            .padding(.bottom, 8)
+            .padding(.horizontal, 4)
+            .padding(.bottom, 4)
             .httDefersSystemGestures()
 
-            // 1.5s Flying Draw Tile Animation Overlay (Flies from right '+' Draw button into the 2-row Wooden Rack!)
+            // End-of-Round Scoreboard Modal Overlay (1:1 like Video 02:45: `游戏结束` + Ranked Players + `再玩一次` / `返回菜单`)
+            if rmk.phase == .roundOver {
+                ZStack {
+                    Color.black.opacity(0.58).ignoresSafeArea()
+                    VStack(spacing: 12) {
+                        Text("游戏结束")
+                            .font(.system(size: 18, weight: .black))
+                            .foregroundColor(.white)
+                            .padding(.top, 4)
+
+                        let ranked = rmk.seats.sorted { a, b in
+                            if a.hand.count != b.hand.count { return a.hand.count < b.hand.count }
+                            return a.score > b.score
+                        }
+                        VStack(spacing: 6) {
+                            ForEach(Array(ranked.enumerated()), id: \.element.id) { idx, s in
+                                HStack(spacing: 10) {
+                                    Text("\(idx + 1)")
+                                        .font(.system(size: 14, weight: .black, design: .monospaced))
+                                        .foregroundColor(idx == 0 ? httGold : .white.opacity(0.8))
+                                        .frame(width: 22)
+                                    if let sprite = manager.allMemberFrames[s.characterId] {
+                                        Image(uiImage: sprite).interpolation(.none).resizable().scaledToFit().frame(width: 24, height: 26)
+                                    }
+                                    Text(s.name)
+                                        .font(.system(size: 13, weight: .bold))
+                                        .foregroundColor(idx == 0 ? Color.green : .white)
+                                        .lineLimit(1)
+                                    Spacer()
+                                    Text("\(s.score) 分 (余\(s.hand.count)张)")
+                                        .font(.system(size: 12, weight: .black, design: .monospaced))
+                                        .foregroundColor(idx == 0 ? httGold : .white.opacity(0.85))
+                                }
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 6)
+                                .background(idx == 0 ? Color.white.opacity(0.14) : Color.black.opacity(0.28))
+                                .cornerRadius(8)
+                            }
+                        }
+
+                        HStack(spacing: 16) {
+                            Button(action: {
+                                rmk.currentRound += 1
+                                rmk.startNewRound()
+                            }) {
+                                Text("再玩一次")
+                                    .font(.system(size: 14, weight: .black))
+                                    .foregroundColor(.white)
+                                    .frame(width: 130, height: 38)
+                                    .background(
+                                        LinearGradient(colors: [Color(red: 0.20, green: 0.62, blue: 0.42), Color(red: 0.12, green: 0.42, blue: 0.28)], startPoint: .top, endPoint: .bottom)
+                                    )
+                                    .clipShape(Capsule())
+                                    .overlay(Capsule().stroke(Color.green.opacity(0.8), lineWidth: 1.5))
+                            }
+                            .buttonStyle(PlainButtonStyle())
+
+                            Button(action: {
+                                rmk.leaveCurrentRoomAndReset()
+                            }) {
+                                Text("返回菜单")
+                                    .font(.system(size: 14, weight: .black))
+                                    .foregroundColor(.white)
+                                    .frame(width: 130, height: 38)
+                                    .background(
+                                        LinearGradient(colors: [Color(red: 0.24, green: 0.36, blue: 0.58), Color(red: 0.14, green: 0.22, blue: 0.38)], startPoint: .top, endPoint: .bottom)
+                                    )
+                                    .clipShape(Capsule())
+                                    .overlay(Capsule().stroke(Color.cyan.opacity(0.7), lineWidth: 1.5))
+                            }
+                            .buttonStyle(PlainButtonStyle())
+                        }
+                        .padding(.bottom, 4)
+                    }
+                    .padding(18)
+                    .frame(width: 360)
+                    .background(Color(red: 0.08, green: 0.16, blue: 0.32).opacity(0.96))
+                    .cornerRadius(16)
+                    .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.white.opacity(0.35), lineWidth: 1.5))
+                    .shadow(color: .black.opacity(0.7), radius: 14)
+                }
+            }
+
+            // 1.5s Flying Draw Tile Animation Overlay
             if rmk.isDrawingAnimation, let animTile = rmk.drawingAnimatedTile {
                 VStack {
                     Spacer()

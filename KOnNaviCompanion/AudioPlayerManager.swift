@@ -13154,6 +13154,108 @@ struct RmkEvaluator {
         }
         return (melds, sortedLeftovers)
     }
+
+    /// Smart Rummikub AI (1:1 like video): combines hand melds AND extends/splits existing table melds after breaking ice!
+    static func findAITableCombinationMove(hand: [RmkTile], tableMelds: [RmkMeld], hasBrokenIce: Bool) -> (newMelds: [RmkMeld], playedIds: [String], highlightedIds: Set<String>)? {
+        var remHand = hand
+        var nextMelds = tableMelds
+        var playedIds: [String] = []
+        var highlightedIds = Set<String>()
+
+        // Step 1: Extract full melds (>=3 tiles) from hand using both run-first and group-first, picking whichever yields higher points/count
+        let (runMelds, _) = organizeHandIntoGroups(remHand, preferRuns: true)
+        let (_, _) = organizeHandIntoGroups(remHand, preferRuns: false)
+        var chosenHandMelds: [[RmkTile]] = []
+        var tempHand = remHand
+        // Extract runs first, then groups from leftovers so AI plays BOTH 789 and 777 melds in the same turn!
+        let (rMelds, afterRuns) = organizeHandIntoGroups(tempHand, preferRuns: true)
+        chosenHandMelds.append(contentsOf: rMelds)
+        let (gMelds, afterBoth) = organizeHandIntoGroups(afterRuns, preferRuns: false)
+        chosenHandMelds.append(contentsOf: gMelds)
+        tempHand = afterBoth
+
+        let totalHandPts = chosenHandMelds.reduce(0) { $0 + (evaluateMeld($1) ?? 0) }
+        var canBreakIceNow = hasBrokenIce
+        if !hasBrokenIce && totalHandPts >= 30 {
+            canBreakIceNow = true
+        }
+
+        if hasBrokenIce || totalHandPts >= 30 {
+            for m in chosenHandMelds {
+                let sortedM = sortMeldForDisplay(m)
+                nextMelds.append(RmkMeld(id: UUID().uuidString, tiles: sortedM))
+                for t in sortedM {
+                    playedIds.append(t.id)
+                    highlightedIds.insert(t.id)
+                }
+            }
+            remHand = tempHand
+        }
+
+        // Step 2: If broken ice (already or via >=30pt hand melds this turn), actively combine remaining hand tiles with table melds!
+        if canBreakIceNow {
+            var changed = true
+            while changed {
+                changed = false
+                // 2A. Try appending/prepending any single hand tile onto any existing table run or 3-tile group
+                outerSingle: for hIdx in 0..<remHand.count {
+                    let ht = remHand[hIdx]
+                    for mIdx in 0..<nextMelds.count {
+                        let cand = nextMelds[mIdx].tiles + [ht]
+                        if evaluateMeld(cand) != nil {
+                            nextMelds[mIdx].tiles = sortMeldForDisplay(cand)
+                            playedIds.append(ht.id)
+                            highlightedIds.insert(ht.id)
+                            remHand.remove(at: hIdx)
+                            changed = true
+                            break outerSingle
+                        }
+                    }
+                }
+                if changed { continue }
+
+                // 2B. Try splitting 1 tile from a 4-tile table group OR the low/high end of a 4+ tile table run to combine with 2 hand tiles!
+                outerSplit: for mIdx in 0..<nextMelds.count {
+                    let mTiles = nextMelds[mIdx].tiles
+                    guard mTiles.count >= 4 else { continue }
+                    let candidateIndices = [0, mTiles.count - 1, 1, mTiles.count - 2]
+                    for cIdx in candidateIndices where cIdx >= 0 && cIdx < mTiles.count {
+                        let spareTile = mTiles[cIdx]
+                        var remainTable = mTiles
+                        remainTable.remove(at: cIdx)
+                        guard evaluateMeld(remainTable) != nil else { continue }
+                        if remHand.count >= 2 {
+                            for i in 0..<(remHand.count - 1) {
+                                for j in (i + 1)..<remHand.count {
+                                    let newTriad = [spareTile, remHand[i], remHand[j]]
+                                    if evaluateMeld(newTriad) != nil {
+                                        let h1 = remHand[i]
+                                        let h2 = remHand[j]
+                                        nextMelds[mIdx].tiles = sortMeldForDisplay(remainTable)
+                                        let sortedTriad = sortMeldForDisplay(newTriad)
+                                        nextMelds.append(RmkMeld(id: UUID().uuidString, tiles: sortedTriad))
+                                        playedIds.append(h1.id)
+                                        playedIds.append(h2.id)
+                                        highlightedIds.insert(spareTile.id)
+                                        highlightedIds.insert(h1.id)
+                                        highlightedIds.insert(h2.id)
+                                        remHand.removeAll { $0.id == h1.id || $0.id == h2.id }
+                                        changed = true
+                                        break outerSplit
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        guard !playedIds.isEmpty else { return nil }
+        let _ = runMelds
+        return (nextMelds, playedIds, highlightedIds)
+    }
+
 }
 
 final class RummikubEngine: NSObject, ObservableObject {
@@ -13246,6 +13348,8 @@ final class RummikubEngine: NSObject, ObservableObject {
     @Published var currentTurnSeat: Int = 0
     @Published var selectedTileIds: Set<String> = []
     @Published var selectedTableMeldId: String? = nil
+    @Published var lastTurnHighlightedTileIds: Set<String> = []
+    @Published var selectedTableTileSource: (meldId: String, tileId: String)? = nil
     @Published var turnRemainingSeconds: Int = 60
     @Published var winnerSeat: Int? = nil
     @Published var statusBanner: String = "欢迎来到轻音拉密数字牌 (2~4人自由开房 · 30分破冰 · 60秒限时)"
@@ -13819,6 +13923,8 @@ final class RummikubEngine: NSObject, ObservableObject {
         }
         poolCount = pool.count
         tableMelds = []
+        lastTurnHighlightedTileIds = []
+        selectedTableTileSource = nil
         currentTurnSeat = (currentRound - 1) % pCnt
         winnerSeat = nil
         phase = .playing
@@ -13865,6 +13971,7 @@ final class RummikubEngine: NSObject, ObservableObject {
     func resetWorkspaceForNewTurn(preserveRackLayout: Bool = true) {
         selectedTileIds.removeAll()
         selectedTableMeldId = nil
+        selectedTableTileSource = nil
         liftedSlotIndex = nil
         isEditingTable = false
         if mySeatIndex < seats.count {
@@ -13993,6 +14100,97 @@ final class RummikubEngine: NSObject, ObservableObject {
         statusBanner = "🔄 已从桌面取回 [\(pickedTile.isJoker ? "百搭" : "\(pickedTile.color.labelZh)\(pickedTile.number)")] 到牌架重组！"
     }
 
+    /// Select or move a tile directly on the table (1:1 Rummikub free table rearrangement: split runs/groups, move tile to another meld, or detach to form new meld!)
+    func handleTableTileTapOrMove(meldId: String, tileId: String) {
+        guard currentTurnSeat == mySeatIndex, phase == .playing else { return }
+        // 1. If player has rack tiles selected, try merging them into this table meld
+        if !selectedTileIds.isEmpty {
+            addSelectedToTableMeld(meldId)
+            return
+        }
+        beginOrEnsureWorkspace()
+        guard let mIdx = workingMelds.firstIndex(where: { $0.id == meldId }),
+              let tIdx = workingMelds[mIdx].tiles.firstIndex(where: { $0.id == tileId }) else { return }
+
+        guard seats[mySeatIndex].hasBrokenIce || mIdx >= snapshotMelds.count else {
+            statusBanner = "⚠️ 尚未破冰！首次出牌需使用自己牌架摆出 ≥30 分牌组"
+            return
+        }
+
+        // 2. If a table tile is already selected for table-to-table move:
+        if let src = selectedTableTileSource {
+            if src.meldId == meldId && src.tileId == tileId {
+                // Tapping the same table tile again detaches it as a standalone incomplete group on the table (or returns to rack if it came from rack this turn)
+                selectedTableTileSource = nil
+                let tile = workingMelds[mIdx].tiles.remove(at: tIdx)
+                if workingMelds[mIdx].tiles.isEmpty {
+                    workingMelds.remove(at: mIdx)
+                }
+                let cameFromRackThisTurn = snapshotHand.contains(where: { $0.id == tile.id })
+                if cameFromRackThisTurn {
+                    workingHand.append(tile)
+                    syncRackFromHand(workingHand, preserveExistingPositions: true)
+                    statusBanner = "↩️ 已将该牌退回牌架"
+                } else {
+                    workingMelds.append(RmkMeld(id: UUID().uuidString, tiles: [tile]))
+                    lastTurnHighlightedTileIds.insert(tile.id)
+                    statusBanner = "🧩 已拆出桌面单牌，请继续点选其他牌或牌架牌与它组合！"
+                }
+                return
+            } else if src.meldId != meldId {
+                // Move the previously selected table tile into this target meld!
+                if let srcMIdx = workingMelds.firstIndex(where: { $0.id == src.meldId }),
+                   let srcTIdx = workingMelds[srcMIdx].tiles.firstIndex(where: { $0.id == src.tileId }) {
+                    let movingTile = workingMelds[srcMIdx].tiles.remove(at: srcTIdx)
+                    if workingMelds[srcMIdx].tiles.isEmpty {
+                        workingMelds.remove(at: srcMIdx)
+                    }
+                    if let newTargetIdx = workingMelds.firstIndex(where: { $0.id == meldId }) {
+                        var combined = workingMelds[newTargetIdx].tiles + [movingTile]
+                        if RmkEvaluator.evaluateMeld(combined) != nil {
+                            combined = RmkEvaluator.sortMeldForDisplay(combined)
+                        }
+                        workingMelds[newTargetIdx].tiles = combined
+                        lastTurnHighlightedTileIds.insert(movingTile.id)
+                        selectedTableTileSource = nil
+                        statusBanner = "✅ 已将桌面牌移入目标牌组！"
+                        return
+                    }
+                }
+            }
+        }
+
+        // 3. Select this table tile so it can be moved into another table meld, combined with rack tiles, or tapped again to detach!
+        selectedTableTileSource = (meldId: meldId, tileId: tileId)
+        let picked = workingMelds[mIdx].tiles[tIdx]
+        statusBanner = "🖐 已选中桌面牌 [\(picked.isJoker ? "百搭" : "\(picked.color.labelZh)\(picked.number)")]：点另一牌组可移入，再点一次可单独拆出！"
+    }
+
+    /// Merge selected rack tiles with a currently selected table tile to form a brand-new meld on the table!
+    func combineSelectedRackTilesWithTableTile() -> Bool {
+        guard let src = selectedTableTileSource, !selectedTileIds.isEmpty else { return false }
+        beginOrEnsureWorkspace()
+        guard let srcMIdx = workingMelds.firstIndex(where: { $0.id == src.meldId }),
+              let srcTIdx = workingMelds[srcMIdx].tiles.firstIndex(where: { $0.id == src.tileId }) else { return false }
+        let tableTile = workingMelds[srcMIdx].tiles[srcTIdx]
+        let rackPicked = workingHand.filter { selectedTileIds.contains($0.id) }
+        let newGroup = [tableTile] + rackPicked
+        workingMelds[srcMIdx].tiles.remove(at: srcTIdx)
+        if workingMelds[srcMIdx].tiles.isEmpty {
+            workingMelds.remove(at: srcMIdx)
+        }
+        workingHand.removeAll { selectedTileIds.contains($0.id) }
+        for i in 0..<rackSlots.count { if let t = rackSlots[i], selectedTileIds.contains(t.id) { rackSlots[i] = nil } }
+        let ordered = RmkEvaluator.evaluateMeld(newGroup) != nil ? RmkEvaluator.sortMeldForDisplay(newGroup) : newGroup
+        workingMelds.append(RmkMeld(id: UUID().uuidString, tiles: ordered))
+        for t in ordered { lastTurnHighlightedTileIds.insert(t.id) }
+        selectedTileIds.removeAll()
+        selectedTableTileSource = nil
+        liftedSlotIndex = nil
+        statusBanner = "✅ 已将牌架选牌与桌面拆出的牌组合成新牌组！"
+        return true
+    }
+
     /// Drag-to-table play: drops selected/lifted rack tiles onto the table (auto-merges onto 123->1234 if valid, or places new meld!)
     func dropRackTilesToTable(primaryTileId: String) {
         guard currentTurnSeat == mySeatIndex, phase == .playing else {
@@ -14002,8 +14200,13 @@ final class RummikubEngine: NSObject, ObservableObject {
         beginOrEnsureWorkspace()
         var targetIds = selectedTileIds
         targetIds.insert(primaryTileId)
+        selectedTileIds = targetIds
+        if selectedTableTileSource != nil && seats[mySeatIndex].hasBrokenIce {
+            if combineSelectedRackTilesWithTableTile() { return }
+        }
         let picked = workingHand.filter { targetIds.contains($0.id) }
         guard !picked.isEmpty else { return }
+        for t in picked { lastTurnHighlightedTileIds.insert(t.id) }
 
         if RmkEvaluator.evaluateMeld(picked) != nil {
             selectedTileIds = targetIds
@@ -14173,6 +14376,9 @@ final class RummikubEngine: NSObject, ObservableObject {
     private func executeCommitTurn(seatIdx: Int, newMelds: [RmkMeld], playedHandIds: [String]) {
         let pCnt = max(2, seats.count)
         tableMelds = newMelds
+        if seatIdx == mySeatIndex || lastTurnHighlightedTileIds.isEmpty {
+            lastTurnHighlightedTileIds = Set(playedHandIds)
+        }
         seats[seatIdx].hand.removeAll { playedHandIds.contains($0.id) }
         seats[seatIdx].hasBrokenIce = true
         isEditingTable = false
@@ -14230,17 +14436,13 @@ final class RummikubEngine: NSObject, ObservableObject {
         let seatIdx = currentTurnSeat
         let work = DispatchWorkItem { [weak self] in
             guard let self = self, self.phase == .playing, self.currentTurnSeat == seatIdx else { return }
-            let (aiMelds, _) = RmkEvaluator.organizeHandIntoGroups(self.seats[seatIdx].hand, preferRuns: true)
-            let totalPts = aiMelds.reduce(0) { $0 + (RmkEvaluator.evaluateMeld($1) ?? 0) }
-            if !aiMelds.isEmpty && (self.seats[seatIdx].hasBrokenIce || totalPts >= 30) {
-                var nextMelds = self.tableMelds
-                var playedIds: [String] = []
-                for m in aiMelds {
-                    let sortedM = RmkEvaluator.sortMeldForDisplay(m)
-                    nextMelds.append(RmkMeld(id: UUID().uuidString, tiles: sortedM))
-                    playedIds.append(contentsOf: sortedM.map { $0.id })
-                }
-                self.executeCommitTurn(seatIdx: seatIdx, newMelds: nextMelds, playedHandIds: playedIds)
+            if let aiMove = RmkEvaluator.findAITableCombinationMove(
+                hand: self.seats[seatIdx].hand,
+                tableMelds: self.tableMelds,
+                hasBrokenIce: self.seats[seatIdx].hasBrokenIce
+            ) {
+                self.lastTurnHighlightedTileIds = aiMove.highlightedIds
+                self.executeCommitTurn(seatIdx: seatIdx, newMelds: aiMove.newMelds, playedHandIds: aiMove.playedIds)
                 return
             }
             self.executeDrawAndAdvance(seatIdx: seatIdx, reason: "从共用牌堆摸1张牌")
