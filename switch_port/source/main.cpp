@@ -124,6 +124,20 @@ static int gMjClaimFromSeat = -1;
 static MjTile gMjClaimTile;
 static bool gMjCanHu = false, gMjCanKong = false, gMjCanPong = false;
 static uint32_t gMjDealStartTick = 0;
+static int gMjAiDifficulty = 1; // 0=休闲, 1=标准, 2=大师
+static std::string gMjClaimBannerText;
+static int gMjClaimBannerCharId = 1;
+static MjTile gMjClaimBannerTile;
+static uint32_t gMjClaimBannerTick = 0;
+static std::string cleanPeerLabel(const std::string& rawName);
+static void triggerMjClaimBanner(int seatIdx, const std::string& label, const MjTile& tile) {
+    if (seatIdx >= 0 && seatIdx < (int)gMjSeats.size()) {
+        gMjClaimBannerText = cleanPeerLabel(gMjSeats[seatIdx].name) + " " + label + "!";
+        gMjClaimBannerCharId = gMjSeats[seatIdx].characterId;
+        gMjClaimBannerTile = tile;
+        gMjClaimBannerTick = SDL_GetTicks();
+    }
+}
 static uint32_t gMjAiNextTick = 0;
 
 // ============================================================================
@@ -1017,7 +1031,8 @@ static void executeMjDiscard(int seatIdx, const std::string& tileId) {
         for (const auto& t : gMjSeats[s].hand) {
             if (t.suit == discarded.suit && t.rank == discarded.rank) sameCount++;
         }
-        if (sameCount >= 2 && (rand() % 3 == 0)) {
+        bool shouldPong = (sameCount >= 2) && (gMjAiDifficulty == 0 ? (rand() % 3 == 0) : (gMjAiDifficulty == 1 ? (rand() % 2 == 0) : true));
+        if (shouldPong) {
             gMjSeats[seatIdx].discards.pop_back();
             int removed = 0;
             auto& aiH = gMjSeats[s].hand;
@@ -1027,6 +1042,7 @@ static void executeMjDiscard(int seatIdx, const std::string& tileId) {
             }
             gMjSeats[s].melds.push_back({discarded.id, "碰", discarded});
             gMjSeats[s].lastActionText = "碰 " + discarded.fullName();
+            triggerMjClaimBanner(s, "碰牌", discarded);
             gMjTurnSeat = s;
             gMjPhase = "playing";
             gMjTurnStartTick = SDL_GetTicks();
@@ -1401,7 +1417,7 @@ static void dropRmkTableTileToTarget(int srcMeldIdx, int srcTileIdx, int dropX, 
     if (dropY >= 488) {
         bool cameFromRackThisTurn = false;
         for (const auto& st : gRmkSnapHand) if (st.id == movingTile.id) { cameFromRackThisTurn = true; break; }
-        if (cameFromRackThisTurn || srcMeldIdx >= (int)gRmkSnapMelds.size()) {
+        if (cameFromRackThisTurn) {
             gRmkWorkMelds[srcMeldIdx].tiles.erase(gRmkWorkMelds[srcMeldIdx].tiles.begin() + srcTileIdx);
             if (gRmkWorkMelds[srcMeldIdx].tiles.empty()) gRmkWorkMelds.erase(gRmkWorkMelds.begin() + srcMeldIdx);
             movingTile.selected = false;
@@ -2504,35 +2520,61 @@ static void renderMahjongTable() {
     drawRoundedRectOutline(cx + cw / 2 - 26, cy + ch / 2 - 26, 52, 52, 26, COL_GOLD, 2);
     drawText(gFontMed, std::to_string(remSec), cx + cw / 2, cy + ch / 2 - 12, remSec <= 5 ? COL_CRIMSON_HI : COL_HUMAN_GREEN, true);
 
-    // 5. Four Non-Overlapping Discard Rivers around Center Compass
-    int dw = 28, dh = 38;
-    // Opposite Discards (Above compass: x=478..802, y=152)
-    size_t oppStart = opp.discards.size() > 10 ? opp.discards.size() - 10 : 0;
+    // 4b. Opponent Melds (Strictly separated beside each seat badge, NEVER in discard river!)
+    auto drawSeatMelds = [&](const MjSeat& st, int sx, int sy) {
+        int mx = sx;
+        for (const auto& m : st.melds) {
+            int cnt = (m.kind == "碰") ? 3 : 4;
+            for (int k = 0; k < cnt; ++k) {
+                if (m.kind == "暗杠" && k != 2) drawMahjongBack(mx, sy, 20, 28);
+                else drawMahjongTile(m.tile, mx, sy, 20, 28, false, false, false);
+                mx += 21;
+            }
+            mx += 6;
+        }
+    };
+    drawSeatMelds(opp, 64, 150);
+    drawSeatMelds(lSeat, 62, 294);
+    drawSeatMelds(rSeat, 1012, 294);
+
+    // 5. Four Non-Overlapping Discard Rivers around Center Compass (Enlarged 32x44 tiles!)
+    int dw = 32, dh = 44;
+    // Opposite Discards (Above compass: y=150)
+    size_t oppStart = opp.discards.size() > 9 ? opp.discards.size() - 9 : 0;
     for (size_t idx = oppStart; idx < opp.discards.size(); ++idx) {
         int i = (int)(idx - oppStart);
-        drawMahjongTile(opp.discards[idx], 490 + i * 30, 156, dw, dh, false, false, idx + 1 == opp.discards.size());
+        drawMahjongTile(opp.discards[idx], 486 + i * 34, 152, dw, dh, false, false, idx + 1 == opp.discards.size());
     }
 
-    // Left Discards (Between Left Seat Badge and Compass: x=282..546, 2 rows of 8)
-    size_t lStart = lSeat.discards.size() > 16 ? lSeat.discards.size() - 16 : 0;
+    // Left Discards (Between Left Seat Badge and Compass: x=282..554, 2 rows of 7)
+    size_t lStart = lSeat.discards.size() > 14 ? lSeat.discards.size() - 14 : 0;
     for (size_t idx = lStart; idx < lSeat.discards.size(); ++idx) {
         int i = (int)(idx - lStart);
-        drawMahjongTile(lSeat.discards[idx], 284 + (i % 8) * 30, 214 + (i / 8) * 42, dw, dh, false, false, idx + 1 == lSeat.discards.size());
+        drawMahjongTile(lSeat.discards[idx], 282 + (i % 7) * 34, 210 + (i / 7) * 48, dw, dh, false, false, idx + 1 == lSeat.discards.size());
     }
 
-    // Right Discards (Between Compass and Right Seat Badge: x=734..998, 2 rows of 8)
-    size_t rStart = rSeat.discards.size() > 16 ? rSeat.discards.size() - 16 : 0;
+    // Right Discards (Between Compass and Right Seat Badge: x=726..998, 2 rows of 7)
+    size_t rStart = rSeat.discards.size() > 14 ? rSeat.discards.size() - 14 : 0;
     for (size_t idx = rStart; idx < rSeat.discards.size(); ++idx) {
         int i = (int)(idx - rStart);
-        drawMahjongTile(rSeat.discards[idx], 736 + (i % 8) * 30, 214 + (i / 8) * 42, dw, dh, false, false, idx + 1 == rSeat.discards.size());
+        drawMahjongTile(rSeat.discards[idx], 726 + (i % 7) * 34, 210 + (i / 7) * 48, dw, dh, false, false, idx + 1 == rSeat.discards.size());
     }
 
-    // My Own Discards (Below compass: x=460..820, y=354..434, up to 2 rows of 10)
+    // My Own Discards (Below compass: y=350..438, up to 2 rows of 9)
     const auto& me = gMjSeats[gMjMySeat];
-    size_t mStart = me.discards.size() > 20 ? me.discards.size() - 20 : 0;
+    size_t mStart = me.discards.size() > 18 ? me.discards.size() - 18 : 0;
     for (size_t idx = mStart; idx < me.discards.size(); ++idx) {
         int i = (int)(idx - mStart);
-        drawMahjongTile(me.discards[idx], 490 + (i % 10) * 30, 354 + (i / 10) * 40, dw, dh, false, false, idx + 1 == me.discards.size());
+        drawMahjongTile(me.discards[idx], 486 + (i % 9) * 34, 350 + (i / 9) * 46, dw, dh, false, false, idx + 1 == me.discards.size());
+    }
+
+    // 5b. Animated Pong/Kong/Hu Claim Callout Banner
+    if (!gMjClaimBannerText.empty() && SDL_GetTicks() - gMjClaimBannerTick < 1800) {
+        drawRoundedRectFill(420, 96, 440, 56, 14, COL_CRIMSON);
+        drawRoundedRectOutline(420, 96, 440, 56, 14, COL_GOLD, 2);
+        drawCharAvatar(gMjClaimBannerCharId, 432, 102, 42, 42, true);
+        drawText(gFontMed, gMjClaimBannerText, 484, 112, COL_GOLD);
+        drawMahjongTile(gMjClaimBannerTile, 810, 101, 34, 46, false, false, true);
     }
 
     // 6. Bottom My Seat Badge + Action Bar (y=446, h=50)
@@ -2920,11 +2962,8 @@ static void updateAiTurns() {
                 executeMjWin(gMjTurnSeat, -1, "自摸胡牌");
                 return;
             }
-            std::string discardId = ai.hand.back().id;
-            for (int i = (int)ai.hand.size() - 1; i >= 0; --i) {
-                if (!ai.hand[i].isLaizi()) { discardId = ai.hand[i].id; break; }
-            }
-            executeMjDiscard(gMjTurnSeat, discardId);
+            MjTile bestD = MjEvaluator::bestAiDiscard(ai.hand, (int)ai.melds.size(), gMjAiDifficulty);
+            executeMjDiscard(gMjTurnSeat, bestD.id);
         }
     }
 

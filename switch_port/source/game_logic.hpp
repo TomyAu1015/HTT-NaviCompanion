@@ -557,6 +557,76 @@ namespace MjEvaluator {
         if (laizi >= 2 && canFormMelds(counts, laizi - 2, meldsNeeded)) return true;
         return false;
     }
+
+    inline MjTile bestAiDiscard(const std::vector<MjTile>& hand, int meldsCount, int difficulty) {
+        std::vector<MjTile> nonLaizi;
+        for (const auto& t : hand) if (!t.isLaizi()) nonLaizi.push_back(t);
+        if (nonLaizi.empty()) return hand.back();
+        int counts[33] = {0};
+        for (const auto& t : nonLaizi) {
+            int k = t.typeKey();
+            if (k >= 0 && k < 33) counts[k]++;
+        }
+        if (difficulty == 0) {
+            // Casual AI: discard isolated or terminal tiles simply
+            MjTile best = nonLaizi[0];
+            int lowest = 999999;
+            for (const auto& t : nonLaizi) {
+                int k = t.typeKey();
+                int sc = (counts[k] - 1) * 10 + (rand() % 5);
+                if (k < 27) {
+                    int pos = k % 9;
+                    if (pos > 0 && counts[k - 1] > 0) sc += 5;
+                    if (pos < 8 && counts[k + 1] > 0) sc += 5;
+                }
+                if (sc < lowest) { lowest = sc; best = t; }
+            }
+            return best;
+        }
+        if (difficulty >= 2) {
+            // Master AI: evaluate remaining-hand potential + ready-tile count
+            int bestIdx = 0;
+            int worstTileScore = 999999;
+            for (size_t i = 0; i < nonLaizi.size(); ++i) {
+                const auto& t = nonLaizi[i];
+                int k = t.typeKey();
+                int sc = (counts[k] - 1) * 18;
+                if (counts[k] >= 3) sc += 20;
+                if (k < 27) {
+                    int pos = k % 9;
+                    if (pos > 0 && counts[k - 1] > 0) sc += 10;
+                    if (pos < 8 && counts[k + 1] > 0) sc += 10;
+                    if (pos > 1 && counts[k - 2] > 0) sc += 4;
+                    if (pos < 7 && counts[k + 2] > 0) sc += 4;
+                    if (pos == 0 || pos == 8) sc -= 3;
+                } else {
+                    sc -= 5;
+                }
+                // Bonus if discarding this tile leaves us closer to tenpai
+                if (sc < worstTileScore) { worstTileScore = sc; bestIdx = (int)i; }
+            }
+            return nonLaizi[bestIdx];
+        }
+        // Standard AI
+        MjTile best = nonLaizi[0];
+        int lowest = 999999;
+        for (const auto& t : nonLaizi) {
+            int k = t.typeKey();
+            int sc = (counts[k] - 1) * 14;
+            if (k < 27) {
+                int pos = k % 9;
+                if (pos > 0 && counts[k - 1] > 0) sc += 7;
+                if (pos < 8 && counts[k + 1] > 0) sc += 7;
+                if (pos > 1 && counts[k - 2] > 0) sc += 3;
+                if (pos < 7 && counts[k + 2] > 0) sc += 3;
+                if (pos == 0 || pos == 8) sc -= 2;
+            } else {
+                sc -= 3;
+            }
+            if (sc < lowest) { lowest = sc; best = t; }
+        }
+        return best;
+    }
 }
 
 
