@@ -483,6 +483,78 @@ class AudioPlayerManager(
     private val _onlineSearchResults = MutableStateFlow<List<PlaceSearchItem>>(emptyList())
     val onlineSearchResults: StateFlow<List<PlaceSearchItem>> = _onlineSearchResults
 
+    private val _recentDestinations = MutableStateFlow<List<PlaceSearchItem>>(emptyList())
+    val recentDestinations: StateFlow<List<PlaceSearchItem>> = _recentDestinations
+    private val recentPrefs by lazy { context.getSharedPreferences("HTT_RecentDest", Context.MODE_PRIVATE) }
+
+    fun loadAndPruneRecentDestinations() {
+        val raw = recentPrefs.getString("items_json", null) ?: return
+        val now = System.currentTimeMillis()
+        val sevenDaysMs = 7L * 86400_000L
+        val validList = ArrayList<PlaceSearchItem>()
+        val validJson = org.json.JSONArray()
+        try {
+            val arr = org.json.JSONArray(raw)
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                val ts = o.optLong("ts", 0L)
+                if (now - ts <= sevenDaysMs) {
+                    val lat = o.optDouble("lat", 0.0)
+                    val lon = o.optDouble("lon", 0.0)
+                    val name = o.optString("name", "")
+                    val addr = o.optString("addr", "")
+                    if (name.isNotBlank()) {
+                        validList.add(PlaceSearchItem(name, addr, 0.0, LatLng(lat, lon), "🕒 最近导航"))
+                        validJson.put(o)
+                    }
+                }
+            }
+            if (validJson.length() != arr.length()) {
+                recentPrefs.edit().putString("items_json", validJson.toString()).apply()
+            }
+        } catch (_: Exception) {}
+        _recentDestinations.value = validList
+    }
+
+    fun recordRecentDestination(name: String, address: String, coord: LatLng) {
+        val cleanName = name.trim()
+        if (cleanName.isEmpty() || cleanName == "目的地") return
+        val now = System.currentTimeMillis()
+        val sevenDaysMs = 7L * 86400_000L
+        val oldRaw = recentPrefs.getString("items_json", null)
+        val kept = ArrayList<org.json.JSONObject>()
+        if (oldRaw != null) {
+            try {
+                val arr = org.json.JSONArray(oldRaw)
+                for (i in 0 until arr.length()) {
+                    val o = arr.getJSONObject(i)
+                    val ts = o.optLong("ts", 0L)
+                    if (now - ts > sevenDaysMs) continue
+                    val oldName = o.optString("name", "").trim()
+                    val oldLat = o.optDouble("lat", 0.0)
+                    val oldLon = o.optDouble("lon", 0.0)
+                    val sameName = oldName.equals(cleanName, ignoreCase = true)
+                    val dist = CoordinateConverter.distanceMeters(coord, LatLng(oldLat, oldLon))
+                    if (!sameName && dist > 150.0) {
+                        kept.add(o)
+                    }
+                }
+            } catch (_: Exception) {}
+        }
+        val newObj = org.json.JSONObject().apply {
+            put("name", cleanName)
+            put("addr", address.trim())
+            put("lat", coord.latitude)
+            put("lon", coord.longitude)
+            put("ts", now)
+        }
+        val outArr = org.json.JSONArray()
+        outArr.put(newObj)
+        for (i in 0 until minOf(19, kept.size)) outArr.put(kept[i])
+        recentPrefs.edit().putString("items_json", outArr.toString()).apply()
+        loadAndPruneRecentDestinations()
+    }
+
     private val _isSearchingPlaces = MutableStateFlow(false)
     val isSearchingPlaces: StateFlow<Boolean> = _isSearchingPlaces
 
@@ -538,6 +610,7 @@ class AudioPlayerManager(
         refreshThemeBackground()
         updateAllSpriteFrames()
         mainHandler.post {
+            loadAndPruneRecentDestinations()
             startSpriteAnimatorLoop()
             startMasterClockLoop()
         }
@@ -714,6 +787,8 @@ class AudioPlayerManager(
     }
 
     fun startRouteToPlace(destName: String, destCoord: LatLng) {
+        val recAddr = if (_tappedTitle.value == destName && _tappedAddress.value.isNotBlank()) _tappedAddress.value else String.format("%.4f, %.4f", destCoord.latitude, destCoord.longitude)
+        recordRecentDestination(destName, recAddr, destCoord)
         _tappedCoord.value = null
         _destinationName.value = destName
         _destinationCoord.value = destCoord

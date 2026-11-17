@@ -259,39 +259,47 @@ object MahjongEvaluator {
 
     private fun canFormMelds(counts: IntArray, laizi: Int): Boolean {
         val firstIdx = counts.indexOfFirst { it > 0 }
-        if (firstIdx == -1) return laizi % 3 == 0
+        if (firstIdx < 0) return laizi % 3 == 0
         val c = counts[firstIdx]
+
+        // 1. Triplet (independent branches so 3/4-of-a-kind can also split with Laizi)
         if (c >= 3) {
             counts[firstIdx] -= 3
             val ok = canFormMelds(counts, laizi)
             counts[firstIdx] += 3
             if (ok) return true
-        } else if (c == 2 && laizi >= 1) {
+        }
+        if (c >= 2 && laizi >= 1) {
             counts[firstIdx] -= 2
             val ok = canFormMelds(counts, laizi - 1)
             counts[firstIdx] += 2
             if (ok) return true
-        } else if (c == 1 && laizi >= 2) {
+        }
+        if (c >= 1 && laizi >= 2) {
             counts[firstIdx] -= 1
             val ok = canFormMelds(counts, laizi - 2)
             counts[firstIdx] += 1
             if (ok) return true
         }
+
+        // 2. Sequence across all 3 windows containing firstIdx
         if (firstIdx < 27) {
             val suitBase = (firstIdx / 9) * 9
-            val pos = firstIdx - suitBase
-            if (pos <= 6) {
-                val need2 = if (counts[firstIdx + 1] > 0) 0 else 1
-                val need3 = if (counts[firstIdx + 2] > 0) 0 else 1
-                val need = need2 + need3
-                if (laizi >= need) {
-                    counts[firstIdx] -= 1
-                    if (need2 == 0) counts[firstIdx + 1] -= 1
-                    if (need3 == 0) counts[firstIdx + 2] -= 1
-                    val ok = canFormMelds(counts, laizi - need)
-                    counts[firstIdx] += 1
-                    if (need2 == 0) counts[firstIdx + 1] += 1
-                    if (need3 == 0) counts[firstIdx + 2] += 1
+            for (start in (firstIdx - 2)..firstIdx) {
+                if (start >= suitBase && start + 2 <= suitBase + 8) {
+                    var need = 0
+                    val used = IntArray(3)
+                    var usedCnt = 0
+                    for (k in start..(start + 2)) {
+                        if (counts[k] > 0) {
+                            counts[k]--
+                            used[usedCnt++] = k
+                        } else {
+                            need++
+                        }
+                    }
+                    val ok = laizi >= need && canFormMelds(counts, laizi - need)
+                    for (u in 0 until usedCnt) counts[used[u]]++
                     if (ok) return true
                 }
             }
@@ -910,6 +918,42 @@ class MahjongEngine(private val context: Context, private val audioMgr: AudioPla
             val myKey = myPeerKey()
 
             when (kind) {
+                "leaveRoom" -> {
+                    val leftPeer = obj.optString("senderPeerName", "")
+                    if (leftPeer.isBlank() || leftPeer == myPeerKey() || leftPeer == _myNickname.value) return
+                    val cleanLeft = cleanPeerLabel(leftPeer)
+                    orderedRoomPeers.removeAll { it.first == leftPeer || cleanPeerLabel(it.first) == cleanLeft }
+                    _connectedPeerNames.value = orderedRoomPeers.map { it.first }.filter { it != myPeerKey() && it != _myNickname.value }
+                    val newAuth = orderedRoomPeers.isEmpty() || orderedRoomPeers.first().first == myPeerKey() || orderedRoomPeers.first().first == _myNickname.value
+                    _isRoomAuthority.value = newAuth
+                    if (_phase.value == MahjongGamePhase.LOBBY) {
+                        rebuildLobbySeats(forceRebuild = true)
+                        _statusBanner.value = "玩家 [$cleanLeft] 已离开麻将房间"
+                    } else {
+                        val list = _seats.value.toMutableList()
+                        var leftSeatIdx: Int? = null
+                        for (i in list.indices) {
+                            if (list[i].peerDisplayName == leftPeer || cleanPeerLabel(list[i].peerDisplayName) == cleanLeft) {
+                                val orig = cleanPeerLabel(list[i].name)
+                                val aiLabel = if (orig.contains("AI接管")) orig else "$orig (AI接管)"
+                                list[i] = list[i].copy(isAI = true, name = aiLabel)
+                                leftSeatIdx = i
+                            }
+                        }
+                        _seats.value = list
+                        _statusBanner.value = "🤖 玩家 [$cleanLeft] 已退房，由 AI 自动接管摸打！"
+                        if (newAuth) {
+                            val pc = _pendingClaim.value
+                            if (leftSeatIdx != null && pc != null && pc.waitingSeats.contains(leftSeatIdx)) {
+                                handleClaimResponse("pass", leftSeatIdx)
+                            } else {
+                                broadcastFullStateSync()
+                                scheduleAiActionIfNeeded()
+                                scheduleAiClaimIfNeeded()
+                            }
+                        }
+                    }
+                }
                 "roomFull" -> {
                     stopNetworking()
                     _phase.value = MahjongGamePhase.LOBBY

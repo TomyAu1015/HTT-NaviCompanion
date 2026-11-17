@@ -11,7 +11,9 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.IntOffset
@@ -1017,6 +1019,7 @@ private fun MjTileBack(w: Dp, h: Dp) {
 }
 
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun KOnRummikubContent() {
     val app = HTTNaviApp.instance
@@ -1080,7 +1083,7 @@ fun KOnRummikubContent() {
                 Image(
                     bitmap = bmp.asImageBitmap(),
                     contentDescription = null,
-                    contentScale = ContentScale.Crop,
+                    contentScale = ContentScale.Fit,
                     filterQuality = FilterQuality.High,
                     modifier = Modifier.fillMaxSize()
                 )
@@ -1293,11 +1296,15 @@ fun KOnRummikubContent() {
                                         rowMelds.forEach { meld ->
                                             val ok = RmkEvaluator.evaluateMeld(meld.tiles) != null
                                             Row(modifier = Modifier.clip(RoundedCornerShape(7.dp)).background(Color.Black.copy(alpha = 0.35f))
-                                                .border(1.dp, if (ok) MjGold.copy(alpha = 0.6f) else Color.Red, RoundedCornerShape(7.dp))
-                                                .clickable(enabled = myTurn) { if (selIds.isNotEmpty()) rmk.addSelectedToTableMeld(meld.id) else rmk.splitMeldToWorkspace(meld.id) }
+                                                .border(1.5.dp, if (ok) MjGold.copy(alpha = 0.6f) else Color.Red, RoundedCornerShape(7.dp))
                                                 .padding(4.dp), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
                                                 meld.tiles.forEach { t ->
-                                                    RmkTileCard(tile = t, selected = false, compact = true)
+                                                    RmkTileCard(tile = t, selected = false, compact = true, onClick = if (myTurn) {
+                                                        {
+                                                            if (selIds.isNotEmpty()) rmk.addSelectedToTableMeld(meld.id)
+                                                            else rmk.splitMeldToWorkspace(meld.id, tileId = t.id)
+                                                        }
+                                                    } else null)
                                                 }
                                             }
                                         }
@@ -1431,12 +1438,16 @@ fun KOnRummikubContent() {
                                                         onDragEnd = {
                                                             val curDrag = dragSlotIdx
                                                             if (curDrag != null) {
-                                                                val stepPx = (size.width + 10).coerceAtLeast(40)
-                                                                val colShift = (dragOffsetX / stepPx).roundToInt()
-                                                                val rowShift = (dragOffsetY / 110f).roundToInt()
-                                                                val dstRow = (row + rowShift).coerceIn(0, 1)
-                                                                val dstCol = (col + colShift).coerceIn(0, cols - 1)
-                                                                rmk.moveRackSlot(curDrag, dstRow * cols + dstCol)
+                                                                if (dragOffsetY < -110f && tileOpt != null) {
+                                                                    rmk.dropRackTilesToTable(tileOpt.id)
+                                                                } else {
+                                                                    val stepPx = (size.width + 10).coerceAtLeast(40)
+                                                                    val colShift = (dragOffsetX / stepPx).roundToInt()
+                                                                    val rowShift = (dragOffsetY / 110f).roundToInt()
+                                                                    val dstRow = (row + rowShift).coerceIn(0, 1)
+                                                                    val dstCol = (col + colShift).coerceIn(0, cols - 1)
+                                                                    rmk.moveRackSlot(curDrag, dstRow * cols + dstCol)
+                                                                }
                                                             }
                                                             dragSlotIdx = null
                                                             dragOffsetX = 0f
@@ -1449,20 +1460,25 @@ fun KOnRummikubContent() {
                                                         }
                                                     )
                                                 }
-                                                .clickable {
-                                                    val curLifted = liftedIdx
-                                                    if (curLifted != null) {
-                                                        if (curLifted == slotIdx) {
-                                                            rmk.setLiftedSlot(null)
-                                                            if (tileOpt != null && myTurn) rmk.toggleSelectTile(tileOpt.id)
-                                                        } else {
-                                                            rmk.moveRackSlot(curLifted, slotIdx)
+                                                .combinedClickable(
+                                                    onLongClick = {
+                                                        if (tileOpt != null) rmk.startLongPressCascadeSelect(slotIdx)
+                                                    },
+                                                    onClick = {
+                                                        val curLifted = liftedIdx
+                                                        if (curLifted != null) {
+                                                            if (curLifted == slotIdx) {
+                                                                rmk.setLiftedSlot(null)
+                                                                if (tileOpt != null && myTurn) rmk.toggleSelectTile(tileOpt.id)
+                                                            } else {
+                                                                rmk.moveRackSlot(curLifted, slotIdx)
+                                                            }
+                                                        } else if (tileOpt != null) {
+                                                            rmk.toggleSelectTile(tileOpt.id)
+                                                            rmk.setLiftedSlot(slotIdx)
                                                         }
-                                                    } else if (tileOpt != null) {
-                                                        rmk.toggleSelectTile(tileOpt.id)
-                                                        rmk.setLiftedSlot(slotIdx)
                                                     }
-                                                },
+                                                ),
                                             contentAlignment = Alignment.Center
                                         ) {
                                             if (tileOpt != null && isDealtVis) {

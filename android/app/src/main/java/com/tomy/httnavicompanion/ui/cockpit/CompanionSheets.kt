@@ -730,9 +730,14 @@ fun DestinationSearchSheetDialog(onDismiss: () -> Unit) {
     val lang by manager.language.collectAsState()
     val travelMode by manager.travelMode.collectAsState()
     val onlineResults by manager.onlineSearchResults.collectAsState()
+    val recentDests by manager.recentDestinations.collectAsState()
     val isSearching by manager.isSearchingPlaces.collectAsState()
     val userCoord by manager.userCoordinate.collectAsState()
     var queryText by remember { mutableStateOf("") }
+
+    LaunchedEffect(Unit) {
+        manager.loadAndPruneRecentDestinations()
+    }
 
     val builtInLandmarks = remember(userCoord) {
         com.tomy.httnavicompanion.data.MapAndRouteEngine.domesticLandmarksDatabase.map { item ->
@@ -741,19 +746,32 @@ fun DestinationSearchSheetDialog(onDismiss: () -> Unit) {
         }.sortedBy { it.distanceKm }
     }
 
-    val displayList = remember(queryText, onlineResults, builtInLandmarks) {
+    val recentWithDist = remember(recentDests, userCoord) {
+        recentDests.map { item ->
+            val dKm = com.tomy.httnavicompanion.data.CoordinateConverter.distanceMeters(userCoord, item.coordinate) / 1000.0
+            item.copy(distanceKm = dKm, category = "🕒 最近导航")
+        }
+    }
+
+    val displayList = remember(queryText, onlineResults, builtInLandmarks, recentWithDist) {
         val q = queryText.trim()
+        val merged = ArrayList<PlaceSearchItem>()
+        val seen = HashSet<String>()
         if (q.isEmpty()) {
-            builtInLandmarks
+            (recentWithDist + builtInLandmarks).forEach { item ->
+                if (seen.add(item.name.lowercase())) merged.add(item)
+            }
+            merged
         } else {
+            val recentMatches = recentWithDist.filter {
+                it.name.contains(q, ignoreCase = true) || it.address.contains(q, ignoreCase = true)
+            }
             val localMatches = builtInLandmarks.filter {
                 it.name.contains(q, ignoreCase = true) ||
                     it.address.contains(q, ignoreCase = true) ||
                     it.category.contains(q, ignoreCase = true)
             }
-            val merged = ArrayList<PlaceSearchItem>()
-            val seen = HashSet<String>()
-            (localMatches + onlineResults).forEach { item ->
+            (recentMatches + localMatches + onlineResults).forEach { item ->
                 if (seen.add(item.name.lowercase())) {
                     merged.add(item)
                 }

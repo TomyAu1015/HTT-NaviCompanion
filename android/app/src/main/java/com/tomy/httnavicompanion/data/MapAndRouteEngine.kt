@@ -341,7 +341,14 @@ object MapAndRouteEngine {
                     for (rIdx in 0 until routesArr.length()) {
                         val rObj = routesArr.getJSONObject(rIdx)
                         val dist = rObj.optDouble("distance", 0.0)
-                        val dur = rObj.optDouble("duration", 0.0)
+                        val rawDur = rObj.optDouble("duration", 0.0)
+                        val distKm = (dist / 1000.0).coerceAtLeast(0.05)
+                        val dur = when (travelMode) {
+                            NavigationTravelMode.DRIVING -> (rawDur * 1.32 + distKm * 32.0).coerceAtLeast((distKm / 40.0) * 3600.0 + distKm * 32.0)
+                            NavigationTravelMode.EBIKE -> (distKm / 15.5) * 3600.0 + distKm * 22.0
+                            NavigationTravelMode.WALKING -> (distKm / 3.8) * 3600.0 + distKm * 18.0
+                            NavigationTravelMode.TRANSIT -> (distKm / 20.0) * 3600.0 + 600.0
+                        }
                         val geom = rObj.getJSONObject("geometry")
                         val coordsArr = geom.getJSONArray("coordinates")
                         val pts = ArrayList<LatLng>(coordsArr.length())
@@ -392,12 +399,13 @@ object MapAndRouteEngine {
             val directDist = CoordinateConverter.distanceMeters(startWgs, destWgs)
             val roadDist = directDist * 1.26
             val speedMps = when (travelMode) {
-                NavigationTravelMode.DRIVING -> 13.5
-                NavigationTravelMode.EBIKE -> 5.8
-                NavigationTravelMode.WALKING -> 1.35
-                NavigationTravelMode.TRANSIT -> 9.5
+                NavigationTravelMode.DRIVING -> 8.8
+                NavigationTravelMode.EBIKE -> 4.2
+                NavigationTravelMode.WALKING -> 1.05
+                NavigationTravelMode.TRANSIT -> 5.5
             }
-            val dur = (roadDist / speedMps).coerceAtLeast(60.0)
+            val extraDelay = if (travelMode == NavigationTravelMode.TRANSIT) 600.0 else (roadDist / 1000.0) * 28.0
+            val dur = (roadDist / speedMps + extraDelay).coerceAtLeast(90.0)
 
             // Generate realistic multi-segment road path (L-shaped + arterial curve)
             val pts1 = buildRealisticRoadWaypoints(startWgs, destWgs, curveSign = 1.0)

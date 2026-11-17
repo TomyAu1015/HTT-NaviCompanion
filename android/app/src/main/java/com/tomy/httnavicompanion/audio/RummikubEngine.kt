@@ -231,8 +231,8 @@ object RmkEvaluator {
             }
         }
 
-        if (preferRuns) { extractRuns(); extractGroups() }
-        else { extractGroups(); extractRuns() }
+        if (preferRuns) { extractRuns() }
+        else { extractGroups() }
 
         while (true) {
             val jIdx = remaining.indexOfFirst { it.isJoker }
@@ -633,9 +633,9 @@ class RummikubEngine(
         _rackSlots.value = next
         _liftedSlotIndex.value = null
         _statusBanner.value = if (melds.isNotEmpty()) {
-            "✨ 已按【${if (preferRuns) "789顺组" else "777群组"}】整理牌架：共识别 ${melds.size} 组可出牌型（已自动留空隔开）"
+            "✨ [${if (preferRuns) "789类型组合" else "777(888)类型组合"}] 共识别 ${melds.size} 组可出牌型（已自动留空隔开，不混入其他类型）"
         } else {
-            if (preferRuns) "🔢 已按 789 同色顺子方向整理牌架" else "🔢 已按 777 同数群组方向整理牌架"
+            if (preferRuns) "🔢 [789类型组合] 当前暂无可出顺子（未混入同数群组）" else "🔢 [777(888)类型组合] 当前暂无可出同数群组（未混入顺子）"
         }
     }
 
@@ -948,6 +948,34 @@ class RummikubEngine(
             val sender = obj.optString("senderPeerName")
             val sChar = obj.optInt("senderCharId", 1)
             when (kind) {
+                "leaveRoom" -> {
+                    val leftPeer = obj.optString("senderPeerName", "")
+                    if (leftPeer.isBlank() || leftPeer == myPeerName) return
+                    val cleanLeft = cleanPeer(leftPeer)
+                    orderedRoomPeers.removeAll { it.first == leftPeer }
+                    _connectedPeerNames.value = orderedRoomPeers.map { it.first }.filter { it != myPeerName }
+                    val newAuth = orderedRoomPeers.isEmpty() || orderedRoomPeers.first().first == myPeerName
+                    _isRoomAuthority.value = newAuth
+                    if (_phase.value == RmkGamePhase.LOBBY) {
+                        rebuildLobbySeats()
+                        _statusBanner.value = "玩家 [$cleanLeft] 已离开拉密房间"
+                    } else {
+                        val list = _seats.value.toMutableList()
+                        for (i in list.indices) {
+                            if (list[i].peerDisplayName == leftPeer) {
+                                val orig = cleanPeer(list[i].name)
+                                val aiLabel = if (orig.contains("AI接管")) orig else "$orig (AI接管)"
+                                list[i] = list[i].copy(isAI = true, name = aiLabel)
+                            }
+                        }
+                        _seats.value = list
+                        _statusBanner.value = "🤖 玩家 [$cleanLeft] 已退房，由 AI 自动接管出牌！"
+                        if (newAuth) {
+                            broadcastFullState()
+                            scheduleAiTurnIfNeeded()
+                        }
+                    }
+                }
                 "roomRoster" -> {
                     val mp = obj.optInt("maxPlayers", 0)
                     if (mp in 2..4) _roomPlayerCount.value = mp
@@ -1220,12 +1248,12 @@ class RummikubEngine(
         _statusBanner.value = "✅ 已将选牌并入桌面牌组（点击【确认出牌】完成回合）"
     }
 
-    fun splitMeldToWorkspace(meldId: String) {
+    fun splitMeldToWorkspace(meldId: String, tileId: String? = null) {
         if (_currentTurnSeat.value != _mySeatIndex.value || _phase.value != RmkGamePhase.PLAYING) return
         ensureWorkspace()
         val idx = _workingMelds.value.indexOfFirst { it.id == meldId }
         if (idx < 0) return
-        if (idx >= snapshotMelds.size) {
+        if (idx >= snapshotMelds.size && tileId == null) {
             val ms = _workingMelds.value.toMutableList()
             val returned = ms.removeAt(idx).tiles
             _workingMelds.value = ms
@@ -1235,22 +1263,106 @@ class RummikubEngine(
             _statusBanner.value = "↩️ 已将该组牌撤回牌架"
             return
         }
-        if (_seats.value.getOrNull(_mySeatIndex.value)?.hasBrokenIce != true) {
+        if (_seats.value.getOrNull(_mySeatIndex.value)?.hasBrokenIce != true && idx < snapshotMelds.size) {
             _statusBanner.value = "⚠️ 尚未破冰，不能拆解其他玩家的桌面牌组！"
             return
         }
-        if (_workingMelds.value[idx].tiles.size < 4) {
-            _statusBanner.value = "⚠️ 只有 ≥4 张的牌组才可直接拆出端牌重组"
-            return
-        }
         val ms = _workingMelds.value.toMutableList()
-        val popped = ms[idx].tiles.last()
-        ms[idx] = ms[idx].copy(tiles = ms[idx].tiles.dropLast(1))
+        val tList = ms[idx].tiles.toMutableList()
+        if (tList.isEmpty()) return
+        val tPos = if (tileId != null) tList.indexOfFirst { it.id == tileId } else tList.lastIndex
+        val popped = tList.removeAt(if (tPos >= 0) tPos else tList.lastIndex)
+        if (tList.isEmpty()) ms.removeAt(idx) else ms[idx] = ms[idx].copy(tiles = tList)
         _workingMelds.value = ms
         _workingHand.value = _workingHand.value + popped
         syncRackFromHand(_workingHand.value, preserveExistingPositions = true)
         _selectedTileIds.value = _selectedTileIds.value + popped.id
-        _statusBanner.value = "🔄 已从牌组拆出 1 张牌，请配合手牌组成新牌组后【确认出牌】"
+        _statusBanner.value = "🔄 已从桌面取回 [${if (popped.isJoker) "百搭" else "${popped.color.labelZh}${popped.number}"}] 到牌架重组！"
+    }
+
+    fun dropRackTilesToTable(primaryTileId: String) {
+        val myIdx = _mySeatIndex.value
+        if (_currentTurnSeat.value != myIdx || _phase.value != RmkGamePhase.PLAYING) {
+            _statusBanner.value = "⏳ 当前不是您的回合，无法拖上桌面出牌"
+            return
+        }
+        ensureWorkspace()
+        val targetIds = _selectedTileIds.value + primaryTileId
+        val picked = _workingHand.value.filter { targetIds.contains(it.id) }
+        if (picked.isEmpty()) return
+
+        if (RmkEvaluator.evaluateMeld(picked) != null) {
+            _selectedTileIds.value = targetIds
+            placeSelectedAsNewMeld()
+            return
+        }
+
+        val brokenIce = _seats.value.getOrNull(myIdx)?.hasBrokenIce == true
+        val ms = _workingMelds.value.toMutableList()
+        for (idx in ms.indices) {
+            if (!brokenIce && idx < snapshotMelds.size) continue
+            val comb = ms[idx].tiles + picked
+            if (RmkEvaluator.evaluateMeld(comb) != null) {
+                _workingHand.value = _workingHand.value.filterNot { targetIds.contains(it.id) }
+                _rackSlots.value = _rackSlots.value.map { if (it != null && targetIds.contains(it.id)) null else it }
+                ms[idx] = ms[idx].copy(tiles = RmkEvaluator.sortMeldForDisplay(comb))
+                _workingMelds.value = ms
+                _selectedTileIds.value = emptySet()
+                _liftedSlotIndex.value = null
+                _statusBanner.value = "✅ 已拖放拼接到桌面牌组（点击【确认出牌】完成回合）"
+                return
+            }
+        }
+
+        if (brokenIce) {
+            _workingHand.value = _workingHand.value.filterNot { targetIds.contains(it.id) }
+            _rackSlots.value = _rackSlots.value.map { if (it != null && targetIds.contains(it.id)) null else it }
+            _workingMelds.value = ms + RmkMeld(UUID.randomUUID().toString(), RmkEvaluator.sortMeldForDisplay(picked))
+            _selectedTileIds.value = emptySet()
+            _liftedSlotIndex.value = null
+            _statusBanner.value = "🧩 已暂放桌面待重组（请点击桌面牌组/红框牌组拼成≥3张合法牌组后再【确认出牌】）"
+        } else {
+            _statusBanner.value = "⚠️ 尚未破冰：请选中≥3张且总分≥30的牌组后再拖上桌面"
+        }
+    }
+
+    fun startLongPressCascadeSelect(slotIdx: Int) {
+        val anchor = _rackSlots.value.getOrNull(slotIdx) ?: return
+        val active = currentCanonicalHand()
+        var seq: List<RmkTile> = listOf(anchor)
+        if (!anchor.isJoker) {
+            val runTiles = mutableListOf(anchor)
+            var nextN = anchor.number + 1
+            while (nextN <= 13) {
+                val nxt = active.firstOrNull { it.color == anchor.color && it.number == nextN }
+                if (nxt != null) { runTiles.add(nxt); nextN++ } else break
+            }
+            var prevN = anchor.number - 1
+            while (prevN >= 1) {
+                val prv = active.firstOrNull { it.color == anchor.color && it.number == prevN }
+                if (prv != null) { runTiles.add(0, prv); prevN-- } else break
+            }
+            if (runTiles.size >= 2) {
+                seq = listOf(anchor) + runTiles.filter { it.id != anchor.id }.sortedBy { it.number }
+            } else {
+                val grp = mutableListOf(anchor)
+                val seen = hashSetOf(anchor.color)
+                for (t in active) {
+                    if (!t.isJoker && t.number == anchor.number && seen.add(t.color)) grp.add(t)
+                }
+                if (grp.size >= 2) seq = grp
+            }
+        }
+        _selectedTileIds.value = emptySet()
+        _liftedSlotIndex.value = slotIdx
+        seq.forEachIndexed { idx, t ->
+            mainHandler.postDelayed({
+                _selectedTileIds.value = _selectedTileIds.value + t.id
+                if (idx == seq.lastIndex) {
+                    _statusBanner.value = "✨ 已长按连选 ${seq.size} 张牌，向上拖入桌面即可直接出牌！"
+                }
+            }, idx * 160L)
+        }
     }
 
     fun smartHint() {
