@@ -364,18 +364,29 @@ struct HTTSmoothMapView: UIViewRepresentable {
                     route.polyline.title = "WALKING_BLUE"
                     mapView.addOverlay(route.polyline, level: .aboveRoads)
                 } else {
-                    // Transit Mode on Map: 100% Genuine Apple Maps Road Polyline!
-                    // Perfectly follows the actual road centerlines (沙湾路 -> 沿河路 -> 罗湖口岸), never cutting across lakes or buildings!
-                    route.polyline.title = "TRANSIT_BUS_BLUE"
-                    mapView.addOverlay(route.polyline, level: .aboveRoads)
-                    
-                    // Add Boarding Station Marker
+                    // Transit + Walking Combined Mode on Map: Dashed Walking Legs + Solid Metro/Transit Leg + Station Pins!
+                    if !manager.transitSegmentPolylines.isEmpty {
+                        for segPoly in manager.transitSegmentPolylines {
+                            mapView.addOverlay(segPoly, level: .aboveRoads)
+                        }
+                    } else {
+                        route.polyline.title = "TRANSIT_METRO_GREEN"
+                        mapView.addOverlay(route.polyline, level: .aboveRoads)
+                    }
+
                     if let boardCoord = manager.transitBoardingStationCoord {
                         let boardPin = MKPointAnnotation()
                         boardPin.coordinate = boardCoord
-                        boardPin.title = manager.transitBoardingStationName.isEmpty ? "乘车站台" : manager.transitBoardingStationName
+                        boardPin.title = manager.transitBoardingStationName.isEmpty ? "🚇 步行换乘站" : manager.transitBoardingStationName
                         boardPin.subtitle = "BUS_STOP_PIN"
                         mapView.addAnnotation(boardPin)
+                    }
+                    if let alightCoord = manager.transitAlightStationCoord {
+                        let alightPin = MKPointAnnotation()
+                        alightPin.coordinate = alightCoord
+                        alightPin.title = manager.transitAlightStationName.isEmpty ? "🚇 下车步行点" : manager.transitAlightStationName
+                        alightPin.subtitle = "BUS_STOP_PIN"
+                        mapView.addAnnotation(alightPin)
                     }
                 }
                 
@@ -1303,6 +1314,61 @@ struct ContentView: View {
                     }
                 }
                 
+                // Apple Maps / GaoDe Style Background Navigation Floating Mini-Popup
+                if manager.hasActiveNavigation && (!manager.isMapEnlarged || !manager.showMapMode || activeModalSheet != nil) {
+                    VStack {
+                        Spacer()
+                        HStack(spacing: 10) {
+                            Image(systemName: manager.travelMode == .transit ? "tram.fill" : (manager.travelMode == .walking ? "figure.walk" : "arrow.turn.up.right"))
+                                .font(.system(size: 16, weight: .black))
+                                .foregroundColor(.white)
+                                .frame(width: 34, height: 34)
+                                .background(manager.travelMode == .transit ? Color.green : Color.blue)
+                                .cornerRadius(10)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(manager.currentStepInstruction.isEmpty ? "正在前往 \(manager.destinationName)" : manager.currentStepInstruction)
+                                    .font(.system(size: 12, weight: .black))
+                                    .foregroundColor(.white)
+                                    .lineLimit(1)
+                                Text(String(format: "距目的地 %.1f km · 约 %d 分钟 · 点击返回导航", manager.remainingRouteDistanceKm, max(1, manager.remainingRouteMinutes)))
+                                    .font(.system(size: 10, weight: .semibold))
+                                    .foregroundColor(httGold)
+                                    .lineLimit(1)
+                            }
+                            Spacer(minLength: 4)
+                            Button(action: {
+                                activeModalSheet = nil
+                                manager.showMapMode = true
+                                manager.isMapEnlarged = true
+                            }) {
+                                Text("回到地图")
+                                    .font(.system(size: 10, weight: .black))
+                                    .padding(.horizontal, 9).padding(.vertical, 6)
+                                    .background(Color.blue).foregroundColor(.white).cornerRadius(8)
+                            }.buttonStyle(PlainButtonStyle())
+                            Button(action: { manager.cancelNavigation() }) {
+                                Text("结束")
+                                    .font(.system(size: 10, weight: .black))
+                                    .padding(.horizontal, 9).padding(.vertical, 6)
+                                    .background(httCrimson).foregroundColor(.white).cornerRadius(8)
+                            }.buttonStyle(PlainButtonStyle())
+                        }
+                        .padding(.horizontal, 12).padding(.vertical, 9)
+                        .background(Color(red: 0.08, green: 0.11, blue: 0.16).opacity(0.95))
+                        .cornerRadius(14)
+                        .overlay(RoundedRectangle(cornerRadius: 14).stroke(httGold.opacity(0.85), lineWidth: 1.5))
+                        .shadow(color: .black.opacity(0.45), radius: 10, y: 4)
+                        .padding(.horizontal, 12)
+                        .padding(.bottom, max(geo.safeAreaInsets.bottom + 8, 14))
+                        .onTapGesture {
+                            activeModalSheet = nil
+                            manager.showMapMode = true
+                            manager.isMapEnlarged = true
+                        }
+                    }
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
+
                 // Long-Press RM-500HTT Beautified Outfit Quick Switcher Modal!
                 if showOutfitPopup {
                     outfitQuickPickerModalOverlay
@@ -9302,6 +9368,7 @@ struct KOnMahjongSheetView: View {
     @ObservedObject private var mj = KOnMahjongManager.shared
     @Environment(\.dismiss) private var dismiss
     @State private var showTingPopup: Bool = false
+    @State private var lastMjDealtRound: Int = -1
     @State private var mjDealtCount: Int = 99
     @State private var mjDealingOrder: [MahjongTile] = []
     @State private var isMjDealing: Bool = false
@@ -9560,6 +9627,17 @@ struct KOnMahjongSheetView: View {
                             }
                         }
                         HStack(spacing: 5) {
+                            Text("AI:").font(.system(size: 10, weight: .bold)).foregroundColor(httCream).frame(width: 34, alignment: .leading)
+                            ForEach(MahjongAIDifficulty.allCases, id: \.self) { diff in
+                                Button(action: { if canEdit { mj.aiDifficulty = diff } }) {
+                                    Text(diff.rawValue).font(.system(size: 10, weight: .bold))
+                                        .frame(maxWidth: .infinity).padding(.vertical, 4)
+                                        .background(mj.aiDifficulty == diff ? Color.purple : Color.white.opacity(0.12))
+                                        .foregroundColor(.white).cornerRadius(6)
+                                }.buttonStyle(PlainButtonStyle()).disabled(!canEdit)
+                            }
+                        }
+                        HStack(spacing: 5) {
                             Text("限时:").font(.system(size: 10, weight: .bold)).foregroundColor(httCream).frame(width: 34, alignment: .leading)
                             ForEach([15, 20, 30, 0], id: \.self) { t in
                                 Button(action: { if canEdit { mj.turnTimeLimit = t; mj.turnRemainingSeconds = t; mj.syncRulesIfHost() } }) {
@@ -9666,8 +9744,11 @@ struct KOnMahjongSheetView: View {
                 // Bounded Middle Arena (Opp River + Compass + My River) so growing discards/melds NEVER clip bottom hand tiles
                 VStack(spacing: 2) {
                 if oppIdx < mj.seats.count {
-                    mjSeatRiverAndMelds(seat: mj.seats[oppIdx], maxWidth: usableW)
-                        .padding(.horizontal, 8)
+                    HStack(spacing: 6) {
+                        mjSeatMelds(seat: mj.seats[oppIdx])
+                        mjSeatDiscardRiver(seat: mj.seats[oppIdx], maxWidth: usableW * 0.72)
+                    }
+                    .padding(.horizontal, 8)
                 }
 
                 // Middle Row: Left Standing Wall + River | Center Compass Hub | Right River + Standing Wall
@@ -9683,7 +9764,8 @@ struct KOnMahjongSheetView: View {
                             .padding(3).background(Color.black.opacity(0.32)).cornerRadius(5)
                             VStack(alignment: .leading, spacing: 3) {
                                 mjCompactSeatBadge(seat: lSeat, isTurn: mj.currentTurnSeat == leftIdx)
-                                mjSeatRiverAndMelds(seat: lSeat, maxWidth: usableW * 0.28)
+                                mjSeatMelds(seat: lSeat)
+                                mjSeatDiscardRiver(seat: lSeat, maxWidth: usableW * 0.28)
                             }
                         }
                         .frame(maxWidth: usableW * 0.36, alignment: .leading)
@@ -9779,7 +9861,8 @@ struct KOnMahjongSheetView: View {
                         HStack(spacing: 5) {
                             VStack(alignment: .trailing, spacing: 3) {
                                 mjCompactSeatBadge(seat: rSeat, isTurn: mj.currentTurnSeat == rightIdx)
-                                mjSeatRiverAndMelds(seat: rSeat, maxWidth: usableW * 0.28)
+                                mjSeatMelds(seat: rSeat)
+                                mjSeatDiscardRiver(seat: rSeat, maxWidth: usableW * 0.28)
                             }
                             VStack(spacing: 1) {
                                 ForEach(0..<min(10, max(0, rSeat.hand.count)), id: \.self) { _ in
@@ -9796,9 +9879,9 @@ struct KOnMahjongSheetView: View {
 
                 Spacer(minLength: 2)
 
-                // My Own Discard River (so player sees their own discarded tiles just like other 3 seats)
+                // My Own Discard River (strictly discards only — melds stay at bottom-left next to hand)
                 if mj.mySeatIndex < mj.seats.count && !mj.seats[mj.mySeatIndex].discards.isEmpty {
-                    mjSeatRiverAndMelds(seat: mj.seats[mj.mySeatIndex], maxWidth: usableW)
+                    mjSeatDiscardRiver(seat: mj.seats[mj.mySeatIndex], maxWidth: usableW)
                         .padding(.horizontal, 8)
                 }
                 }
@@ -9851,20 +9934,24 @@ struct KOnMahjongSheetView: View {
                         let displayedTiles: [MahjongTile] = isMjDealing ? Array(mjDealingOrder.prefix(mjDealtCount)) : me.hand
                         mjMyHandView(hand: displayedTiles, usableWidth: usableW - CGFloat(me.melds.count * 90), maxTileH: 50)
                             .onAppear {
-                                if mj.phase == .playing && !me.hand.isEmpty && mjDealingOrder.isEmpty {
+                                if mj.phase == .playing && !me.hand.isEmpty && lastMjDealtRound != mj.currentRound {
+                                    lastMjDealtRound = mj.currentRound
                                     triggerMjDealingAnimation(hand: me.hand)
                                 }
                             }
                             .onChange(of: mj.phase) { newP in
-                                if newP == .playing && !me.hand.isEmpty {
+                                if newP == .playing && !me.hand.isEmpty && lastMjDealtRound != mj.currentRound {
+                                    lastMjDealtRound = mj.currentRound
                                     triggerMjDealingAnimation(hand: me.hand)
                                 } else if newP == .lobby {
+                                    lastMjDealtRound = -1
                                     isMjDealing = false
                                     mjDealingOrder = []
                                 }
                             }
-                            .onChange(of: mj.currentRound) { _ in
-                                if mj.phase == .playing && !me.hand.isEmpty {
+                            .onChange(of: mj.currentRound) { newR in
+                                if mj.phase == .playing && !me.hand.isEmpty && lastMjDealtRound != newR {
+                                    lastMjDealtRound = newR
                                     triggerMjDealingAnimation(hand: me.hand)
                                 }
                             }
@@ -9875,6 +9962,32 @@ struct KOnMahjongSheetView: View {
                 }
             }
             .frame(width: geo.size.width, height: geo.size.height, alignment: .top)
+
+            // Animated Pong / Kong / Hu Callout Banner (so player always sees WHO claimed WHAT)
+            if let ev = mj.lastClaimEvent {
+                VStack {
+                    HStack(spacing: 8) {
+                        if let sp = manager.allMemberFrames[ev.characterId] {
+                            Image(uiImage: sp).interpolation(.none).resizable().scaledToFit().frame(width: 30, height: 34)
+                        }
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(ev.seatName).font(.system(size: 10, weight: .bold)).foregroundColor(httCream).lineLimit(1)
+                            Text("💥 \(ev.actionLabel) \(ev.tile.fullName)!").font(.system(size: 14, weight: .black)).foregroundColor(.yellow)
+                        }
+                        mjTileView(tile: ev.tile, width: 26, height: 36, isSelected: false, isHighlight: true)
+                    }
+                    .padding(.horizontal, 14).padding(.vertical, 7)
+                    .background(httCrimson.opacity(0.95)).cornerRadius(12)
+                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(httGold, lineWidth: 2))
+                    .shadow(color: .black.opacity(0.55), radius: 10)
+                    .padding(.top, 42)
+                    Spacer()
+                }
+                .id("mj_claim_banner_\(ev.id)")
+                .transition(.scale(scale: 0.72).combined(with: .opacity))
+                .animation(.spring(response: 0.30, dampingFraction: 0.65), value: ev.id)
+                .allowsHitTesting(false)
+            }
 
             // Floating Ting Card Popup Panel (like Tencent Happy Mahjong)
             if showTingPopup {
@@ -10023,45 +10136,46 @@ struct KOnMahjongSheetView: View {
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(isTurn ? httGold : Color.white.opacity(0.2), lineWidth: isTurn ? 1.5 : 0.8))
     }
 
-    private func mjSeatRiverAndMelds(seat: MahjongSeat, maxWidth: CGFloat) -> some View {
-        let cols = max(7, Int(maxWidth / 16))
+    @ViewBuilder
+    private func mjSeatMelds(seat: MahjongSeat) -> some View {
+        if !seat.melds.isEmpty {
+            HStack(spacing: 3) {
+                ForEach(seat.melds) { m in
+                    HStack(spacing: 1) {
+                        let cnt = (m.kind == .pong ? 3 : 4)
+                        ForEach(0..<cnt, id: \.self) { idx in
+                            if m.kind == .concealedKong && idx != 2 {
+                                mjTileBackView(width: 15, height: 21)
+                            } else {
+                                mjTileView(tile: m.tile, width: 15, height: 21, isSelected: false, isHighlight: false)
+                            }
+                        }
+                    }
+                    .padding(2)
+                    .background(Color.black.opacity(0.42))
+                    .cornerRadius(4)
+                }
+            }
+        }
+    }
+
+    private func mjSeatDiscardRiver(seat: MahjongSeat, maxWidth: CGFloat) -> some View {
+        let tileW: CGFloat = 20
+        let tileH: CGFloat = 27
+        let cols = max(5, Int(maxWidth / (tileW + 2)))
         let visibleDiscards = seat.discards.count > cols * 2 ? Array(seat.discards.suffix(cols * 2)) : seat.discards
         let rows = stride(from: 0, to: visibleDiscards.count, by: cols).map { Array(visibleDiscards[$0..<min($0 + cols, visibleDiscards.count)]) }
         return VStack(alignment: .leading, spacing: 2) {
-            if !seat.melds.isEmpty {
-                HStack(spacing: 4) {
-                    ForEach(seat.melds) { m in
-                        HStack(spacing: 1) {
-                            let cnt = (m.kind == .pong ? 3 : 4)
-                            ForEach(0..<cnt, id: \.self) { idx in
-                                if m.kind == .concealedKong && idx != 2 {
-                                    mjTileBackView(width: 15, height: 21)
-                                } else {
-                                    mjTileView(tile: m.tile, width: 15, height: 21, isSelected: false, isHighlight: false)
-                                }
-                            }
-                        }
-                        .padding(2)
-                        .background(Color.black.opacity(0.35))
-                        .cornerRadius(4)
-                    }
-                }
-            }
             ForEach(0..<rows.count, id: \.self) { rIdx in
-                HStack(spacing: 1.5) {
+                HStack(spacing: 2) {
                     ForEach(rows[rIdx]) { t in
                         let isLatest = (t.id == seat.discards.last?.id)
-                        ZStack(alignment: .top) {
-                            mjTileView(tile: t, width: 14, height: 19, isSelected: false, isHighlight: isLatest)
-                            if isLatest {
-                                Text("▼")
-                                    .font(.system(size: 9, weight: .black))
-                                    .foregroundColor(.orange)
-                                    .shadow(color: .black, radius: 1)
-                                    .offset(y: -8)
-                            }
-                        }
-                        .transition(.scale(scale: 1.38).combined(with: .opacity))
+                        mjTileView(tile: t, width: tileW, height: tileH, isSelected: false, isHighlight: isLatest)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 3)
+                                    .stroke(isLatest ? Color.orange : Color.clear, lineWidth: isLatest ? 1.8 : 0)
+                            )
+                            .transition(.scale(scale: 1.28).combined(with: .opacity))
                     }
                 }
             }
@@ -10688,6 +10802,11 @@ struct KOnRummikubSheetView: View {
 
     @State private var dragSlotIndex: Int? = nil
     @State private var dragOffset: CGSize = .zero
+    @State private var dragTableSource: (meldId: String, tileId: String)? = nil
+    @State private var dragTableOffset: CGSize = .zero
+    @State private var meldGlobalFrames: [String: CGRect] = [:]
+    @State private var tableAreaGlobalFrame: CGRect = .zero
+    @State private var rackAreaGlobalFrame: CGRect = .zero
     @State private var drawAnimProgress: CGFloat = 0.0
 
     // Order seats so opponents are at top-left and local player (me) is anchored at bottom-left next to the rack (1:1 like video!)
@@ -10903,23 +11022,54 @@ struct KOnRummikubSheetView: View {
                                         ForEach(meld.tiles) { t in
                                             let isPickedTableTile = (rmk.selectedTableTileSource?.meldId == meld.id && rmk.selectedTableTileSource?.tileId == t.id)
                                             let isHigh = rmk.lastTurnHighlightedTileIds.contains(t.id)
+                                            let isDraggingThisTbl = (dragTableSource?.meldId == meld.id && dragTableSource?.tileId == t.id)
                                             tileChip(
                                                 t,
-                                                selected: isPickedTableTile,
+                                                selected: isPickedTableTile || isDraggingThisTbl,
                                                 highlighted: isHigh,
                                                 compact: true,
-                                                customW: 40,
-                                                customH: 56
+                                                customW: 42,
+                                                customH: 58
                                             )
+                                            .offset(isDraggingThisTbl ? dragTableOffset : .zero)
+                                            .zIndex(isDraggingThisTbl ? 120 : 1)
                                             .onTapGesture {
                                                 withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
                                                     rmk.handleTableTileTapOrMove(meldId: meld.id, tileId: t.id)
                                                 }
                                             }
+                                            .highPriorityGesture(
+                                                DragGesture(minimumDistance: 6, coordinateSpace: .global)
+                                                    .onChanged { val in
+                                                        guard myTurn else { return }
+                                                        dragTableSource = (meldId: meld.id, tileId: t.id)
+                                                        dragTableOffset = val.translation
+                                                    }
+                                                    .onEnded { val in
+                                                        let dropPt = val.location
+                                                        withAnimation(.spring(response: 0.24, dampingFraction: 0.8)) {
+                                                            if rackAreaGlobalFrame.contains(dropPt) {
+                                                                _ = rmk.returnTableTileToRackIfFromThisTurn(meldId: meld.id, tileId: t.id)
+                                                            } else if let targetMeld = meldGlobalFrames.first(where: { $0.key != meld.id && $0.value.insetBy(dx: -12, dy: -12).contains(dropPt) })?.key {
+                                                                rmk.moveTableTile(fromMeldId: meld.id, tileId: t.id, toMeldId: targetMeld)
+                                                            } else if tableAreaGlobalFrame.contains(dropPt) {
+                                                                rmk.moveTableTile(fromMeldId: meld.id, tileId: t.id, toMeldId: nil)
+                                                            }
+                                                            dragTableSource = nil
+                                                            dragTableOffset = .zero
+                                                        }
+                                                    }
+                                            )
                                         }
                                     }
                                     .padding(4)
-                                    .background(Color.black.opacity(0.28))
+                                    .background(
+                                        GeometryReader { mGeo in
+                                            Color.black.opacity(0.28)
+                                                .onAppear { meldGlobalFrames[meld.id] = mGeo.frame(in: .global) }
+                                                .onChange(of: displayMelds.count) { _ in meldGlobalFrames[meld.id] = mGeo.frame(in: .global) }
+                                        }
+                                    )
                                     .cornerRadius(8)
                                     .overlay(
                                         RoundedRectangle(cornerRadius: 8)
@@ -10931,6 +11081,13 @@ struct KOnRummikubSheetView: View {
                         }
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(
+                        GeometryReader { tGeo in
+                            Color.clear
+                                .onAppear { tableAreaGlobalFrame = tGeo.frame(in: .global) }
+                                .onChange(of: rmk.phase) { _ in tableAreaGlobalFrame = tGeo.frame(in: .global) }
+                        }
+                    )
                     .contentShape(Rectangle())
                     .onTapGesture {
                         if myTurn && !rmk.selectedTileIds.isEmpty {
@@ -11022,15 +11179,17 @@ struct KOnRummikubSheetView: View {
                                                         }
                                                     }
                                                     .highPriorityGesture(
-                                                        DragGesture(minimumDistance: 3, coordinateSpace: .local)
+                                                        DragGesture(minimumDistance: 3, coordinateSpace: .global)
                                                             .onChanged { val in
                                                                 dragSlotIndex = slotIdx
                                                                 dragOffset = val.translation
                                                             }
                                                             .onEnded { val in
-                                                                if val.translation.height < -55 {
+                                                                let dropPt = val.location
+                                                                if val.translation.height < -55 || tableAreaGlobalFrame.contains(dropPt) {
+                                                                    let targetMeld = meldGlobalFrames.first(where: { $0.value.insetBy(dx: -14, dy: -14).contains(dropPt) })?.key
                                                                     withAnimation(.spring(response: 0.25, dampingFraction: 0.80)) {
-                                                                        rmk.dropRackTilesToTable(primaryTileId: tile.id)
+                                                                        rmk.dropRackTilesToTable(primaryTileId: tile.id, targetMeldId: targetMeld)
                                                                         dragSlotIndex = nil
                                                                         dragOffset = .zero
                                                                     }
@@ -11076,6 +11235,11 @@ struct KOnRummikubSheetView: View {
                             .padding(.vertical, 3)
                         }
                     }
+                    .background(
+                        GeometryReader { rGeo in
+                            Color.clear.onAppear { rackAreaGlobalFrame = rGeo.frame(in: .global) }
+                        }
+                    )
                     .frame(height: 110)
                 }
 

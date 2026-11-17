@@ -867,7 +867,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     }
 
     // MARK: - App Metadata & Author Information (多语言制作作者与版本)
-    var appVersion: String { "1.0" }
+    var appVersion: String { "17/11/2026" }
     
     var appAuthorName: String {
         switch language {
@@ -922,6 +922,8 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     @Published var transitPhase: TransitNavigationPhase = .idle
     @Published var transitCurrentStationIndex: Int = 0
     @Published var transitBoardingStationCoord: CLLocationCoordinate2D? = nil
+    @Published var transitAlightStationCoord: CLLocationCoordinate2D? = nil
+    @Published var transitSegmentPolylines: [MKPolyline] = []
     @Published var transitBoardingStationName: String = ""
     @Published var transitAlightStationName: String = ""
     @Published var transitActiveLineName: String = ""
@@ -945,7 +947,14 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         }
     }
     @Published var cruiseRemainingSeconds: Int = 600
-    @Published var selectedCharacter: CharacterFilter = .all
+    @Published var selectedCharacter: CharacterFilter = {
+        let saved = UserDefaults.standard.integer(forKey: "kon_stage_selected_char")
+        return CharacterFilter(rawValue: saved) ?? .all
+    }() {
+        didSet {
+            UserDefaults.standard.set(selectedCharacter.rawValue, forKey: "kon_stage_selected_char")
+        }
+    }
     @Published var enableBanter: Bool = true
     
     // GPS & HUD Speedometer State
@@ -1032,11 +1041,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             UserDefaults.standard.set(showMapMode, forKey: "kon_show_map_mode")
         }
     }
-    @Published var isMapEnlarged: Bool = UserDefaults.standard.bool(forKey: "kon_is_map_enlarged") {
-        didSet {
-            UserDefaults.standard.set(isMapEnlarged, forKey: "kon_is_map_enlarged")
-        }
-    } // Auto-enlarges on active navigation!
+    @Published var isMapEnlarged: Bool = false // Auto-enlarges on active navigation!
     @Published var travelMode: NavigationTravelMode = .driving {
         didSet {
             guard oldValue != travelMode else { return }
@@ -1835,6 +1840,23 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     
     func exitFocusedNavigationToOverview() {
         isNavigatingFocused = false
+    }
+
+    func cancelNavigation() {
+        stop()
+        isNavigatingFocused = false
+        activeRoute = nil
+        customTransitPolyline = nil
+        transitSegmentPolylines = []
+        transitBoardingStationCoord = nil
+        transitAlightStationCoord = nil
+        candidateRoutes = []
+        destinationCoord = nil
+        destinationName = "目的地"
+        currentStepInstruction = "準備OK！出発進行～！"
+        remainingRouteDistanceKm = 0.0
+        remainingRouteMinutes = 0
+        isMapEnlarged = false
     }
     
     private func announceTravelModeSwitch() {
@@ -6113,22 +6135,20 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
 
     func calculateTransitAppleMapsRoute(from: CLLocationCoordinate2D, to: CLLocationCoordinate2D, destTitle: String, plan: TransitPlanOption?) {
         self.customTransitPolyline = nil
+        self.transitSegmentPolylines = []
+        let originCoord = isDemoSimulating ? from : userCoordinate
         let roadReq = MKDirections.Request()
-        if isDemoSimulating {
-            roadReq.source = MKMapItem(placemark: MKPlacemark(coordinate: from))
-        } else {
-            // When real GPS is active, prefer coordinate from userCoordinate so origin is 100% matched to road!
-            roadReq.source = MKMapItem(placemark: MKPlacemark(coordinate: userCoordinate))
-        }
+        roadReq.source = MKMapItem(placemark: MKPlacemark(coordinate: originCoord))
         roadReq.destination = MKMapItem(placemark: MKPlacemark(coordinate: to))
         roadReq.transportType = .automobile
         roadReq.requestsAlternateRoutes = false
-        
+
         MKDirections(request: roadReq).calculate { [weak self] resp, _ in
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 if let roadRoute = resp?.routes.first {
-                    roadRoute.polyline.title = "TRANSIT_BUS_BLUE"
+                    let pts = roadRoute.polyline.points()
+                    let cnt = roadRoute.polyline.pointCount
                     self.activeRoute = roadRoute
                     self.customTransitPolyline = nil
                     self.remainingRouteDistanceKm = roadRoute.distance / 1000.0
@@ -6140,6 +6160,59 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                     self.candidateRoutes = [roadRoute]
                     self.selectedRouteIndex = 0
                     self.triggerDepartureGreeting(title: destTitle, isReroute: false)
+
+                    if cnt >= 6 {
+                        let boardIdx = max(1, min(cnt - 3, Int(Double(cnt) * 0.14)))
+                        let alightIdx = max(boardIdx + 1, min(cnt - 2, Int(Double(cnt) * 0.86)))
+                        let boardCoord = pts[boardIdx].coordinate
+                        let alightCoord = pts[alightIdx].coordinate
+                        self.transitBoardingStationCoord = boardCoord
+                        self.transitAlightStationCoord = alightCoord
+                        if self.transitBoardingStationName.isEmpty { self.transitBoardingStationName = "🚇 乘车站" }
+                        if self.transitAlightStationName.isEmpty { self.transitAlightStationName = "🚇 下车站" }
+
+                        // Build combined Walking + Transit + Walking polylines (with real MKDirections walking legs!)
+                        let transitSliceCount = max(2, alightIdx - boardIdx + 1)
+                        let transitPoly = MKPolyline(points: pts.advanced(by: boardIdx), count: transitSliceCount)
+                        transitPoly.title = "TRANSIT_METRO_GREEN"
+
+                        let w1Req = MKDirections.Request()
+                        w1Req.source = MKMapItem(placemark: MKPlacemark(coordinate: originCoord))
+                        w1Req.destination = MKMapItem(placemark: MKPlacemark(coordinate: boardCoord))
+                        w1Req.transportType = .walking
+
+                        let w2Req = MKDirections.Request()
+                        w2Req.source = MKMapItem(placemark: MKPlacemark(coordinate: alightCoord))
+                        w2Req.destination = MKMapItem(placemark: MKPlacemark(coordinate: to))
+                        w2Req.transportType = .walking
+
+                        var walk1Poly = MKPolyline(points: pts, count: boardIdx + 1)
+                        walk1Poly.title = "TRANSIT_WALK_BLUE"
+                        var walk2Poly = MKPolyline(points: pts.advanced(by: alightIdx), count: cnt - alightIdx)
+                        walk2Poly.title = "TRANSIT_WALK_BLUE"
+                        self.transitSegmentPolylines = [walk1Poly, transitPoly, walk2Poly]
+
+                        let group = DispatchGroup()
+                        group.enter()
+                        MKDirections(request: w1Req).calculate { r1, _ in
+                            if let p1 = r1?.routes.first?.polyline {
+                                p1.title = "TRANSIT_WALK_BLUE"
+                                walk1Poly = p1
+                            }
+                            group.leave()
+                        }
+                        group.enter()
+                        MKDirections(request: w2Req).calculate { r2, _ in
+                            if let p2 = r2?.routes.first?.polyline {
+                                p2.title = "TRANSIT_WALK_BLUE"
+                                walk2Poly = p2
+                            }
+                            group.leave()
+                        }
+                        group.notify(queue: .main) {
+                            self.transitSegmentPolylines = [walk1Poly, transitPoly, walk2Poly]
+                        }
+                    }
                 } else {
                     let walkReq = MKDirections.Request()
                     walkReq.source = MKMapItem(placemark: MKPlacemark(coordinate: self.userCoordinate))
@@ -11587,28 +11660,45 @@ enum MahjongEvaluator {
         return result
     }
 
-    static func bestAIDiscard(hand: [MahjongTile]) -> MahjongTile {
+    static func bestAIDiscard(hand: [MahjongTile], meldsCount: Int = 0, difficulty: MahjongAIDifficulty = .standard) -> MahjongTile {
         let nonLaizi = hand.filter { !$0.isLaizi }
         guard !nonLaizi.isEmpty else { return hand.last! }
         var counts = [Int](repeating: 0, count: 33)
         for t in nonLaizi where t.typeKey >= 0 && t.typeKey < 33 {
             counts[t.typeKey] += 1
         }
+        if difficulty == .master {
+            // Evaluate if discarding a tile immediately reaches Tenpai (listening) with maximum winning tiles
+            var bestMasterTile: MahjongTile? = nil
+            var bestReadyCount = 0
+            for (idx, cand) in hand.enumerated() where !cand.isLaizi {
+                var rem = hand
+                rem.remove(at: idx)
+                let ready = readyTiles(hand: rem, meldsCount: meldsCount)
+                if ready.count > bestReadyCount {
+                    bestReadyCount = ready.count
+                    bestMasterTile = cand
+                }
+            }
+            if let bt = bestMasterTile { return bt }
+        }
         var bestTile = nonLaizi[0]
         var lowestScore = Int.max
         for t in nonLaizi {
             let k = t.typeKey
-            var score = (counts[k] - 1) * 14
+            var score = (counts[k] - 1) * (difficulty == .master ? 18 : 14)
+            if difficulty == .master && counts[k] >= 3 { score += 16 }
             if k < 27 {
                 let pos = k % 9
-                if pos > 0 && counts[k - 1] > 0 { score += 7 }
-                if pos < 8 && counts[k + 1] > 0 { score += 7 }
+                if pos > 0 && counts[k - 1] > 0 { score += (difficulty == .master ? 10 : 7) }
+                if pos < 8 && counts[k + 1] > 0 { score += (difficulty == .master ? 10 : 7) }
                 if pos > 1 && counts[k - 2] > 0 { score += 3 }
                 if pos < 7 && counts[k + 2] > 0 { score += 3 }
-                if pos == 0 || pos == 8 { score -= 2 }
+                if pos == 0 || pos == 8 { score -= (difficulty == .master ? 4 : 2) }
             } else {
-                score -= 3 // Isolated wind/dragon discarded first unless paired/triplet
+                score -= (difficulty == .master ? 5 : 3)
             }
+            if difficulty == .casual { score += Int.random(in: -4...6) }
             if score < lowestScore {
                 lowestScore = score
                 bestTile = t
@@ -11616,6 +11706,21 @@ enum MahjongEvaluator {
         }
         return bestTile
     }
+}
+
+enum MahjongAIDifficulty: String, Codable, CaseIterable {
+    case casual = "休闲 AI"
+    case standard = "标准 AI"
+    case master = "大师 AI"
+}
+
+struct MahjongClaimEvent: Identifiable, Equatable {
+    let id: String
+    let seatIndex: Int
+    let seatName: String
+    let characterId: Int
+    let actionLabel: String
+    let tile: MahjongTile
 }
 
 class KOnMahjongManager: NSObject, ObservableObject, MCSessionDelegate, MCNearbyServiceAdvertiserDelegate, MCNearbyServiceBrowserDelegate {
@@ -11834,6 +11939,26 @@ class KOnMahjongManager: NSObject, ObservableObject, MCSessionDelegate, MCNearby
     @Published var selectedTileId: String? = nil
     @Published var drawnTileId: String? = nil
     @Published var pendingClaim: MahjongPendingClaim? = nil
+    @Published var aiDifficulty: MahjongAIDifficulty = .standard
+    @Published var lastClaimEvent: MahjongClaimEvent? = nil
+
+    private func triggerClaimEvent(seatIdx: Int, actionLabel: String, tile: MahjongTile) {
+        guard seatIdx >= 0 && seatIdx < seats.count else { return }
+        let ev = MahjongClaimEvent(
+            id: UUID().uuidString,
+            seatIndex: seatIdx,
+            seatName: seats[seatIdx].name,
+            characterId: seats[seatIdx].characterId,
+            actionLabel: actionLabel,
+            tile: tile
+        )
+        lastClaimEvent = ev
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.85) { [weak self] in
+            if self?.lastClaimEvent?.id == ev.id {
+                self?.lastClaimEvent = nil
+            }
+        }
+    }
     @Published var winnerSeat: Int? = nil
     @Published var winReason: String = ""
 
@@ -12257,7 +12382,7 @@ class KOnMahjongManager: NSObject, ObservableObject, MCSessionDelegate, MCNearby
         } else if phase == .playing {
             let actor = currentTurnSeat
             guard actor >= 0 && actor < seats.count else { return }
-            let tile = MahjongEvaluator.bestAIDiscard(hand: seats[actor].hand)
+            let tile = MahjongEvaluator.bestAIDiscard(hand: seats[actor].hand, meldsCount: seats[actor].melds.count, difficulty: self.aiDifficulty)
             executeDiscard(tileId: tile.id, fromSeat: actor)
         }
     }
@@ -12336,6 +12461,7 @@ class KOnMahjongManager: NSObject, ObservableObject, MCSessionDelegate, MCNearby
             seats[actor].hand.removeAll { $0.suit == tile.suit && $0.rank == tile.rank }
             seats[actor].melds.append(MahjongMeld(id: UUID().uuidString, kind: .concealedKong, tile: tile))
             seats[actor].lastActionText = "暗杠 \(tile.fullName)"
+            triggerClaimEvent(seatIdx: actor, actionLabel: "暗杠", tile: tile)
             for i in 0..<4 {
                 seats[i].score += (i == actor) ? (baseScore * 3) : (-baseScore)
             }
@@ -12344,6 +12470,7 @@ class KOnMahjongManager: NSObject, ObservableObject, MCSessionDelegate, MCNearby
             seats[actor].hand.remove(at: handIdx)
             seats[actor].melds[mIdx] = MahjongMeld(id: seats[actor].melds[mIdx].id, kind: .exposedKong, tile: tile)
             seats[actor].lastActionText = "补杠 \(tile.fullName)"
+            triggerClaimEvent(seatIdx: actor, actionLabel: "补杠", tile: tile)
             for i in 0..<4 {
                 seats[i].score += (i == actor) ? (baseScore * 3) : (-baseScore)
             }
@@ -12406,6 +12533,7 @@ class KOnMahjongManager: NSObject, ObservableObject, MCSessionDelegate, MCNearby
             seats[seatIdx].hand.removeAll { $0.suit == claim.tile.suit && $0.rank == claim.tile.rank }
             seats[seatIdx].melds.append(MahjongMeld(id: UUID().uuidString, kind: .exposedKong, tile: claim.tile))
             seats[seatIdx].lastActionText = "明杠 \(claim.tile.fullName)"
+            triggerClaimEvent(seatIdx: seatIdx, actionLabel: "明杠", tile: claim.tile)
             seats[seatIdx].score += baseScore * 3
             seats[claim.discarderSeat].score -= baseScore * 3
             pendingClaim = nil
@@ -12429,6 +12557,7 @@ class KOnMahjongManager: NSObject, ObservableObject, MCSessionDelegate, MCNearby
             }
             seats[seatIdx].melds.append(MahjongMeld(id: UUID().uuidString, kind: .pong, tile: claim.tile))
             seats[seatIdx].lastActionText = "碰 \(claim.tile.fullName)"
+            triggerClaimEvent(seatIdx: seatIdx, actionLabel: "碰", tile: claim.tile)
             pendingClaim = nil
             phase = .playing
             currentTurnSeat = seatIdx
@@ -12536,7 +12665,7 @@ class KOnMahjongManager: NSObject, ObservableObject, MCSessionDelegate, MCNearby
                 self.executeSelfKong(tile: kongTile, fromSeat: seatIdx)
                 return
             }
-            let discard = MahjongEvaluator.bestAIDiscard(hand: self.seats[seatIdx].hand)
+            let discard = MahjongEvaluator.bestAIDiscard(hand: self.seats[seatIdx].hand, meldsCount: self.seats[seatIdx].melds.count, difficulty: self.aiDifficulty)
             self.executeDiscard(tileId: discard.id, fromSeat: seatIdx)
         }
         aiWorkItem = work
@@ -12559,7 +12688,11 @@ class KOnMahjongManager: NSObject, ObservableObject, MCSessionDelegate, MCNearby
             } else if let kongAi = cl.eligibleKongSeats.first(where: { self.seats[$0].isAI && !cl.passedSeats.contains($0) }) {
                 self.handleClaimResponse("kong", fromSeat: kongAi)
             } else if let pongAi = cl.eligiblePongSeats.first(where: { self.seats[$0].isAI && !cl.passedSeats.contains($0) }) {
-                self.handleClaimResponse("pong", fromSeat: pongAi)
+                if self.aiDifficulty == .casual && Int.random(in: 0..<3) == 0 {
+                    self.handleClaimResponse("pass", fromSeat: pongAi)
+                } else {
+                    self.handleClaimResponse("pong", fromSeat: pongAi)
+                }
             } else {
                 self.resolveClaimAsAllPass()
             }
@@ -14042,27 +14175,28 @@ final class RummikubEngine: NSObject, ObservableObject {
         }
     }
 
-    func addSelectedToTableMeld(_ meldId: String) {
+    func addSelectedToTableMeld(_ meldId: String, allowInvalidSplit: Bool = false) {
         guard currentTurnSeat == mySeatIndex, phase == .playing, !selectedTileIds.isEmpty else { return }
         beginOrEnsureWorkspace()
         guard let idx = workingMelds.firstIndex(where: { $0.id == meldId }) else { return }
-        // Allow adding to a meld placed during this turn even before breaking ice, or any meld after breaking ice
         guard seats[mySeatIndex].hasBrokenIce || idx >= snapshotMelds.count else {
             statusBanner = "⚠️ 尚未破冰！首次出牌只能操作自己牌架摆出的牌组且总和 ≥30 分"
             return
         }
         let picked = workingHand.filter { selectedTileIds.contains($0.id) }
         let combined = workingMelds[idx].tiles + picked
-        guard RmkEvaluator.evaluateMeld(combined) != nil else {
+        let valid = (RmkEvaluator.evaluateMeld(combined) != nil)
+        if !valid && !(allowInvalidSplit && seats[mySeatIndex].hasBrokenIce) {
             statusBanner = "⚠️ 添牌后该牌组不符合群组或顺组规则"
             return
         }
         workingHand.removeAll { selectedTileIds.contains($0.id) }
         for i in 0..<rackSlots.count { if let t = rackSlots[i], selectedTileIds.contains(t.id) { rackSlots[i] = nil } }
-        workingMelds[idx].tiles = RmkEvaluator.sortMeldForDisplay(combined)
+        workingMelds[idx].tiles = valid ? RmkEvaluator.sortMeldForDisplay(combined) : combined
+        for t in picked { lastTurnHighlightedTileIds.insert(t.id) }
         selectedTileIds.removeAll()
         liftedSlotIndex = nil
-        statusBanner = "✅ 已将选牌并入牌组（点击【确认出牌】完成回合）"
+        statusBanner = valid ? "✅ 已将选牌并入牌组（点右侧绿色 ✓ 确认出牌）" : "🧩 已填入桌面牌组（红框表示待拆解，可拖动多余的牌到桌面其他位置重组！）"
     }
 
     /// Pick ANY specific tile from ANY table meld (even 3-tile melds or middle tiles like taking 4 from 4567!)
@@ -14100,12 +14234,14 @@ final class RummikubEngine: NSObject, ObservableObject {
         statusBanner = "🔄 已从桌面取回 [\(pickedTile.isJoker ? "百搭" : "\(pickedTile.color.labelZh)\(pickedTile.number)")] 到牌架重组！"
     }
 
-    /// Select or move a tile directly on the table (1:1 Rummikub free table rearrangement: split runs/groups, move tile to another meld, or detach to form new meld!)
+    /// 1:1 Rummikub Video Behavior:
+    /// - Tapping or dragging a table tile NEVER sends a prior-turn table tile back to your rack!
+    /// - If you tap/drag a tile from a table meld, it detaches/splits on the table or moves into another table meld!
+    /// - Only tiles that originated from your own rack in the current turn can return to your rack.
     func handleTableTileTapOrMove(meldId: String, tileId: String) {
         guard currentTurnSeat == mySeatIndex, phase == .playing else { return }
-        // 1. If player has rack tiles selected, try merging them into this table meld
         if !selectedTileIds.isEmpty {
-            addSelectedToTableMeld(meldId)
+            addSelectedToTableMeld(meldId, allowInvalidSplit: true)
             return
         }
         beginOrEnsureWorkspace()
@@ -14117,56 +14253,78 @@ final class RummikubEngine: NSObject, ObservableObject {
             return
         }
 
-        // 2. If a table tile is already selected for table-to-table move:
         if let src = selectedTableTileSource {
             if src.meldId == meldId && src.tileId == tileId {
-                // Tapping the same table tile again detaches it as a standalone incomplete group on the table (or returns to rack if it came from rack this turn)
+                // Tapping the same table tile again detaches/splits it ON THE TABLE (never forces prior-turn table tiles onto your rack!)
                 selectedTableTileSource = nil
                 let tile = workingMelds[mIdx].tiles.remove(at: tIdx)
                 if workingMelds[mIdx].tiles.isEmpty {
                     workingMelds.remove(at: mIdx)
                 }
-                let cameFromRackThisTurn = snapshotHand.contains(where: { $0.id == tile.id })
-                if cameFromRackThisTurn {
-                    workingHand.append(tile)
-                    syncRackFromHand(workingHand, preserveExistingPositions: true)
-                    statusBanner = "↩️ 已将该牌退回牌架"
-                } else {
-                    workingMelds.append(RmkMeld(id: UUID().uuidString, tiles: [tile]))
-                    lastTurnHighlightedTileIds.insert(tile.id)
-                    statusBanner = "🧩 已拆出桌面单牌，请继续点选其他牌或牌架牌与它组合！"
-                }
+                workingMelds.append(RmkMeld(id: UUID().uuidString, tiles: [tile]))
+                lastTurnHighlightedTileIds.insert(tile.id)
+                statusBanner = "🧩 已从桌面牌组拆出单牌到桌面！可继续拖动其他牌与它组合"
                 return
             } else if src.meldId != meldId {
-                // Move the previously selected table tile into this target meld!
-                if let srcMIdx = workingMelds.firstIndex(where: { $0.id == src.meldId }),
-                   let srcTIdx = workingMelds[srcMIdx].tiles.firstIndex(where: { $0.id == src.tileId }) {
-                    let movingTile = workingMelds[srcMIdx].tiles.remove(at: srcTIdx)
-                    if workingMelds[srcMIdx].tiles.isEmpty {
-                        workingMelds.remove(at: srcMIdx)
-                    }
-                    if let newTargetIdx = workingMelds.firstIndex(where: { $0.id == meldId }) {
-                        var combined = workingMelds[newTargetIdx].tiles + [movingTile]
-                        if RmkEvaluator.evaluateMeld(combined) != nil {
-                            combined = RmkEvaluator.sortMeldForDisplay(combined)
-                        }
-                        workingMelds[newTargetIdx].tiles = combined
-                        lastTurnHighlightedTileIds.insert(movingTile.id)
-                        selectedTableTileSource = nil
-                        statusBanner = "✅ 已将桌面牌移入目标牌组！"
-                        return
-                    }
-                }
+                moveTableTile(fromMeldId: src.meldId, tileId: src.tileId, toMeldId: meldId)
+                selectedTableTileSource = nil
+                return
             }
         }
 
-        // 3. Select this table tile so it can be moved into another table meld, combined with rack tiles, or tapped again to detach!
         selectedTableTileSource = (meldId: meldId, tileId: tileId)
         let picked = workingMelds[mIdx].tiles[tIdx]
-        statusBanner = "🖐 已选中桌面牌 [\(picked.isJoker ? "百搭" : "\(picked.color.labelZh)\(picked.number)")]：点另一牌组可移入，再点一次可单独拆出！"
+        statusBanner = "🖐 已选中桌面牌 [\(picked.isJoker ? "百搭" : "\(picked.color.labelZh)\(picked.number)")]：可直接拖到其他牌组，或点另一组移入，再点一次单独拆出！"
     }
 
-    /// Merge selected rack tiles with a currently selected table tile to form a brand-new meld on the table!
+    func moveTableTile(fromMeldId: String, tileId: String, toMeldId: String?) {
+        guard currentTurnSeat == mySeatIndex, phase == .playing else { return }
+        beginOrEnsureWorkspace()
+        guard let srcMIdx = workingMelds.firstIndex(where: { $0.id == fromMeldId }),
+              let srcTIdx = workingMelds[srcMIdx].tiles.firstIndex(where: { $0.id == tileId }) else { return }
+        guard seats[mySeatIndex].hasBrokenIce || srcMIdx >= snapshotMelds.count else {
+            statusBanner = "⚠️ 尚未破冰！不能拆解其他玩家的桌面牌组"
+            return
+        }
+        let movingTile = workingMelds[srcMIdx].tiles.remove(at: srcTIdx)
+        if workingMelds[srcMIdx].tiles.isEmpty {
+            workingMelds.remove(at: srcMIdx)
+        }
+        lastTurnHighlightedTileIds.insert(movingTile.id)
+        if let targetId = toMeldId, let dstIdx = workingMelds.firstIndex(where: { $0.id == targetId }) {
+            var comb = workingMelds[dstIdx].tiles + [movingTile]
+            if RmkEvaluator.evaluateMeld(comb) != nil {
+                comb = RmkEvaluator.sortMeldForDisplay(comb)
+            }
+            workingMelds[dstIdx].tiles = comb
+            statusBanner = "✅ 已将桌面牌拖入目标牌组！"
+        } else {
+            workingMelds.append(RmkMeld(id: UUID().uuidString, tiles: [movingTile]))
+            statusBanner = "🧩 已拆出单牌到桌面空位，可继续拖动组牌！"
+        }
+        selectedTableTileSource = nil
+    }
+
+    func returnTableTileToRackIfFromThisTurn(meldId: String, tileId: String) -> Bool {
+        guard currentTurnSeat == mySeatIndex, phase == .playing else { return false }
+        guard snapshotHand.contains(where: { $0.id == tileId }) else {
+            statusBanner = "⚠️ 桌面原有的牌不能放回牌架，请在桌面上拖动拆组！"
+            return false
+        }
+        beginOrEnsureWorkspace()
+        guard let mIdx = workingMelds.firstIndex(where: { $0.id == meldId }),
+              let tIdx = workingMelds[mIdx].tiles.firstIndex(where: { $0.id == tileId }) else { return false }
+        let tile = workingMelds[mIdx].tiles.remove(at: tIdx)
+        if workingMelds[mIdx].tiles.isEmpty {
+            workingMelds.remove(at: mIdx)
+        }
+        workingHand.append(tile)
+        syncRackFromHand(workingHand, preserveExistingPositions: true)
+        selectedTableTileSource = nil
+        statusBanner = "↩️ 已将本回合打出的牌拉回牌架"
+        return true
+    }
+
     func combineSelectedRackTilesWithTableTile() -> Bool {
         guard let src = selectedTableTileSource, !selectedTileIds.isEmpty else { return false }
         beginOrEnsureWorkspace()
@@ -14192,7 +14350,7 @@ final class RummikubEngine: NSObject, ObservableObject {
     }
 
     /// Drag-to-table play: drops selected/lifted rack tiles onto the table (auto-merges onto 123->1234 if valid, or places new meld!)
-    func dropRackTilesToTable(primaryTileId: String) {
+    func dropRackTilesToTable(primaryTileId: String, targetMeldId: String? = nil) {
         guard currentTurnSeat == mySeatIndex, phase == .playing else {
             statusBanner = "⏳ 当前不是您的回合，无法拖上桌面出牌"
             return
@@ -14207,6 +14365,13 @@ final class RummikubEngine: NSObject, ObservableObject {
         let picked = workingHand.filter { targetIds.contains($0.id) }
         guard !picked.isEmpty else { return }
         for t in picked { lastTurnHighlightedTileIds.insert(t.id) }
+
+        if let tMeldId = targetMeldId,
+           let mIdx = workingMelds.firstIndex(where: { $0.id == tMeldId }),
+           (seats[mySeatIndex].hasBrokenIce || mIdx >= snapshotMelds.count) {
+            addSelectedToTableMeld(tMeldId, allowInvalidSplit: true)
+            return
+        }
 
         if RmkEvaluator.evaluateMeld(picked) != nil {
             selectedTileIds = targetIds
