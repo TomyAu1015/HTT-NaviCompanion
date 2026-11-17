@@ -7166,11 +7166,7 @@ struct AboutAndFeedbackContentView: View {
     private let httCrimson = Color(red: 0.78, green: 0.18, blue: 0.22)
     private let httCream = Color(red: 0.99, green: 0.96, blue: 0.90)
     
-    var body: some View {
-        ZStack {
-            ScrollView {
-                VStack(spacing: 16) {
-                    // 1. App Header Card (放课后茶会伴侣 v1.0 + 作者署名)
+    private var aboutHeaderCard: some View {
                 VStack(spacing: 8) {
                     // App Avatar
                     if let appIcon = UIImage(named: "AppIcon60x60@2x") ?? UIImage(named: "AppIcon") {
@@ -7225,6 +7221,13 @@ struct AboutAndFeedbackContentView: View {
                 .cornerRadius(16)
                 .padding(.horizontal)
                 
+    }
+
+    var body: some View {
+        ZStack {
+            ScrollView {
+                VStack(spacing: 16) {
+                    aboutHeaderCard
                 // Toast notification
                 if let toast = copyToastText {
                     HStack(spacing: 6) {

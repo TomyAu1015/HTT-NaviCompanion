@@ -947,10 +947,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         }
     }
     @Published var cruiseRemainingSeconds: Int = 600
-    @Published var selectedCharacter: CharacterFilter = {
-        let saved = UserDefaults.standard.integer(forKey: "kon_stage_selected_char")
-        return CharacterFilter(rawValue: saved) ?? .all
-    }() {
+    @Published var selectedCharacter: CharacterFilter = CharacterFilter(rawValue: UserDefaults.standard.string(forKey: "kon_stage_selected_char") ?? "") ?? .all {
         didSet {
             UserDefaults.standard.set(selectedCharacter.rawValue, forKey: "kon_stage_selected_char")
         }
@@ -9470,7 +9467,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             }
         }
         if parsedName == nil {
-            parsedName = params["dname"] ?? params["poiname"] ?? params["name"] ?? params["title"] ?? params["dest"] ?? params["keyword"] ?? params["q"] ?? params[" saddr"] ?? params["daddr"]
+            parsedName = ["dname", "poiname", "name", "title", "dest", "keyword", "q", " saddr", "daddr"].compactMap { params[$0] }.first
         }
         
         // 3. Check Baidu Map (baidumap://map/direction?destination=latlng:22.54,114.05|name:xxx or destination=22.54,114.05)
