@@ -7231,10 +7231,8 @@ struct AboutAndFeedbackContentView: View {
                 
     }
 
-    var body: some View {
-        ZStack {
-            ScrollView {
-                VStack(spacing: 16) {
+    private var aboutChannelsPart1: some View {
+        VStack(spacing: 16) {
                     aboutHeaderCard
                 // Toast notification
                 if let toast = copyToastText {
@@ -7478,6 +7476,11 @@ struct AboutAndFeedbackContentView: View {
                 .cornerRadius(16)
                 .padding(.horizontal)
                 
+        }
+    }
+
+    private var aboutChannelsPart2: some View {
+        VStack(spacing: 16) {
                 // 3. Feedback Channel 2: Instagram (附图 P2 - 点击可直接放大打开)
                 VStack(alignment: .leading, spacing: 10) {
                     HStack(spacing: 8) {
@@ -7703,6 +7706,11 @@ struct AboutAndFeedbackContentView: View {
                 .cornerRadius(16)
                 .padding(.horizontal)
                 
+        }
+    }
+
+    private var aboutChannelsPart3: some View {
+        VStack(spacing: 16) {
                 // 5. Feedback Channel 4: 小红书 (保留「小君殇」原名不变)
                 VStack(alignment: .leading, spacing: 10) {
                     HStack(spacing: 8) {
@@ -7896,7 +7904,16 @@ struct AboutAndFeedbackContentView: View {
                 .cornerRadius(16)
                 .padding(.horizontal)
                 .padding(.bottom, 16)
-                }
+        }
+    }
+
+    var body: some View {
+        ZStack {
+            ScrollView {
+                VStack(spacing: 16) {
+                    aboutChannelsPart1
+                    aboutChannelsPart2
+                    aboutChannelsPart3                }
                 .padding(.vertical, 8)
             }
             
@@ -8210,10 +8227,8 @@ struct KOnDoudizhuSheetView: View {
     }
     
     // MARK: - 1. Scrollable Lobby View (Fixed Sheet + Scrollable Cards)
-    private var lobbyContentView: some View {
-        VStack(spacing: 6) {
-            ScrollView(.vertical, showsIndicators: true) {
-                VStack(alignment: .leading, spacing: 8) {
+    private var ddzLobbyTopSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
             // Network Mode Selector: Face-to-Face P2P vs Online Server
             HStack(spacing: 8) {
                 Button(action: {
@@ -8461,6 +8476,11 @@ struct KOnDoudizhuSheetView: View {
                 .cornerRadius(10)
             }
             
+        }
+    }
+
+    private var ddzLobbyBottomSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
             // 3. Host Room Rules Settings (局数 / 底分 / 封顶 / 倒计时 / AI难度)
             let canEditRules = ddz.isRoomAuthority || (!ddz.isHostingRoom && !ddz.isOnlineConnected && ddz.connectedPeerNames.isEmpty)
             VStack(alignment: .leading, spacing: 5) {
@@ -8565,7 +8585,15 @@ struct KOnDoudizhuSheetView: View {
             .padding(8)
             .background(Color.black.opacity(0.45))
             .cornerRadius(10)
-                }
+        }
+    }
+
+    private var lobbyContentView: some View {
+        VStack(spacing: 6) {
+            ScrollView(.vertical, showsIndicators: true) {
+                VStack(alignment: .leading, spacing: 8) {
+                    ddzLobbyTopSection
+                    ddzLobbyBottomSection                }
                 .padding(.bottom, 6)
             }
             
@@ -9389,6 +9417,18 @@ struct KOnMahjongSheetView: View {
     private let httCream = Color(red: 0.99, green: 0.96, blue: 0.90)
     private let tableFeltDark = Color(red: 0.05, green: 0.24, blue: 0.16)
     private let tableFeltLight = Color(red: 0.09, green: 0.34, blue: 0.22)
+
+    private func mjTr(_ hans: String, _ hant: String, _ en: String) -> String {
+        switch manager.language {
+        case .zhHans: return hans
+        case .zhHant: return hant
+        case .en: return en
+        }
+    }
+
+    private func tr(_ hans: String, _ hant: String, _ en: String) -> String {
+        mjTr(hans, hant, en)
+    }
 
     var body: some View {
         ZStack {
@@ -10558,6 +10598,14 @@ struct KOnRummikubSheetView: View {
         }
     }
 
+    private func mjTr(_ hans: String, _ hant: String, _ en: String) -> String {
+        rmkTr(hans, hant, en)
+    }
+
+    private func tr(_ hans: String, _ hant: String, _ en: String) -> String {
+        rmkTr(hans, hant, en)
+    }
+
     private func computeAutoScaledRmkRows(melds: [RmkMeld], availW: CGFloat, availH: CGFloat) -> (rows: [[RmkMeld]], tileW: CGFloat, tileH: CGFloat) {
         guard !melds.isEmpty else { return ([], 40, 56) }
         for candW in stride(from: CGFloat(42.0), through: CGFloat(22.0), by: -2.0) {
@@ -10900,7 +10948,7 @@ struct KOnRummikubSheetView: View {
             HStack(spacing: 6) {
                 // 1. LEFT VERTICAL PLAYER COLUMN (1:1 like Video: Circular Avatar + Countdown Ring + Star Badge + Name + Tile Count)
                 VStack(spacing: 8) {
-                    ForEach(orderedVerticalSeats) { s in
+                    ForEach(orderedVerticalSeats, id: \.id) { s in
                         let isTurn = (rmk.currentTurnSeat == s.id && rmk.phase == .playing)
                         let isMe = (s.id == rmk.mySeatIndex)
                         let progress = max(0.0, min(1.0, CGFloat(rmk.turnRemainingSeconds) / 60.0))

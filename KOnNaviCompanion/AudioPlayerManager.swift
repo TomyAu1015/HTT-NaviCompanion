@@ -11897,7 +11897,7 @@ struct HTTGameRoomLocalizer {
         ("琴吹紬", "琴吹紬")
     ]
 
-    static func localize(_ text: String, _ lang: AudioPlayerManager.AppLanguage) -> String {
+    static func localize(_ text: String, _ lang: AppLanguage) -> String {
         switch lang {
         case .zhHans:
             return text
