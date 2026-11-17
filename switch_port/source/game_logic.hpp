@@ -877,4 +877,113 @@ namespace RmkEvaluator {
         });
         outLeftovers = pool;
     }
+
+    // Smart Rummikub AI (1:1 like video): plays hand melds AND extends/splits existing table melds after breaking ice!
+    inline bool findAITableCombinationMove(
+        const std::vector<RmkTile>& hand,
+        const std::vector<RmkMeld>& tableMelds,
+        bool hasBrokenIce,
+        uint32_t seedTick,
+        std::vector<RmkMeld>& outNewMelds,
+        std::set<std::string>& outPlayedIds,
+        std::set<std::string>& outHighlightedIds
+    ) {
+        outNewMelds = tableMelds;
+        outPlayedIds.clear();
+        outHighlightedIds.clear();
+
+        std::vector<RmkTile> remHand = hand;
+        std::vector<std::vector<RmkTile>> rMelds, gMelds;
+        std::vector<RmkTile> afterRuns, afterBoth;
+        organizeHandIntoGroups(remHand, true, rMelds, afterRuns);
+        organizeHandIntoGroups(afterRuns, false, gMelds, afterBoth);
+
+        std::vector<std::vector<RmkTile>> chosenHandMelds = rMelds;
+        chosenHandMelds.insert(chosenHandMelds.end(), gMelds.begin(), gMelds.end());
+
+        int totalHandPts = 0;
+        for (const auto& m : chosenHandMelds) {
+            int p = evaluateMeld(m);
+            if (p > 0) totalHandPts += p;
+        }
+
+        bool canBreakIceNow = hasBrokenIce || (totalHandPts >= 30);
+        int mSeq = 1;
+        if (hasBrokenIce || totalHandPts >= 30) {
+            for (const auto& m : chosenHandMelds) {
+                auto sortedM = sortMeldForDisplay(m);
+                outNewMelds.push_back({"m_" + std::to_string(seedTick) + "_" + std::to_string(mSeq++), sortedM});
+                for (const auto& t : sortedM) {
+                    outPlayedIds.insert(t.id);
+                    outHighlightedIds.insert(t.id);
+                }
+            }
+            remHand = afterBoth;
+        }
+
+        if (canBreakIceNow) {
+            bool changed = true;
+            while (changed) {
+                changed = false;
+                // 1. Try appending/prepending any single hand tile onto an existing table run or 3-tile group
+                for (size_t hIdx = 0; hIdx < remHand.size() && !changed; ++hIdx) {
+                    const auto& ht = remHand[hIdx];
+                    for (size_t mIdx = 0; mIdx < outNewMelds.size(); ++mIdx) {
+                        auto cand = outNewMelds[mIdx].tiles;
+                        cand.push_back(ht);
+                        if (evaluateMeld(cand) >= 0) {
+                            outNewMelds[mIdx].tiles = sortMeldForDisplay(cand);
+                            outPlayedIds.insert(ht.id);
+                            outHighlightedIds.insert(ht.id);
+                            remHand.erase(remHand.begin() + hIdx);
+                            changed = true;
+                            break;
+                        }
+                    }
+                }
+                if (changed) continue;
+
+                // 2. Try splitting 1 tile from a 4-tile table group or 4+ tile table run to combine with 2 hand tiles!
+                for (size_t mIdx = 0; mIdx < outNewMelds.size() && !changed; ++mIdx) {
+                    const auto& mTiles = outNewMelds[mIdx].tiles;
+                    if (mTiles.size() < 4) continue;
+                    int candIndices[4] = {0, (int)mTiles.size() - 1, 1, (int)mTiles.size() - 2};
+                    for (int ci = 0; ci < 4 && !changed; ++ci) {
+                        int cIdx = candIndices[ci];
+                        if (cIdx < 0 || cIdx >= (int)mTiles.size()) continue;
+                        RmkTile spareTile = mTiles[cIdx];
+                        std::vector<RmkTile> remainTable = mTiles;
+                        remainTable.erase(remainTable.begin() + cIdx);
+                        if (evaluateMeld(remainTable) < 0) continue;
+                        if (remHand.size() >= 2) {
+                            for (size_t i = 0; i + 1 < remHand.size() && !changed; ++i) {
+                                for (size_t j = i + 1; j < remHand.size() && !changed; ++j) {
+                                    std::vector<RmkTile> newTriad = {spareTile, remHand[i], remHand[j]};
+                                    if (evaluateMeld(newTriad) >= 0) {
+                                        std::string id1 = remHand[i].id;
+                                        std::string id2 = remHand[j].id;
+                                        outNewMelds[mIdx].tiles = sortMeldForDisplay(remainTable);
+                                        auto sortedTriad = sortMeldForDisplay(newTriad);
+                                        outNewMelds.push_back({"m_" + std::to_string(seedTick) + "_" + std::to_string(mSeq++), sortedTriad});
+                                        outPlayedIds.insert(id1);
+                                        outPlayedIds.insert(id2);
+                                        outHighlightedIds.insert(spareTile.id);
+                                        outHighlightedIds.insert(id1);
+                                        outHighlightedIds.insert(id2);
+                                        remHand.erase(std::remove_if(remHand.begin(), remHand.end(), [&](const RmkTile& t) {
+                                            return t.id == id1 || t.id == id2;
+                                        }), remHand.end());
+                                        changed = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        return !outPlayedIds.empty();
+    }
+
 }

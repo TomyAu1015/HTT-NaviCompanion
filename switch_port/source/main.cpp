@@ -37,6 +37,7 @@ static const SDL_Color COL_WHITE       = {255, 255, 255, 255};
 static const SDL_Color COL_CREAM       = {252, 245, 230, 255};
 static const SDL_Color COL_GRAY        = {148, 156, 152, 255};
 static const SDL_Color COL_BLACK       = {20, 20, 20, 255};
+static const SDL_Color COL_CYAN_GLOW   = {48, 224, 255, 255};
 
 // ============================================================================
 // Global App State
@@ -156,6 +157,12 @@ static int gRmkDragSlot = -1;
 static bool gRmkDragMoved = false;
 static int gRmkDragCurX = 0, gRmkDragCurY = 0;
 static int gRmkDragStartX = 0, gRmkDragStartY = 0;
+static std::set<std::string> gRmkHighlightedIds;
+static int gRmkDragTableMeldIdx = -1;
+static int gRmkDragTableTileIdx = -1;
+static bool gRmkDragTableMoved = false;
+static int gRmkSelectedTableMeldIdx = -1;
+static int gRmkSelectedTableTileIdx = -1;
 
 static SDL_Color rmkTileColor(const std::string& c) {
     if (c == "R") return {220, 40, 50, 255};
@@ -1215,6 +1222,11 @@ static void organizeRmkRack(bool preferRuns) {
 
 static void resetRmkWorkspace() {
     gRmkEditing = false;
+    gRmkSelectedTableMeldIdx = -1;
+    gRmkSelectedTableTileIdx = -1;
+    gRmkDragTableMeldIdx = -1;
+    gRmkDragTableTileIdx = -1;
+    gRmkDragTableMoved = false;
     if (gRmkMySeat >= 0 && gRmkMySeat < (int)gRmkSeats.size()) {
         gRmkSnapHand = gRmkSeats[gRmkMySeat].hand;
         for (auto& t : gRmkSeats[gRmkMySeat].hand) t.selected = false;
@@ -1253,6 +1265,21 @@ static void selectRmkHintForMe() {
     gStatusBanner = "[提示] 已为您选中一组有效牌型 (" + std::to_string(pts) + "分)，点击【放上桌面】即可摆出！";
 }
 
+static void ensureRmkWorkspaceStarted() {
+    if (!gRmkEditing) {
+        gRmkSnapHand = gRmkSeats[gRmkMySeat].hand;
+        gRmkWorkHand = gRmkSnapHand;
+        gRmkSnapMelds = gRmkTableMelds;
+        gRmkWorkMelds = gRmkSnapMelds;
+        gRmkEditing = true;
+        for (const auto& sl : gRmkRackSlots) {
+            if (!sl.id.empty() && sl.selected) {
+                for (auto& wt : gRmkWorkHand) if (wt.id == sl.id) wt.selected = true;
+            }
+        }
+    }
+}
+
 static void dropRmkSlotToTable(int slotIdx, int dropX, int dropY) {
     if (gRmkPhase != "playing" || gRmkTurnSeat != gRmkMySeat) {
         gStatusBanner = "当前不是您的回合，无法拖上桌面出牌";
@@ -1260,55 +1287,76 @@ static void dropRmkSlotToTable(int slotIdx, int dropX, int dropY) {
     }
     if (slotIdx < 0 || slotIdx >= (int)gRmkRackSlots.size() || gRmkRackSlots[slotIdx].id.empty()) return;
     gRmkRackSlots[slotIdx].selected = true;
-
-    if (!gRmkEditing) {
-        gRmkSnapHand = gRmkSeats[gRmkMySeat].hand;
-        gRmkWorkHand = gRmkSnapHand;
-        gRmkSnapMelds = gRmkTableMelds;
-        gRmkWorkMelds = gRmkSnapMelds;
-        gRmkEditing = true;
-    }
+    ensureRmkWorkspaceStarted();
 
     std::set<std::string> selIds;
     for (const auto& sl : gRmkRackSlots) if (!sl.id.empty() && sl.selected) selIds.insert(sl.id);
     std::vector<RmkTile> picked;
     for (const auto& t : gRmkWorkHand) if (selIds.count(t.id)) picked.push_back(t);
     if (picked.empty()) return;
+    for (const auto& pt : picked) gRmkHighlightedIds.insert(pt.id);
 
-    // 1. Check if dropped directly onto a specific table meld bounding box
-    int mx = 30, my = 158;
+    // 1. Check if dropped directly onto a specific table meld bounding box (large 50x68 tiles!)
+    int mx = 172, my = 56;
     for (size_t i = 0; i < gRmkWorkMelds.size(); ++i) {
-        int mw = (int)gRmkWorkMelds[i].tiles.size() * 44 + 14;
-        if (mx + mw > 1100) { mx = 30; my += 72; }
-        if (dropX >= mx - 18 && dropX <= mx + mw + 18 && dropY >= my - 14 && dropY <= my + 78) {
+        int mw = (int)gRmkWorkMelds[i].tiles.size() * 52 + 16;
+        if (mx + mw > 1118) { mx = 172; my += 82; }
+        if (dropX >= mx - 18 && dropX <= mx + mw + 18 && dropY >= my - 12 && dropY <= my + 82) {
             if (gRmkSeats[gRmkMySeat].hasBrokenIce || i >= gRmkSnapMelds.size()) {
                 std::vector<RmkTile> comb = gRmkWorkMelds[i].tiles;
                 comb.insert(comb.end(), picked.begin(), picked.end());
                 if (RmkEvaluator::evaluateMeld(comb) >= 0) {
                     gRmkWorkMelds[i].tiles = RmkEvaluator::sortMeldForDisplay(comb);
-                    gRmkWorkHand.erase(std::remove_if(gRmkWorkHand.begin(), gRmkWorkHand.end(), [&](const RmkTile& t){ return selIds.count(t.id) > 0; }), gRmkWorkHand.end());
-                    for (auto& sl : gRmkRackSlots) if (!sl.id.empty() && selIds.count(sl.id)) sl = RmkTile{};
-                    gRmkLiftedSlot = -1;
-                    gStatusBanner = "已拖放并入桌面牌组（点击【确认出牌】完成回合）";
-                    return;
+                } else {
+                    gRmkWorkMelds[i].tiles = comb;
                 }
+                gRmkWorkHand.erase(std::remove_if(gRmkWorkHand.begin(), gRmkWorkHand.end(), [&](const RmkTile& t){ return selIds.count(t.id) > 0; }), gRmkWorkHand.end());
+                for (auto& sl : gRmkRackSlots) if (!sl.id.empty() && selIds.count(sl.id)) sl = RmkTile{};
+                gRmkLiftedSlot = -1;
+                gRmkSelectedTableMeldIdx = -1;
+                gRmkSelectedTableTileIdx = -1;
+                gStatusBanner = "已拖放并入桌面牌组（点右侧绿色[OK]或按[X]确认出牌，点红色[复原]或按[R]撤回）";
+                return;
             }
         }
-        mx += mw + 12;
+        mx += mw + 16;
     }
 
-    // 2. If picked tiles themselves form a valid meld (>=3), place as new meld
+    // 2. If a table tile was selected for combination and player is broken ice, combine them into a new meld!
+    if (gRmkSeats[gRmkMySeat].hasBrokenIce &&
+        gRmkSelectedTableMeldIdx >= 0 && gRmkSelectedTableMeldIdx < (int)gRmkWorkMelds.size() &&
+        gRmkSelectedTableTileIdx >= 0 && gRmkSelectedTableTileIdx < (int)gRmkWorkMelds[gRmkSelectedTableMeldIdx].tiles.size()) {
+        RmkTile tblTile = gRmkWorkMelds[gRmkSelectedTableMeldIdx].tiles[gRmkSelectedTableTileIdx];
+        gRmkWorkMelds[gRmkSelectedTableMeldIdx].tiles.erase(gRmkWorkMelds[gRmkSelectedTableMeldIdx].tiles.begin() + gRmkSelectedTableTileIdx);
+        if (gRmkWorkMelds[gRmkSelectedTableMeldIdx].tiles.empty()) {
+            gRmkWorkMelds.erase(gRmkWorkMelds.begin() + gRmkSelectedTableMeldIdx);
+        }
+        std::vector<RmkTile> comb = {tblTile};
+        comb.insert(comb.end(), picked.begin(), picked.end());
+        if (RmkEvaluator::evaluateMeld(comb) >= 0) comb = RmkEvaluator::sortMeldForDisplay(comb);
+        gRmkWorkMelds.push_back({"m_" + std::to_string(SDL_GetTicks()), comb});
+        gRmkHighlightedIds.insert(tblTile.id);
+        gRmkWorkHand.erase(std::remove_if(gRmkWorkHand.begin(), gRmkWorkHand.end(), [&](const RmkTile& t){ return selIds.count(t.id) > 0; }), gRmkWorkHand.end());
+        for (auto& sl : gRmkRackSlots) if (!sl.id.empty() && selIds.count(sl.id)) sl = RmkTile{};
+        gRmkLiftedSlot = -1;
+        gRmkSelectedTableMeldIdx = -1;
+        gRmkSelectedTableTileIdx = -1;
+        gStatusBanner = "已与桌面牌组合成新牌组（点右侧绿色[OK]或按[X]确认出牌）";
+        return;
+    }
+
+    // 3. If picked tiles themselves form a valid meld (>=3), place as new meld
     if (RmkEvaluator::evaluateMeld(picked) >= 0) {
         auto ordered = RmkEvaluator::sortMeldForDisplay(picked);
         gRmkWorkHand.erase(std::remove_if(gRmkWorkHand.begin(), gRmkWorkHand.end(), [&](const RmkTile& t){ return selIds.count(t.id) > 0; }), gRmkWorkHand.end());
         for (auto& sl : gRmkRackSlots) if (!sl.id.empty() && selIds.count(sl.id)) sl = RmkTile{};
         gRmkWorkMelds.push_back({"m_" + std::to_string(SDL_GetTicks()), ordered});
         gRmkLiftedSlot = -1;
-        gStatusBanner = "已拖上桌面成组（点击【确认出牌】或按 [X] 完成回合）";
+        gStatusBanner = "已拖上桌面成组（点右侧绿色[OK]或按[X]确认出牌）";
         return;
     }
 
-    // 3. Otherwise auto-find any compatible table meld (e.g. 4 onto 123)
+    // 4. Otherwise auto-find any compatible table meld (e.g. 4 onto 123)
     for (size_t i = 0; i < gRmkWorkMelds.size(); ++i) {
         if (!gRmkSeats[gRmkMySeat].hasBrokenIce && i < gRmkSnapMelds.size()) continue;
         std::vector<RmkTile> comb = gRmkWorkMelds[i].tiles;
@@ -1318,21 +1366,83 @@ static void dropRmkSlotToTable(int slotIdx, int dropX, int dropY) {
             gRmkWorkHand.erase(std::remove_if(gRmkWorkHand.begin(), gRmkWorkHand.end(), [&](const RmkTile& t){ return selIds.count(t.id) > 0; }), gRmkWorkHand.end());
             for (auto& sl : gRmkRackSlots) if (!sl.id.empty() && selIds.count(sl.id)) sl = RmkTile{};
             gRmkLiftedSlot = -1;
-            gStatusBanner = "已自动拼接到桌面兼容牌组（点击【确认出牌】完成回合）";
+            gStatusBanner = "已自动拼接到桌面兼容牌组（点右侧绿色[OK]或按[X]确认出牌）";
             return;
         }
     }
 
-    // 4. After icebreak, allow placing temporary tile on table workspace for free rearrangement
+    // 5. After icebreak, allow placing temporary tile on table workspace for free rearrangement
     if (gRmkSeats[gRmkMySeat].hasBrokenIce) {
         auto ordered = RmkEvaluator::sortMeldForDisplay(picked);
         gRmkWorkHand.erase(std::remove_if(gRmkWorkHand.begin(), gRmkWorkHand.end(), [&](const RmkTile& t){ return selIds.count(t.id) > 0; }), gRmkWorkHand.end());
         for (auto& sl : gRmkRackSlots) if (!sl.id.empty() && selIds.count(sl.id)) sl = RmkTile{};
         gRmkWorkMelds.push_back({"m_" + std::to_string(SDL_GetTicks()), ordered});
         gRmkLiftedSlot = -1;
-        gStatusBanner = "已暂放桌面待重组（请拼成>=3张合法牌组后点【确认出牌】）";
+        gStatusBanner = "已暂放桌面待重组（可继续拖桌面牌或手牌拼成>=3张合法牌组后点[OK]）";
     } else {
         gStatusBanner = "[注意] 尚未破冰：请选中>=3张且总分>=30的牌组后再拖上桌面";
+    }
+}
+
+static void dropRmkTableTileToTarget(int srcMeldIdx, int srcTileIdx, int dropX, int dropY) {
+    if (gRmkPhase != "playing" || gRmkTurnSeat != gRmkMySeat) return;
+    ensureRmkWorkspaceStarted();
+    if (srcMeldIdx < 0 || srcMeldIdx >= (int)gRmkWorkMelds.size()) return;
+    if (srcTileIdx < 0 || srcTileIdx >= (int)gRmkWorkMelds[srcMeldIdx].tiles.size()) return;
+    if (!gRmkSeats[gRmkMySeat].hasBrokenIce && srcMeldIdx < (int)gRmkSnapMelds.size()) {
+        gStatusBanner = "[注意] 尚未破冰，不能拆解其他玩家的桌面牌组！";
+        return;
+    }
+
+    RmkTile movingTile = gRmkWorkMelds[srcMeldIdx].tiles[srcTileIdx];
+    gRmkHighlightedIds.insert(movingTile.id);
+
+    // 1. If dropped down onto the wooden rack (dropY >= 488):
+    if (dropY >= 488) {
+        bool cameFromRackThisTurn = false;
+        for (const auto& st : gRmkSnapHand) if (st.id == movingTile.id) { cameFromRackThisTurn = true; break; }
+        if (cameFromRackThisTurn || srcMeldIdx >= (int)gRmkSnapMelds.size()) {
+            gRmkWorkMelds[srcMeldIdx].tiles.erase(gRmkWorkMelds[srcMeldIdx].tiles.begin() + srcTileIdx);
+            if (gRmkWorkMelds[srcMeldIdx].tiles.empty()) gRmkWorkMelds.erase(gRmkWorkMelds.begin() + srcMeldIdx);
+            movingTile.selected = false;
+            gRmkWorkHand.push_back(movingTile);
+            syncRmkRackFromHand(true);
+            gStatusBanner = "已将该牌退回牌架";
+            return;
+        }
+    }
+
+    // 2. Check if dropped onto another table meld
+    int mx = 172, my = 56;
+    for (size_t i = 0; i < gRmkWorkMelds.size(); ++i) {
+        int mw = (int)gRmkWorkMelds[i].tiles.size() * 52 + 16;
+        if (mx + mw > 1118) { mx = 172; my += 82; }
+        if ((int)i != srcMeldIdx && dropX >= mx - 16 && dropX <= mx + mw + 16 && dropY >= my - 12 && dropY <= my + 82) {
+            gRmkWorkMelds[srcMeldIdx].tiles.erase(gRmkWorkMelds[srcMeldIdx].tiles.begin() + srcTileIdx);
+            int targetIdx = (int)i;
+            if (gRmkWorkMelds[srcMeldIdx].tiles.empty()) {
+                gRmkWorkMelds.erase(gRmkWorkMelds.begin() + srcMeldIdx);
+                if (targetIdx > srcMeldIdx) targetIdx--;
+            }
+            auto comb = gRmkWorkMelds[targetIdx].tiles;
+            comb.push_back(movingTile);
+            if (RmkEvaluator::evaluateMeld(comb) >= 0) comb = RmkEvaluator::sortMeldForDisplay(comb);
+            gRmkWorkMelds[targetIdx].tiles = comb;
+            gRmkSelectedTableMeldIdx = -1;
+            gRmkSelectedTableTileIdx = -1;
+            gStatusBanner = "已将桌面牌拖入目标牌组重组！";
+            return;
+        }
+        mx += mw + 16;
+    }
+
+    // 3. Dropped onto open table space -> detach this tile as a new group on the table so player can combine other tiles with it!
+    if (gRmkWorkMelds[srcMeldIdx].tiles.size() > 1) {
+        gRmkWorkMelds[srcMeldIdx].tiles.erase(gRmkWorkMelds[srcMeldIdx].tiles.begin() + srcTileIdx);
+        gRmkWorkMelds.push_back({"m_" + std::to_string(SDL_GetTicks()), {movingTile}});
+        gRmkSelectedTableMeldIdx = (int)gRmkWorkMelds.size() - 1;
+        gRmkSelectedTableTileIdx = 0;
+        gStatusBanner = "已从牌组拆出单牌到桌面！可继续拖其他桌面牌或手牌与它合并";
     }
 }
 
@@ -1396,6 +1506,9 @@ static void startNewRmkRound() {
     }
     gRmkPoolCount = (int)gRmkPool.size();
     gRmkTableMelds.clear();
+    gRmkHighlightedIds.clear();
+    gRmkSelectedTableMeldIdx = -1;
+    gRmkSelectedTableTileIdx = -1;
     gRmkTurnSeat = (gRmkRound - 1) % pCnt;
     gRmkWinnerSeat = -1;
     gRmkPhase = "playing";
@@ -1448,6 +1561,9 @@ static void startRmkPlayerDrawAnimation() {
 static void executeRmkCommit(int seatIdx, const std::vector<RmkMeld>& newMelds, const std::set<std::string>& playedIds) {
     int pCnt = std::max(2, (int)gRmkSeats.size());
     gRmkTableMelds = newMelds;
+    if (seatIdx == gRmkMySeat || gRmkHighlightedIds.empty()) {
+        gRmkHighlightedIds = playedIds;
+    }
     auto& h = gRmkSeats[seatIdx].hand;
     h.erase(std::remove_if(h.begin(), h.end(), [&](const RmkTile& t) { return playedIds.count(t.id) > 0; }), h.end());
     gRmkSeats[seatIdx].hasBrokenIce = true;
@@ -1981,6 +2097,7 @@ static inline bool pointInRect(int px, int py, int x, int y, int w, int h) {
 }
 
 static void renderTopBar() {
+    if (gScreen == MODE_RMK_TABLE) return;
     drawRoundedRectFill(0, 0, SCREEN_W, 50, 0, {5, 22, 14, 238});
     SDL_SetRenderDrawColor(gRenderer, COL_GOLD.r, COL_GOLD.g, COL_GOLD.b, 140);
     SDL_RenderDrawLine(gRenderer, 0, 50, SCREEN_W, 50);
@@ -2473,138 +2590,190 @@ static void renderMahjongTable() {
 }
 
 
-static void drawRmkTileBox(const RmkTile& t, int x, int y, int w, int h, bool isCursor, bool isSel) {
-    int dy = y - (isSel ? 16 : 0);
+static void drawRmkTileBox(const RmkTile& t, int x, int y, int w, int h, bool isCursor, bool isSel, bool isHighlighted = false) {
+    int dy = y - (isSel ? 12 : 0);
     SDL_Texture* tex = getTexture(t.romfsImagePath());
     if (tex) {
-        drawRoundedRectFill(x - 1, dy - 1, w + 2, h + 2, 7, COL_WHITE);
+        drawRoundedRectFill(x - 1, dy - 1, w + 2, h + 2, 7, {252, 249, 242, 255});
         SDL_Rect dst = {x, dy, w, h};
         SDL_RenderCopy(gRenderer, tex, nullptr, &dst);
     } else {
-        drawRoundedRectFill(x, dy, w, h, 8, {252, 247, 235, 255});
+        drawRoundedRectFill(x, dy, w, h, 8, {252, 248, 238, 255});
         SDL_Color tc = rmkTileColor(t.color);
-        drawText(gFontMed, t.isJoker() ? "鬼" : std::to_string(t.number), x + w / 2, dy + 6, tc, true);
+        drawText(gFontLarge, t.isJoker() ? "鬼" : std::to_string(t.number), x + w / 2, dy + 6, tc, true);
         drawText(gFontSmall, t.isJoker() ? "百搭" : t.colorZh(), x + w / 2, dy + h - 22, tc, true);
     }
     if (isCursor) {
         drawRoundedRectOutline(x - 2, dy - 2, w + 4, h + 4, 9, COL_GOLD, 3);
         drawText(gFontSmall, "▲", x + w / 2, dy + h + 1, COL_GOLD, true);
     } else if (isSel) {
-        drawRoundedRectOutline(x - 2, dy - 2, w + 4, h + 4, 9, COL_HUMAN_GREEN, 3);
+        drawRoundedRectOutline(x - 2, dy - 2, w + 4, h + 4, 9, COL_CYAN_GLOW, 3);
+    } else if (isHighlighted) {
+        drawRoundedRectOutline(x - 2, dy - 2, w + 4, h + 4, 8, {255, 145, 25, 255}, 3);
     } else {
-        drawRoundedRectOutline(x, dy, w, h, 7, {210, 185, 145, 220}, 1);
+        drawRoundedRectOutline(x, dy, w, h, 7, {205, 182, 145, 220}, 1);
     }
 }
 
 static void renderRummikubTable() {
-    int remSec = std::max(0, 60 - (int)((SDL_GetTicks() - gRmkTurnStartTick) / 1000));
-    drawRoundedRectFill(20, 52, 1240, 32, 10, COL_PANEL);
-    drawRoundedRectOutline(20, 52, 1240, 32, 10, COL_GOLD, 1);
-    drawImage("romfs:/cards/icon_rummikub.png", 30, 55, 26, 26);
-    drawText(gFontSmall, gStatusBanner, 64, 59, COL_GOLD);
-    drawText(gFontSmall, "牌堆: " + std::to_string(gRmkPoolCount) + "张   限时: " + std::to_string(remSec) + "s", 1244, 59, remSec <= 10 ? COL_CRIMSON_HI : COL_HUMAN_GREEN, false, true);
+    // 0. Deep Royal-Blue Rummikub Video Felt Background over Full 1280x720 Screen
+    drawRoundedRectFill(0, 0, SCREEN_W, SCREEN_H, 0, {14, 48, 102, 242});
+    drawRoundedRectFill(154, 42, 976, 444, 16, {10, 36, 80, 215});
+    drawRoundedRectOutline(154, 42, 976, 444, 16, {55, 110, 185, 110}, 1);
 
-    // 2..4 Dynamic Seats Row (y=90..140)
-    int seatCnt = std::max(2, (int)gRmkSeats.size());
-    int badgeW = (1240 - (seatCnt - 1) * 12) / seatCnt;
-    for (int i = 0; i < seatCnt; ++i) {
-        int sx = 20 + i * (badgeW + 12);
-        const auto& s = gRmkSeats[i];
-        bool iturn = (gRmkTurnSeat == i);
-        drawCompactSeatBadge(sx, 90, badgeW, 50, s.characterId, s.name, s.score, (int)s.hand.size(), s.isAI, iturn, (i == 0), s.hasBrokenIce ? "已破冰" : "未破冰");
+    // Subtle Center K-ON! Rummikub Watermark
+    drawText(gFontLarge, "K-ON! Rummikub · 放课后茶会", 642, 236, {255, 255, 255, 24}, true);
+
+    int remSec = std::max(0, 60 - (int)((SDL_GetTicks() - gRmkTurnStartTick) / 1000));
+    bool myTurn = (gRmkTurnSeat == gRmkMySeat && gRmkPhase == "playing");
+
+    // 1. LEFT VERTICAL PLAYER COLUMN (x=10..146, 1:1 like Video: Opponents on top, Local Player at bottom-left next to rack!)
+    std::vector<int> orderedSeatIndices;
+    for (int i = 0; i < (int)gRmkSeats.size(); ++i) {
+        if (i != gRmkMySeat) orderedSeatIndices.push_back(i);
+    }
+    if (gRmkMySeat >= 0 && gRmkMySeat < (int)gRmkSeats.size()) {
+        orderedSeatIndices.push_back(gRmkMySeat);
+    }
+    int seatCnt = (int)orderedSeatIndices.size();
+    int vStep = (seatCnt > 1) ? std::min(168, 540 / (seatCnt - 1)) : 0;
+
+    for (int pos = 0; pos < seatCnt; ++pos) {
+        int sIdx = orderedSeatIndices[pos];
+        const auto& s = gRmkSeats[sIdx];
+        bool iturn = (gRmkTurnSeat == sIdx && gRmkPhase == "playing");
+        bool isMe = (sIdx == gRmkMySeat);
+        int sy = (pos == seatCnt - 1) ? 556 : (26 + pos * vStep);
+
+        // Player Avatar Card with Glowing Countdown Ring
+        drawRoundedRectFill(12, sy, 134, 128, 16, iturn ? SDL_Color{28, 76, 148, 248} : SDL_Color{9, 26, 56, 225});
+        SDL_Color ringCol = iturn ? (remSec <= 10 ? COL_CRIMSON_HI : COL_HUMAN_GREEN) : SDL_Color{90, 130, 185, 120};
+        drawRoundedRectOutline(12, sy, 134, 128, 16, ringCol, iturn ? 3 : 1);
+
+        // Character Avatar Portrait
+        drawCharAvatar(s.characterId, 45, sy + 8, 68, 68, !s.isAI);
+
+        // Countdown Seconds Badge Over Avatar When Active Turn (1:1 like Video!)
+        if (iturn) {
+            drawRoundedRectFill(51, sy + 22, 56, 36, 12, {0, 0, 0, 175});
+            drawRoundedRectOutline(51, sy + 22, 56, 36, 12, ringCol, 2);
+            drawText(gFontLarge, std::to_string(remSec), 79, sy + 25, COL_WHITE, true);
+        }
+
+        // Star / Icebreak Badge at Top-Right of Avatar
+        drawRoundedRectFill(112, sy + 6, 28, 22, 8, s.hasBrokenIce ? SDL_Color{245, 142, 18, 255} : SDL_Color{42, 74, 126, 255});
+        drawText(gFontSmall, s.hasBrokenIce ? "★" : "冰", 126, sy + 7, COL_WHITE, true);
+
+        // Player Name & Remaining Tile Count Badge
+        std::string shortName = cleanPeerLabel(s.name);
+        if (shortName.size() > 12) shortName = shortName.substr(0, 12);
+        drawText(gFontSmall, shortName, 79, sy + 79, isMe ? COL_GOLD : COL_WHITE, true);
+
+        drawRoundedRectFill(34, sy + 101, 90, 22, 6, {6, 16, 36, 220});
+        drawRoundedRectOutline(34, sy + 101, 90, 22, 6, COL_CYAN_GLOW, 1);
+        drawText(gFontSmall, "余 " + std::to_string(s.hand.size()) + " 张", 79, sy + 102, COL_WHITE, true);
     }
 
-    // Middle Table Melds (x=20..1106, y=148..422) + Right-Middle Control Tower (x=1118..1260, y=148..422)
-    drawRoundedRectFill(20, 148, 1086, 274, 12, {7, 30, 19, 195});
-    drawRoundedRectOutline(20, 148, 1086, 274, 12, COL_GOLD_DIM, 1);
+    // 2. TOP COMPACT STATUS PILL & QUICK HINT BAR (x=154..1130, y=6..36)
+    drawRoundedRectFill(154, 6, 976, 32, 10, {8, 24, 54, 220});
+    drawRoundedRectOutline(154, 6, 976, 32, 10, {70, 130, 210, 140}, 1);
+    drawImage("romfs:/cards/icon_rummikub.png", 164, 9, 24, 24);
+    drawText(gFontSmall, gStatusBanner, 194, 12, COL_GOLD);
+    if (myTurn) {
+        drawRoundedRectFill(932, 9, 92, 26, 7, {132, 48, 178, 255});
+        drawText(gFontSmall, "[L] 提示", 978, 12, COL_WHITE, true);
+        drawRoundedRectFill(1030, 9, 94, 26, 7, {235, 132, 18, 255});
+        drawText(gFontSmall, "[Y] 出牌", 1077, 12, COL_WHITE, true);
+    }
+
+    // 3. CENTER TABLE MELDS AREA WITH LARGE TILES (x=154..1130, y=42..486, Tile Size 50x68!)
     const auto& melds = gRmkEditing ? gRmkWorkMelds : gRmkTableMelds;
     if (melds.empty()) {
-        drawText(gFontMed, "桌面暂无牌组 · 首次破冰需 >=30 分 (按住牌架牌可向上拖到桌面出牌/合并)", 563, 272, COL_CREAM, true);
+        drawText(gFontMed, "桌面暂无牌组 · 首次破冰需 >=30 分 (触屏向上拖牌到桌面出牌，或用摇杆选牌按 [Y] 放上桌面)", 642, 248, COL_CREAM, true);
+        drawText(gFontSmall, "提示：按 [ZL]=789顺子理牌  [ZR]=777同数群组  [B]=+摸牌  [X]=OK确认出牌  [R]=复原桌面", 642, 284, COL_GOLD, true);
     } else {
-        int mx = 30, my = 158;
+        int mx = 172, my = 56;
         for (size_t i = 0; i < melds.size(); ++i) {
-            int mw = (int)melds[i].tiles.size() * 44 + 14;
-            if (mx + mw > 1100) { mx = 30; my += 72; }
-            if (my > 360) break;
+            int mw = (int)melds[i].tiles.size() * 52 + 16;
+            if (mx + mw > 1118) { mx = 172; my += 82; }
+            if (my > 410) break;
             bool ok = (RmkEvaluator::evaluateMeld(melds[i].tiles) >= 0);
-            drawRoundedRectFill(mx, my, mw, 64, 8, {12, 48, 30, 230});
-            drawRoundedRectOutline(mx, my, mw, 64, 8, ok ? COL_GOLD : COL_CRIMSON_HI, ok ? 1 : 2);
+            drawRoundedRectFill(mx, my, mw, 76, 10, {6, 24, 56, 215});
+            drawRoundedRectOutline(mx, my, mw, 76, 10, ok ? SDL_Color{110, 175, 245, 150} : COL_CRIMSON_HI, ok ? 1 : 3);
             for (size_t k = 0; k < melds[i].tiles.size(); ++k) {
-                drawRmkTileBox(melds[i].tiles[k], mx + 7 + (int)k * 44, my + 5, 40, 54, false, false);
+                const auto& t = melds[i].tiles[k];
+                bool isBeingDraggedTbl = (gRmkDragTableMoved && gRmkDragTableMeldIdx == (int)i && gRmkDragTableTileIdx == (int)k);
+                bool isSelTbl = (gRmkSelectedTableMeldIdx == (int)i && gRmkSelectedTableTileIdx == (int)k);
+                bool isHigh = (gRmkHighlightedIds.count(t.id) > 0);
+                int txPos = mx + 8 + (int)k * 52;
+                int tyPos = my + 4;
+                if (!isBeingDraggedTbl) {
+                    drawRmkTileBox(t, txPos, tyPos, 50, 68, false, isSelTbl, isHigh);
+                } else {
+                    drawRoundedRectOutline(txPos, tyPos, 50, 68, 7, {255, 232, 185, 95}, 1);
+                }
             }
-            mx += mw + 12;
+            mx += mw + 16;
         }
     }
 
-    bool myTurn = (gRmkTurnSeat == gRmkMySeat && gRmkPhase == "playing");
+    // 4. RIGHT VERTICAL CONTROL COLUMN (x=1142..1268, 1:1 like Video: Top `«` Exit, Middle `789`/`777`, Bottom Dynamic `+` ⇄ `↺` + `✓`)
+    drawRoundedRectFill(1154, 12, 104, 42, 21, {28, 58, 108, 235});
+    drawRoundedRectOutline(1154, 12, 104, 42, 21, {140, 190, 255, 160}, 1);
+    drawText(gFontLarge, "<<", 1182, 17, COL_WHITE, true);
+    drawText(gFontSmall, "[-]退房", 1226, 22, COL_GOLD, true);
 
-    // Right-Middle Big Touch-Friendly Control Tower (x=1118, w=142, y=148..422)
-    // 1. [789] Run Organizer (y=148, h=58)
-    drawRoundedRectFill(1118, 148, 142, 58, 10, gRmkSortByColor ? SDL_Color{25, 118, 210, 255} : SDL_Color{45, 78, 122, 240});
-    drawRoundedRectOutline(1118, 148, 142, 58, 10, gRmkSortByColor ? COL_GOLD : COL_GOLD_DIM, gRmkSortByColor ? 2 : 1);
-    drawText(gFontLarge, "789", 1189, 157, COL_WHITE, true);
-    drawText(gFontSmall, "顺子理牌", 1189, 184, COL_GOLD, true);
+    drawRoundedRectFill(1146, 148, 120, 58, 14, gRmkSortByColor ? SDL_Color{36, 116, 234, 255} : SDL_Color{24, 48, 92, 240});
+    drawRoundedRectOutline(1146, 148, 120, 58, 14, gRmkSortByColor ? COL_CYAN_GLOW : COL_GOLD_DIM, gRmkSortByColor ? 2 : 1);
+    drawText(gFontLarge, "789", 1206, 155, COL_WHITE, true);
+    drawText(gFontSmall, "[ZL]顺子", 1206, 184, COL_GOLD, true);
 
-    // 2. [777] Group Organizer (y=212, h=58)
-    drawRoundedRectFill(1118, 212, 142, 58, 10, !gRmkSortByColor ? SDL_Color{25, 118, 210, 255} : SDL_Color{45, 78, 122, 240});
-    drawRoundedRectOutline(1118, 212, 142, 58, 10, !gRmkSortByColor ? COL_GOLD : COL_GOLD_DIM, !gRmkSortByColor ? 2 : 1);
-    drawText(gFontLarge, "777", 1189, 221, COL_WHITE, true);
-    drawText(gFontSmall, "同数群组", 1189, 248, COL_GOLD, true);
+    drawRoundedRectFill(1146, 212, 120, 58, 14, !gRmkSortByColor ? SDL_Color{36, 116, 234, 255} : SDL_Color{24, 48, 92, 240});
+    drawRoundedRectOutline(1146, 212, 120, 58, 14, !gRmkSortByColor ? COL_CYAN_GLOW : COL_GOLD_DIM, !gRmkSortByColor ? 2 : 1);
+    drawText(gFontLarge, "777", 1206, 219, COL_WHITE, true);
+    drawText(gFontSmall, "[ZR]群组", 1206, 248, COL_GOLD, true);
 
-    // 3. [打乱牌架] Shuffle (y=276, h=48)
-    drawRoundedRectFill(1118, 276, 142, 48, 10, {126, 62, 178, 245});
-    drawRoundedRectOutline(1118, 276, 142, 48, 10, COL_GOLD_DIM, 1);
-    drawText(gFontMed, "打乱牌架", 1189, 288, COL_WHITE, true);
+    drawRoundedRectFill(1146, 278, 120, 40, 10, {112, 48, 168, 235});
+    drawRoundedRectOutline(1146, 278, 120, 40, 10, COL_GOLD_DIM, 1);
+    drawText(gFontSmall, "打乱牌架", 1206, 288, COL_WHITE, true);
 
-    // 4. Tall [+ 摸牌 (余X张)] Deck Button (y=330, h=92)
-    drawRoundedRectFill(1118, 330, 142, 92, 12, (myTurn && !gRmkDrawAnimActive) ? SDL_Color{20, 148, 162, 255} : SDL_Color{62, 82, 86, 215});
-    drawRoundedRectOutline(1118, 330, 142, 92, 12, myTurn ? COL_GOLD : COL_GOLD_DIM, 2);
-    drawText(gFontHuge, "+", 1189, 336, COL_WHITE, true);
-    drawText(gFontMed, "余 " + std::to_string(gRmkPoolCount) + " 张", 1189, 384, COL_GOLD, true);
+    if (gRmkEditing && myTurn) {
+        drawRoundedRectFill(1158, 366, 96, 72, 36, {32, 56, 102, 248});
+        drawRoundedRectOutline(1158, 366, 96, 72, 36, {255, 92, 72, 255}, 3);
+        drawText(gFontLarge, "复原", 1206, 376, {255, 105, 85, 255}, true);
+        drawText(gFontSmall, "[R]撤回", 1206, 408, COL_WHITE, true);
 
-    // Action Bar (y=428..474)
-    drawRoundedRectFill(20, 428, 1240, 46, 10, COL_PANEL);
-    drawRoundedRectOutline(20, 428, 1240, 46, 10, COL_GOLD_DIM, 1);
-    if (gRmkPhase == "roundOver") {
-        drawRoundedRectFill(28, 432, 1224, 38, 9, COL_CRIMSON);
-        drawRoundedRectOutline(28, 432, 1224, 38, 9, COL_GOLD, 2);
-        drawText(gFontMed, "本局结束！点击此处或按 [A] 开始下一局，按 [-] 返回大厅", SCREEN_W / 2, 440, COL_WHITE, true);
+        drawRoundedRectFill(1146, 450, 120, 148, 18, {24, 72, 108, 250});
+        drawRoundedRectOutline(1146, 450, 120, 148, 18, COL_HUMAN_GREEN, 3);
+        drawText(gFontHuge, "OK", 1206, 476, COL_HUMAN_GREEN, true);
+        drawText(gFontMed, "确认出牌", 1206, 526, COL_WHITE, true);
+        drawText(gFontSmall, "按 [X] 确认", 1206, 558, COL_GOLD, true);
     } else {
-        drawRoundedRectFill(28, 432, 140, 38, 8, {24, 118, 210, 255});
-        drawText(gFontSmall, gRmkSortByColor ? "[ZL] 789理牌" : "[ZL] 777理牌", 98, 442, COL_WHITE, true);
-        drawRoundedRectFill(176, 432, 116, 38, 8, myTurn ? SDL_Color{146, 52, 182, 255} : SDL_Color{75, 82, 80, 200});
-        drawText(gFontSmall, "[L] 提示", 234, 442, COL_WHITE, true);
-        drawRoundedRectFill(300, 432, 150, 38, 8, myTurn ? SDL_Color{235, 132, 18, 255} : SDL_Color{75, 82, 80, 200});
-        drawText(gFontSmall, "[Y] 放上桌面", 375, 442, COL_WHITE, true);
-        drawRoundedRectFill(458, 432, 116, 38, 8, (myTurn && gRmkEditing) ? SDL_Color{110, 122, 135, 255} : SDL_Color{62, 70, 68, 190});
-        drawText(gFontSmall, "[R] 复原", 516, 442, (myTurn && gRmkEditing) ? COL_WHITE : COL_GRAY, true);
-        drawRoundedRectFill(582, 432, 134, 38, 8, myTurn ? SDL_Color{22, 148, 156, 255} : SDL_Color{75, 82, 80, 200});
-        drawText(gFontSmall, "[B] 摸牌过", 649, 442, COL_WHITE, true);
-
-        bool canCommit = (myTurn && gRmkEditing);
-        drawRoundedRectFill(724, 432, 528, 38, 8, canCommit ? COL_GREEN_BTN : SDL_Color{45, 72, 58, 210});
-        drawRoundedRectOutline(724, 432, 528, 38, 8, canCommit ? COL_GOLD : COL_GOLD_DIM, canCommit ? 2 : 1);
-        std::string commitTxt = myTurn ? (gRmkEditing ? "[X] 确认出牌 (完成本回合)" : "拖拽或点选牌放上桌面 -> [X] 确认出牌") : ("等待 [" + cleanPeerLabel(gRmkSeats[gRmkTurnSeat].name) + "] 出牌...");
-        drawText(gFontSmall, commitTxt, 988, 442, canCommit ? COL_WHITE : COL_GOLD, true);
+        drawRoundedRectFill(1146, 396, 120, 188, 18, (myTurn && !gRmkDrawAnimActive) ? SDL_Color{38, 72, 124, 250} : SDL_Color{22, 42, 76, 220});
+        drawRoundedRectOutline(1146, 396, 120, 188, 18, myTurn ? SDL_Color{255, 152, 28, 255} : COL_GOLD_DIM, myTurn ? 3 : 1);
+        drawText(gFontHuge, "+", 1206, 424, myTurn ? SDL_Color{255, 158, 35, 255} : COL_GRAY, true);
+        drawText(gFontMed, "余 " + std::to_string(gRmkPoolCount) + " 张", 1206, 492, COL_WHITE, true);
+        drawText(gFontSmall, "按 [B] 摸牌", 1206, 532, COL_GOLD, true);
     }
 
-    // Bottom Full-Width Enlarged Fixed 2-Row Wooden Rack (x=20..1260, y=482..706, w=1240, h=224!)
+    // 5. BOTTOM CENTERED FIXED 2-ROW × 10-COLUMN WOODEN RACK (x=154..1130, y=492..712, w=976, h=220!)
     if (gRmkRackSlots.empty()) syncRmkRackFromHand(false);
     int cols = std::max(10, gRmkRackCols);
     if ((int)gRmkRackSlots.size() < cols * 2) gRmkRackSlots.resize(cols * 2, RmkTile{});
 
-    drawRoundedRectFill(20, 482, 1240, 224, 12, {158, 102, 46, 252});
-    drawRoundedRectOutline(20, 482, 1240, 224, 12, COL_GOLD, 2);
-    drawRoundedRectFill(28, 489, 1224, 98, 6, {124, 76, 32, 240});
-    drawRoundedRectFill(24, 585, 1232, 7, 3, {96, 56, 22, 255});
-    drawRoundedRectFill(28, 594, 1224, 98, 6, {124, 76, 32, 240});
-    drawRoundedRectFill(24, 691, 1232, 11, 4, {84, 48, 18, 255});
-    drawText(gFontSmall, "K-ON! Rummikub · 2×" + std::to_string(cols) + "格 (直接向上拖牌可出牌/并入桌面，牌架内可自由换位)", 1246, 688, {255, 226, 162, 220}, false, true);
+    drawRoundedRectFill(154, 492, 976, 220, 12, {182, 124, 62, 255});
+    drawRoundedRectOutline(154, 492, 976, 220, 12, {228, 174, 102, 255}, 2);
+    drawRoundedRectFill(162, 498, 960, 96, 6, {148, 94, 44, 245});
+    drawRoundedRectFill(158, 592, 968, 7, 3, {108, 64, 26, 255});
+    drawRoundedRectFill(162, 601, 960, 96, 6, {138, 86, 38, 245});
+    drawRoundedRectFill(158, 696, 968, 11, 4, {92, 52, 20, 255});
+    drawText(gFontSmall, "K-ON! Rummikub", 1112, 694, {255, 228, 172, 210}, false, true);
 
-    int availW = 1210;
-    int slotPitch = std::max(44, std::min(120, availW / cols));
-    int tw = std::min(68, slotPitch - 6);
-    int th = 90;
+    int availW = 944;
+    int slotPitch = std::max(44, std::min(94, availW / cols));
+    int tw = std::min(64, slotPitch - 6);
+    int th = 86;
+    int rackStartX = 162 + (960 - cols * slotPitch) / 2;
 
     uint32_t nowT = SDL_GetTicks();
     int dealVisLimit = 999;
@@ -2614,10 +2783,10 @@ static void renderRummikubTable() {
     int seenTiles = 0;
 
     for (int r = 0; r < 2; ++r) {
-        int rowY = (r == 0) ? 493 : 598;
+        int rowY = (r == 0) ? 503 : 606;
         for (int c = 0; c < cols; ++c) {
             int sIdx = r * cols + c;
-            int sx = 35 + c * slotPitch;
+            int sx = rackStartX + c * slotPitch;
             const RmkTile& sl = gRmkRackSlots[sIdx];
             bool isCur = (sIdx == gRmkCursor);
             bool isLift = (sIdx == gRmkLiftedSlot);
@@ -2627,9 +2796,10 @@ static void renderRummikubTable() {
                 seenTiles++;
                 if (seenTiles <= dealVisLimit) {
                     if (!isBeingDragged) {
-                        drawRmkTileBox(sl, sx, rowY - (isLift ? 10 : 0), tw, th, isCur || isLift, sl.selected);
+                        bool isHigh = (gRmkHighlightedIds.count(sl.id) > 0);
+                        drawRmkTileBox(sl, sx, rowY - (isLift ? 10 : 0), tw, th, isCur || isLift, sl.selected, isHigh);
                         if (isLift) {
-                            drawRoundedRectOutline(sx - 3, rowY - 13, tw + 6, th + 6, 9, {30, 215, 255, 255}, 3);
+                            drawRoundedRectOutline(sx - 3, rowY - 13, tw + 6, th + 6, 9, COL_CYAN_GLOW, 3);
                         }
                     } else {
                         drawRoundedRectOutline(sx, rowY, tw, th, 6, {255, 232, 185, 95}, 1);
@@ -2644,26 +2814,61 @@ static void renderRummikubTable() {
         }
     }
 
-    // Floating dragged tile preview!
     if (gRmkDragMoved && gRmkDragSlot >= 0 && gRmkDragSlot < (int)gRmkRackSlots.size() && !gRmkRackSlots[gRmkDragSlot].id.empty()) {
         drawRmkTileBox(gRmkRackSlots[gRmkDragSlot], gRmkDragCurX - tw / 2, gRmkDragCurY - th / 2, tw + 6, th + 8, true, true);
     }
 
-    // 1.5s Flying Draw Tile Animation Overlay from Right-Middle + Button!
+    if (gRmkDragTableMoved && gRmkDragTableMeldIdx >= 0 && gRmkDragTableMeldIdx < (int)melds.size() &&
+        gRmkDragTableTileIdx >= 0 && gRmkDragTableTileIdx < (int)melds[gRmkDragTableMeldIdx].tiles.size()) {
+        const auto& dt = melds[gRmkDragTableMeldIdx].tiles[gRmkDragTableTileIdx];
+        drawRmkTileBox(dt, gRmkDragCurX - 26, gRmkDragCurY - 36, 54, 72, true, true);
+    }
+
     if (gRmkDrawAnimActive) {
         float prog = std::min(1.0f, (float)(nowT - gRmkDrawAnimStartTick) / 1500.0f);
-        int startX = 1155, startY = 345;
+        int startX = 1175, startY = 440;
         int targetSlot = 0;
         for (size_t i = 0; i < gRmkRackSlots.size(); ++i) {
             if (gRmkRackSlots[i].id.empty()) { targetSlot = (int)i; break; }
         }
         int tr = targetSlot / cols;
         int tc = targetSlot % cols;
-        int endX = 35 + tc * slotPitch;
-        int endY = (tr == 0) ? 493 : 598;
+        int endX = rackStartX + tc * slotPitch;
+        int endY = (tr == 0) ? 503 : 606;
         int curX = startX + (int)((endX - startX) * prog);
         int curY = startY + (int)((endY - startY) * prog) - (int)(sinf(prog * 3.14159f) * 65.0f);
         drawRmkTileBox(gRmkDrawAnimTile, curX, curY, tw, th, true, false);
+    }
+
+    if (gRmkPhase == "roundOver") {
+        drawRoundedRectFill(0, 0, SCREEN_W, SCREEN_H, 0, {0, 0, 0, 155});
+        drawRoundedRectFill(360, 130, 560, 440, 20, {18, 42, 86, 250});
+        drawRoundedRectOutline(360, 130, 560, 440, 20, COL_GOLD, 2);
+        drawText(gFontLarge, "游戏结束", 640, 152, COL_WHITE, true);
+
+        std::vector<RmkSeat> ranked = gRmkSeats;
+        std::sort(ranked.begin(), ranked.end(), [](const RmkSeat& a, const RmkSeat& b) {
+            if (a.hand.size() != b.hand.size()) return a.hand.size() < b.hand.size();
+            return a.score > b.score;
+        });
+
+        for (size_t i = 0; i < ranked.size(); ++i) {
+            int ry = 206 + (int)i * 62;
+            drawRoundedRectFill(392, ry, 496, 52, 10, (i == 0) ? SDL_Color{36, 82, 148, 240} : SDL_Color{10, 24, 52, 220});
+            drawRoundedRectOutline(392, ry, 496, 52, 10, (i == 0) ? COL_GOLD : SDL_Color{70, 110, 170, 120}, 1);
+            drawText(gFontMed, std::to_string(i + 1), 416, ry + 13, (i == 0) ? COL_GOLD : COL_WHITE, true);
+            drawCharAvatar(ranked[i].characterId, 440, ry + 6, 40, 40, !ranked[i].isAI);
+            drawText(gFontMed, cleanPeerLabel(ranked[i].name), 492, ry + 13, (i == 0) ? COL_HUMAN_GREEN : COL_WHITE);
+            drawText(gFontMed, std::to_string(ranked[i].score) + " 分 (余" + std::to_string(ranked[i].hand.size()) + "张)", 868, ry + 13, (i == 0) ? COL_GOLD : COL_CREAM, false, true);
+        }
+
+        drawRoundedRectFill(410, 488, 210, 54, 27, {36, 142, 92, 255});
+        drawRoundedRectOutline(410, 488, 210, 54, 27, COL_HUMAN_GREEN, 2);
+        drawText(gFontMed, "[A] 再玩一次", 515, 502, COL_WHITE, true);
+
+        drawRoundedRectFill(660, 488, 210, 54, 27, {42, 74, 128, 255});
+        drawRoundedRectOutline(660, 488, 210, 54, 27, COL_CYAN_GLOW, 2);
+        drawText(gFontMed, "[-] 返回菜单", 765, 502, COL_WHITE, true);
     }
 }
 
@@ -2742,14 +2947,20 @@ static void updateAiTurns() {
             return;
         }
         if (now >= gRmkAiNextTick && gRmkSeats[gRmkTurnSeat].isAI) {
-            auto best = RmkEvaluator::findBestMeld(gRmkSeats[gRmkTurnSeat].hand);
-            int pts = best.empty() ? 0 : RmkEvaluator::evaluateMeld(best);
-            if (!best.empty() && (gRmkSeats[gRmkTurnSeat].hasBrokenIce || pts >= 30)) {
-                auto nm = gRmkTableMelds;
-                nm.push_back({"m_" + std::to_string(SDL_GetTicks()), best});
-                std::set<std::string> pids;
-                for (const auto& t : best) pids.insert(t.id);
-                executeRmkCommit(gRmkTurnSeat, nm, pids);
+            std::vector<RmkMeld> aiNewMelds;
+            std::set<std::string> aiPlayedIds;
+            std::set<std::string> aiHighIds;
+            if (RmkEvaluator::findAITableCombinationMove(
+                    gRmkSeats[gRmkTurnSeat].hand,
+                    gRmkTableMelds,
+                    gRmkSeats[gRmkTurnSeat].hasBrokenIce,
+                    SDL_GetTicks(),
+                    aiNewMelds,
+                    aiPlayedIds,
+                    aiHighIds
+                )) {
+                gRmkHighlightedIds = aiHighIds;
+                executeRmkCommit(gRmkTurnSeat, aiNewMelds, aiPlayedIds);
             } else {
                 executeRmkDraw(gRmkTurnSeat, "从共用牌堆摸1张牌");
             }
@@ -2830,12 +3041,12 @@ int main(int argc, char* argv[]) {
         if (isTouchingNow) { prevTouchX = tx; prevTouchY = ty; }
         wasTouching = isTouchingNow;
 
-        // Touch-Drag release handler for Rummikub!
+        // Touch-Drag release handler for Rummikub (Rack Tile Drag & Table Tile Drag)!
         if (gScreen == MODE_RMK_TABLE && gRmkDragSlot >= 0) {
             if (isTouchingNow) {
                 gRmkDragCurX = tx;
                 gRmkDragCurY = ty;
-                if (abs(tx - gRmkDragStartX) > 14 || abs(ty - gRmkDragStartY) > 14) {
+                if (abs(tx - gRmkDragStartX) > 12 || abs(ty - gRmkDragStartY) > 12) {
                     gRmkDragMoved = true;
                 }
             } else if (touchReleased) {
@@ -2844,19 +3055,19 @@ int main(int argc, char* argv[]) {
                 gRmkDragSlot = -1;
                 gRmkDragMoved = false;
                 if (didMove) {
-                    if (ty < 428) {
+                    if (ty < 486) {
                         dropRmkSlotToTable(sSlot, tx, ty);
-                    } else if (ty >= 482) {
+                    } else if (ty >= 492) {
                         int cols = std::max(10, gRmkRackCols);
-                        int slotPitch = std::max(44, std::min(120, 1210 / cols));
-                        int dstR = (ty >= 590) ? 1 : 0;
-                        int dstC = std::max(0, std::min(cols - 1, (tx - 35) / slotPitch));
+                        int slotPitch = std::max(44, std::min(94, 944 / cols));
+                        int rackStartX = 162 + (960 - cols * slotPitch) / 2;
+                        int dstR = (ty >= 596) ? 1 : 0;
+                        int dstC = std::max(0, std::min(cols - 1, (tx - rackStartX) / slotPitch));
                         int dstIdx = dstR * cols + dstC;
                         moveRmkRackSlot(sSlot, dstIdx);
                         gStatusBanner = "已移动牌架位置";
                     }
                 } else {
-                    // Normal tap on tile!
                     if (gRmkLiftedSlot >= 0) {
                         if (gRmkLiftedSlot == sSlot) {
                             gRmkRackSlots[sSlot].selected = !gRmkRackSlots[sSlot].selected;
@@ -2875,15 +3086,71 @@ int main(int argc, char* argv[]) {
             }
         }
 
+        if (gScreen == MODE_RMK_TABLE && gRmkDragTableMeldIdx >= 0) {
+            if (isTouchingNow) {
+                gRmkDragCurX = tx;
+                gRmkDragCurY = ty;
+                if (abs(tx - gRmkDragStartX) > 12 || abs(ty - gRmkDragStartY) > 12) {
+                    gRmkDragTableMoved = true;
+                }
+            } else if (touchReleased) {
+                int sMeld = gRmkDragTableMeldIdx;
+                int sTile = gRmkDragTableTileIdx;
+                bool didMove = gRmkDragTableMoved;
+                gRmkDragTableMeldIdx = -1;
+                gRmkDragTableTileIdx = -1;
+                gRmkDragTableMoved = false;
+                if (didMove) {
+                    dropRmkTableTileToTarget(sMeld, sTile, tx, ty);
+                } else {
+                    ensureRmkWorkspaceStarted();
+                    std::vector<RmkTile> handSel;
+                    for (const auto& wt : gRmkWorkHand) if (wt.selected) handSel.push_back(wt);
+                    if (!handSel.empty() && sMeld >= 0 && sMeld < (int)gRmkWorkMelds.size() &&
+                        (gRmkSeats[gRmkMySeat].hasBrokenIce || sMeld >= (int)gRmkSnapMelds.size())) {
+                        std::vector<RmkTile> comb = gRmkWorkMelds[sMeld].tiles;
+                        comb.insert(comb.end(), handSel.begin(), handSel.end());
+                        if (RmkEvaluator::evaluateMeld(comb) >= 0) {
+                            gRmkWorkMelds[sMeld].tiles = RmkEvaluator::sortMeldForDisplay(comb);
+                            std::set<std::string> rmIds;
+                            for (const auto& ht : handSel) { rmIds.insert(ht.id); gRmkHighlightedIds.insert(ht.id); }
+                            gRmkWorkHand.erase(std::remove_if(gRmkWorkHand.begin(), gRmkWorkHand.end(), [&](const RmkTile& t){ return rmIds.count(t.id) > 0; }), gRmkWorkHand.end());
+                            for (auto& sl : gRmkRackSlots) if (!sl.id.empty() && rmIds.count(sl.id)) sl = RmkTile{};
+                            gStatusBanner = "已将选牌并入桌面牌组（点击右侧[OK]或按[X]确认出牌）";
+                        } else {
+                            gStatusBanner = "[注意] 拼接后不符合顺组或群组规则";
+                        }
+                    } else if (gRmkSelectedTableMeldIdx == sMeld && gRmkSelectedTableTileIdx == sTile) {
+                        dropRmkTableTileToTarget(sMeld, sTile, 640, (sMeld >= (int)gRmkSnapMelds.size()) ? 550 : 420);
+                        gRmkSelectedTableMeldIdx = -1;
+                        gRmkSelectedTableTileIdx = -1;
+                    } else if (gRmkSelectedTableMeldIdx >= 0 && gRmkSelectedTableMeldIdx != sMeld) {
+                        int mx = 172, my = 56;
+                        for (int i = 0; i < sMeld; ++i) {
+                            int mw = (int)gRmkWorkMelds[i].tiles.size() * 52 + 16;
+                            if (mx + mw > 1118) { mx = 172; my += 82; }
+                            mx += mw + 16;
+                        }
+                        dropRmkTableTileToTarget(gRmkSelectedTableMeldIdx, gRmkSelectedTableTileIdx, mx + 20, my + 20);
+                        gRmkSelectedTableMeldIdx = -1;
+                        gRmkSelectedTableTileIdx = -1;
+                    } else {
+                        gRmkSelectedTableMeldIdx = sMeld;
+                        gRmkSelectedTableTileIdx = sTile;
+                        gStatusBanner = "已选中桌面单牌：可直接触屏拖到其他牌组，或点另一组移入，再点一次单独拆出！";
+                    }
+                }
+            }
+        }
+
         processIncomingNetworkMessages();
         updateAiTurns();
 
-        // Host-only [ZR] / Touch refresh button in active game
-        if (gScreen != MODE_LOBBY && (!gIsOnlineRoom || gIsRoomAuthority)) {
+        // Host-only [ZR] / Touch refresh button in Doudizhu & Mahjong (In Rummikub, [ZR] is 777 Group Organizer!)
+        if ((gScreen == MODE_DDZ_TABLE || gScreen == MODE_MJ_TABLE) && (!gIsOnlineRoom || gIsRoomAuthority)) {
             if ((kDown & HidNpadButton_ZR) || (tapped && pointInRect(tx, ty, SCREEN_W - 148, 9, 132, 32))) {
                 if (gScreen == MODE_DDZ_TABLE) { gDdzRound++; startNewDoudizhuRound(); }
                 else if (gScreen == MODE_MJ_TABLE) { gMjRound++; startNewMahjongRound(); }
-                else if (gScreen == MODE_RMK_TABLE) { gRmkRound++; startNewRmkRound(); }
                 tapped = false;
             }
         }
@@ -2989,33 +3256,37 @@ int main(int argc, char* argv[]) {
                     }
                 }
             } else if (gScreen == MODE_RMK_TABLE) {
-                if (gRmkPhase == "roundOver" && pointInRect(tx, ty, 20, 428, 1240, 46)) {
-                    kDown |= HidNpadButton_A;
-                } else if (pointInRect(tx, ty, 28, 432, 140, 38)) {
-                    organizeRmkRack(!gRmkSortByColor);
-                } else if (pointInRect(tx, ty, 176, 432, 116, 38)) {
-                    kDown |= HidNpadButton_L;  // 提示
-                } else if (pointInRect(tx, ty, 300, 432, 150, 38)) {
-                    kDown |= HidNpadButton_Y;  // 放上桌面
-                } else if (pointInRect(tx, ty, 458, 432, 116, 38)) {
-                    kDown |= HidNpadButton_R;  // 复原
-                } else if (pointInRect(tx, ty, 582, 432, 134, 38)) {
-                    kDown |= HidNpadButton_B;  // 摸牌过
-                } else if (pointInRect(tx, ty, 724, 432, 528, 38)) {
-                    kDown |= HidNpadButton_X;  // 确认出牌
-                } else if (pointInRect(tx, ty, 1118, 148, 142, 58)) {
-                    organizeRmkRack(true);     // Right-Middle [789]
-                } else if (pointInRect(tx, ty, 1118, 212, 142, 58)) {
-                    organizeRmkRack(false);    // Right-Middle [777]
-                } else if (pointInRect(tx, ty, 1118, 276, 142, 48)) {
-                    shuffleRmkRackRandomly();  // Right-Middle [打乱牌架]
-                } else if (pointInRect(tx, ty, 1118, 330, 142, 92)) {
-                    kDown |= HidNpadButton_B;  // Right-Middle [+ 摸牌]
-                } else if (ty >= 482) {
+                bool myTurn = (gRmkTurnSeat == gRmkMySeat && gRmkPhase == "playing");
+                if (gRmkPhase == "roundOver") {
+                    if (pointInRect(tx, ty, 410, 488, 210, 54)) {
+                        kDown |= HidNpadButton_A;
+                    } else if (pointInRect(tx, ty, 660, 488, 210, 54) || pointInRect(tx, ty, 1154, 12, 104, 42)) {
+                        kDown |= HidNpadButton_Minus;
+                    }
+                } else if (pointInRect(tx, ty, 1154, 12, 104, 42)) {
+                    kDown |= HidNpadButton_Minus;
+                } else if (pointInRect(tx, ty, 932, 9, 92, 26)) {
+                    kDown |= HidNpadButton_L;
+                } else if (pointInRect(tx, ty, 1030, 9, 94, 26)) {
+                    kDown |= HidNpadButton_Y;
+                } else if (pointInRect(tx, ty, 1146, 148, 120, 58)) {
+                    organizeRmkRack(true);
+                } else if (pointInRect(tx, ty, 1146, 212, 120, 58)) {
+                    organizeRmkRack(false);
+                } else if (pointInRect(tx, ty, 1146, 278, 120, 40)) {
+                    shuffleRmkRackRandomly();
+                } else if (gRmkEditing && myTurn && pointInRect(tx, ty, 1158, 366, 96, 72)) {
+                    kDown |= HidNpadButton_R;
+                } else if (gRmkEditing && myTurn && pointInRect(tx, ty, 1146, 450, 120, 148)) {
+                    kDown |= HidNpadButton_X;
+                } else if ((!gRmkEditing || !myTurn) && pointInRect(tx, ty, 1146, 396, 120, 188)) {
+                    kDown |= HidNpadButton_B;
+                } else if (ty >= 492 && pointInRect(tx, ty, 154, 492, 976, 220)) {
                     int cols = std::max(10, gRmkRackCols);
-                    int slotPitch = std::max(44, std::min(120, 1210 / cols));
-                    int r = (ty >= 590) ? 1 : 0;
-                    int c = std::max(0, std::min(cols - 1, (tx - 35) / slotPitch));
+                    int slotPitch = std::max(44, std::min(94, 944 / cols));
+                    int rackStartX = 162 + (960 - cols * slotPitch) / 2;
+                    int r = (ty >= 596) ? 1 : 0;
+                    int c = std::max(0, std::min(cols - 1, (tx - rackStartX) / slotPitch));
                     int sIdx = r * cols + c;
                     if (sIdx >= 0 && sIdx < (int)gRmkRackSlots.size()) {
                         gRmkCursor = sIdx;
@@ -3029,69 +3300,29 @@ int main(int argc, char* argv[]) {
                             gStatusBanner = "已移动牌架位置";
                         }
                     }
-                } else if (pointInRect(tx, ty, 20, 148, 1086, 274) && gRmkPhase == "playing" && gRmkTurnSeat == gRmkMySeat) {
-                    if (!gRmkEditing) {
-                        gRmkSnapHand = gRmkSeats[gRmkMySeat].hand;
-                        gRmkWorkHand = gRmkSnapHand;
-                        gRmkSnapMelds = gRmkTableMelds;
-                        gRmkWorkMelds = gRmkSnapMelds;
-                        gRmkEditing = true;
-                        for (const auto& sl : gRmkRackSlots) {
-                            if (!sl.id.empty() && sl.selected) {
-                                for (auto& wt : gRmkWorkHand) if (wt.id == sl.id) wt.selected = true;
+                } else if (pointInRect(tx, ty, 154, 42, 976, 444) && myTurn) {
+                    const auto& dispMelds = gRmkEditing ? gRmkWorkMelds : gRmkTableMelds;
+                    int mx = 172, my = 56;
+                    bool hitTile = false;
+                    for (size_t i = 0; i < dispMelds.size() && !hitTile; ++i) {
+                        int mw = (int)dispMelds[i].tiles.size() * 52 + 16;
+                        if (mx + mw > 1118) { mx = 172; my += 82; }
+                        if (pointInRect(tx, ty, mx, my, mw, 76)) {
+                            for (size_t k = 0; k < dispMelds[i].tiles.size(); ++k) {
+                                int trx = mx + 8 + (int)k * 52;
+                                if (pointInRect(tx, ty, trx, my + 4, 50, 68)) {
+                                    ensureRmkWorkspaceStarted();
+                                    gRmkDragTableMeldIdx = (int)i;
+                                    gRmkDragTableTileIdx = (int)k;
+                                    gRmkDragTableMoved = false;
+                                    gRmkDragStartX = tx; gRmkDragStartY = ty;
+                                    gRmkDragCurX = tx; gRmkDragCurY = ty;
+                                    hitTile = true;
+                                    break;
+                                }
                             }
                         }
-                    }
-                    std::vector<RmkTile> handSel;
-                    for (const auto& wt : gRmkWorkHand) if (wt.selected) handSel.push_back(wt);
-
-                    int mx = 30, my = 158;
-                    bool hit = false;
-                    for (size_t i = 0; i < gRmkWorkMelds.size() && !hit; ++i) {
-                        int mw = (int)gRmkWorkMelds[i].tiles.size() * 44 + 14;
-                        if (mx + mw > 1100) { mx = 30; my += 72; }
-                        if (pointInRect(tx, ty, mx, my, mw, 64)) {
-                            hit = true;
-                            if (!handSel.empty() && (gRmkSeats[gRmkMySeat].hasBrokenIce || i >= gRmkSnapMelds.size())) {
-                                // Append selected rack tiles (e.g. 4 onto 1 2 3!) into this table meld
-                                std::vector<RmkTile> comb = gRmkWorkMelds[i].tiles;
-                                comb.insert(comb.end(), handSel.begin(), handSel.end());
-                                if (RmkEvaluator::evaluateMeld(comb) >= 0) {
-                                    gRmkWorkMelds[i].tiles = RmkEvaluator::sortMeldForDisplay(comb);
-                                    std::set<std::string> rmIds;
-                                    for (const auto& ht : handSel) rmIds.insert(ht.id);
-                                    gRmkWorkHand.erase(std::remove_if(gRmkWorkHand.begin(), gRmkWorkHand.end(), [&](const RmkTile& t){ return rmIds.count(t.id) > 0; }), gRmkWorkHand.end());
-                                    for (auto& sl : gRmkRackSlots) if (!sl.id.empty() && rmIds.count(sl.id)) sl = RmkTile{};
-                                    gStatusBanner = "已将选牌并入桌面牌组（点击【确认出牌】完成回合）";
-                                } else {
-                                    gStatusBanner = "[注意] 拼接后不符合顺组或群组规则";
-                                }
-                            } else if ((int)i >= (int)gRmkSnapMelds.size() && handSel.empty()) {
-                                // Tap meld placed in current turn -> return entire meld to rack
-                                for (auto t : gRmkWorkMelds[i].tiles) { t.selected = false; gRmkWorkHand.push_back(t); }
-                                gRmkWorkMelds.erase(gRmkWorkMelds.begin() + i);
-                                syncRmkRackFromHand(true);
-                                gStatusBanner = "已撤回本回合暂放的牌组回牌架";
-                            } else if (gRmkSeats[gRmkMySeat].hasBrokenIce) {
-                                // Pick ANY single tile from table meld to rack for free Rummikub rearrangement (4567 -> take 4)!
-                                for (size_t k = 0; k < gRmkWorkMelds[i].tiles.size(); ++k) {
-                                    int trx = mx + 6 + (int)k * 44;
-                                    if (pointInRect(tx, ty, trx, my + 5, 40, 54)) {
-                                        RmkTile picked = gRmkWorkMelds[i].tiles[k];
-                                        picked.selected = true;
-                                        gRmkWorkMelds[i].tiles.erase(gRmkWorkMelds[i].tiles.begin() + k);
-                                        if (gRmkWorkMelds[i].tiles.empty()) gRmkWorkMelds.erase(gRmkWorkMelds.begin() + i);
-                                        gRmkWorkHand.push_back(picked);
-                                        syncRmkRackFromHand(true);
-                                        gStatusBanner = "已从桌面取下1张牌到牌架重组（确认前桌面所有牌组须合法）";
-                                        break;
-                                    }
-                                }
-                            } else {
-                                gStatusBanner = "[注意] 尚未破冰！首次出牌只能操作自己牌架摆出的牌组";
-                            }
-                        }
-                        mx += mw + 12;
+                        mx += mw + 16;
                     }
                 }
             }
@@ -3390,7 +3621,10 @@ int main(int argc, char* argv[]) {
                 gStatusBanner = "已退出拉密数字牌房间返回大厅";
             }
             if (kDown & HidNpadButton_ZL) {
-                organizeRmkRack(!gRmkSortByColor);
+                organizeRmkRack(true);  // [ZL] = 789 同色顺子理牌
+            }
+            if (kDown & HidNpadButton_ZR) {
+                organizeRmkRack(false); // [ZR] = 777 同数群组理牌
             }
             if (gRmkRackSlots.empty()) syncRmkRackFromHand(false);
             int totalSlots = std::max(20, (int)gRmkRackSlots.size());
@@ -3424,29 +3658,41 @@ int main(int argc, char* argv[]) {
                     gStatusBanner = "已复原牌架与桌面";
                 }
                 if (kDown & HidNpadButton_Y) {
-                    if (!gRmkEditing) {
-                        gRmkSnapHand = gRmkSeats[gRmkMySeat].hand;
-                        gRmkWorkHand = gRmkSnapHand;
-                        gRmkSnapMelds = gRmkTableMelds;
-                        gRmkWorkMelds = gRmkSnapMelds;
-                        gRmkEditing = true;
-                        for (size_t i = 0; i < gRmkRackSlots.size(); ++i) {
-                            if (!gRmkRackSlots[i].id.empty() && gRmkRackSlots[i].selected) {
-                                for (auto& wt : gRmkWorkHand) if (wt.id == gRmkRackSlots[i].id) wt.selected = true;
-                            }
-                        }
-                    }
+                    ensureRmkWorkspaceStarted();
                     std::vector<RmkTile> picked;
-                    for (const auto& t : gRmkWorkHand) if (t.selected) picked.push_back(t);
-                    if (RmkEvaluator::evaluateMeld(picked) >= 0) {
+                    std::set<std::string> selIds;
+                    for (const auto& t : gRmkWorkHand) if (t.selected) { picked.push_back(t); selIds.insert(t.id); }
+                    if (picked.empty()) {
+                        gStatusBanner = "[注意] 请先用摇杆+[A]键在牌架选牌后再按 [Y] 放上桌面！";
+                    } else if (RmkEvaluator::evaluateMeld(picked) >= 0) {
                         auto orderedPicked = RmkEvaluator::sortMeldForDisplay(picked);
+                        for (const auto& pt : orderedPicked) gRmkHighlightedIds.insert(pt.id);
                         gRmkWorkHand.erase(std::remove_if(gRmkWorkHand.begin(), gRmkWorkHand.end(), [](const RmkTile& t){ return t.selected; }), gRmkWorkHand.end());
                         for (auto& sl : gRmkRackSlots) if (sl.selected) sl = RmkTile{};
                         gRmkWorkMelds.push_back({"m_" + std::to_string(SDL_GetTicks()), orderedPicked});
                         gRmkLiftedSlot = -1;
-                        gStatusBanner = "已暂放牌组到桌面，点击【确认出牌】或按 [X] 完成出牌！";
+                        gStatusBanner = "已放上桌面成组！按 [X] 确认出牌，按 [R] 复原";
                     } else {
-                        gStatusBanner = "[注意] 所选牌未能组成有效顺组或群组 (需>=3张)";
+                        bool mergedToTable = false;
+                        if (gRmkSeats[gRmkMySeat].hasBrokenIce) {
+                            for (size_t i = 0; i < gRmkWorkMelds.size(); ++i) {
+                                auto comb = gRmkWorkMelds[i].tiles;
+                                comb.insert(comb.end(), picked.begin(), picked.end());
+                                if (RmkEvaluator::evaluateMeld(comb) >= 0) {
+                                    gRmkWorkMelds[i].tiles = RmkEvaluator::sortMeldForDisplay(comb);
+                                    for (const auto& pt : picked) gRmkHighlightedIds.insert(pt.id);
+                                    gRmkWorkHand.erase(std::remove_if(gRmkWorkHand.begin(), gRmkWorkHand.end(), [&](const RmkTile& t){ return selIds.count(t.id) > 0; }), gRmkWorkHand.end());
+                                    for (auto& sl : gRmkRackSlots) if (!sl.id.empty() && selIds.count(sl.id)) sl = RmkTile{};
+                                    gRmkLiftedSlot = -1;
+                                    mergedToTable = true;
+                                    gStatusBanner = "已自动并入桌面牌组！按 [X] 确认出牌，按 [R] 复原";
+                                    break;
+                                }
+                            }
+                        }
+                        if (!mergedToTable) {
+                            gStatusBanner = "[注意] 所选牌需满>=3张成组，或触屏直接拖到桌面目标牌组上合并！";
+                        }
                     }
                 }
                 if (kDown & HidNpadButton_B) {
