@@ -842,7 +842,7 @@ namespace RmkEvaluator {
                     }
                 }
             }
-            if (bestPair.empty()) {
+            else {
                 for (int num = 13; num >= 1; --num) {
                     std::vector<RmkTile> sn;
                     std::set<std::string> seen;
