@@ -4439,6 +4439,68 @@ struct DestinationSearchSheetView: View {
                 // App-Switch Safe ScrollView + LazyVStack (Never freezes hit-testing when returning from background!)
                 ScrollView(.vertical, showsIndicators: true) {
                     LazyVStack(alignment: .leading, spacing: 8) {
+                        let recentMatches = manager.matchingRecentDestinations(for: queryText)
+                        if !recentMatches.isEmpty {
+                            Text(manager.language == .en ? "Recent Destinations (7 Days)" : (manager.language == .zhHant ? "🕒 最近導航目的地 (7天內有效)" : "🕒 最近导航目的地 (7天内有效)"))
+                                .font(.caption.bold())
+                                .foregroundColor(.orange)
+                                .padding(.horizontal, 16)
+                                .padding(.top, 4)
+
+                            ForEach(recentMatches) { rec in
+                                Button(action: {
+                                    UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+                                    manager.travelMode = selectedMode
+                                    manager.isMapEnlarged = true
+                                    manager.showMapMode = true
+                                    manager.calculateAndStartRoute(to: rec.coordinate, title: rec.name)
+                                    dismiss()
+                                    if selectedMode == .transit {
+                                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                                            manager.showTransitPlanSheet = true
+                                        }
+                                    }
+                                }) {
+                                    HStack(spacing: 10) {
+                                        Image(systemName: "clock.arrow.circlepath")
+                                            .font(.title3)
+                                            .foregroundColor(.orange)
+                                        VStack(alignment: .leading, spacing: 3) {
+                                            HStack(spacing: 6) {
+                                                Text(rec.name)
+                                                    .font(.subheadline.bold())
+                                                    .foregroundColor(.primary)
+                                                    .lineLimit(1)
+                                                Text("最近")
+                                                    .font(.system(size: 10, weight: .black))
+                                                    .padding(.horizontal, 5).padding(.vertical, 1)
+                                                    .background(Color.orange.opacity(0.2))
+                                                    .foregroundColor(.orange)
+                                                    .cornerRadius(4)
+                                            }
+                                            if !rec.address.isEmpty {
+                                                Text(rec.address)
+                                                    .font(.caption)
+                                                    .foregroundColor(.secondary)
+                                                    .lineLimit(1)
+                                            }
+                                        }
+                                        Spacer()
+                                        Text(distanceString(to: rec.coordinate))
+                                            .font(.caption.bold())
+                                            .foregroundColor(.orange)
+                                    }
+                                    .padding(.horizontal, 16)
+                                    .padding(.vertical, 10)
+                                    .background(Color.orange.opacity(0.10))
+                                    .cornerRadius(10)
+                                    .padding(.horizontal, 12)
+                                    .contentShape(Rectangle())
+                                }
+                                .buttonStyle(PlainButtonStyle())
+                            }
+                        }
+
                         if !searchEngine.mapItems.isEmpty {
                             Text(manager.language == .en ? "Exact Matches (\(searchEngine.mapItems.count))" : (manager.language == .zhHant ? "精準地點結果 (\(searchEngine.mapItems.count) 個)" : "精准地点结果 (\(searchEngine.mapItems.count) 个)"))
                                 .font(.caption.bold())

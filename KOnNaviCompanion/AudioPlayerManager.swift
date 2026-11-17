@@ -156,7 +156,6 @@ enum TransitSortStrategy: String, CaseIterable, Identifiable {
 enum TransitVehicleMode: String, CaseIterable, Identifiable, Hashable {
     case bus = "bus"                   // 巴士
     case subwayLightRail = "subway"    // 地铁与轻轨
-    case commuterRail = "rail"         // 通勤铁路
     case ferry = "ferry"               // 渡轮
     
     var id: String { self.rawValue }
@@ -168,9 +167,6 @@ enum TransitVehicleMode: String, CaseIterable, Identifiable, Hashable {
         case (.subwayLightRail, .zhHans): return "地铁与轻轨"
         case (.subwayLightRail, .zhHant): return "地鐵與輕軌"
         case (.subwayLightRail, .en): return "Subway & Light Rail"
-        case (.commuterRail, .zhHans): return "通勤铁路"
-        case (.commuterRail, .zhHant): return "通勤鐵路"
-        case (.commuterRail, .en): return "Commuter Rail"
         case (.ferry, .zhHans): return "渡轮"
         case (.ferry, .zhHant): return "渡輪"
         case (.ferry, .en): return "Ferry"
@@ -181,7 +177,6 @@ enum TransitVehicleMode: String, CaseIterable, Identifiable, Hashable {
         switch self {
         case .bus: return "bus.fill"
         case .subwayLightRail: return "tram.fill"
-        case .commuterRail: return "train.side.front.car"
         case .ferry: return "ferry.fill"
         }
     }
@@ -708,6 +703,19 @@ enum RM500ArrowOutfit: Int, CaseIterable, Identifiable {
 }
 
 // MARK: - Isolated Pinyin-Safe AutoNavi/MapKit Place Search Engine
+struct RecentDestinationRecord: Codable, Identifiable, Equatable {
+    var id: String
+    var name: String
+    var address: String
+    var latitude: Double
+    var longitude: Double
+    var timestamp: TimeInterval
+
+    var coordinate: CLLocationCoordinate2D {
+        CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
+    }
+}
+
 class PlaceSearchEngine: NSObject, ObservableObject, MKLocalSearchCompleterDelegate {
     @Published var completions: [MKLocalSearchCompletion] = []
     @Published var mapItems: [MKMapItem] = []
@@ -941,6 +949,70 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     @Published var enableBanter: Bool = true
     
     // GPS & HUD Speedometer State
+    @Published var recentDestinations: [RecentDestinationRecord] = []
+    private let recentDestDefaultsKey = "HTTRecentDestinationsV1"
+
+    func loadAndPruneRecentDestinations() {
+        let now = Date().timeIntervalSince1970
+        let sevenDays: TimeInterval = 7.0 * 86400.0
+        if let data = UserDefaults.standard.data(forKey: recentDestDefaultsKey),
+           let decoded = try? JSONDecoder().decode([RecentDestinationRecord].self, from: data) {
+            let valid = decoded.filter { (now - $0.timestamp) <= sevenDays }
+            recentDestinations = valid
+            if valid.count != decoded.count, let enc = try? JSONEncoder().encode(valid) {
+                UserDefaults.standard.set(enc, forKey: recentDestDefaultsKey)
+            }
+        }
+    }
+
+    func recordRecentDestination(name: String, address: String, coord: CLLocationCoordinate2D) {
+        let cleanName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanName.isEmpty, cleanName != "目的地", cleanName != "正在获取地点..." else { return }
+        let now = Date().timeIntervalSince1970
+        let sevenDays: TimeInterval = 7.0 * 86400.0
+        let newLoc = CLLocation(latitude: coord.latitude, longitude: coord.longitude)
+
+        // 1. Prune >7 days old records; 2. Deduplicate same place by normalized name OR <= 150m distance (overwrite old!)
+        var list = recentDestinations.filter { rec in
+            guard (now - rec.timestamp) <= sevenDays else { return false }
+            let sameName = rec.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == cleanName.lowercased()
+            let dist = newLoc.distance(from: CLLocation(latitude: rec.latitude, longitude: rec.longitude))
+            return !sameName && dist > 150.0
+        }
+
+        let item = RecentDestinationRecord(
+            id: UUID().uuidString,
+            name: cleanName,
+            address: address.trimmingCharacters(in: .whitespacesAndNewlines),
+            latitude: coord.latitude,
+            longitude: coord.longitude,
+            timestamp: now
+        )
+        list.insert(item, at: 0)
+        if list.count > 20 { list = Array(list.prefix(20)) }
+        recentDestinations = list
+        if let enc = try? JSONEncoder().encode(list) {
+            UserDefaults.standard.set(enc, forKey: recentDestDefaultsKey)
+        }
+    }
+
+    func matchingRecentDestinations(for query: String) -> [RecentDestinationRecord] {
+        let now = Date().timeIntervalSince1970
+        let sevenDays: TimeInterval = 7.0 * 86400.0
+        let valid = recentDestinations.filter { (now - $0.timestamp) <= sevenDays }
+        if valid.count != recentDestinations.count {
+            recentDestinations = valid
+            if let enc = try? JSONEncoder().encode(valid) {
+                UserDefaults.standard.set(enc, forKey: recentDestDefaultsKey)
+            }
+        }
+        let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        if q.isEmpty { return valid }
+        return valid.filter {
+            $0.name.localizedCaseInsensitiveContains(q) || $0.address.localizedCaseInsensitiveContains(q)
+        }
+    }
+
     @Published var userCoordinate: CLLocationCoordinate2D = CLLocationCoordinate2D(latitude: 22.3193, longitude: 114.1694)
     var hasMapUserLocation: Bool = false
     @Published var currentSpeedKmh: Double = 0.0
@@ -1449,7 +1521,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         case .walk: return true
         case .bus: return preferredTransitVehicles.contains(.bus)
         case .subway: return preferredTransitVehicles.contains(.subwayLightRail)
-        case .intercity, .train: return preferredTransitVehicles.contains(.commuterRail)
+        case .intercity, .train: return preferredTransitVehicles.contains(.subwayLightRail)
         case .ferry: return preferredTransitVehicles.contains(.ferry)
         }
     }
@@ -1464,7 +1536,6 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         let destClean = destinationName.isEmpty ? "目的地" : destinationName
         let allowBus = preferredTransitVehicles.contains(.bus)
         let allowSubway = preferredTransitVehicles.contains(.subwayLightRail)
-        let allowRail = preferredTransitVehicles.contains(.commuterRail)
         let allowFerry = preferredTransitVehicles.contains(.ferry)
         
         // 1. Strict match: plans where every transit step is in preferredTransitVehicles
@@ -1623,77 +1694,8 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             }
         }
         
-        // 4. If Commuter Rail (.commuterRail) is checked and user either selected ONLY Commuter Rail or wants rail options included:
-        if allowRail && (!allowBus && !allowSubway || !candidateList.contains(where: { p in p.steps.contains { $0.kind == .train || $0.kind == .intercity } })) {
-            let railSteps: [TransitStepItem] = [
-                TransitStepItem(
-                    kind: .walk,
-                    lineName: "步行前往鐵路樞紐",
-                    directionDesc: "前往 深圳東站(布吉) / 深圳北站",
-                    fromStation: "我的位置",
-                    toStation: "深圳東站 / 城際鐵路站",
-                    passStations: [],
-                    durationMins: 12,
-                    walkMeters: 780,
-                    doorSideDesc: "",
-                    acNotice: "",
-                    exitDesc: "進站安檢候車",
-                    colorHex: "#888888",
-                    intervalDesc: "步行 780 米 (12分鐘)"
-                ),
-                TransitStepItem(
-                    kind: .intercity,
-                    lineName: "通勤鐵路 / 廣深城際動車",
-                    directionDesc: "往 \(destClean) / 羅湖 / 福田樞紐方向",
-                    fromStation: "深圳東站 / 布吉城際站",
-                    toStation: "\(destClean)鐵路站",
-                    passStations: ["深圳東", "\(destClean)鐵路站"],
-                    durationMins: 18,
-                    walkMeters: 0,
-                    doorSideDesc: "動車組列車",
-                    acNotice: "🚆 通勤鐵路/城際動車 · 準點率 99%",
-                    exitDesc: "出站前往 \(destClean)",
-                    colorHex: "#7CB342",
-                    intervalDesc: "1站直達 (18分鐘) · 票價¥15"
-                ),
-                TransitStepItem(
-                    kind: .walk,
-                    lineName: "步行到達",
-                    directionDesc: "前往 \(destClean)",
-                    fromStation: "\(destClean)鐵路站",
-                    toStation: destClean,
-                    passStations: [],
-                    durationMins: 6,
-                    walkMeters: 350,
-                    doorSideDesc: "",
-                    acNotice: "",
-                    exitDesc: "到達 \(destClean)",
-                    colorHex: "#888888",
-                    intervalDesc: "步行 350 米 (6分鐘)"
-                )
-            ]
-            let railPlan = TransitPlanOption(
-                title: "36分鐘 · 通勤鐵路/城際動車直達",
-                badge: "通勤鐵路 · 極速0換乘",
-                totalMinutes: 36,
-                totalStations: 2,
-                transferCount: 0,
-                walkMeters: 1130,
-                priceYuan: "15",
-                startExitDesc: "城際鐵路站進站",
-                warningNotice: "🚆 通勤鐵路與城際動車專線，大站直達無紅綠燈",
-                realtimeArrivalText: "預定每15分鐘開出一班 · CN¥15",
-                steps: railSteps
-            )
-            if !allowBus && !allowSubway {
-                candidateList.insert(railPlan, at: 0)
-            } else {
-                candidateList.append(railPlan)
-            }
-        }
-        
         // 5. If Ferry (.ferry) is checked and user selected ONLY Ferry (or wants ferry option):
-        if allowFerry && !allowBus && !allowSubway && !allowRail {
+        if allowFerry && !allowBus && !allowSubway {
             let ferrySteps: [TransitStepItem] = [
                 TransitStepItem(
                     kind: .walk,
@@ -6567,6 +6569,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     }
     
     private func setupLocationManager() {
+        loadAndPruneRecentDestinations()
         locationManager.delegate = self
         locationManager.desiredAccuracy = kCLLocationAccuracyBestForNavigation
         locationManager.distanceFilter = 1.5
@@ -7718,6 +7721,8 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         destinationName = title
         if !isReroute {
             initialRouteOriginCoordinate = userCoordinate
+            let recAddr = (self.tappedMapTitle == title && !self.tappedMapAddress.isEmpty) ? self.tappedMapAddress : String(format: "%.4f, %.4f", destCoord.latitude, destCoord.longitude)
+            self.recordRecentDestination(name: title, address: recAddr, coord: destCoord)
         }
         consecutiveOffRouteCount = 0
         isRecalculatingRoute = true
@@ -7932,17 +7937,29 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         routeSelectionRenderTrigger += 1
     }
     
-    func estimatedMinutes(for route: MKRoute) -> Int {
-        let distKm: Double = route.distance / 1000.0
-        if travelMode == .ebike {
-            let hours: Double = distKm / 22.0
-            return max(1, Int(hours * 60.0))
-        } else if travelMode == .walking {
-            let hours: Double = distKm / 4.8
-            return max(1, Int(hours * 60.0))
-        } else {
-            return max(1, Int(route.expectedTravelTime / 60.0))
+    /// Realistic urban ETA calibration (accounts for traffic lights, urban congestion, e-bike stops & transit wait time)
+    func realisticTravelSeconds(for route: MKRoute) -> Double {
+        let distKm: Double = max(0.05, route.distance / 1000.0)
+        switch travelMode {
+        case .ebike:
+            // Urban e-bike average ~15.5 km/h + ~22s per km for traffic lights
+            return (distKm / 15.5) * 3600.0 + distKm * 22.0
+        case .walking:
+            // Urban walking average ~3.8 km/h + crosswalk waits
+            return (distKm / 3.8) * 3600.0 + distKm * 18.0
+        case .transit:
+            // Public transit ~20 km/h + 10 min boarding/transfer/walking buffer
+            return (distKm / 20.0) * 3600.0 + 600.0
+        case .driving:
+            // Apple/Amap free-flow expectedTravelTime underestimates urban signals & congestion by ~30%
+            let signalPenalty = distKm * 30.0
+            let congestedFactor = isCongested ? 1.45 : 1.28
+            return max(route.expectedTravelTime * congestedFactor + signalPenalty, (distKm / 42.0) * 3600.0 + signalPenalty)
         }
+    }
+
+    func estimatedMinutes(for route: MKRoute) -> Int {
+        return max(1, Int((realisticTravelSeconds(for: route) / 60.0).rounded()))
     }
 
     func routeOptionBadgeTitle(for route: MKRoute, index: Int) -> String {
@@ -8114,15 +8131,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         }
         self.remainingRouteDistanceKm = route.distance / 1000.0
         
-        if self.travelMode == .ebike {
-            self.remainingRouteMinutes = max(1, Int((route.distance / 1000.0) / 22.0 * 60.0))
-        } else if self.travelMode == .transit {
-            self.remainingRouteMinutes = max(1, Int((route.distance / 1000.0) / 30.0 * 60.0) + 4)
-        } else if self.travelMode == .walking {
-            self.remainingRouteMinutes = max(1, Int((route.distance / 1000.0) / 4.8 * 60.0))
-        } else {
-            self.remainingRouteMinutes = max(1, Int(route.expectedTravelTime / 60.0))
-        }
+        self.remainingRouteMinutes = self.estimatedMinutes(for: route)
         
         // Immediately snap user coordinate onto route start so e-bike/car starts dead-center on the route line!
         self.updateSnappedRouteCoordinate(for: self.userCoordinate)
@@ -8567,12 +8576,9 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         self.remainingRouteDistanceKm = totalRemainMeters / 1000.0
         if route.distance > 0 {
             let ratio = max(0.02, min(1.0, totalRemainMeters / route.distance))
-            if self.travelMode == .ebike {
-                self.remainingRouteMinutes = max(1, Int((totalRemainMeters / 1000.0) / 22.0 * 60.0))
-            } else if self.travelMode == .walking {
-                self.remainingRouteMinutes = max(1, Int((totalRemainMeters / 1000.0) / 4.8 * 60.0))
-            } else if self.travelMode != .transit {
-                self.remainingRouteMinutes = max(1, Int((route.expectedTravelTime * ratio) / 60.0))
+            if self.travelMode != .transit {
+                let totalSec = self.realisticTravelSeconds(for: route)
+                self.remainingRouteMinutes = max(1, Int(((totalSec * ratio) / 60.0).rounded()))
             }
             let traveledM = max(0, Int(route.distance - totalRemainMeters))
             self.updateUpcomingServiceAreaAndToll(traveledMeters: traveledM)
