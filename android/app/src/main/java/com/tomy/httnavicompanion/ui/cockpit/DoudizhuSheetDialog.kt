@@ -136,7 +136,7 @@ fun KOnDoudizhuSheetDialog(onDismiss: () -> Unit, embeddedInGameRoom: Boolean = 
                     }
 
                     Text(
-                        "放课后茶会 · 面对面斗地主",
+                        HTTGameRoomLocalizer.localize("放课后茶会 · 面对面斗地主", lang),
                         color = Color.White,
                         fontSize = 14.sp,
                         fontWeight = FontWeight.Black,
@@ -170,7 +170,7 @@ fun KOnDoudizhuSheetDialog(onDismiss: () -> Unit, embeddedInGameRoom: Boolean = 
                         .border(1.dp, DdzGold.copy(alpha = 0.7f), RoundedCornerShape(10.dp))
                         .padding(horizontal = 10.dp, vertical = 5.dp)
                 ) {
-                    Text(statusBanner, color = DdzCream, fontSize = 11.sp, fontWeight = FontWeight.Bold, maxLines = 2)
+                    Text(HTTGameRoomLocalizer.localize(statusBanner, lang), color = DdzCream, fontSize = 11.sp, fontWeight = FontWeight.Bold, maxLines = 2)
                 }
 
                 Spacer(Modifier.height(6.dp))
