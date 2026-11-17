@@ -1280,6 +1280,7 @@ class MahjongEngine(private val context: Context, private val audioMgr: AudioPla
         val cur = _seats.value.toMutableList()
         val s = cur.getOrNull(actor) ?: return
         val inHand = s.hand.filter { it.suit == tile.suit && it.rank == tile.rank }
+        val kongLabel = if (inHand.size == 4) "暗杠" else "补杠"
         val newSeats = if (inHand.size == 4) {
             val rem = s.hand.filterNot { it.suit == tile.suit && it.rank == tile.rank }
             val melds = s.melds + MahjongMeld(UUID.randomUUID().toString(), MahjongMeldKind.CONCEALED_KONG, tile)
@@ -1287,7 +1288,6 @@ class MahjongEngine(private val context: Context, private val audioMgr: AudioPla
                 val sc = seat.score + if (idx == actor) _baseScore.value * 3 else -_baseScore.value
                 if (idx == actor) seat.copy(hand = rem, melds = melds, score = sc, lastActionText = "暗杠 ${tile.fullName}") else seat.copy(score = sc)
             }
-            triggerClaimEvent(actor, "暗杠", tile)
         } else {
             val rem = s.hand.toMutableList()
             val hIdx = rem.indexOfFirst { it.suit == tile.suit && it.rank == tile.rank }
@@ -1297,9 +1297,9 @@ class MahjongEngine(private val context: Context, private val audioMgr: AudioPla
                 val sc = seat.score + if (idx == actor) _baseScore.value * 3 else -_baseScore.value
                 if (idx == actor) seat.copy(hand = rem, melds = melds, score = sc, lastActionText = "补杠 ${tile.fullName}") else seat.copy(score = sc)
             }
-            triggerClaimEvent(actor, "补杠", tile)
         }
         _seats.value = newSeats
+        triggerClaimEvent(actor, kongLabel, tile)
         audioMgr.playMascotVoice(s.character)
         drawTileForSeat(actor, "🔥 [${s.name}] 杠牌补摸")
     }
