@@ -11404,6 +11404,10 @@ struct MahjongPendingClaim: Codable, Equatable {
     var eligibleKongSeats: [Int]
     var eligiblePongSeats: [Int]
     var passedSeats: [Int]
+
+    var waitingSeats: [Int] {
+        Array(Set(eligibleHuSeats + eligibleKongSeats + eligiblePongSeats)).filter { !passedSeats.contains($0) }
+    }
 }
 
 struct MahjongNetPacket: Codable {
