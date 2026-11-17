@@ -34,6 +34,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -353,12 +357,14 @@ fun KOnMahjongSheetDialog(onDismiss: () -> Unit, embeddedInGameRoom: Boolean = f
     val pendingClaim by engine.pendingClaim.collectAsState()
     val winnerSeat by engine.winnerSeat.collectAsState()
     val winReason by engine.winReason.collectAsState()
+    val aiDifficulty by engine.aiDifficulty.collectAsState()
+    val lastClaimEvent by engine.lastClaimEvent.collectAsState()
 
     LaunchedEffect(Unit) { engine.refreshLocalIpAddress() }
     DisposableEffect(Unit) { onDispose { engine.leaveRoomAndResetLobby() } }
 
     val contentBody: @Composable () -> Unit = {
-            Column(modifier = Modifier.fillMaxSize().padding(8.dp)) {
+            Column(modifier = Modifier.fillMaxSize().navigationBarsPadding().padding(horizontal = 8.dp, vertical = 4.dp)) {
                 if (!embeddedInGameRoom) {
                 // Top Bar
                 Row(
@@ -550,6 +556,7 @@ fun KOnMahjongSheetDialog(onDismiss: () -> Unit, embeddedInGameRoom: Boolean = f
                             }
                             MjRuleRow("局数:", listOf(4 to "4局", 8 to "8局", 16 to "16局", 0 to "无限"), totalRounds, MjRed) { if (canEdit) engine.setTotalRounds(it) }
                             MjRuleRow("底分:", listOf(50 to "50分", 100 to "100分", 200 to "200分", 500 to "500分"), baseScore, Color(0xFFD99426)) { if (canEdit) engine.setBaseScore(it) }
+                            MjRuleRow("AI:", listOf(0 to "休闲 AI", 1 to "标准 AI", 2 to "大师 AI"), aiDifficulty.ordinal, Color(0xFF7E57C2)) { if (canEdit) engine.setAiDifficulty(MahjongAIDifficulty.entries[it]) }
                             MjRuleRow("限时:", listOf(15 to "15秒", 20 to "20秒", 30 to "30秒", 0 to "不限"), turnLimit, MjBlue) { if (canEdit) engine.setTurnTimeLimit(it) }
                         }
 
@@ -633,7 +640,12 @@ fun KOnMahjongSheetDialog(onDismiss: () -> Unit, embeddedInGameRoom: Boolean = f
                         }
                     }
 
-                    seats.getOrNull(oppIdx)?.let { MjDiscardRiver(it) }
+                    seats.getOrNull(oppIdx)?.let { opp ->
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                            MjSeatMelds(opp)
+                            MjDiscardRiver(opp, maxCols = 8)
+                        }
+                    }
 
                     Row(modifier = Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                         // Left Seat with Standing Vertical Tile Wall
@@ -649,7 +661,8 @@ fun KOnMahjongSheetDialog(onDismiss: () -> Unit, embeddedInGameRoom: Boolean = f
                                 }
                                 Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
                                     MjSeatBadge(lSeat, currentTurn == leftIdx, allMemberFrames[lSeat.character.charId])
-                                    MjDiscardRiver(lSeat)
+                                    MjSeatMelds(lSeat)
+                                    MjDiscardRiver(lSeat, maxCols = 5)
                                 }
                             }
                         }
@@ -661,7 +674,27 @@ fun KOnMahjongSheetDialog(onDismiss: () -> Unit, embeddedInGameRoom: Boolean = f
                             contentAlignment = Alignment.Center
                         ) {
                             val cl = pendingClaim
-                            when {
+                            val ev = lastClaimEvent
+                            if (ev != null) {
+                                Row(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .background(MjRed.copy(alpha = 0.95f))
+                                        .border(2.dp, MjGold, RoundedCornerShape(12.dp))
+                                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    allMemberFrames[ev.character.charId]?.let { bmp ->
+                                        Image(bitmap = bmp.asImageBitmap(), contentDescription = null, filterQuality = FilterQuality.None, modifier = Modifier.size(26.dp))
+                                    }
+                                    Column {
+                                        Text(ev.seatName, color = Color.White, fontSize = 9.sp, maxLines = 1)
+                                        Text("💥 ${ev.actionLabel} ${ev.tile.fullName}!", color = Color.Yellow, fontSize = 12.sp, fontWeight = FontWeight.Black)
+                                    }
+                                    MjTileCard(ev.tile, 24.dp, 33.dp, isSelected = false, isHighlight = true)
+                                }
+                            } else when {
                                 cl != null -> Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                     Text("⚡ 响应牌", color = MjGold, fontSize = 11.sp, fontWeight = FontWeight.Black)
                                     Spacer(Modifier.height(4.dp))
@@ -739,7 +772,8 @@ fun KOnMahjongSheetDialog(onDismiss: () -> Unit, embeddedInGameRoom: Boolean = f
                             seats.getOrNull(rightIdx)?.let { rSeat ->
                                 Column(modifier = Modifier.weight(1f), horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(3.dp)) {
                                     MjSeatBadge(rSeat, currentTurn == rightIdx, allMemberFrames[rSeat.character.charId])
-                                    MjDiscardRiver(rSeat)
+                                    MjSeatMelds(rSeat)
+                                    MjDiscardRiver(rSeat, maxCols = 5)
                                 }
                                 Column(
                                     modifier = Modifier.clip(RoundedCornerShape(5.dp)).background(Color.Black.copy(alpha = 0.32f)).padding(3.dp),
@@ -757,7 +791,7 @@ fun KOnMahjongSheetDialog(onDismiss: () -> Unit, embeddedInGameRoom: Boolean = f
                     val me = seats.getOrNull(mySeatIdx)
                     if (me != null) {
                         if (me.discards.isNotEmpty()) {
-                            MjDiscardRiver(me)
+                            MjDiscardRiver(me, maxCols = 10)
                         }
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -936,28 +970,32 @@ private fun MjSeatBadge(seat: MahjongSeat, isTurn: Boolean, bmp: android.graphic
 }
 
 @Composable
-private fun MjDiscardRiver(seat: MahjongSeat) {
-    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-        if (seat.melds.isNotEmpty()) {
-            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                seat.melds.forEach { m ->
-                    Row(modifier = Modifier.clip(RoundedCornerShape(4.dp)).background(Color.Black.copy(alpha = 0.35f)).padding(2.dp), horizontalArrangement = Arrangement.spacedBy(1.dp)) {
-                        val cnt = if (m.kind == MahjongMeldKind.PONG) 3 else 4
-                        repeat(cnt) { idx ->
-                            if (m.kind == MahjongMeldKind.CONCEALED_KONG && idx != 2) {
-                                MjTileBack(15.dp, 21.dp)
-                            } else {
-                                MjTileCard(m.tile, 15.dp, 21.dp, isSelected = false, isHighlight = false)
-                            }
-                        }
+private fun MjSeatMelds(seat: MahjongSeat) {
+    if (seat.melds.isEmpty()) return
+    Row(horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+        seat.melds.forEach { m ->
+            Row(modifier = Modifier.clip(RoundedCornerShape(4.dp)).background(Color.Black.copy(alpha = 0.42f)).padding(2.dp), horizontalArrangement = Arrangement.spacedBy(1.dp)) {
+                val cnt = if (m.kind == MahjongMeldKind.PONG) 3 else 4
+                repeat(cnt) { idx ->
+                    if (m.kind == MahjongMeldKind.CONCEALED_KONG && idx != 2) {
+                        MjTileBack(15.dp, 21.dp)
+                    } else {
+                        MjTileCard(m.tile, 15.dp, 21.dp, isSelected = false, isHighlight = false)
                     }
                 }
             }
         }
-        val latestId = seat.discards.lastOrNull()?.id
-        val recentDiscards = if (seat.discards.size > 12) seat.discards.takeLast(12) else seat.discards
-        recentDiscards.chunked(6).forEach { row ->
-            Row(horizontalArrangement = Arrangement.spacedBy(1.5.dp)) {
+    }
+}
+
+@Composable
+private fun MjDiscardRiver(seat: MahjongSeat, maxCols: Int = 6) {
+    val latestId = seat.discards.lastOrNull()?.id
+    val maxTiles = maxCols * 2
+    val recentDiscards = if (seat.discards.size > maxTiles) seat.discards.takeLast(maxTiles) else seat.discards
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        recentDiscards.chunked(maxCols).forEach { row ->
+            Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
                 row.forEach { t ->
                     val isLatest = (t.id == latestId)
                     val popScale by animateFloatAsState(
@@ -965,11 +1003,8 @@ private fun MjDiscardRiver(seat: MahjongSeat) {
                         animationSpec = spring(dampingRatio = 0.55f, stiffness = 420f),
                         label = "mj_discard_pop"
                     )
-                    Box(modifier = Modifier.graphicsLayer(scaleX = popScale, scaleY = popScale), contentAlignment = Alignment.TopCenter) {
-                        MjTileCard(t, 19.dp, 26.dp, isSelected = false, isHighlight = isLatest)
-                        if (isLatest) {
-                            Text("▼", color = Color(0xFFFF9800), fontSize = 9.sp, fontWeight = FontWeight.Black, modifier = Modifier.offset(y = (-8).dp))
-                        }
+                    Box(modifier = Modifier.graphicsLayer(scaleX = popScale, scaleY = popScale)) {
+                        MjTileCard(t, 22.dp, 30.dp, isSelected = false, isHighlight = isLatest)
                     }
                 }
             }
@@ -1269,6 +1304,12 @@ fun KOnRummikubContent() {
         var dragSlotIdx by remember { mutableStateOf<Int?>(null) }
         var dragOffsetX by remember { mutableStateOf(0f) }
         var dragOffsetY by remember { mutableStateOf(0f) }
+        var dragTableTileKey by remember { mutableStateOf<Pair<String, String>?>(null) }
+        var dragTableOffX by remember { mutableStateOf(0f) }
+        var dragTableOffY by remember { mutableStateOf(0f) }
+        val meldBoundsMap = remember { mutableStateMapOf<String, Rect>() }
+        var tableAreaBounds by remember { mutableStateOf<Rect?>(null) }
+        var rackAreaBounds by remember { mutableStateOf<Rect?>(null) }
         val drawAnimProg by animateFloatAsState(targetValue = if (isDrawing) 1f else 0f, animationSpec = spring())
 
         // Order seats so opponents are at top-left and local player (me) is anchored at bottom-left next to the rack (1:1 like video!)
@@ -1433,6 +1474,7 @@ fun KOnRummikubContent() {
                         modifier = Modifier
                             .weight(1f)
                             .fillMaxWidth()
+                            .onGloballyPositioned { tableAreaBounds = it.boundsInRoot() }
                             .clip(RoundedCornerShape(10.dp))
                             .background(Color.Black.copy(alpha = 0.16f))
                             .clickable(enabled = myTurn && selIds.isNotEmpty()) {
@@ -1478,6 +1520,7 @@ fun KOnRummikubContent() {
                                             val ok = RmkEvaluator.evaluateMeld(meld.tiles) != null
                                             Row(
                                                 modifier = Modifier
+                                                    .onGloballyPositioned { meldBoundsMap[meld.id] = it.boundsInRoot() }
                                                     .clip(RoundedCornerShape(8.dp))
                                                     .background(Color.Black.copy(alpha = 0.28f))
                                                     .border(if (ok) 1.dp else 2.5.dp, if (ok) Color.White.copy(alpha = 0.18f) else Color.Red, RoundedCornerShape(8.dp))
@@ -1486,18 +1529,62 @@ fun KOnRummikubContent() {
                                             ) {
                                                 meld.tiles.forEach { t ->
                                                     val isPickedTable = (selectedTableTile?.first == meld.id && selectedTableTile?.second == t.id)
+                                                    val isDragTbl = (dragTableTileKey?.first == meld.id && dragTableTileKey?.second == t.id)
                                                     val isHigh = highlightedIds.contains(t.id)
-                                                    RmkTileCard(
-                                                        tile = t,
-                                                        selected = isPickedTable,
-                                                        highlighted = isHigh,
-                                                        compact = true,
-                                                        customW = 40.dp,
-                                                        customH = 56.dp,
-                                                        onClick = if (myTurn) {
-                                                            { rmk.handleTableTileTapOrMove(meld.id, t.id) }
-                                                        } else null
-                                                    )
+                                                    var tileRootPos by remember { mutableStateOf(Offset.Zero) }
+                                                    Box(
+                                                        modifier = Modifier
+                                                            .onGloballyPositioned { tileRootPos = it.boundsInRoot().center }
+                                                            .offset { if (isDragTbl) IntOffset(dragTableOffX.roundToInt(), dragTableOffY.roundToInt()) else IntOffset.Zero }
+                                                            .pointerInput(meld.id, t.id, myTurn) {
+                                                                if (!myTurn) return@pointerInput
+                                                                detectDragGestures(
+                                                                    onDragStart = {
+                                                                        dragTableTileKey = meld.id to t.id
+                                                                        dragTableOffX = 0f
+                                                                        dragTableOffY = 0f
+                                                                    },
+                                                                    onDrag = { change, dragAmount ->
+                                                                        change.consume()
+                                                                        dragTableOffX += dragAmount.x
+                                                                        dragTableOffY += dragAmount.y
+                                                                    },
+                                                                    onDragEnd = {
+                                                                        val dropPt = Offset(tileRootPos.x + dragTableOffX, tileRootPos.y + dragTableOffY)
+                                                                        if (rackAreaBounds?.contains(dropPt) == true) {
+                                                                            rmk.returnTableTileToRackIfFromThisTurn(meld.id, t.id)
+                                                                        } else {
+                                                                            val targetMeld = meldBoundsMap.entries.firstOrNull { it.key != meld.id && it.value.inflate(18f).contains(dropPt) }?.key
+                                                                            if (targetMeld != null) {
+                                                                                rmk.moveTableTile(meld.id, t.id, targetMeld)
+                                                                            } else if (tableAreaBounds?.contains(dropPt) == true) {
+                                                                                rmk.moveTableTile(meld.id, t.id, null)
+                                                                            }
+                                                                        }
+                                                                        dragTableTileKey = null
+                                                                        dragTableOffX = 0f
+                                                                        dragTableOffY = 0f
+                                                                    },
+                                                                    onDragCancel = {
+                                                                        dragTableTileKey = null
+                                                                        dragTableOffX = 0f
+                                                                        dragTableOffY = 0f
+                                                                    }
+                                                                )
+                                                            }
+                                                    ) {
+                                                        RmkTileCard(
+                                                            tile = t,
+                                                            selected = isPickedTable || isDragTbl,
+                                                            highlighted = isHigh,
+                                                            compact = true,
+                                                            customW = 38.dp,
+                                                            customH = 54.dp,
+                                                            onClick = if (myTurn) {
+                                                                { rmk.handleTableTileTapOrMove(meld.id, t.id) }
+                                                            } else null
+                                                        )
+                                                    }
                                                 }
                                             }
                                         }
@@ -1511,7 +1598,8 @@ fun KOnRummikubContent() {
                     BoxWithConstraints(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(118.dp)
+                            .height(104.dp)
+                            .onGloballyPositioned { rackAreaBounds = it.boundsInRoot() }
                             .clip(RoundedCornerShape(10.dp))
                             .background(Color(0xFFB57C44))
                             .border(2.dp, Color(0xFFE0AC63), RoundedCornerShape(10.dp))
@@ -1540,7 +1628,7 @@ fun KOnRummikubContent() {
 
                                             Box(
                                                 modifier = Modifier
-                                                    .size(width = slotW, height = 49.dp)
+                                                    .size(width = slotW, height = 43.dp)
                                                     .clip(RoundedCornerShape(5.dp))
                                                     .background(if (liftedIdx != null && tileOpt == null) Color.Yellow.copy(alpha = 0.16f) else Color.Black.copy(alpha = 0.10f))
                                                     .border(1.dp, if (liftedIdx != null) Color.Yellow.copy(alpha = 0.55f) else Color.Black.copy(alpha = 0.20f), RoundedCornerShape(5.dp))
@@ -1561,8 +1649,12 @@ fun KOnRummikubContent() {
                                                             onDragEnd = {
                                                                 val curDrag = dragSlotIdx
                                                                 if (curDrag != null) {
-                                                                    if (dragOffsetY < -95f && tileOpt != null) {
-                                                                        rmk.dropRackTilesToTable(tileOpt.id)
+                                                                    if (dragOffsetY < -85f && tileOpt != null) {
+                                                                        val estDrop = tableAreaBounds?.let { tb ->
+                                                                            Offset(tb.left + tb.width * ((col + 0.5f) / cols) + dragOffsetX, tb.bottom + dragOffsetY)
+                                                                        }
+                                                                        val targetMeld = if (estDrop != null) meldBoundsMap.entries.firstOrNull { it.value.inflate(22f).contains(estDrop) }?.key else null
+                                                                        rmk.dropRackTilesToTable(tileOpt.id, targetMeld)
                                                                     } else {
                                                                         val stepPx = (size.width + 10).coerceAtLeast(38)
                                                                         val colShift = (dragOffsetX / stepPx).roundToInt()
@@ -1617,7 +1709,7 @@ fun KOnRummikubContent() {
                                                             highlighted = highlightedIds.contains(tileOpt.id),
                                                             compact = true,
                                                             customW = (slotW - 2.dp).coerceAtLeast(24.dp),
-                                                            customH = 47.dp
+                                                            customH = 41.dp
                                                         )
                                                     }
                                                 }
@@ -1700,7 +1792,7 @@ fun KOnRummikubContent() {
                             // Tall Green Confirm `✓` Button
                             Box(
                                 modifier = Modifier
-                                    .size(width = 58.dp, height = 82.dp)
+                                    .size(width = 56.dp, height = 72.dp)
                                     .clip(RoundedCornerShape(14.dp))
                                     .background(Color(0xFF1B4568))
                                     .border(2.dp, Color(0xFF47F285), RoundedCornerShape(14.dp))
@@ -1714,7 +1806,7 @@ fun KOnRummikubContent() {
                         // Tall `+` Draw Tile Button with Remaining Pool Count (1:1 like Video!)
                         Box(
                             modifier = Modifier
-                                .size(width = 58.dp, height = 102.dp)
+                                .size(width = 56.dp, height = 86.dp)
                                 .clip(RoundedCornerShape(14.dp))
                                 .background(if (myTurn) Color(0xFF2A4A7C) else Color(0xFF182C4F))
                                 .border(if (myTurn) 2.2.dp else 1.dp, if (myTurn) Color(0xFFFB8C00) else Color.White.copy(alpha = 0.25f), RoundedCornerShape(14.dp))

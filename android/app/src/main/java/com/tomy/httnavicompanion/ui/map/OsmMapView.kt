@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Color as AndroidColor
+import android.graphics.DashPathEffect
 import android.graphics.drawable.BitmapDrawable
 import android.view.MotionEvent
 import androidx.compose.runtime.*
@@ -58,6 +59,7 @@ fun OsmMapView(
     val userCoord by manager.userCoordinate.collectAsState()
     val destCoord by manager.destinationCoord.collectAsState()
     val routePoints by manager.activeRoutePoints.collectAsState()
+    val transitSegments by manager.transitSegments.collectAsState()
     val navArrowBmp by manager.currentNavArrowBitmap.collectAsState()
     val camMode by manager.cameraMode.collectAsState()
     val heading by manager.headingDegrees.collectAsState()
@@ -86,6 +88,8 @@ fun OsmMapView(
     val tappedMarkerHolder = remember { arrayOfNulls<Marker>(1) }
     val outerPolyHolder = remember { arrayOfNulls<Polyline>(1) }
     val innerPolyHolder = remember { arrayOfNulls<Polyline>(1) }
+    val walkPoly1Holder = remember { arrayOfNulls<Polyline>(1) }
+    val walkPoly2Holder = remember { arrayOfNulls<Polyline>(1) }
     val lastAnimatedCoord = remember { arrayOfNulls<LatLng>(1) }
     val lastArrowBmp = remember { arrayOfNulls<Bitmap>(1) }
 
@@ -145,6 +149,20 @@ fun OsmMapView(
                 overlays.add(innerLine)
                 outerPolyHolder[0] = outerLine
                 innerPolyHolder[0] = innerLine
+                val w1 = Polyline(this).apply {
+                    outlinePaint.color = AndroidColor.rgb(21, 101, 192)
+                    outlinePaint.strokeWidth = 10f
+                    outlinePaint.pathEffect = DashPathEffect(floatArrayOf(20f, 14f), 0f)
+                }
+                val w2 = Polyline(this).apply {
+                    outlinePaint.color = AndroidColor.rgb(21, 101, 192)
+                    outlinePaint.strokeWidth = 10f
+                    outlinePaint.pathEffect = DashPathEffect(floatArrayOf(20f, 14f), 0f)
+                }
+                overlays.add(w1)
+                overlays.add(w2)
+                walkPoly1Holder[0] = w1
+                walkPoly2Holder[0] = w2
 
                 val uMarker = Marker(this).apply {
                     setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
@@ -192,13 +210,29 @@ fun OsmMapView(
                 }
             }
 
-            // 3. Update Route Polylines
-            val dispRoute = routePoints.map { pt ->
-                val c = if (useAmapTiles) CoordinateConverter.wgs84ToGCJ02(pt) else pt
-                GeoPoint(c.latitude, c.longitude)
+            // 3. Update Route Polylines (with Combined Walking + Transit segments!)
+            if (transitSegments.size >= 3) {
+                val w1Pts = transitSegments[0].points.map { pt -> val c = if (useAmapTiles) CoordinateConverter.wgs84ToGCJ02(pt) else pt; GeoPoint(c.latitude, c.longitude) }
+                val trPts = transitSegments[1].points.map { pt -> val c = if (useAmapTiles) CoordinateConverter.wgs84ToGCJ02(pt) else pt; GeoPoint(c.latitude, c.longitude) }
+                val w2Pts = transitSegments[2].points.map { pt -> val c = if (useAmapTiles) CoordinateConverter.wgs84ToGCJ02(pt) else pt; GeoPoint(c.latitude, c.longitude) }
+                outerPolyHolder[0]?.outlinePaint?.color = AndroidColor.rgb(0, 150, 136)
+                innerPolyHolder[0]?.outlinePaint?.color = AndroidColor.rgb(0, 230, 118)
+                outerPolyHolder[0]?.setPoints(trPts)
+                innerPolyHolder[0]?.setPoints(trPts)
+                walkPoly1Holder[0]?.setPoints(w1Pts)
+                walkPoly2Holder[0]?.setPoints(w2Pts)
+            } else {
+                outerPolyHolder[0]?.outlinePaint?.color = AndroidColor.rgb(18, 92, 168)
+                innerPolyHolder[0]?.outlinePaint?.color = AndroidColor.rgb(0, 229, 255)
+                val dispRoute = routePoints.map { pt ->
+                    val c = if (useAmapTiles) CoordinateConverter.wgs84ToGCJ02(pt) else pt
+                    GeoPoint(c.latitude, c.longitude)
+                }
+                outerPolyHolder[0]?.setPoints(dispRoute)
+                innerPolyHolder[0]?.setPoints(dispRoute)
+                walkPoly1Holder[0]?.setPoints(emptyList())
+                walkPoly2Holder[0]?.setPoints(emptyList())
             }
-            outerPolyHolder[0]?.setPoints(dispRoute)
-            innerPolyHolder[0]?.setPoints(dispRoute)
 
             // 4. Update Destination Marker
             val dMarker = destMarkerHolder[0]

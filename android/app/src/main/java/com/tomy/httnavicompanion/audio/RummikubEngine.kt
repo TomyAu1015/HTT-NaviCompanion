@@ -1335,32 +1335,34 @@ class RummikubEngine(
         }
     }
 
-    fun addSelectedToTableMeld(meldId: String) {
+    fun addSelectedToTableMeld(meldId: String, allowInvalidSplit: Boolean = false) {
         if (_currentTurnSeat.value != _mySeatIndex.value || _phase.value != RmkGamePhase.PLAYING) return
         val sel = _selectedTileIds.value
         if (sel.isEmpty()) return
         ensureWorkspace()
         val idx = _workingMelds.value.indexOfFirst { it.id == meldId }
         if (idx < 0) return
-        if (_seats.value.getOrNull(_mySeatIndex.value)?.hasBrokenIce != true && idx < snapshotMelds.size) {
+        val brokenIce = _seats.value.getOrNull(_mySeatIndex.value)?.hasBrokenIce == true
+        if (!brokenIce && idx < snapshotMelds.size) {
             _statusBanner.value = "⚠️ 尚未破冰！首次出牌只能操作自己牌架摆出的牌组且总和 ≥30 分"
             return
         }
         val picked = _workingHand.value.filter { sel.contains(it.id) }
         val comb = _workingMelds.value[idx].tiles + picked
-        if (RmkEvaluator.evaluateMeld(comb) == null) {
+        val valid = (RmkEvaluator.evaluateMeld(comb) != null)
+        if (!valid && !(allowInvalidSplit && brokenIce)) {
             _statusBanner.value = "⚠️ 添牌后该牌组不符合群组或顺组规则"
             return
         }
         _workingHand.value = _workingHand.value.filterNot { sel.contains(it.id) }
         _rackSlots.value = _rackSlots.value.map { if (it != null && sel.contains(it.id)) null else it }
         val ms = _workingMelds.value.toMutableList()
-        ms[idx] = ms[idx].copy(tiles = RmkEvaluator.sortMeldForDisplay(comb))
+        ms[idx] = ms[idx].copy(tiles = if (valid) RmkEvaluator.sortMeldForDisplay(comb) else comb)
         _workingMelds.value = ms
+        _lastTurnHighlightedTileIds.value = _lastTurnHighlightedTileIds.value + picked.map { it.id }
         _selectedTileIds.value = emptySet()
-        _selectedTableTileSource.value = null
         _liftedSlotIndex.value = null
-        _statusBanner.value = "✅ 已将选牌并入桌面牌组（点击【确认出牌】完成回合）"
+        _statusBanner.value = if (valid) "✅ 已将选牌并入桌面牌组（点右侧绿色 ✓ 确认出牌）" else "🧩 已填入桌面牌组（红框表示待拆解，可拖动多余的牌到桌面其他位置重组！）"
     }
 
     fun splitMeldToWorkspace(meldId: String, tileId: String? = null) {
@@ -1398,7 +1400,7 @@ class RummikubEngine(
     fun handleTableTileTapOrMove(meldId: String, tileId: String) {
         if (_currentTurnSeat.value != _mySeatIndex.value || _phase.value != RmkGamePhase.PLAYING) return
         if (_selectedTileIds.value.isNotEmpty()) {
-            addSelectedToTableMeld(meldId)
+            addSelectedToTableMeld(meldId, allowInvalidSplit = true)
             return
         }
         ensureWorkspace()
@@ -1417,53 +1419,79 @@ class RummikubEngine(
         val src = _selectedTableTileSource.value
         if (src != null) {
             if (src.first == meldId && src.second == tileId) {
-                // Tapping the same table tile again detaches it as a standalone group on the table (or returns to rack if it came from rack this turn)
                 _selectedTableTileSource.value = null
                 val tList = ms[mIdx].tiles.toMutableList()
                 val tile = tList.removeAt(tIdx)
                 if (tList.isEmpty()) ms.removeAt(mIdx) else ms[mIdx] = ms[mIdx].copy(tiles = tList)
-                val cameFromRackThisTurn = snapshotHand.any { it.id == tile.id }
-                if (cameFromRackThisTurn) {
-                    _workingMelds.value = ms
-                    _workingHand.value = _workingHand.value + tile
-                    syncRackFromHand(_workingHand.value, preserveExistingPositions = true)
-                    _statusBanner.value = "↩️ 已将该牌退回牌架"
-                } else {
-                    ms.add(RmkMeld(UUID.randomUUID().toString(), listOf(tile)))
-                    _workingMelds.value = ms
-                    _lastTurnHighlightedTileIds.value = _lastTurnHighlightedTileIds.value + tile.id
-                    _statusBanner.value = "🧩 已拆出桌面单牌，请继续点选其他牌或牌架牌与它组合！"
-                }
+                ms.add(RmkMeld(UUID.randomUUID().toString(), listOf(tile)))
+                _workingMelds.value = ms
+                _lastTurnHighlightedTileIds.value = _lastTurnHighlightedTileIds.value + tile.id
+                _statusBanner.value = "🧩 已从桌面牌组拆出单牌到桌面！可继续拖动其他牌与它组合"
                 return
             } else if (src.first != meldId) {
-                val srcMIdx = ms.indexOfFirst { it.id == src.first }
-                if (srcMIdx >= 0) {
-                    val srcTiles = ms[srcMIdx].tiles.toMutableList()
-                    val srcTIdx = srcTiles.indexOfFirst { it.id == src.second }
-                    if (srcTIdx >= 0) {
-                        val movingTile = srcTiles.removeAt(srcTIdx)
-                        if (srcTiles.isEmpty()) ms.removeAt(srcMIdx) else ms[srcMIdx] = ms[srcMIdx].copy(tiles = srcTiles)
-                        val newTargetIdx = ms.indexOfFirst { it.id == meldId }
-                        if (newTargetIdx >= 0) {
-                            var comb = ms[newTargetIdx].tiles + movingTile
-                            if (RmkEvaluator.evaluateMeld(comb) != null) {
-                                comb = RmkEvaluator.sortMeldForDisplay(comb)
-                            }
-                            ms[newTargetIdx] = ms[newTargetIdx].copy(tiles = comb)
-                            _workingMelds.value = ms
-                            _lastTurnHighlightedTileIds.value = _lastTurnHighlightedTileIds.value + movingTile.id
-                            _selectedTableTileSource.value = null
-                            _statusBanner.value = "✅ 已将桌面牌移入目标牌组！"
-                            return
-                        }
-                    }
-                }
+                moveTableTile(src.first, src.second, meldId)
+                _selectedTableTileSource.value = null
+                return
             }
         }
 
         _selectedTableTileSource.value = meldId to tileId
         val picked = ms[mIdx].tiles[tIdx]
-        _statusBanner.value = "🖐 已选中桌面牌 [${if (picked.isJoker) "百搭" else "${picked.color.labelZh}${picked.number}"}]：点另一牌组可移入，再点一次可单独拆出！"
+        _statusBanner.value = "🖐 已选中桌面牌 [${if (picked.isJoker) "百搭" else "${picked.color.labelZh}${picked.number}"}]：可直接拖到其他牌组，或点另一组移入，再点一次单独拆出！"
+    }
+
+    fun moveTableTile(fromMeldId: String, tileId: String, toMeldId: String?) {
+        if (_currentTurnSeat.value != _mySeatIndex.value || _phase.value != RmkGamePhase.PLAYING) return
+        ensureWorkspace()
+        val ms = _workingMelds.value.toMutableList()
+        val srcMIdx = ms.indexOfFirst { it.id == fromMeldId }
+        if (srcMIdx < 0) return
+        val brokenIce = _seats.value.getOrNull(_mySeatIndex.value)?.hasBrokenIce == true
+        if (!brokenIce && srcMIdx < snapshotMelds.size) {
+            _statusBanner.value = "⚠️ 尚未破冰！不能拆解其他玩家的桌面牌组"
+            return
+        }
+        val srcTiles = ms[srcMIdx].tiles.toMutableList()
+        val srcTIdx = srcTiles.indexOfFirst { it.id == tileId }
+        if (srcTIdx < 0) return
+        val movingTile = srcTiles.removeAt(srcTIdx)
+        if (srcTiles.isEmpty()) ms.removeAt(srcMIdx) else ms[srcMIdx] = ms[srcMIdx].copy(tiles = srcTiles)
+        _lastTurnHighlightedTileIds.value = _lastTurnHighlightedTileIds.value + movingTile.id
+
+        val dstIdx = if (toMeldId != null) ms.indexOfFirst { it.id == toMeldId } else -1
+        if (dstIdx >= 0) {
+            val comb = ms[dstIdx].tiles + movingTile
+            ms[dstIdx] = ms[dstIdx].copy(tiles = if (RmkEvaluator.evaluateMeld(comb) != null) RmkEvaluator.sortMeldForDisplay(comb) else comb)
+            _statusBanner.value = "✅ 已将桌面牌拖入目标牌组！"
+        } else {
+            ms.add(RmkMeld(UUID.randomUUID().toString(), listOf(movingTile)))
+            _statusBanner.value = "🧩 已拆出单牌到桌面空位，可继续拖动组牌！"
+        }
+        _workingMelds.value = ms
+        _selectedTableTileSource.value = null
+    }
+
+    fun returnTableTileToRackIfFromThisTurn(meldId: String, tileId: String): Boolean {
+        if (_currentTurnSeat.value != _mySeatIndex.value || _phase.value != RmkGamePhase.PLAYING) return false
+        if (snapshotHand.none { it.id == tileId }) {
+            _statusBanner.value = "⚠️ 桌面原有的牌不能放回牌架，请在桌面上拖动拆组！"
+            return false
+        }
+        ensureWorkspace()
+        val ms = _workingMelds.value.toMutableList()
+        val mIdx = ms.indexOfFirst { it.id == meldId }
+        if (mIdx < 0) return false
+        val tList = ms[mIdx].tiles.toMutableList()
+        val tIdx = tList.indexOfFirst { it.id == tileId }
+        if (tIdx < 0) return false
+        val tile = tList.removeAt(tIdx)
+        if (tList.isEmpty()) ms.removeAt(mIdx) else ms[mIdx] = ms[mIdx].copy(tiles = tList)
+        _workingMelds.value = ms
+        _workingHand.value = _workingHand.value + tile
+        syncRackFromHand(_workingHand.value, preserveExistingPositions = true)
+        _selectedTableTileSource.value = null
+        _statusBanner.value = "↩️ 已将本回合打出的牌拉回牌架"
+        return true
     }
 
     fun combineSelectedRackTilesWithTableTile(): Boolean {
@@ -1495,7 +1523,7 @@ class RummikubEngine(
         return true
     }
 
-    fun dropRackTilesToTable(primaryTileId: String) {
+    fun dropRackTilesToTable(primaryTileId: String, targetMeldId: String? = null) {
         val myIdx = _mySeatIndex.value
         if (_currentTurnSeat.value != myIdx || _phase.value != RmkGamePhase.PLAYING) {
             _statusBanner.value = "⏳ 当前不是您的回合，无法拖上桌面出牌"
@@ -1511,6 +1539,15 @@ class RummikubEngine(
         val picked = _workingHand.value.filter { targetIds.contains(it.id) }
         if (picked.isEmpty()) return
         _lastTurnHighlightedTileIds.value = _lastTurnHighlightedTileIds.value + picked.map { it.id }
+
+        if (targetMeldId != null) {
+            val mIdx = _workingMelds.value.indexOfFirst { it.id == targetMeldId }
+            val brokenIce = _seats.value.getOrNull(myIdx)?.hasBrokenIce == true
+            if (mIdx >= 0 && (brokenIce || mIdx >= snapshotMelds.size)) {
+                addSelectedToTableMeld(targetMeldId, allowInvalidSplit = true)
+                return
+            }
+        }
 
         if (RmkEvaluator.evaluateMeld(picked) != null) {
             _selectedTileIds.value = targetIds

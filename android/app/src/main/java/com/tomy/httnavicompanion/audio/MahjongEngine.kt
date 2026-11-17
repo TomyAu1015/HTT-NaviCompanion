@@ -325,26 +325,43 @@ object MahjongEvaluator {
         return res
     }
 
-    fun bestAIDiscard(hand: List<MahjongTile>): MahjongTile {
+    fun bestAIDiscard(hand: List<MahjongTile>, meldsCount: Int = 0, difficulty: MahjongAIDifficulty = MahjongAIDifficulty.STANDARD): MahjongTile {
         val nonLaizi = hand.filter { !it.isLaizi }
         if (nonLaizi.isEmpty()) return hand.last()
         val counts = IntArray(33)
         nonLaizi.forEach { if (it.typeKey in 0 until 33) counts[it.typeKey] += 1 }
+        if (difficulty == MahjongAIDifficulty.MASTER) {
+            var bestMasterTile: MahjongTile? = null
+            var bestReadyCount = 0
+            for (idx in hand.indices) {
+                val cand = hand[idx]
+                if (cand.isLaizi) continue
+                val rem = hand.toMutableList().apply { removeAt(idx) }
+                val ready = readyTiles(rem, meldsCount)
+                if (ready.size > bestReadyCount) {
+                    bestReadyCount = ready.size
+                    bestMasterTile = cand
+                }
+            }
+            if (bestMasterTile != null) return bestMasterTile
+        }
         var best = nonLaizi[0]
         var lowest = Int.MAX_VALUE
         for (t in nonLaizi) {
             val k = t.typeKey
-            var score = (counts[k] - 1) * 14
+            var score = (counts[k] - 1) * (if (difficulty == MahjongAIDifficulty.MASTER) 18 else 14)
+            if (difficulty == MahjongAIDifficulty.MASTER && counts[k] >= 3) score += 16
             if (k < 27) {
                 val pos = k % 9
-                if (pos > 0 && counts[k - 1] > 0) score += 7
-                if (pos < 8 && counts[k + 1] > 0) score += 7
+                if (pos > 0 && counts[k - 1] > 0) score += (if (difficulty == MahjongAIDifficulty.MASTER) 10 else 7)
+                if (pos < 8 && counts[k + 1] > 0) score += (if (difficulty == MahjongAIDifficulty.MASTER) 10 else 7)
                 if (pos > 1 && counts[k - 2] > 0) score += 3
                 if (pos < 7 && counts[k + 2] > 0) score += 3
-                if (pos == 0 || pos == 8) score -= 2
+                if (pos == 0 || pos == 8) score -= (if (difficulty == MahjongAIDifficulty.MASTER) 4 else 2)
             } else {
-                score -= 3
+                score -= (if (difficulty == MahjongAIDifficulty.MASTER) 5 else 3)
             }
+            if (difficulty == MahjongAIDifficulty.CASUAL) score += (-4..6).random()
             if (score < lowest) {
                 lowest = score
                 best = t
@@ -353,6 +370,21 @@ object MahjongEvaluator {
         return best
     }
 }
+
+enum class MahjongAIDifficulty(val label: String) {
+    CASUAL("休闲 AI"),
+    STANDARD("标准 AI"),
+    MASTER("大师 AI")
+}
+
+data class MahjongClaimEvent(
+    val id: String,
+    val seatIndex: Int,
+    val seatName: String,
+    val character: CharacterFilter,
+    val actionLabel: String,
+    val tile: MahjongTile
+)
 
 class MahjongEngine(private val context: Context, private val audioMgr: AudioPlayerManager) {
     private val TAG = "MahjongEngine"
@@ -399,6 +431,24 @@ class MahjongEngine(private val context: Context, private val audioMgr: AudioPla
 
     private val _connectedPeerNames = MutableStateFlow<List<String>>(emptyList())
     val connectedPeerNames: StateFlow<List<String>> = _connectedPeerNames
+
+    private val _aiDifficulty = MutableStateFlow(MahjongAIDifficulty.STANDARD)
+    val aiDifficulty: StateFlow<MahjongAIDifficulty> = _aiDifficulty
+    fun setAiDifficulty(d: MahjongAIDifficulty) { _aiDifficulty.value = d }
+
+    private val _lastClaimEvent = MutableStateFlow<MahjongClaimEvent?>(null)
+    val lastClaimEvent: StateFlow<MahjongClaimEvent?> = _lastClaimEvent
+
+    private fun triggerClaimEvent(seatIdx: Int, actionLabel: String, tile: MahjongTile) {
+        val seat = _seats.value.getOrNull(seatIdx) ?: return
+        val ev = MahjongClaimEvent(UUID.randomUUID().toString(), seatIdx, seat.name, seat.character, actionLabel, tile)
+        _lastClaimEvent.value = ev
+        mainHandler.postDelayed({
+            if (_lastClaimEvent.value?.id == ev.id) {
+                _lastClaimEvent.value = null
+            }
+        }, 1850L)
+    }
 
     private val _totalRounds = MutableStateFlow(4)
     val totalRounds: StateFlow<Int> = _totalRounds
@@ -1222,7 +1272,7 @@ class MahjongEngine(private val context: Context, private val audioMgr: AudioPla
         else if (_phase.value == MahjongGamePhase.PLAYING) {
             val actor = _currentTurnSeat.value
             val s = _seats.value.getOrNull(actor) ?: return
-            if (s.hand.isNotEmpty()) executeDiscard(MahjongEvaluator.bestAIDiscard(s.hand).id, actor)
+            if (s.hand.isNotEmpty()) executeDiscard(MahjongEvaluator.bestAIDiscard(s.hand, s.melds.size, _aiDifficulty.value).id, actor)
         }
     }
 
@@ -1237,6 +1287,7 @@ class MahjongEngine(private val context: Context, private val audioMgr: AudioPla
                 val sc = seat.score + if (idx == actor) _baseScore.value * 3 else -_baseScore.value
                 if (idx == actor) seat.copy(hand = rem, melds = melds, score = sc, lastActionText = "暗杠 ${tile.fullName}") else seat.copy(score = sc)
             }
+            triggerClaimEvent(actor, "暗杠", tile)
         } else {
             val rem = s.hand.toMutableList()
             val hIdx = rem.indexOfFirst { it.suit == tile.suit && it.rank == tile.rank }
@@ -1246,6 +1297,7 @@ class MahjongEngine(private val context: Context, private val audioMgr: AudioPla
                 val sc = seat.score + if (idx == actor) _baseScore.value * 3 else -_baseScore.value
                 if (idx == actor) seat.copy(hand = rem, melds = melds, score = sc, lastActionText = "补杠 ${tile.fullName}") else seat.copy(score = sc)
             }
+            triggerClaimEvent(actor, "补杠", tile)
         }
         _seats.value = newSeats
         audioMgr.playMascotVoice(s.character)
@@ -1308,6 +1360,7 @@ class MahjongEngine(private val context: Context, private val audioMgr: AudioPla
                 score = s.score + _baseScore.value * 3,
                 lastActionText = "明杠 ${cl.tile.fullName}"
             )
+            triggerClaimEvent(seatIdx, "明杠", cl.tile)
             _seats.value = cur
             _pendingClaim.value = null
             _phase.value = MahjongGamePhase.PLAYING
@@ -1325,6 +1378,7 @@ class MahjongEngine(private val context: Context, private val audioMgr: AudioPla
                 if (remCnt < 2 && it.suit == cl.tile.suit && it.rank == cl.tile.rank) { remCnt++; true } else false
             }
             cur[seatIdx] = s.copy(hand = newH, melds = s.melds + MahjongMeld(UUID.randomUUID().toString(), MahjongMeldKind.PONG, cl.tile), lastActionText = "碰 ${cl.tile.fullName}")
+            triggerClaimEvent(seatIdx, "碰", cl.tile)
             _seats.value = cur
             _pendingClaim.value = null
             _phase.value = MahjongGamePhase.PLAYING
@@ -1412,7 +1466,7 @@ class MahjongEngine(private val context: Context, private val audioMgr: AudioPla
             if (canDeclareSelfHu(turn)) { executeWin(turn, null, null, true); return@postDelayed }
             val k = selfKongOptions(turn).firstOrNull()
             if (k != null) { executeSelfKong(k, turn); return@postDelayed }
-            val d = MahjongEvaluator.bestAIDiscard(_seats.value[turn].hand)
+            val d = MahjongEvaluator.bestAIDiscard(_seats.value[turn].hand, _seats.value[turn].melds.size, _aiDifficulty.value)
             executeDiscard(d.id, turn)
         }, 850L)
     }
@@ -1431,7 +1485,7 @@ class MahjongEngine(private val context: Context, private val audioMgr: AudioPla
             when {
                 hu != null -> handleClaimResponse("hu", hu)
                 kong != null -> handleClaimResponse("kong", kong)
-                pong != null -> handleClaimResponse("pong", pong)
+                pong != null -> if (_aiDifficulty.value == MahjongAIDifficulty.CASUAL && (0..2).random() == 0) handleClaimResponse("pass", pong) else handleClaimResponse("pong", pong)
                 else -> resolveClaimAsAllPass()
             }
         }, 750L)

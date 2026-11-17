@@ -20,12 +20,18 @@ data class RouteStepInfo(
     val maneuverLocation: LatLng
 )
 
+data class RouteSegment(
+    val points: List<LatLng>,
+    val kind: String // "WALK", "TRANSIT", "DRIVE"
+)
+
 data class ComputedRoute(
     val name: String,
     val points: List<LatLng>,
     val steps: List<RouteStepInfo>,
     val totalDistanceMeters: Double,
-    val durationSeconds: Double
+    val durationSeconds: Double,
+    val segments: List<RouteSegment> = emptyList()
 )
 
 data class ReverseGeocodeResult(
@@ -386,7 +392,18 @@ object MapAndRouteEngine {
                             1 -> "备选方案 2"
                             else -> "备选方案 ${rIdx + 1}"
                         }
-                        routes.add(ComputedRoute(label, pts, steps, dist, dur))
+                        val segs = if (travelMode == NavigationTravelMode.TRANSIT && pts.size >= 6) {
+                            val bIdx = (pts.size * 0.14).toInt().coerceIn(1, pts.size - 3)
+                            val aIdx = (pts.size * 0.86).toInt().coerceIn(bIdx + 1, pts.size - 2)
+                            listOf(
+                                RouteSegment(pts.subList(0, bIdx + 1), "WALK"),
+                                RouteSegment(pts.subList(bIdx, aIdx + 1), "TRANSIT"),
+                                RouteSegment(pts.subList(aIdx, pts.size), "WALK")
+                            )
+                        } else {
+                            emptyList()
+                        }
+                        routes.add(ComputedRoute(label, pts, steps, dist, dur, segs))
                     }
                 }
             }
@@ -411,6 +428,15 @@ object MapAndRouteEngine {
             val pts1 = buildRealisticRoadWaypoints(startWgs, destWgs, curveSign = 1.0)
             val pts2 = buildRealisticRoadWaypoints(startWgs, destWgs, curveSign = -1.0)
 
+            val fbSegs = if (travelMode == NavigationTravelMode.TRANSIT && pts1.size >= 6) {
+                val bIdx = (pts1.size * 0.16).toInt().coerceIn(1, pts1.size - 3)
+                val aIdx = (pts1.size * 0.84).toInt().coerceIn(bIdx + 1, pts1.size - 2)
+                listOf(
+                    RouteSegment(pts1.subList(0, bIdx + 1), "WALK"),
+                    RouteSegment(pts1.subList(bIdx, aIdx + 1), "TRANSIT"),
+                    RouteSegment(pts1.subList(aIdx, pts1.size), "WALK")
+                )
+            } else emptyList()
             routes.add(
                 ComputedRoute(
                     name = "高德推荐路线 (最快)",
@@ -421,7 +447,8 @@ object MapAndRouteEngine {
                         RouteStepInfo("沿目标道路直行到达终点", roadDist * 0.20, destWgs)
                     ),
                     totalDistanceMeters = roadDist,
-                    durationSeconds = dur
+                    durationSeconds = dur,
+                    segments = fbSegs
                 )
             )
             routes.add(

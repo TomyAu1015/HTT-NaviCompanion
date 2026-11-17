@@ -277,17 +277,21 @@ class AudioPlayerManager(
     private val _language = MutableStateFlow(AppLanguage.ZH_HANS)
     val language: StateFlow<AppLanguage> = _language
 
-    private val _showMapMode = MutableStateFlow(false)
+    private val cockpitPrefs by lazy { context.getSharedPreferences("HTT_CockpitPrefs", Context.MODE_PRIVATE) }
+
+    private val _showMapMode = MutableStateFlow(cockpitPrefs.getBoolean("show_map_mode", false))
     val showMapMode: StateFlow<Boolean> = _showMapMode
 
-    private val _isMapEnlarged = MutableStateFlow(false)
+    private val _isMapEnlarged = MutableStateFlow(false) // Always launch on Main Cockpit Page!
     val isMapEnlarged: StateFlow<Boolean> = _isMapEnlarged
 
     private val _isHUDMirrored = MutableStateFlow(false)
     val isHUDMirrored: StateFlow<Boolean> = _isHUDMirrored
 
-    // Character & Mascot State
-    private val _selectedCharacter = MutableStateFlow(CharacterFilter.ALL)
+    // Character & Mascot State (Remember last selected Stage Mode!)
+    private val _selectedCharacter = MutableStateFlow(
+        CharacterFilter.entries.firstOrNull { it.charId == cockpitPrefs.getInt("stage_char_id", CharacterFilter.ALL.charId) } ?: CharacterFilter.ALL
+    )
     val selectedCharacter: StateFlow<CharacterFilter> = _selectedCharacter
 
     private val _activeAllMemberChar = MutableStateFlow(CharacterFilter.YUI)
@@ -436,6 +440,9 @@ class AudioPlayerManager(
     private val _activeRoutePoints = MutableStateFlow<List<LatLng>>(emptyList())
     val activeRoutePoints: StateFlow<List<LatLng>> = _activeRoutePoints
 
+    private val _transitSegments = MutableStateFlow<List<RouteSegment>>(emptyList())
+    val transitSegments: StateFlow<List<RouteSegment>> = _transitSegments
+
     private val _remainingRouteDistanceKm = MutableStateFlow(0.0)
     val remainingRouteDistanceKm: StateFlow<Double> = _remainingRouteDistanceKm
 
@@ -570,7 +577,7 @@ class AudioPlayerManager(
     val rummikubEngine: RummikubEngine by lazy { RummikubEngine(context, this) }
 
     @Volatile var isAppInForeground: Boolean = true
-    val appVersion = "1.7.1"
+    val appVersion = "17/11/2026"
 
     fun appAuthorLabel(): String = when (_language.value) {
         AppLanguage.ZH_HANS -> "制作作者: 君殇"
@@ -688,6 +695,7 @@ class AudioPlayerManager(
             _currentStepInstruction.value = "🎉 已抵达目的地：${_destinationName.value}"
             _hasActiveNavigation.value = false
             _activeRoutePoints.value = emptyList()
+            _transitSegments.value = emptyList()
             _candidateRoutes.value = emptyList()
             _destinationCoord.value = null
             _isDemoSimulating.value = false
@@ -794,6 +802,7 @@ class AudioPlayerManager(
         _destinationCoord.value = destCoord
         _hasActiveNavigation.value = true
         _showMapMode.value = true
+        cockpitPrefs.edit().putBoolean("show_map_mode", true).apply()
         _currentStepInstruction.value = "正在规划前往 $destName 的路线..."
 
         val start = _userCoordinate.value
@@ -815,6 +824,7 @@ class AudioPlayerManager(
         _selectedRouteIndex.value = index
         val r = routes[index]
         _activeRoutePoints.value = r.points
+        _transitSegments.value = r.segments
         _remainingRouteDistanceKm.value = r.totalDistanceMeters / 1000.0
         _remainingRouteMinutes.value = (r.durationSeconds / 60.0).toInt().coerceAtLeast(1)
         offRouteStrikeCount = 0
@@ -823,6 +833,20 @@ class AudioPlayerManager(
         val activeStep = r.steps.getOrNull(currentRouteStepIdx) ?: r.steps.firstOrNull()
         _currentStepInstruction.value = activeStep?.instruction ?: "沿规划路线前往 ${_destinationName.value}"
         _distanceToNextStepMeters.value = activeStep?.distanceMeters?.toInt() ?: r.totalDistanceMeters.toInt()
+    }
+
+    fun stopNavigation() {
+        _hasActiveNavigation.value = false
+        _activeRoutePoints.value = emptyList()
+        _transitSegments.value = emptyList()
+        _candidateRoutes.value = emptyList()
+        _destinationCoord.value = null
+        _destinationName.value = "目的地"
+        _currentStepInstruction.value = "準備OK！出発進行～！"
+        _remainingRouteDistanceKm.value = 0.0
+        _remainingRouteMinutes.value = 0
+        _isDemoSimulating.value = false
+        _isMapEnlarged.value = false
     }
 
     fun triggerFastRecenter() {
@@ -1048,7 +1072,7 @@ class AudioPlayerManager(
     }
 
     fun setLanguage(lang: AppLanguage) { _language.value = lang }
-    fun toggleMapMode() { _showMapMode.value = !_showMapMode.value }
+    fun toggleMapMode() { val nv = !_showMapMode.value; _showMapMode.value = nv; cockpitPrefs.edit().putBoolean("show_map_mode", nv).apply() }
     fun setMapEnlarged(enlarged: Boolean) { _isMapEnlarged.value = enlarged }
     fun toggleHUDMirror() { _isHUDMirrored.value = !_isHUDMirrored.value }
 
@@ -1084,6 +1108,7 @@ class AudioPlayerManager(
 
     fun selectCharacter(char: CharacterFilter) {
         _selectedCharacter.value = char
+        cockpitPrefs.edit().putInt("stage_char_id", char.charId).apply()
         if (char == CharacterFilter.ALL) {
             _mascotAction.value = MascotActionState.TEA_CAKE
         }
