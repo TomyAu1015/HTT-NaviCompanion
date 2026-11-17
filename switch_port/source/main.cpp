@@ -355,11 +355,11 @@ static void drawRoundedRectOutline(int x, int y, int w, int h, int rad, SDL_Colo
     }
 }
 
-static void drawRectFill(int x, int y, int w, int h, SDL_Color c) {
+[[maybe_unused]] static void drawRectFill(int x, int y, int w, int h, SDL_Color c) {
     drawRoundedRectFill(x, y, w, h, 10, c);
 }
 
-static void drawRectOutline(int x, int y, int w, int h, SDL_Color c, int thickness = 2) {
+[[maybe_unused]] static void drawRectOutline(int x, int y, int w, int h, SDL_Color c, int thickness = 2) {
     drawRoundedRectOutline(x, y, w, h, 10, c, thickness);
 }
 
@@ -1280,7 +1280,7 @@ static void dropRmkSlotToTable(int slotIdx, int dropX, int dropY) {
     for (size_t i = 0; i < gRmkWorkMelds.size(); ++i) {
         int mw = (int)gRmkWorkMelds[i].tiles.size() * 44 + 14;
         if (mx + mw > 1100) { mx = 30; my += 72; }
-        if (pointInRect(dropX, dropY, mx - 18, my - 14, mw + 36, 92)) {
+        if (dropX >= mx - 18 && dropX <= mx + mw + 18 && dropY >= my - 14 && dropY <= my + 78) {
             if (gRmkSeats[gRmkMySeat].hasBrokenIce || i >= gRmkSnapMelds.size()) {
                 std::vector<RmkTile> comb = gRmkWorkMelds[i].tiles;
                 comb.insert(comb.end(), picked.begin(), picked.end());
@@ -2126,7 +2126,7 @@ static void renderLobbyScreen() {
             bool isCntSel = (gRmkRoomPlayerCount == cntVal);
             bool isFocused = (gLobbyFocus == 8 + idx);
             drawRoundedRectFill(pbx, 421, 94, 28, 8, isCntSel ? SDL_Color{225, 118, 22, 255} : COL_PANEL_INNER);
-            drawRoundedRectOutline(pbx, 421, 94, 28, 8, isFocused ? COL_CYAN_GLOW : (isCntSel ? COL_GOLD : COL_GOLD_DIM), (isFocused || isCntSel) ? 2 : 1);
+            drawRoundedRectOutline(pbx, 421, 94, 28, 8, isFocused ? SDL_Color{0, 229, 255, 255} : (isCntSel ? COL_GOLD : COL_GOLD_DIM), (isFocused || isCntSel) ? 2 : 1);
             drawText(gFontSmall, std::to_string(cntVal) + "人局", pbx + 47, 426, COL_WHITE, true);
         }
     }
