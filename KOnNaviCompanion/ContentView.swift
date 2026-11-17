@@ -2881,8 +2881,8 @@ struct ContentView: View {
                 .cornerRadius(8)
                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold, lineWidth: 1))
             }
-            
-
+            }
+            .padding(.horizontal, 2)
         }
         .frame(maxWidth: .infinity)
     }
@@ -3526,8 +3526,6 @@ struct ContentView: View {
                         .zIndex(2)
                 }
             }
-            }
-            .padding(.horizontal, 2)
         }
         .frame(height: stageHeight)
         .clipped()
