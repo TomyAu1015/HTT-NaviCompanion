@@ -2751,7 +2751,8 @@ struct ContentView: View {
     
     // MARK: - STANDARD COCKPIT COMPONENTS (When Not In Full Screen)
     private var topBezelBar: some View {
-        HStack(spacing: 4) {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
             Button(action: {
                 withAnimation { manager.showMapMode.toggle() }
             }) {
@@ -2764,7 +2765,7 @@ struct ContentView: View {
                          : tr("舞台模式", "舞台模式", "Stage Mode"))
                         .font(.system(size: 11, weight: .heavy, design: .rounded))
                         .foregroundColor(httCream)
-                        .lineLimit(1)
+                        .lineLimit(1).fixedSize(horizontal: true, vertical: false)
                         .minimumScaleFactor(0.8)
                 }
                 .padding(.horizontal, 6)
@@ -2782,7 +2783,7 @@ struct ContentView: View {
                         .font(.system(size: 11, weight: .bold))
                     Text(tr("音乐", "音樂", "Music"))
                         .font(.system(size: 11, weight: .bold))
-                        .lineLimit(1)
+                        .lineLimit(1).fixedSize(horizontal: true, vertical: false)
                         .minimumScaleFactor(0.8)
                 }
                 .padding(.horizontal, 6)
@@ -2801,7 +2802,7 @@ struct ContentView: View {
                         .font(.system(size: 10))
                     Text(tr("放课后棋牌室", "放課後棋牌室", "Game Room"))
                         .font(.system(size: 11, weight: .heavy))
-                        .lineLimit(1)
+                        .lineLimit(1).fixedSize(horizontal: true, vertical: false)
                         .minimumScaleFactor(0.8)
                 }
                 .padding(.horizontal, 7)
@@ -2812,7 +2813,6 @@ struct ContentView: View {
                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold, lineWidth: 1.2))
             }
             
-            Spacer(minLength: 2)
             
             Menu {
                 ForEach(AppLanguage.allCases) { lang in
@@ -2829,7 +2829,7 @@ struct ContentView: View {
                         .font(.system(size: 10))
                     Text(manager.language.rawValue)
                         .font(.system(size: 11, weight: .bold))
-                        .lineLimit(1)
+                        .lineLimit(1).fixedSize(horizontal: true, vertical: false)
                         .minimumScaleFactor(0.8)
                 }
                 .padding(.horizontal, 6)
@@ -2847,7 +2847,7 @@ struct ContentView: View {
                         .font(.system(size: 10))
                     Text(manager.isHUDMirrored ? tr("镜像", "鏡像", "Flip") : "HUD")
                         .font(.system(size: 11, weight: .bold))
-                        .lineLimit(1)
+                        .lineLimit(1).fixedSize(horizontal: true, vertical: false)
                         .minimumScaleFactor(0.8)
                 }
                 .padding(.horizontal, 6)
@@ -2871,7 +2871,7 @@ struct ContentView: View {
                     }
                     Text(tr("相册/车标", "相冊/車標", "Album"))
                         .font(.system(size: 11, weight: .heavy))
-                        .lineLimit(1)
+                        .lineLimit(1).fixedSize(horizontal: true, vertical: false)
                         .minimumScaleFactor(0.8)
                 }
                 .padding(.horizontal, 6)
@@ -2896,7 +2896,7 @@ struct ContentView: View {
                             .font(.system(size: isCompact ? 34 : 44, weight: .black, design: .monospaced))
                             .foregroundColor(manager.isOverspeeding ? .red : Color(red: 0.35, green: 0.98, blue: 0.65))
                             .shadow(color: (manager.isOverspeeding ? Color.red : Color.green).opacity(0.5), radius: 5)
-                            .lineLimit(1)
+                            .lineLimit(1).fixedSize(horizontal: true, vertical: false)
                             .minimumScaleFactor(0.75)
                         
                         Text("km/h")
@@ -2911,7 +2911,7 @@ struct ContentView: View {
                                 Text(manager.isGPSSignalPoor
                                      ? tr("GPS弱(点按播报)", "GPS弱(點按播報)", "GPS Weak")
                                      : tr("GPS信号正常", "GPS訊號正常", "GPS OK"))
-                                    .lineLimit(1)
+                                    .lineLimit(1).fixedSize(horizontal: true, vertical: false)
                                     .minimumScaleFactor(0.8)
                             }
                             .font(.system(size: isCompact ? 9 : 10, weight: .bold))
@@ -2926,7 +2926,7 @@ struct ContentView: View {
                             Text(tr("⚠️ 已超速!", "⚠️ 已超速!", "⚠️ OVERSPEED!"))
                                 .font(.system(size: 9, weight: .black))
                                 .foregroundColor(.red)
-                                .lineLimit(1)
+                                .lineLimit(1).fixedSize(horizontal: true, vertical: false)
                         }
                     }
                 }
@@ -2948,7 +2948,7 @@ struct ContentView: View {
                         HStack(spacing: 2) {
                             Image(systemName: "speedometer")
                             Text(tr("限速播报:", "限速播報:", "Limit:"))
-                                .lineLimit(1)
+                                .lineLimit(1).fixedSize(horizontal: true, vertical: false)
                                 .minimumScaleFactor(0.75)
                         }
                         .font(.system(size: isCompact ? 10 : 11, weight: .bold))
@@ -2973,11 +2973,10 @@ struct ContentView: View {
                                 .cornerRadius(5)
                         }
                     }
-                    Spacer(minLength: 2)
-                    Text("\(tr("最高", "最高", "MAX")): \(Int(manager.maxSpeedKmh))")
+                            Text("\(tr("最高", "最高", "MAX")): \(Int(manager.maxSpeedKmh))")
                         .font(.system(size: isCompact ? 10 : 11, weight: .bold))
                         .foregroundColor(httGold)
-                        .lineLimit(1)
+                        .lineLimit(1).fixedSize(horizontal: true, vertical: false)
                         .minimumScaleFactor(0.8)
                 }
             }
@@ -3027,7 +3026,7 @@ struct ContentView: View {
                                          : manager.destinationName)
                                         .font(.system(size: 10, weight: .bold))
                                         .foregroundColor(.white)
-                                        .lineLimit(1)
+                                        .lineLimit(1).fixedSize(horizontal: true, vertical: false)
                                     Spacer(minLength: 0)
                                 }
                                 .padding(.horizontal, 6)
@@ -3527,6 +3526,8 @@ struct ContentView: View {
                         .zIndex(2)
                 }
             }
+            }
+            .padding(.horizontal, 2)
         }
         .frame(height: stageHeight)
         .clipped()
@@ -10227,8 +10228,11 @@ struct KOnGameRoomSheetView: View {
                         Color.clear.frame(width: 72, height: 28)
                     }
                 }
+                .frame(height: 30)
                 .padding(.horizontal, 10)
-                .padding(.top, 6)
+                .padding(.top, 4)
+                .layoutPriority(10)
+                .zIndex(200)
 
                 // Game Switcher Bar
                 if isInJoinedRoom && isInLobby {
@@ -10259,9 +10263,10 @@ struct KOnGameRoomSheetView: View {
                         }) {
                             HStack(spacing: 4) {
                                 Text("🃏")
-                                Text(tr("斗地主 (3人)", "鬥地主 (3人)", "Doudizhu (3P)"))
+                                Text(tr("斗地主(3人)", "鬥地主(3人)", "Doudizhu"))
                                     .font(.system(size: 11, weight: .black))
                                     .lineLimit(1)
+                                    .minimumScaleFactor(0.75)
                             }
                             .frame(maxWidth: .infinity, minHeight: 30)
                             .background(selectedGame == 0 ? Color(red: 0.78, green: 0.18, blue: 0.22) : Color.black.opacity(0.42))
@@ -10280,9 +10285,10 @@ struct KOnGameRoomSheetView: View {
                         }) {
                             HStack(spacing: 4) {
                                 Text("🀄")
-                                Text(tr("红中麻将 (4人)", "紅中麻將 (4人)", "Mahjong (4P)"))
+                                Text(tr("红中麻将(4人)", "紅中麻將(4人)", "Mahjong"))
                                     .font(.system(size: 11, weight: .black))
                                     .lineLimit(1)
+                                    .minimumScaleFactor(0.75)
                             }
                             .frame(maxWidth: .infinity, minHeight: 30)
                             .background(selectedGame == 1 ? Color(red: 0.08, green: 0.45, blue: 0.25) : Color.black.opacity(0.42))
@@ -10305,9 +10311,10 @@ struct KOnGameRoomSheetView: View {
                                 } else {
                                     Text("🔢")
                                 }
-                                Text(tr("拉密数字牌 (2-4人)", "拉密數字牌 (2-4人)", "Rummikub (2-4P)"))
+                                Text(tr("拉密牌(2-4人)", "拉密牌(2-4人)", "Rummikub"))
                                     .font(.system(size: 11, weight: .black))
                                     .lineLimit(1)
+                                    .minimumScaleFactor(0.75)
                             }
                             .frame(maxWidth: .infinity, minHeight: 30)
                             .background(selectedGame == 2 ? Color.orange : Color.black.opacity(0.42))
@@ -10582,9 +10589,8 @@ struct KOnRummikubSheetView: View {
             if let img = RummikubEngine.tileImage(for: tile.assetKey) {
                 Image(uiImage: img)
                     .resizable()
-                    .scaledToFill()
+                    .scaledToFit()
                     .frame(width: w, height: h)
-                    .clipped()
                     .background(Color.white)
                     .cornerRadius(6)
             } else {
@@ -10673,15 +10679,20 @@ struct KOnRummikubSheetView: View {
                                 ForEach(displayMelds) { meld in
                                     let isValid = RmkEvaluator.evaluateMeld(meld.tiles) != nil
                                     HStack(spacing: 2) {
-                                        ForEach(meld.tiles) { t in tileChip(t, selected: false, compact: true) }
+                                        ForEach(meld.tiles) { t in
+                                            tileChip(t, selected: false, compact: true)
+                                                .onTapGesture {
+                                                    if !rmk.selectedTileIds.isEmpty {
+                                                        rmk.addSelectedToTableMeld(meld.id)
+                                                    } else {
+                                                        rmk.splitMeldToWorkspace(meld.id, tileId: t.id)
+                                                    }
+                                                }
+                                        }
                                     }
                                     .padding(4)
                                     .background(Color.black.opacity(0.35)).cornerRadius(8)
-                                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(isValid ? httGold.opacity(0.65) : Color.red, lineWidth: 1.3))
-                                    .onTapGesture {
-                                        if !rmk.selectedTileIds.isEmpty { rmk.addSelectedToTableMeld(meld.id) }
-                                        else { rmk.splitMeldToWorkspace(meld.id) }
-                                    }
+                                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(isValid ? httGold.opacity(0.65) : Color.red, lineWidth: 1.5))
                                 }
                             }
                             .padding(6)
@@ -10808,8 +10819,8 @@ struct KOnRummikubSheetView: View {
                 GeometryReader { rackGeo in
                     let rackW = max(320, rackGeo.size.width)
                     let hSpacing: CGFloat = 4
-                    let fitSlotW = max(28, min(52, floor((rackW - 20 - CGFloat(cols - 1) * hSpacing) / CGFloat(cols))))
-                    let fitSlotH: CGFloat = 54
+                    let fitSlotW = max(26, min(48, floor((rackW - 20 - CGFloat(cols - 1) * hSpacing) / CGFloat(cols))))
+                    let fitSlotH: CGFloat = 46
 
                     ZStack(alignment: .bottom) {
                         // Stationary 3D Two-Shelf Wooden Rack Background (never scrolls or shifts!)
@@ -10869,22 +10880,35 @@ struct KOnRummikubSheetView: View {
                                                     .scaleEffect(isLifted ? 1.10 : 1.0)
                                                     .offset(dragSlotIndex == slotIdx ? dragOffset : .zero)
                                                     .zIndex(dragSlotIndex == slotIdx ? 80 : 2)
+                                                    .onLongPressGesture(minimumDuration: 0.30) {
+                                                        withAnimation(.spring(response: 0.24, dampingFraction: 0.78)) {
+                                                            rmk.startLongPressCascadeSelect(fromSlotIndex: slotIdx)
+                                                        }
+                                                    }
                                                     .highPriorityGesture(
-                                                        DragGesture(minimumDistance: 2, coordinateSpace: .local)
+                                                        DragGesture(minimumDistance: 3, coordinateSpace: .local)
                                                             .onChanged { val in
                                                                 dragSlotIndex = slotIdx
                                                                 dragOffset = val.translation
                                                             }
                                                             .onEnded { val in
-                                                                let colShift = Int(round(val.translation.width / (fitSlotW + hSpacing)))
-                                                                let rowShift = Int(round(val.translation.height / (fitSlotH + 6)))
-                                                                let targetRow = max(0, min(1, row + rowShift))
-                                                                let targetCol = max(0, min(cols - 1, col + colShift))
-                                                                let dstIdx = targetRow * cols + targetCol
-                                                                withAnimation(.spring(response: 0.24, dampingFraction: 0.80)) {
-                                                                    rmk.moveRackSlot(from: slotIdx, to: dstIdx)
-                                                                    dragSlotIndex = nil
-                                                                    dragOffset = .zero
+                                                                if val.translation.height < -65 {
+                                                                    withAnimation(.spring(response: 0.25, dampingFraction: 0.80)) {
+                                                                        rmk.dropRackTilesToTable(primaryTileId: tile.id)
+                                                                        dragSlotIndex = nil
+                                                                        dragOffset = .zero
+                                                                    }
+                                                                } else {
+                                                                    let colShift = Int(round(val.translation.width / (fitSlotW + hSpacing)))
+                                                                    let rowShift = Int(round(val.translation.height / (fitSlotH + 6)))
+                                                                    let targetRow = max(0, min(1, row + rowShift))
+                                                                    let targetCol = max(0, min(cols - 1, col + colShift))
+                                                                    let dstIdx = targetRow * cols + targetCol
+                                                                    withAnimation(.spring(response: 0.24, dampingFraction: 0.80)) {
+                                                                        rmk.moveRackSlot(from: slotIdx, to: dstIdx)
+                                                                        dragSlotIndex = nil
+                                                                        dragOffset = .zero
+                                                                    }
                                                                 }
                                                             }
                                                     )
@@ -10916,10 +10940,11 @@ struct KOnRummikubSheetView: View {
                         .padding(.vertical, 3)
                     }
                 }
-                .frame(height: 122)
+                .frame(height: 106)
             }
-            .padding(.horizontal, 12)
-            .padding(.bottom, 16)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .padding(.horizontal, 10)
+            .padding(.bottom, 8)
             .httDefersSystemGestures()
 
             // 1.5s Flying Draw Tile Animation Overlay (Flies from right '+' Draw button into the 2-row Wooden Rack!)

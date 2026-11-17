@@ -11068,7 +11068,15 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
             } else {
                 for i in 0..<seats.count where seats[i].peerDisplayName == pName {
                     seats[i].isAI = true
-                    seats[i].name = "\(characterFilter(for: seats[i].characterId).displayName(AudioPlayerManager.shared.language)) (AI接管)"
+                    let orig = cleanPeerLabel(seats[i].name)
+                    if !orig.contains("AI接管") { seats[i].name = "\(orig) (AI接管)" }
+                    seats[i].lastActionText = "🤖 AI接管"
+                }
+                statusBanner = "🤖 [\(cleanLeft)] 已退出，由 AI 自动接管出牌！"
+                promoteAuthorityIfNeededAndResumeAI()
+                if isRoomAuthority {
+                    broadcastFullState()
+                    scheduleAITurnIfNeeded()
                 }
                 promoteAuthorityIfNeededAndResumeAI()
                 statusBanner = "ℹ️ 玩家 [\(cleanLeft)] 已离开，由轻音AI自动接管\(isRoomAuthority ? "（您已接任房主）" : "")"
@@ -11499,43 +11507,46 @@ enum MahjongEvaluator {
             return laizi % 3 == 0
         }
         let c = counts[firstIdx]
-        // 1. Try Triplet (AAA)
+        // 1. Try Triplet (AAA) — independent branches so 3/4-of-a-kind can also split with Laizi!
         if c >= 3 {
             counts[firstIdx] -= 3
             let ok = canFormMelds(&counts, laizi: laizi)
             counts[firstIdx] += 3
             if ok { return true }
-        } else if c == 2 && laizi >= 1 {
+        }
+        if c >= 2 && laizi >= 1 {
             counts[firstIdx] -= 2
             let ok = canFormMelds(&counts, laizi: laizi - 1)
             counts[firstIdx] += 2
             if ok { return true }
-        } else if c == 1 && laizi >= 2 {
+        }
+        if c >= 1 && laizi >= 2 {
             counts[firstIdx] -= 1
             let ok = canFormMelds(&counts, laizi: laizi - 2)
             counts[firstIdx] += 1
             if ok { return true }
         }
 
-        // 2. Try Sequence (ABC) ONLY for suited tiles (0..26); Honor tiles (27..32) cannot form sequences
+        // 2. Try Sequence (ABC) across ALL 3 windows containing firstIdx (covers Laizi+8+9, Laizi+Laizi+9, etc.)
         if firstIdx < 27 {
             let suitBase = (firstIdx / 9) * 9
-            let posInSuit = firstIdx - suitBase
-            if posInSuit <= 6 {
-                let idx2 = firstIdx + 1
-                let idx3 = firstIdx + 2
-                let need2 = counts[idx2] > 0 ? 0 : 1
-                let need3 = counts[idx3] > 0 ? 0 : 1
-                let need = need2 + need3
-                if laizi >= need {
-                    counts[firstIdx] -= 1
-                    if need2 == 0 { counts[idx2] -= 1 }
-                    if need3 == 0 { counts[idx3] -= 1 }
-                    let ok = canFormMelds(&counts, laizi: laizi - need)
-                    counts[firstIdx] += 1
-                    if need2 == 0 { counts[idx2] += 1 }
-                    if need3 == 0 { counts[idx3] += 1 }
-                    if ok { return true }
+            for start in (firstIdx - 2)...firstIdx {
+                if start >= suitBase && start + 2 <= suitBase + 8 {
+                    var need = 0
+                    var used: [Int] = []
+                    for k in start...(start + 2) {
+                        if counts[k] > 0 {
+                            counts[k] -= 1
+                            used.append(k)
+                        } else {
+                            need += 1
+                        }
+                    }
+                    if laizi >= need && canFormMelds(&counts, laizi: laizi - need) {
+                        for k in used { counts[k] += 1 }
+                        return true
+                    }
+                    for k in used { counts[k] += 1 }
                 }
             }
         }
@@ -12653,11 +12664,23 @@ class KOnMahjongManager: NSObject, ObservableObject, MCSessionDelegate, MCNearby
                 if phase == .lobby { rebuildLobbySeats() }
             } else {
                 promoteAuthorityIfNeeded()
+                var leftSeatIdx: Int? = nil
                 for i in 0..<seats.count where seats[i].peerDisplayName == pName {
                     seats[i].isAI = true
-                    seats[i].name = "\(characterFilter(for: seats[i].characterId).displayName(AudioPlayerManager.shared.language))(AI接管)"
+                    let orig = cleanPeerLabel(seats[i].name)
+                    if !orig.contains("AI接管") { seats[i].name = "\(orig) (AI接管)" }
+                    leftSeatIdx = i
                 }
-                promoteAuthorityIfNeeded()
+                statusBanner = "🤖 [\(cleanPeerLabel(pName))] 已退出，由 AI 自动接管！"
+                if isRoomAuthority {
+                    if let lIdx = leftSeatIdx, let pc = pendingClaim, pc.waitingSeats.contains(lIdx) {
+                        handleClaimResponse("pass", fromSeat: lIdx)
+                    } else {
+                        broadcastFullState()
+                        scheduleAIActionIfNeeded()
+                        scheduleAIClaimIfNeeded()
+                    }
+                }
             }
         case .joinRequest:
             let pName = pkt.senderPeerName
@@ -13062,11 +13085,9 @@ struct RmkEvaluator {
         }
 
         if preferRuns {
-            extractRuns()
-            extractGroups()
+            extractRuns() // 789类型：只提取同色顺子，不混入888同数群组
         } else {
-            extractGroups()
-            extractRuns()
+            extractGroups() // 777类型：只提取同数群组，不混入789顺子
         }
 
         // Try pairing 2-tile near-meld with a Joker if available
@@ -13494,10 +13515,10 @@ final class RummikubEngine: NSObject, ObservableObject {
         liftedSlotIndex = nil
 
         if !melds.isEmpty {
-            let modeLabel = preferRuns ? "789顺组" : "777群组"
-            statusBanner = "✨ 已按【\(modeLabel)】整理牌架：共识别 \(melds.count) 组可出牌型（已自动留空隔开）"
+            let modeLabel = preferRuns ? "789类型组合" : "777(888)类型组合"
+            statusBanner = "✨ [\(modeLabel)] 共识别 \(melds.count) 组可出牌型（已自动留空隔开，不混入其他类型）"
         } else {
-            statusBanner = preferRuns ? "🔢 已按 789 同色顺子方向整理牌架" : "🔢 已按 777 同数群组方向整理牌架"
+            statusBanner = preferRuns ? "🔢 [789类型组合] 当前暂无可出顺子（未混入同数群组）" : "🔢 [777(888)类型组合] 当前暂无可出同数群组（未混入顺子）"
         }
     }
 
@@ -13715,10 +13736,25 @@ final class RummikubEngine: NSObject, ObservableObject {
                 broadcastFullState()
             }
         case .leaveRoom:
+            let leftNick = cleanPeer(pkt.senderPeerName)
             orderedRoomPeers.removeAll { $0.name == pkt.senderPeerName }
             connectedPeerNames.removeAll { $0 == pkt.senderPeerName }
             isRoomAuthority = (orderedRoomPeers.first?.name == myPeerName) || orderedRoomPeers.isEmpty
-            if phase == .lobby { rebuildLobbySeats() }
+            if phase == .lobby {
+                rebuildLobbySeats()
+                statusBanner = "玩家 [\(leftNick)] 已离开拉密房间"
+            } else {
+                for i in 0..<seats.count where seats[i].peerDisplayName == pkt.senderPeerName {
+                    seats[i].isAI = true
+                    let orig = cleanPeer(seats[i].name)
+                    if !orig.contains("AI接管") { seats[i].name = "\(orig) (AI接管)" }
+                }
+                statusBanner = "🤖 玩家 [\(leftNick)] 已退房，由 AI 自动接管出牌！"
+                if isRoomAuthority {
+                    broadcastFullState()
+                    scheduleAIIfNeeded()
+                }
+            }
         case .stateSync:
             guard pkt.senderPeerName != myPeerName else { return }
             if let mp = pkt.maxPlayers, (2...4).contains(mp), mp != roomPlayerCount { roomPlayerCount = mp }
@@ -13912,12 +13948,12 @@ final class RummikubEngine: NSObject, ObservableObject {
         statusBanner = "✅ 已将选牌并入牌组（点击【确认出牌】完成回合）"
     }
 
-    func splitMeldToWorkspace(_ meldId: String) {
+    /// Pick ANY specific tile from ANY table meld (even 3-tile melds or middle tiles like taking 4 from 4567!)
+    func splitMeldToWorkspace(_ meldId: String, tileId: String? = nil) {
         guard currentTurnSeat == mySeatIndex, phase == .playing else { return }
         beginOrEnsureWorkspace()
         guard let idx = workingMelds.firstIndex(where: { $0.id == meldId }) else { return }
-        // If this meld was placed from the player's rack during the current turn, tapping it returns the whole meld to the rack!
-        if idx >= snapshotMelds.count {
+        if idx >= snapshotMelds.count && tileId == nil {
             let returnedTiles = workingMelds[idx].tiles
             workingMelds.remove(at: idx)
             workingHand.append(contentsOf: returnedTiles)
@@ -13926,19 +13962,118 @@ final class RummikubEngine: NSObject, ObservableObject {
             statusBanner = "↩️ 已将该组牌撤回牌架"
             return
         }
-        guard seats[mySeatIndex].hasBrokenIce else {
+        guard seats[mySeatIndex].hasBrokenIce || idx >= snapshotMelds.count else {
             statusBanner = "⚠️ 尚未破冰，不能拆解其他玩家的桌面牌组！（点击【复原】可退回本回合牌组）"
             return
         }
-        guard workingMelds[idx].tiles.count >= 4 else {
-            statusBanner = "⚠️ 只有 ≥4 张的牌组才可直接拆出端牌重组"
+        let pickedTile: RmkTile
+        if let tid = tileId, let tIdx = workingMelds[idx].tiles.firstIndex(where: { $0.id == tid }) {
+            pickedTile = workingMelds[idx].tiles.remove(at: tIdx)
+        } else if !workingMelds[idx].tiles.isEmpty {
+            pickedTile = workingMelds[idx].tiles.removeLast()
+        } else {
             return
         }
-        let popped = workingMelds[idx].tiles.removeLast()
-        workingHand.append(popped)
+        if workingMelds[idx].tiles.isEmpty {
+            workingMelds.remove(at: idx)
+        }
+        workingHand.append(pickedTile)
         syncRackFromHand(workingHand, preserveExistingPositions: true)
-        selectedTileIds.insert(popped.id)
-        statusBanner = "🔄 已从牌组拆出 1 张牌回到牌架，请配合手牌重组后【确认出牌】"
+        selectedTileIds.insert(pickedTile.id)
+        statusBanner = "🔄 已从桌面取回 [\(pickedTile.isJoker ? "百搭" : "\(pickedTile.color.labelZh)\(pickedTile.number)")] 到牌架重组！"
+    }
+
+    /// Drag-to-table play: drops selected/lifted rack tiles onto the table (auto-merges onto 123->1234 if valid, or places new meld!)
+    func dropRackTilesToTable(primaryTileId: String) {
+        guard currentTurnSeat == mySeatIndex, phase == .playing else {
+            statusBanner = "⏳ 当前不是您的回合，无法拖上桌面出牌"
+            return
+        }
+        beginOrEnsureWorkspace()
+        var targetIds = selectedTileIds
+        targetIds.insert(primaryTileId)
+        let picked = workingHand.filter { targetIds.contains($0.id) }
+        guard !picked.isEmpty else { return }
+
+        if RmkEvaluator.evaluateMeld(picked) != nil {
+            selectedTileIds = targetIds
+            placeSelectedAsNewMeld()
+            return
+        }
+
+        for idx in 0..<workingMelds.count {
+            if !seats[mySeatIndex].hasBrokenIce && idx < snapshotMelds.count { continue }
+            let combined = workingMelds[idx].tiles + picked
+            if RmkEvaluator.evaluateMeld(combined) != nil {
+                workingHand.removeAll { targetIds.contains($0.id) }
+                for i in 0..<rackSlots.count { if let t = rackSlots[i], targetIds.contains(t.id) { rackSlots[i] = nil } }
+                workingMelds[idx].tiles = RmkEvaluator.sortMeldForDisplay(combined)
+                selectedTileIds.removeAll()
+                liftedSlotIndex = nil
+                statusBanner = "✅ 已拖放拼接到桌面牌组（点击【确认出牌】完成回合）"
+                return
+            }
+        }
+
+        if seats[mySeatIndex].hasBrokenIce {
+            let ordered = RmkEvaluator.sortMeldForDisplay(picked)
+            workingHand.removeAll { targetIds.contains($0.id) }
+            for i in 0..<rackSlots.count { if let t = rackSlots[i], targetIds.contains(t.id) { rackSlots[i] = nil } }
+            workingMelds.append(RmkMeld(id: UUID().uuidString, tiles: ordered))
+            selectedTileIds.removeAll()
+            liftedSlotIndex = nil
+            statusBanner = "🧩 已暂放桌面待重组（请点击桌面牌组/红框牌组拼成≥3张合法牌组后再【确认出牌】）"
+        } else {
+            statusBanner = "⚠️ 尚未破冰：请选中≥3张且总分≥30的牌组后再拖上桌面"
+        }
+    }
+
+    /// Long-press cascade lift: pressing tile 1 slowly lifts 1 -> 2 -> 3 (or 7 -> 7 -> 7) in sequence!
+    func startLongPressCascadeSelect(fromSlotIndex slotIdx: Int) {
+        guard slotIdx >= 0, slotIdx < rackSlots.count, let anchor = rackSlots[slotIdx] else { return }
+        let active = currentCanonicalHand()
+        var seq: [RmkTile] = [anchor]
+
+        if !anchor.isJoker {
+            var runTiles: [RmkTile] = [anchor]
+            var nextNum = anchor.number + 1
+            while nextNum <= 13 {
+                if let nxt = active.first(where: { $0.color == anchor.color && $0.number == nextNum }) {
+                    runTiles.append(nxt)
+                    nextNum += 1
+                } else { break }
+            }
+            var prevNum = anchor.number - 1
+            while prevNum >= 1 {
+                if let prv = active.first(where: { $0.color == anchor.color && $0.number == prevNum }) {
+                    runTiles.insert(prv, at: 0)
+                    prevNum -= 1
+                } else { break }
+            }
+            if runTiles.count >= 2 {
+                seq = [anchor] + runTiles.filter { $0.id != anchor.id }.sorted { $0.number < $1.number }
+            } else {
+                var grp: [RmkTile] = [anchor]
+                var seenCols: Set<RmkColor> = [anchor.color]
+                for t in active where !t.isJoker && t.number == anchor.number && !seenCols.contains(t.color) {
+                    seenCols.insert(t.color)
+                    grp.append(t)
+                }
+                if grp.count >= 2 { seq = grp }
+            }
+        }
+
+        selectedTileIds.removeAll()
+        liftedSlotIndex = slotIdx
+        for (i, t) in seq.enumerated() {
+            DispatchQueue.main.asyncAfter(deadline: .now() + Double(i) * 0.16) { [weak self] in
+                guard let self = self else { return }
+                self.selectedTileIds.insert(t.id)
+                if i == seq.count - 1 {
+                    self.statusBanner = "✨ 已长按连选 \(seq.count) 张牌，向上拖入桌面即可直接出牌！"
+                }
+            }
+        }
     }
 
     func smartHintOrAutoPlace() {
@@ -14114,6 +14249,24 @@ extension RummikubEngine: MCSessionDelegate, MCNearbyServiceAdvertiserDelegate, 
                 self.isBrowsingRooms = false
                 self.browser?.stopBrowsingForPeers()
                 self.sendPacket(RmkNetPacket(kind: .joinRequest, roomCode: self.wireRoomCode(), senderPeerName: self.myPeerName, senderCharId: self.myCharacter.charId, maxPlayers: self.roomPlayerCount))
+            } else if state == .notConnected {
+                let leftNick = self.cleanPeer(peerID.displayName)
+                self.orderedRoomPeers.removeAll { $0.name == peerID.displayName }
+                self.isRoomAuthority = (self.orderedRoomPeers.first?.name == self.myPeerName) || self.orderedRoomPeers.isEmpty
+                if self.phase == .lobby {
+                    self.rebuildLobbySeats()
+                } else {
+                    for i in 0..<self.seats.count where self.seats[i].peerDisplayName == peerID.displayName {
+                        self.seats[i].isAI = true
+                        let orig = self.cleanPeer(self.seats[i].name)
+                        if !orig.contains("AI接管") { self.seats[i].name = "\(orig) (AI接管)" }
+                    }
+                    self.statusBanner = "🤖 玩家 [\(leftNick)] 已断开，由 AI 自动接管！"
+                    if self.isRoomAuthority {
+                        self.broadcastFullState()
+                        self.scheduleAIIfNeeded()
+                    }
+                }
             }
         }
     }
