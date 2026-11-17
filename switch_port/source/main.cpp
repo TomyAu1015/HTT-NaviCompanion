@@ -2734,28 +2734,39 @@ static void renderRummikubTable() {
         drawText(gFontMed, "桌面暂无牌组 · 首次破冰需 >=30 分 (触屏向上拖牌到桌面出牌，或用摇杆选牌按 [Y] 放上桌面)", 642, 248, COL_CREAM, true);
         drawText(gFontSmall, "提示：按 [ZL]=789顺子理牌  [ZR]=777同数群组  [B]=+摸牌  [X]=OK确认出牌  [R]=复原桌面", 642, 284, COL_GOLD, true);
     } else {
-        int mx = 172, my = 56;
+        int tw = 50, th = 68;
+        for (int candW = 50; candW >= 28; candW -= 4) {
+            int candH = (candW * 68) / 50;
+            int tx = 172, ty = 52;
+            for (size_t i = 0; i < melds.size(); ++i) {
+                int mw = (int)melds[i].tiles.size() * (candW + 2) + 14;
+                if (tx > 172 && tx + mw > 1118) { tx = 172; ty += candH + 12; }
+                tx += mw + 12;
+            }
+            tw = candW; th = candH;
+            if (ty + candH + 8 <= 478) break;
+        }
+        int mx = 172, my = 52;
         for (size_t i = 0; i < melds.size(); ++i) {
-            int mw = (int)melds[i].tiles.size() * 52 + 16;
-            if (mx + mw > 1118) { mx = 172; my += 82; }
-            if (my > 410) break;
+            int mw = (int)melds[i].tiles.size() * (tw + 2) + 14;
+            if (mx > 172 && mx + mw > 1118) { mx = 172; my += th + 12; }
             bool ok = (RmkEvaluator::evaluateMeld(melds[i].tiles) >= 0);
-            drawRoundedRectFill(mx, my, mw, 76, 10, {6, 24, 56, 215});
-            drawRoundedRectOutline(mx, my, mw, 76, 10, ok ? SDL_Color{110, 175, 245, 150} : COL_CRIMSON_HI, ok ? 1 : 3);
+            drawRoundedRectFill(mx, my, mw, th + 8, 9, {6, 24, 56, 215});
+            drawRoundedRectOutline(mx, my, mw, th + 8, 9, ok ? SDL_Color{110, 175, 245, 150} : COL_CRIMSON_HI, ok ? 1 : 3);
             for (size_t k = 0; k < melds[i].tiles.size(); ++k) {
                 const auto& t = melds[i].tiles[k];
                 bool isBeingDraggedTbl = (gRmkDragTableMoved && gRmkDragTableMeldIdx == (int)i && gRmkDragTableTileIdx == (int)k);
                 bool isSelTbl = (gRmkSelectedTableMeldIdx == (int)i && gRmkSelectedTableTileIdx == (int)k);
                 bool isHigh = (gRmkHighlightedIds.count(t.id) > 0);
-                int txPos = mx + 8 + (int)k * 52;
+                int txPos = mx + 7 + (int)k * (tw + 2);
                 int tyPos = my + 4;
                 if (!isBeingDraggedTbl) {
-                    drawRmkTileBox(t, txPos, tyPos, 50, 68, false, isSelTbl, isHigh);
+                    drawRmkTileBox(t, txPos, tyPos, tw, th, false, isSelTbl, isHigh);
                 } else {
-                    drawRoundedRectOutline(txPos, tyPos, 50, 68, 7, {255, 232, 185, 95}, 1);
+                    drawRoundedRectOutline(txPos, tyPos, tw, th, 7, {255, 232, 185, 95}, 1);
                 }
             }
-            mx += mw + 16;
+            mx += mw + 12;
         }
     }
 
@@ -3107,19 +3118,13 @@ int main(int argc, char* argv[]) {
                         gStatusBanner = "已移动牌架位置";
                     }
                 } else {
-                    if (gRmkLiftedSlot >= 0) {
-                        if (gRmkLiftedSlot == sSlot) {
-                            gRmkRackSlots[sSlot].selected = !gRmkRackSlots[sSlot].selected;
-                            gRmkLiftedSlot = -1;
-                            syncRmkHandFromRackSlots();
-                        } else {
-                            moveRmkRackSlot(gRmkLiftedSlot, sSlot);
-                            gStatusBanner = "已移动牌架位置";
-                        }
-                    } else if (!gRmkRackSlots[sSlot].id.empty()) {
+                    if (!gRmkRackSlots[sSlot].id.empty()) {
                         gRmkRackSlots[sSlot].selected = !gRmkRackSlots[sSlot].selected;
-                        gRmkLiftedSlot = sSlot;
+                        gRmkLiftedSlot = gRmkRackSlots[sSlot].selected ? sSlot : -1;
                         syncRmkHandFromRackSlots();
+                    } else if (gRmkLiftedSlot >= 0) {
+                        moveRmkRackSlot(gRmkLiftedSlot, sSlot);
+                        gStatusBanner = "已移动牌架位置";
                     }
                 }
             }
