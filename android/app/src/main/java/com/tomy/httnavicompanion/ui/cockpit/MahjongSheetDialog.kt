@@ -134,7 +134,8 @@ fun KOnGameRoomSheetDialog(onDismiss: () -> Unit) {
             color = if (selectedGame == 0) Color(0xFF104B2C) else MjBgGreen
         ) {
             Column(modifier = Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
-                // Unified Header
+                // Unified Header (Hidden when inside Rummikub playing room so Rummikub table is 1:1 full-screen like the video!)
+                if (!(selectedGame == 2 && !inLobbyNow)) {
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -183,6 +184,7 @@ fun KOnGameRoomSheetDialog(onDismiss: () -> Unit) {
                     } else {
                         Spacer(Modifier.width(72.dp))
                     }
+                }
                 }
 
                 // Game Switcher Bar
@@ -1055,6 +1057,8 @@ fun KOnRummikubContent() {
     val isDealing by rmk.isDealingAnimation.collectAsState()
     val isDrawing by rmk.isDrawingAnimation.collectAsState()
     val drawAnimTile by rmk.drawingAnimatedTile.collectAsState()
+    val highlightedIds by rmk.lastTurnHighlightedTileIds.collectAsState()
+    val selectedTableTile by rmk.selectedTableTileSource.collectAsState()
 
     fun tileColor(c: RmkColor): Color = when (c) {
         RmkColor.RED -> Color(0xFFDC2832)
@@ -1065,17 +1069,31 @@ fun KOnRummikubContent() {
     }
 
     @Composable
-    fun RmkTileCard(tile: RmkTile, selected: Boolean, compact: Boolean = false, onClick: (() -> Unit)? = null) {
-        val w = if (compact) 34.dp else 48.dp
-        val h = if (compact) 48.dp else 68.dp
+    fun RmkTileCard(
+        tile: RmkTile,
+        selected: Boolean,
+        highlighted: Boolean = false,
+        compact: Boolean = false,
+        customW: Dp? = null,
+        customH: Dp? = null,
+        onClick: (() -> Unit)? = null
+    ) {
+        val w = customW ?: if (compact) 42.dp else 48.dp
+        val h = customH ?: if (compact) 58.dp else 64.dp
         val bmp = rmk.getAssetBitmap(tile.assetFileName)
+        val borderCol = when {
+            selected -> Color.Cyan
+            highlighted -> Color(0xFFFF8F1F)
+            else -> Color.Gray.copy(alpha = 0.38f)
+        }
+        val borderW = if (selected || highlighted) 2.5.dp else 1.dp
         Box(
             modifier = Modifier
                 .size(width = w, height = h)
-                .offset(y = if (selected) (-6).dp else 0.dp)
-                .clip(RoundedCornerShape(6.dp))
-                .background(Color(0xFFFCF7EB))
-                .border(if (selected) 2.5.dp else 1.dp, if (selected) Color.Yellow else Color.Gray.copy(alpha = 0.4f), RoundedCornerShape(6.dp))
+                .offset(y = if (selected) (-7).dp else 0.dp)
+                .clip(RoundedCornerShape(7.dp))
+                .background(Color(0xFFFCF8F2))
+                .border(borderW, borderCol, RoundedCornerShape(7.dp))
                 .then(if (onClick != null) Modifier.clickable { onClick() } else Modifier),
             contentAlignment = Alignment.Center
         ) {
@@ -1089,8 +1107,8 @@ fun KOnRummikubContent() {
                 )
             } else {
                 Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-                    Text(if (tile.isJoker) "JOKER" else "${tile.number}", color = tileColor(tile.color), fontSize = if (compact) 12.sp else 15.sp, fontWeight = FontWeight.Black)
-                    Text(if (tile.isJoker) "百搭" else tile.color.labelZh, color = tileColor(tile.color), fontSize = if (compact) 7.sp else 8.sp, fontWeight = FontWeight.Bold)
+                    Text(if (tile.isJoker) "JOKER" else "${tile.number}", color = tileColor(tile.color), fontSize = if (compact) 15.sp else 17.sp, fontWeight = FontWeight.Black)
+                    Text(if (tile.isJoker) "百搭" else tile.color.labelZh, color = tileColor(tile.color), fontSize = if (compact) 8.sp else 9.sp, fontWeight = FontWeight.Bold)
                 }
             }
         }
@@ -1253,58 +1271,233 @@ fun KOnRummikubContent() {
         var dragOffsetY by remember { mutableStateOf(0f) }
         val drawAnimProg by animateFloatAsState(targetValue = if (isDrawing) 1f else 0f, animationSpec = spring())
 
-        Box(modifier = Modifier.fillMaxSize()) {
-            Column(modifier = Modifier.fillMaxSize().padding(horizontal = 8.dp, vertical = 4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Row(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(Color.Black.copy(alpha = 0.45f)).padding(horizontal = 8.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text(banner, color = MjGold, fontSize = 10.sp, fontWeight = FontWeight.Bold, maxLines = 1, modifier = Modifier.weight(1f))
-                    Spacer(Modifier.width(6.dp))
-                    Text("⏱ ${remSec}s", color = if (remSec <= 10) Color.Red else Color(0xFF00E676), fontSize = 11.sp, fontWeight = FontWeight.Black)
-                    if (!isConn || isAuth) {
-                        Spacer(Modifier.width(6.dp))
-                        Text("↻", color = MjGold, fontSize = 17.sp, fontWeight = FontWeight.Black, modifier = Modifier.clickable { rmk.nextRound() })
-                    }
-                }
+        // Order seats so opponents are at top-left and local player (me) is anchored at bottom-left next to the rack (1:1 like video!)
+        val orderedSeats = remember(seats, mySeat) {
+            val opps = seats.filter { it.id != mySeat }
+            val me = seats.firstOrNull { it.id == mySeat }
+            if (me != null) opps + me else opps
+        }
 
-                Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-                    seats.forEach { s ->
-                        val iturn = (turnSeat == s.id)
-                        Row(modifier = Modifier.weight(1f).clip(RoundedCornerShape(7.dp)).background(if (iturn) Color(0xFFFB8C00).copy(alpha = 0.30f) else Color.Black.copy(alpha = 0.35f))
-                            .border(if (iturn) 1.5.dp else 1.dp, if (iturn) MjGold else (if (s.isAI) Color.White.copy(alpha = 0.15f) else Color(0xFF00E676)), RoundedCornerShape(7.dp)).padding(4.dp), verticalAlignment = Alignment.CenterVertically) {
-                            allFrames[s.characterId]?.let { bmp -> Image(bitmap = bmp.asImageBitmap(), contentDescription = null, modifier = Modifier.size(20.dp)) }
-                            Spacer(Modifier.width(4.dp))
-                            Column {
-                                Text(s.name, color = Color.White, fontSize = 9.sp, fontWeight = FontWeight.Black, maxLines = 1)
-                                Text("🃏${s.hand.size}张 · ${if (s.hasBrokenIce) "已破冰" else "未破冰"} · ${s.score}分", color = if (s.hasBrokenIce) Color(0xFF00E676) else MjGold, fontSize = 8.sp, fontWeight = FontWeight.Bold)
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color(0xFF0E3266))
+        ) {
+            // Subtle K-ON! HTT Watermark in Center of Table
+            Column(
+                modifier = Modifier.align(Alignment.Center).offset(y = (-42).dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text("放課後ティータイム", color = Color.White.copy(alpha = 0.07f), fontSize = 13.sp, fontWeight = FontWeight.Black)
+                Text("K-ON! Rummikub", color = Color.White.copy(alpha = 0.08f), fontSize = 26.sp, fontWeight = FontWeight.Black)
+            }
+
+            // Main 3-Column Video Layout: [Left Vertical Player Column] + [Center Full-Height Table & Bottom Rack] + [Right Action Column]
+            Row(
+                modifier = Modifier.fillMaxSize().padding(horizontal = 6.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                // 1. LEFT VERTICAL PLAYER COLUMN (1:1 like Video: Circular Avatar + Countdown Ring + Star Badge + Name + Tile Count)
+                Column(
+                    modifier = Modifier.width(76.dp).fillMaxHeight().padding(vertical = 4.dp),
+                    verticalArrangement = Arrangement.SpaceBetween,
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    orderedSeats.forEach { s ->
+                        val iturn = (turnSeat == s.id && phase == RmkGamePhase.PLAYING)
+                        val isMe = (s.id == mySeat)
+                        val prog = (remSec.toFloat() / 60f).coerceIn(0f, 1f)
+
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Box(modifier = Modifier.size(52.dp), contentAlignment = Alignment.Center) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(46.dp)
+                                        .clip(CircleShape)
+                                        .background(if (iturn) Color(0xFF1E5096) else Color(0xFF091B38)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    allFrames[s.characterId]?.let { bmp ->
+                                        Image(
+                                            bitmap = bmp.asImageBitmap(),
+                                            contentDescription = null,
+                                            modifier = Modifier.size(36.dp).clip(CircleShape)
+                                        )
+                                    }
+                                    if (iturn) {
+                                        Box(
+                                            modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.38f)),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Text("${remSec}", color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Black)
+                                        }
+                                    }
+                                }
+                                CircularProgressIndicator(
+                                    progress = if (iturn) prog else 1f,
+                                    modifier = Modifier.size(50.dp),
+                                    color = if (iturn) {
+                                        if (remSec <= 10) Color.Red else Color(0xFF59F573)
+                                    } else Color.White.copy(alpha = 0.22f),
+                                    strokeWidth = if (iturn) 3.8.dp else 2.dp
+                                )
+                                // Top-Right Star / Icebreak Badge
+                                Box(
+                                    modifier = Modifier
+                                        .align(Alignment.TopEnd)
+                                        .size(16.dp)
+                                        .clip(CircleShape)
+                                        .background(if (s.hasBrokenIce) Color(0xFFFB8C00) else Color(0xFF284878)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(if (s.hasBrokenIce) "★" else "❄", color = Color.White, fontSize = 8.sp, fontWeight = FontWeight.Black)
+                                }
+                            }
+                            Spacer(Modifier.height(2.dp))
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(2.dp)
+                            ) {
+                                Text(
+                                    s.name.replace("👑房主 ", "").replace(" (AI)", ""),
+                                    color = if (isMe) MjGold else Color.White,
+                                    fontSize = 9.sp,
+                                    fontWeight = FontWeight.Black,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.widthIn(max = 44.dp)
+                                )
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(4.dp))
+                                        .background(Color.Black.copy(alpha = 0.45f))
+                                        .padding(horizontal = 4.dp, vertical = 1.dp)
+                                ) {
+                                    Text("🃏${s.hand.size}", color = Color.White, fontSize = 9.sp, fontWeight = FontWeight.Black)
+                                }
                             }
                         }
                     }
                 }
 
-                // Middle Area: Center Table Melds + Right-Side 789 / 777 / 打乱 / +摸牌 Control Tower (1:1 like Video!)
-                Row(modifier = Modifier.weight(1f).fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Box(modifier = Modifier.weight(1f).fillMaxHeight().clip(RoundedCornerShape(10.dp)).background(Color.Black.copy(alpha = 0.25f)).padding(6.dp)) {
+                // 2. CENTER COLUMN: Full-Height Large-Tile Table + Bottom Fixed 2-Row Wooden Rack
+                Column(
+                    modifier = Modifier.weight(1f).fillMaxHeight(),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    // Compact Floating Status Bar at Top of Table
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(Color.Black.copy(alpha = 0.32f))
+                            .padding(horizontal = 10.dp, vertical = 3.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(banner, color = MjGold, fontSize = 10.sp, fontWeight = FontWeight.Bold, maxLines = 1, modifier = Modifier.weight(1f))
+                        if (myTurn) {
+                            Spacer(Modifier.width(6.dp))
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .background(Color(0xFF7B1FA2))
+                                    .clickable { rmk.smartHint() }
+                                    .padding(horizontal = 8.dp, vertical = 3.dp)
+                            ) {
+                                Text("💡提示", color = Color.White, fontSize = 9.sp, fontWeight = FontWeight.Black)
+                            }
+                            if (selIds.isNotEmpty()) {
+                                Spacer(Modifier.width(6.dp))
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(6.dp))
+                                        .background(Color(0xFFFB8C00))
+                                        .clickable {
+                                            val brokenIce = seats.getOrNull(mySeat)?.hasBrokenIce == true
+                                            if (selectedTableTile != null && brokenIce) {
+                                                rmk.combineSelectedRackTilesWithTableTile()
+                                            } else {
+                                                rmk.placeSelectedAsNewMeld()
+                                            }
+                                        }
+                                        .padding(horizontal = 8.dp, vertical = 3.dp)
+                                ) {
+                                    Text("⬆️出到桌面", color = Color.White, fontSize = 9.sp, fontWeight = FontWeight.Black)
+                                }
+                            }
+                        }
+                    }
+
+                    // Full-Height Table Melds Area with LARGE K-ON! Tiles (40x56.dp!)
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(Color.Black.copy(alpha = 0.16f))
+                            .clickable(enabled = myTurn && selIds.isNotEmpty()) {
+                                val brokenIce = seats.getOrNull(mySeat)?.hasBrokenIce == true
+                                if (selectedTableTile != null && brokenIce) {
+                                    rmk.combineSelectedRackTilesWithTableTile()
+                                } else {
+                                    rmk.placeSelectedAsNewMeld()
+                                }
+                            }
+                            .padding(6.dp)
+                    ) {
                         if (dispMelds.isEmpty()) {
-                            Column(modifier = Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
-                                Text("桌面暂无牌组 · 首次破冰需选牌总和 ≥30 分后点【放上桌面】", color = Color.White.copy(alpha = 0.68f), fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            Column(
+                                modifier = Modifier.align(Alignment.Center),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                Text(
+                                    "桌面暂无牌组 · 首次破冰需从牌架拖出 ≥30 分牌组",
+                                    color = Color.White.copy(alpha = 0.75f),
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
                                 Spacer(Modifier.height(4.dp))
-                                Text("💡 点右侧【789】或【777】可自动识别可出牌组并在牌架上留空隔开；点选或拖拽牌架可自由移动位置", color = MjGold.copy(alpha = 0.88f), fontSize = 9.sp)
+                                Text(
+                                    "💡 长按牌架上的牌可自动连选整组顺子/群组，向上拖到桌面即可出牌；破冰后可任意点选/拆解桌面牌重组",
+                                    color = MjGold.copy(alpha = 0.90f),
+                                    fontSize = 10.sp,
+                                    textAlign = TextAlign.Center
+                                )
                             }
                         } else {
-                            Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .verticalScroll(rememberScrollState())
+                                    .horizontalScroll(rememberScrollState()),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
                                 dispMelds.chunked(3).forEach { rowMelds ->
-                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                                         rowMelds.forEach { meld ->
                                             val ok = RmkEvaluator.evaluateMeld(meld.tiles) != null
-                                            Row(modifier = Modifier.clip(RoundedCornerShape(7.dp)).background(Color.Black.copy(alpha = 0.35f))
-                                                .border(1.5.dp, if (ok) MjGold.copy(alpha = 0.6f) else Color.Red, RoundedCornerShape(7.dp))
-                                                .padding(4.dp), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                                            Row(
+                                                modifier = Modifier
+                                                    .clip(RoundedCornerShape(8.dp))
+                                                    .background(Color.Black.copy(alpha = 0.28f))
+                                                    .border(if (ok) 1.dp else 2.5.dp, if (ok) Color.White.copy(alpha = 0.18f) else Color.Red, RoundedCornerShape(8.dp))
+                                                    .padding(4.dp),
+                                                horizontalArrangement = Arrangement.spacedBy(2.dp)
+                                            ) {
                                                 meld.tiles.forEach { t ->
-                                                    RmkTileCard(tile = t, selected = false, compact = true, onClick = if (myTurn) {
-                                                        {
-                                                            if (selIds.isNotEmpty()) rmk.addSelectedToTableMeld(meld.id)
-                                                            else rmk.splitMeldToWorkspace(meld.id, tileId = t.id)
-                                                        }
-                                                    } else null)
+                                                    val isPickedTable = (selectedTableTile?.first == meld.id && selectedTableTile?.second == t.id)
+                                                    val isHigh = highlightedIds.contains(t.id)
+                                                    RmkTileCard(
+                                                        tile = t,
+                                                        selected = isPickedTable,
+                                                        highlighted = isHigh,
+                                                        compact = true,
+                                                        customW = 40.dp,
+                                                        customH = 56.dp,
+                                                        onClick = if (myTurn) {
+                                                            { rmk.handleTableTileTapOrMove(meld.id, t.id) }
+                                                        } else null
+                                                    )
                                                 }
                                             }
                                         }
@@ -1314,186 +1507,294 @@ fun KOnRummikubContent() {
                         }
                     }
 
-                    // Right-Side Video-Style Control Tower: [789] [777] [🔀打乱] + [+ 摸牌(余X张)]
-                    Column(verticalArrangement = Arrangement.spacedBy(4.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                        Box(
-                            modifier = Modifier.size(width = 52.dp, height = 26.dp).clip(RoundedCornerShape(8.dp))
-                                .background(if (sortCol) Color(0xFF2874E0) else Color(0xFF263D6B))
-                                .border(if (sortCol) 2.dp else 1.dp, if (sortCol) Color.Cyan else Color.White.copy(alpha = 0.25f), RoundedCornerShape(8.dp))
-                                .clickable { rmk.organizeRack(preferRuns = true) },
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text("789", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Black)
-                        }
-                        Box(
-                            modifier = Modifier.size(width = 52.dp, height = 26.dp).clip(RoundedCornerShape(8.dp))
-                                .background(if (!sortCol) Color(0xFF2874E0) else Color(0xFF263D6B))
-                                .border(if (!sortCol) 2.dp else 1.dp, if (!sortCol) Color.Cyan else Color.White.copy(alpha = 0.25f), RoundedCornerShape(8.dp))
-                                .clickable { rmk.organizeRack(preferRuns = false) },
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text("777", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Black)
-                        }
-                        Box(
-                            modifier = Modifier.size(width = 52.dp, height = 22.dp).clip(RoundedCornerShape(7.dp))
-                                .background(Color(0xFF7B1FA2))
-                                .border(1.dp, MjGold.copy(alpha = 0.5f), RoundedCornerShape(7.dp))
-                                .clickable { rmk.shuffleRackRandomly() },
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text("🔀打乱", color = Color.White, fontSize = 9.sp, fontWeight = FontWeight.Black)
-                        }
-                        Box(
-                            modifier = Modifier.size(width = 52.dp, height = 52.dp).clip(RoundedCornerShape(10.dp))
-                                .background(Color(0xFF243B66))
-                                .border(if (myTurn) 2.dp else 1.dp, if (myTurn) Color(0xFFFB8C00) else Color.White.copy(alpha = 0.22f), RoundedCornerShape(10.dp))
-                                .clickable(enabled = myTurn && !isDrawing) { rmk.drawTilePassTapped() },
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                Text("+", color = if (myTurn) Color(0xFFFB8C00) else Color.Gray, fontSize = 20.sp, fontWeight = FontWeight.Black)
-                                Text("🃏$poolCount", color = Color.White, fontSize = 9.sp, fontWeight = FontWeight.Bold)
-                            }
-                        }
-                    }
-                }
+                    // Bottom Fixed 2-Row × 10-Column Wooden Rack (1:1 like Video!)
+                    BoxWithConstraints(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(118.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(Color(0xFFB57C44))
+                            .border(2.dp, Color(0xFFE0AC63), RoundedCornerShape(10.dp))
+                            .padding(horizontal = 7.dp, vertical = 4.dp)
+                    ) {
+                        val slotW = ((maxWidth - 8.dp - 4.dp * (cols - 1)) / cols).coerceIn(26.dp, 50.dp)
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.fillMaxWidth()) {
+                            for (row in 0..1) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(6.dp))
+                                        .background(if (row == 0) Color(0xFF945E2E) else Color(0xFF825024))
+                                        .padding(horizontal = 4.dp, vertical = 2.dp)
+                                ) {
+                                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+                                        for (col in 0 until cols) {
+                                            val slotIdx = row * cols + col
+                                            val tileOpt = rackSlots.getOrNull(slotIdx)
+                                            var ordinal = 0
+                                            for (k in 0..minOf(slotIdx, rackSlots.size - 1)) {
+                                                if (rackSlots[k] != null) ordinal++
+                                            }
+                                            val isDealtVis = !isDealing || ordinal <= dealVisCnt
+                                            val isLifted = (liftedIdx == slotIdx) || (dragSlotIdx == slotIdx)
 
-                // Action Bar
-                Row(horizontalArrangement = Arrangement.spacedBy(5.dp), verticalAlignment = Alignment.CenterVertically) {
-                    if (phase == RmkGamePhase.ROUND_OVER) {
-                        Box(modifier = Modifier.weight(1f).clip(RoundedCornerShape(8.dp)).background(MjRed).clickable { rmk.nextRound() }.padding(vertical = 6.dp), contentAlignment = Alignment.Center) {
-                            Text("🏆 再来一局", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Black)
-                        }
-                    } else {
-                        Box(modifier = Modifier.clip(RoundedCornerShape(7.dp)).background(if (myTurn) Color(0xFF7B1FA2) else Color.Gray).clickable(enabled = myTurn) { rmk.smartHint() }.padding(horizontal = 8.dp, vertical = 5.dp)) {
-                            Text("💡 提示", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Black)
-                        }
-                        Box(modifier = Modifier.clip(RoundedCornerShape(7.dp)).background(if (myTurn && selIds.isNotEmpty()) Color(0xFFFB8C00) else Color.Gray).clickable(enabled = myTurn && selIds.isNotEmpty()) { rmk.placeSelectedAsNewMeld() }.padding(horizontal = 8.dp, vertical = 5.dp)) {
-                            Text("⬆️ 放上桌面", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Black)
-                        }
-                        Box(modifier = Modifier.clip(RoundedCornerShape(7.dp)).background(if (myTurn && isEditing) Color(0xFF6D4C41) else Color.Gray).clickable(enabled = myTurn && isEditing) { rmk.restoreWorkspaceSnapshot() }.padding(horizontal = 8.dp, vertical = 5.dp)) {
-                            Text("↩️ 复原", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Black)
-                        }
-                        Box(modifier = Modifier.clip(RoundedCornerShape(7.dp)).background(if (myTurn) Color(0xFF00897B) else Color.Gray).clickable(enabled = myTurn && !isDrawing) { rmk.drawTilePassTapped() }.padding(horizontal = 8.dp, vertical = 5.dp)) {
-                            Text("🃏 摸牌过", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Black)
-                        }
-                        Box(modifier = Modifier.weight(1f).clip(RoundedCornerShape(7.dp)).background(if (myTurn && isEditing) Color(0xFF2E7D32) else Color.Gray).clickable(enabled = myTurn && isEditing) { rmk.commitMyTurn() }.padding(vertical = 5.dp), contentAlignment = Alignment.Center) {
-                            Text("✅ 确认出牌", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Black)
-                        }
-                    }
-                }
-
-                // Bottom Fixed 2-Row Wooden Rack (Stationary rack, 10x2=20 slots, only expands if >20 tiles, only tiles move!)
-                BoxWithConstraints(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(124.dp)
-                        .padding(bottom = 8.dp)
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(Color(0xFFA8703E))
-                        .border(2.dp, Color(0xFFD9A35C), RoundedCornerShape(10.dp))
-                        .padding(horizontal = 8.dp, vertical = 4.dp)
-                ) {
-                    val slotW = ((maxWidth - 8.dp - 4.dp * (cols - 1)) / cols).coerceIn(26.dp, 52.dp)
-                    Column(verticalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.fillMaxWidth()) {
-                        for (row in 0..1) {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(6.dp))
-                                    .background(if (row == 0) Color(0xFF8C582B) else Color(0xFF7D4D25))
-                                    .padding(horizontal = 4.dp, vertical = 2.dp)
-                            ) {
-                                Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
-                                    for (col in 0 until cols) {
-                                        val slotIdx = row * cols + col
-                                        val tileOpt = rackSlots.getOrNull(slotIdx)
-                                        var ordinal = 0
-                                        for (k in 0..minOf(slotIdx, rackSlots.size - 1)) {
-                                            if (rackSlots[k] != null) ordinal++
-                                        }
-                                        val isDealtVis = !isDealing || ordinal <= dealVisCnt
-                                        val isLifted = (liftedIdx == slotIdx) || (dragSlotIdx == slotIdx)
-
-                                        Box(
-                                            modifier = Modifier
-                                                .size(width = slotW, height = 50.dp)
-                                                .clip(RoundedCornerShape(5.dp))
-                                                .background(if (liftedIdx != null && tileOpt == null) Color.Yellow.copy(alpha = 0.16f) else Color.Black.copy(alpha = 0.12f))
-                                                .border(1.dp, if (liftedIdx != null) Color.Yellow.copy(alpha = 0.55f) else Color.Black.copy(alpha = 0.22f), RoundedCornerShape(5.dp))
-                                                .pointerInput(slotIdx, cols) {
-                                                    detectDragGestures(
-                                                        onDragStart = {
-                                                            if (rackSlots.getOrNull(slotIdx) != null) {
-                                                                dragSlotIdx = slotIdx
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(width = slotW, height = 49.dp)
+                                                    .clip(RoundedCornerShape(5.dp))
+                                                    .background(if (liftedIdx != null && tileOpt == null) Color.Yellow.copy(alpha = 0.16f) else Color.Black.copy(alpha = 0.10f))
+                                                    .border(1.dp, if (liftedIdx != null) Color.Yellow.copy(alpha = 0.55f) else Color.Black.copy(alpha = 0.20f), RoundedCornerShape(5.dp))
+                                                    .pointerInput(slotIdx, cols) {
+                                                        detectDragGestures(
+                                                            onDragStart = {
+                                                                if (rackSlots.getOrNull(slotIdx) != null) {
+                                                                    dragSlotIdx = slotIdx
+                                                                    dragOffsetX = 0f
+                                                                    dragOffsetY = 0f
+                                                                }
+                                                            },
+                                                            onDrag = { change, dragAmount ->
+                                                                change.consume()
+                                                                dragOffsetX += dragAmount.x
+                                                                dragOffsetY += dragAmount.y
+                                                            },
+                                                            onDragEnd = {
+                                                                val curDrag = dragSlotIdx
+                                                                if (curDrag != null) {
+                                                                    if (dragOffsetY < -95f && tileOpt != null) {
+                                                                        rmk.dropRackTilesToTable(tileOpt.id)
+                                                                    } else {
+                                                                        val stepPx = (size.width + 10).coerceAtLeast(38)
+                                                                        val colShift = (dragOffsetX / stepPx).roundToInt()
+                                                                        val rowShift = (dragOffsetY / 105f).roundToInt()
+                                                                        val dstRow = (row + rowShift).coerceIn(0, 1)
+                                                                        val dstCol = (col + colShift).coerceIn(0, cols - 1)
+                                                                        rmk.moveRackSlot(curDrag, dstRow * cols + dstCol)
+                                                                    }
+                                                                }
+                                                                dragSlotIdx = null
+                                                                dragOffsetX = 0f
+                                                                dragOffsetY = 0f
+                                                            },
+                                                            onDragCancel = {
+                                                                dragSlotIdx = null
                                                                 dragOffsetX = 0f
                                                                 dragOffsetY = 0f
                                                             }
-                                                        },
-                                                        onDrag = { change, dragAmount ->
-                                                            change.consume()
-                                                            dragOffsetX += dragAmount.x
-                                                            dragOffsetY += dragAmount.y
-                                                        },
-                                                        onDragEnd = {
-                                                            val curDrag = dragSlotIdx
-                                                            if (curDrag != null) {
-                                                                if (dragOffsetY < -110f && tileOpt != null) {
-                                                                    rmk.dropRackTilesToTable(tileOpt.id)
-                                                                } else {
-                                                                    val stepPx = (size.width + 10).coerceAtLeast(40)
-                                                                    val colShift = (dragOffsetX / stepPx).roundToInt()
-                                                                    val rowShift = (dragOffsetY / 110f).roundToInt()
-                                                                    val dstRow = (row + rowShift).coerceIn(0, 1)
-                                                                    val dstCol = (col + colShift).coerceIn(0, cols - 1)
-                                                                    rmk.moveRackSlot(curDrag, dstRow * cols + dstCol)
-                                                                }
-                                                            }
-                                                            dragSlotIdx = null
-                                                            dragOffsetX = 0f
-                                                            dragOffsetY = 0f
-                                                        },
-                                                        onDragCancel = {
-                                                            dragSlotIdx = null
-                                                            dragOffsetX = 0f
-                                                            dragOffsetY = 0f
-                                                        }
-                                                    )
-                                                }
-                                                .combinedClickable(
-                                                    onLongClick = {
-                                                        if (tileOpt != null) rmk.startLongPressCascadeSelect(slotIdx)
-                                                    },
-                                                    onClick = {
-                                                        val curLifted = liftedIdx
-                                                        if (curLifted != null) {
-                                                            if (curLifted == slotIdx) {
-                                                                rmk.setLiftedSlot(null)
-                                                                if (tileOpt != null && myTurn) rmk.toggleSelectTile(tileOpt.id)
-                                                            } else {
-                                                                rmk.moveRackSlot(curLifted, slotIdx)
-                                                            }
-                                                        } else if (tileOpt != null) {
-                                                            rmk.toggleSelectTile(tileOpt.id)
-                                                            rmk.setLiftedSlot(slotIdx)
-                                                        }
+                                                        )
                                                     }
-                                                ),
-                                            contentAlignment = Alignment.Center
-                                        ) {
-                                            if (tileOpt != null && isDealtVis) {
-                                                val sel = selIds.contains(tileOpt.id) || isLifted
-                                                Box(
-                                                    modifier = if (dragSlotIdx == slotIdx) {
-                                                        Modifier.offset { IntOffset(dragOffsetX.roundToInt(), dragOffsetY.roundToInt()) }
-                                                    } else Modifier
-                                                ) {
-                                                    RmkTileCard(tile = tileOpt, selected = sel, compact = true)
+                                                    .combinedClickable(
+                                                        onLongClick = {
+                                                            if (tileOpt != null) rmk.startLongPressCascadeSelect(slotIdx)
+                                                        },
+                                                        onClick = {
+                                                            val curLifted = liftedIdx
+                                                            if (curLifted != null) {
+                                                                if (curLifted == slotIdx) {
+                                                                    rmk.setLiftedSlot(null)
+                                                                    if (tileOpt != null && myTurn) rmk.toggleSelectTile(tileOpt.id)
+                                                                } else {
+                                                                    rmk.moveRackSlot(curLifted, slotIdx)
+                                                                }
+                                                            } else if (tileOpt != null) {
+                                                                rmk.toggleSelectTile(tileOpt.id)
+                                                                rmk.setLiftedSlot(slotIdx)
+                                                            }
+                                                        }
+                                                    ),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                if (tileOpt != null && isDealtVis) {
+                                                    val sel = selIds.contains(tileOpt.id) || isLifted
+                                                    Box(
+                                                        modifier = if (dragSlotIdx == slotIdx) {
+                                                            Modifier.offset { IntOffset(dragOffsetX.roundToInt(), dragOffsetY.roundToInt()) }
+                                                        } else Modifier
+                                                    ) {
+                                                        RmkTileCard(
+                                                            tile = tileOpt,
+                                                            selected = sel,
+                                                            highlighted = highlightedIds.contains(tileOpt.id),
+                                                            compact = true,
+                                                            customW = (slotW - 2.dp).coerceAtLeast(24.dp),
+                                                            customH = 47.dp
+                                                        )
+                                                    }
                                                 }
                                             }
                                         }
                                     }
                                 }
+                            }
+                        }
+                    }
+                }
+
+                // 3. RIGHT VERTICAL CONTROL COLUMN (1:1 like Video: Top `«` Exit, Middle `789`/`777`, Bottom Dynamic `+` ⇄ `↺` + `✓`)
+                Column(
+                    modifier = Modifier.width(60.dp).fillMaxHeight().padding(vertical = 4.dp),
+                    verticalArrangement = Arrangement.SpaceBetween,
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    // Top-Right `«` Exit Room Button
+                    Box(
+                        modifier = Modifier
+                            .size(width = 46.dp, height = 34.dp)
+                            .clip(RoundedCornerShape(17.dp))
+                            .background(Color.White.copy(alpha = 0.14f))
+                            .border(1.dp, Color.White.copy(alpha = 0.28f), RoundedCornerShape(17.dp))
+                            .clickable { rmk.leaveRoomAndResetLobby() },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text("«", color = Color.White, fontSize = 19.sp, fontWeight = FontWeight.Black)
+                    }
+
+                    // Middle-Right Unified `789` / `777` Capsule (1:1 like Video!)
+                    Column(
+                        modifier = Modifier
+                            .width(58.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .border(1.5.dp, Color.Cyan.copy(alpha = 0.7f), RoundedCornerShape(12.dp))
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(36.dp)
+                                .background(if (sortCol) Color(0xFF2874EA) else Color(0xFF1C3566))
+                                .clickable { rmk.organizeRack(preferRuns = true) },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text("789", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Black)
+                        }
+                        Box(modifier = Modifier.fillMaxWidth().height(1.dp).background(Color.White.copy(alpha = 0.25f)))
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(36.dp)
+                                .background(if (!sortCol) Color(0xFF2874EA) else Color(0xFF1C3566))
+                                .clickable { rmk.organizeRack(preferRuns = false) },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text("777", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Black)
+                        }
+                    }
+
+                    // Bottom-Right Dynamic Action Area (`+` Draw when not editing table; transforms into Circular `↺` + Tall Green `✓` when editing table!)
+                    if (isEditing && myTurn) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            // Circular Red/Orange Undo `↺` Button
+                            Box(
+                                modifier = Modifier
+                                    .size(46.dp)
+                                    .clip(CircleShape)
+                                    .background(Color(0xFF1E3868))
+                                    .border(2.dp, Color(0xFFFF5C47), CircleShape)
+                                    .clickable { rmk.restoreWorkspaceSnapshot() },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text("↺", color = Color(0xFFFF5C47), fontSize = 22.sp, fontWeight = FontWeight.Black)
+                            }
+                            // Tall Green Confirm `✓` Button
+                            Box(
+                                modifier = Modifier
+                                    .size(width = 58.dp, height = 82.dp)
+                                    .clip(RoundedCornerShape(14.dp))
+                                    .background(Color(0xFF1B4568))
+                                    .border(2.dp, Color(0xFF47F285), RoundedCornerShape(14.dp))
+                                    .clickable { rmk.commitMyTurn() },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text("✓", color = Color(0xFF47F285), fontSize = 28.sp, fontWeight = FontWeight.Black)
+                            }
+                        }
+                    } else {
+                        // Tall `+` Draw Tile Button with Remaining Pool Count (1:1 like Video!)
+                        Box(
+                            modifier = Modifier
+                                .size(width = 58.dp, height = 102.dp)
+                                .clip(RoundedCornerShape(14.dp))
+                                .background(if (myTurn) Color(0xFF2A4A7C) else Color(0xFF182C4F))
+                                .border(if (myTurn) 2.2.dp else 1.dp, if (myTurn) Color(0xFFFB8C00) else Color.White.copy(alpha = 0.25f), RoundedCornerShape(14.dp))
+                                .clickable(enabled = myTurn && !isDrawing) { rmk.drawTilePassTapped() },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Text("+", color = if (myTurn) Color(0xFFFB8C00) else Color.White.copy(alpha = 0.45f), fontSize = 30.sp, fontWeight = FontWeight.Black)
+                                Text("🃏$poolCount", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Black)
+                            }
+                        }
+                    }
+                }
+            }
+
+            // End-of-Round Scoreboard Modal Overlay (1:1 like Video 02:45: `游戏结束` + Ranked Players + `再玩一次` / `返回菜单`)
+            if (phase == RmkGamePhase.ROUND_OVER) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Color.Black.copy(alpha = 0.58f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    val ranked = seats.sortedWith(Comparator { a, b ->
+                        if (a.hand.size != b.hand.size) a.hand.size - b.hand.size else b.score - a.score
+                    })
+                    Column(
+                        modifier = Modifier
+                            .width(360.dp)
+                            .clip(RoundedCornerShape(16.dp))
+                            .background(Color(0xFF142952))
+                            .border(1.5.dp, Color.White.copy(alpha = 0.35f), RoundedCornerShape(16.dp))
+                            .padding(18.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Text("游戏结束", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Black)
+                        ranked.forEachIndexed { idx, s ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(if (idx == 0) Color.White.copy(alpha = 0.14f) else Color.Black.copy(alpha = 0.28f))
+                                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("${idx + 1}", color = if (idx == 0) MjGold else Color.White, fontSize = 14.sp, fontWeight = FontWeight.Black, modifier = Modifier.width(24.dp))
+                                allFrames[s.characterId]?.let { bmp ->
+                                    Image(bitmap = bmp.asImageBitmap(), contentDescription = null, modifier = Modifier.size(24.dp))
+                                    Spacer(Modifier.width(8.dp))
+                                }
+                                Text(s.name, color = if (idx == 0) Color(0xFF59F573) else Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold, maxLines = 1, modifier = Modifier.weight(1f))
+                                Text("${s.score} 分 (余${s.hand.size}张)", color = if (idx == 0) MjGold else Color.White, fontSize = 12.sp, fontWeight = FontWeight.Black)
+                            }
+                        }
+                        Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                            Box(
+                                modifier = Modifier
+                                    .size(width = 130.dp, height = 38.dp)
+                                    .clip(RoundedCornerShape(19.dp))
+                                    .background(Color(0xFF288E5F))
+                                    .border(1.5.dp, Color(0xFF59F573), RoundedCornerShape(19.dp))
+                                    .clickable { rmk.nextRound() },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text("再玩一次", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Black)
+                            }
+                            Box(
+                                modifier = Modifier
+                                    .size(width = 130.dp, height = 38.dp)
+                                    .clip(RoundedCornerShape(19.dp))
+                                    .background(Color(0xFF2B4B7E))
+                                    .border(1.5.dp, Color.Cyan, RoundedCornerShape(19.dp))
+                                    .clickable { rmk.leaveRoomAndResetLobby() },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text("返回菜单", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Black)
                             }
                         }
                     }
