@@ -213,6 +213,13 @@ fun KOnDoudizhuSheetDialog(onDismiss: () -> Unit, embeddedInGameRoom: Boolean = 
                                 Text("☁️ 在线服务器联机", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Black)
                             }
                         }
+                        Text(
+                            "💡 联机说明：面对面(免流量)仅限安卓设备之间局域网/蓝牙直连；与 iOS / Switch 跨平台同桌请用【在线服务器联机】(可开热点共享网络)",
+                            color = DdzGold.copy(alpha = 0.95f),
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(7.dp)).background(Color.Black.copy(alpha = 0.35f)).padding(horizontal = 8.dp, vertical = 5.dp)
+                        )
 
                         // 1. Personal Nickname & Character Selection
                         Column(
@@ -1234,7 +1241,7 @@ private fun TablePokerCardView(
     val bmp = app.assetDecryptor.getDoudizhuCardBitmap(card.cardImageKey)
     val indexColor = if (card.isRedCard) CardRedColor else Color.Black
 
-    Box(
+    Column(
         modifier = Modifier
             .size(cardW, cardH)
             .shadow(2.dp, RoundedCornerShape(6.dp))
@@ -1242,28 +1249,19 @@ private fun TablePokerCardView(
             .background(Color.White)
             .border(1.dp, Color.White.copy(alpha = 0.85f), RoundedCornerShape(6.dp))
     ) {
-        if (bmp != null) {
-            Image(
-                bitmap = bmp.asImageBitmap(),
-                contentDescription = card.rankLabel,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize()
-            )
-        }
-
-        Column(
+        Row(
             modifier = Modifier
-                .align(Alignment.TopStart)
-                .padding(start = 2.dp, top = 2.dp)
-                .clip(RoundedCornerShape(3.dp))
-                .background(Color.White.copy(alpha = 0.92f))
-                .padding(horizontal = 2.5.dp, vertical = 1.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
+                .fillMaxWidth()
+                .height(14.dp)
+                .background(Color.White)
+                .padding(horizontal = 2.5.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(1.dp)
         ) {
             Text(
                 text = card.rankLabel,
                 color = indexColor,
-                fontSize = if (card.rank >= 16) 8.sp else 10.sp,
+                fontSize = if (card.rank >= 16) 7.5.sp else 9.5.sp,
                 fontWeight = FontWeight.Black,
                 lineHeight = 10.sp
             )
@@ -1271,11 +1269,21 @@ private fun TablePokerCardView(
                 Text(
                     text = card.suit.symbol,
                     color = indexColor,
-                    fontSize = 8.sp,
+                    fontSize = 8.5.sp,
                     fontWeight = FontWeight.Bold,
-                    lineHeight = 8.sp
+                    lineHeight = 9.sp
                 )
             }
+        }
+        if (bmp != null) {
+            Image(
+                bitmap = bmp.asImageBitmap(),
+                contentDescription = card.rankLabel,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxWidth().weight(1f)
+            )
+        } else {
+            Spacer(modifier = Modifier.fillMaxWidth().weight(1f))
         }
     }
 }
@@ -1289,34 +1297,36 @@ private fun MiniPokerCardView(
     val bmp = app.assetDecryptor.getDoudizhuCardBitmap(if (faceUp) card.cardImageKey else "back")
     val indexColor = if (card.isRedCard) CardRedColor else Color.Black
 
-    Box(
+    Column(
         modifier = Modifier
             .size(32.dp, 44.dp)
             .clip(RoundedCornerShape(4.dp))
             .background(Color.White)
             .border(1.dp, DdzGold, RoundedCornerShape(4.dp))
     ) {
+        if (faceUp) {
+            Row(
+                modifier = Modifier.fillMaxWidth().height(11.dp).background(Color.White).padding(horizontal = 2.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = if (card.rank >= 16) card.rankLabel else "${card.rankLabel}${card.suit.symbol}",
+                    color = indexColor,
+                    fontSize = if (card.rank >= 16) 6.sp else 7.sp,
+                    fontWeight = FontWeight.Black,
+                    lineHeight = 9.sp
+                )
+            }
+        }
         if (bmp != null) {
             Image(
                 bitmap = bmp.asImageBitmap(),
                 contentDescription = null,
                 contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize()
+                modifier = Modifier.fillMaxWidth().weight(1f)
             )
-        }
-        if (faceUp) {
-            Text(
-                text = if (card.rank >= 16) card.rankLabel else "${card.suit.symbol}${card.rankLabel}",
-                color = indexColor,
-                fontSize = if (card.rank >= 16) 6.sp else 7.sp,
-                fontWeight = FontWeight.Black,
-                modifier = Modifier
-                    .align(Alignment.TopStart)
-                    .padding(1.5.dp)
-                    .clip(RoundedCornerShape(2.dp))
-                    .background(Color.White.copy(alpha = 0.90f))
-                    .padding(horizontal = 2.dp)
-            )
+        } else {
+            Spacer(modifier = Modifier.fillMaxWidth().weight(1f))
         }
     }
 }

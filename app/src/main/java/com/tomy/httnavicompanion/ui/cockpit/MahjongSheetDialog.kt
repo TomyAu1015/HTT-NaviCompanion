@@ -11,11 +11,19 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.unit.IntOffset
+import kotlin.math.roundToInt
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -26,6 +34,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -50,8 +59,9 @@ fun KOnGameRoomSheetDialog(onDismiss: () -> Unit) {
     val manager = app.audioPlayerManager
     val ddzEngine = manager.doudizhuEngine
     val mjEngine = manager.mahjongEngine
+    val rmkEngine = manager.rummikubEngine
     val lang by manager.language.collectAsState()
-    var selectedGame by remember { mutableStateOf(0) } // 0 = 斗地主, 1 = 广东红中麻将
+    var selectedGame by remember { mutableStateOf(0) } // 0 = 放课后斗地主(3P), 1 = 广东红中麻将(4P), 2 = 拉密数字牌(2-4P)
 
     fun tr(hans: String, hant: String, en: String): String = when (lang) {
         AppLanguage.ZH_HANS -> hans
@@ -62,16 +72,25 @@ fun KOnGameRoomSheetDialog(onDismiss: () -> Unit) {
     val context = LocalContext.current
     val ddzPhase by ddzEngine.phase.collectAsState()
     val mjPhase by mjEngine.phase.collectAsState()
+    val rmkPhase by rmkEngine.phase.collectAsState()
     val ddzHosting by ddzEngine.isHostingRoom.collectAsState()
     val ddzServerConn by ddzEngine.isServerConnected.collectAsState()
     val ddzPeers by ddzEngine.connectedPeerNames.collectAsState()
     val mjHosting by mjEngine.isHostingRoom.collectAsState()
     val mjServerConn by mjEngine.isServerConnected.collectAsState()
     val mjPeers by mjEngine.connectedPeerNames.collectAsState()
-    val inLobbyNow = (selectedGame == 0 && ddzPhase == DoudizhuGamePhase.LOBBY) || (selectedGame == 1 && mjPhase == MahjongGamePhase.LOBBY)
+    val rmkServerConn by rmkEngine.isServerConnected.collectAsState()
+    val rmkHosting by rmkEngine.isHostingRoom.collectAsState()
+    val rmkPeers by rmkEngine.connectedPeerNames.collectAsState()
+    val rmkPlayerCnt by rmkEngine.roomPlayerCount.collectAsState()
+
+    val inLobbyNow = (selectedGame == 0 && ddzPhase == DoudizhuGamePhase.LOBBY) ||
+        (selectedGame == 1 && mjPhase == MahjongGamePhase.LOBBY) ||
+        (selectedGame == 2 && rmkPhase == RmkGamePhase.LOBBY)
     val isInJoinedRoom = !inLobbyNow ||
         (selectedGame == 0 && (ddzHosting || ddzServerConn || ddzPeers.isNotEmpty())) ||
-        (selectedGame == 1 && (mjHosting || mjServerConn || mjPeers.isNotEmpty()))
+        (selectedGame == 1 && (mjHosting || mjServerConn || mjPeers.isNotEmpty())) ||
+        (selectedGame == 2 && (rmkHosting || rmkServerConn || rmkPeers.isNotEmpty()))
 
     val activity = remember(context) {
         var ctx: Context? = context
@@ -97,6 +116,7 @@ fun KOnGameRoomSheetDialog(onDismiss: () -> Unit) {
             activity?.requestedOrientation = prevOrientation
             ddzEngine.leaveRoomAndResetLobby()
             mjEngine.leaveRoomAndResetLobby()
+            rmkEngine.leaveRoomAndResetLobby()
         }
     }
 
@@ -104,6 +124,7 @@ fun KOnGameRoomSheetDialog(onDismiss: () -> Unit) {
         onDismissRequest = {
             ddzEngine.leaveRoomAndResetLobby()
             mjEngine.leaveRoomAndResetLobby()
+            rmkEngine.leaveRoomAndResetLobby()
             onDismiss()
         },
         properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)
@@ -126,7 +147,8 @@ fun KOnGameRoomSheetDialog(onDismiss: () -> Unit) {
                                 .background(MjCardGreen)
                                 .clickable {
                                     if (selectedGame == 0) ddzEngine.leaveRoomAndResetLobby()
-                                    else mjEngine.leaveRoomAndResetLobby()
+                                    else if (selectedGame == 1) mjEngine.leaveRoomAndResetLobby()
+                                    else rmkEngine.leaveRoomAndResetLobby()
                                 }
                                 .padding(horizontal = 10.dp, vertical = 5.dp)
                         ) {
@@ -151,6 +173,7 @@ fun KOnGameRoomSheetDialog(onDismiss: () -> Unit) {
                                 .clickable {
                                     ddzEngine.leaveRoomAndResetLobby()
                                     mjEngine.leaveRoomAndResetLobby()
+                                    rmkEngine.leaveRoomAndResetLobby()
                                     onDismiss()
                                 }
                                 .padding(horizontal = 10.dp, vertical = 5.dp)
@@ -162,73 +185,126 @@ fun KOnGameRoomSheetDialog(onDismiss: () -> Unit) {
                     }
                 }
 
-                // Game Switcher Bar (hidden once user enters/hosts a room or starts an active game)
-                if (!isInJoinedRoom) {
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
+                // Game Switcher Bar
+                if (isInJoinedRoom && inLobbyNow) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp)
                             .clip(RoundedCornerShape(9.dp))
-                            .background(if (selectedGame == 0) MjRed else Color.Black.copy(alpha = 0.42f))
-                            .border(
-                                if (selectedGame == 0) 1.5.dp else 1.dp,
-                                if (selectedGame == 0) MjGold else MjGold.copy(alpha = 0.35f),
-                                RoundedCornerShape(9.dp)
-                            )
-                            .clickable {
-                                if (selectedGame != 0) {
-                                    mjEngine.leaveRoomAndResetLobby()
-                                    selectedGame = 0
-                                }
-                            }
-                            .padding(vertical = 7.dp),
-                        contentAlignment = Alignment.Center
+                            .background(when (selectedGame) { 0 -> MjRed.copy(alpha = 0.85f); 1 -> Color(0xFF146C43).copy(alpha = 0.85f); else -> Color(0xFFFB8C00).copy(alpha = 0.88f) })
+                            .border(1.2.dp, MjGold, RoundedCornerShape(9.dp))
+                            .padding(horizontal = 10.dp, vertical = 5.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            tr("🃏 放课后斗地主 (3人)", "🃏 放課後鬥地主 (3人)", "🃏 Doudizhu (3P)"),
-                            color = Color.White,
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Black
+                            when (selectedGame) { 0 -> "🃏 当前房间：放课后斗地主 (3人)"; 1 -> "🀄 当前房间：广东红中麻将 (4人)"; else -> "🔢 当前房间：拉密数字牌 (${rmkPlayerCnt}人)" },
+                            color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Black
                         )
-                    }
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .clip(RoundedCornerShape(9.dp))
-                            .background(if (selectedGame == 1) Color(0xFF146C43) else Color.Black.copy(alpha = 0.42f))
-                            .border(
-                                if (selectedGame == 1) 1.5.dp else 1.dp,
-                                if (selectedGame == 1) MjGold else MjGold.copy(alpha = 0.35f),
-                                RoundedCornerShape(9.dp)
-                            )
-                            .clickable {
-                                if (selectedGame != 1) {
-                                    ddzEngine.leaveRoomAndResetLobby()
-                                    selectedGame = 1
-                                }
-                            }
-                            .padding(vertical = 7.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
                         Text(
-                            tr("🀄 广东红中麻将 (4人)", "🀄 廣東紅中麻將 (4人)", "🀄 Mahjong (4P)"),
-                            color = Color.White,
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Black
+                            "房号: ${when (selectedGame) { 0 -> ddzEngine.roomCode.collectAsState().value; 1 -> mjEngine.roomCode.collectAsState().value; else -> rmkEngine.roomCode.collectAsState().value }}",
+                            color = MjGold, fontSize = 11.sp, fontWeight = FontWeight.Bold
                         )
                     }
                 }
-
+                if (!isInJoinedRoom) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(9.dp))
+                                .background(if (selectedGame == 0) MjRed else Color.Black.copy(alpha = 0.42f))
+                                .border(
+                                    if (selectedGame == 0) 1.5.dp else 1.dp,
+                                    if (selectedGame == 0) MjGold else MjGold.copy(alpha = 0.35f),
+                                    RoundedCornerShape(9.dp)
+                                )
+                                .clickable {
+                                    if (selectedGame != 0) {
+                                        mjEngine.leaveRoomAndResetLobby()
+                                        rmkEngine.leaveRoomAndResetLobby()
+                                        selectedGame = 0
+                                    }
+                                }
+                                .padding(vertical = 7.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                tr("🃏 斗地主 (3人)", "🃏 鬥地主 (3人)", "🃏 Doudizhu (3P)"),
+                                color = Color.White,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Black,
+                                maxLines = 1
+                            )
+                        }
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(9.dp))
+                                .background(if (selectedGame == 1) Color(0xFF146C43) else Color.Black.copy(alpha = 0.42f))
+                                .border(
+                                    if (selectedGame == 1) 1.5.dp else 1.dp,
+                                    if (selectedGame == 1) MjGold else MjGold.copy(alpha = 0.35f),
+                                    RoundedCornerShape(9.dp)
+                                )
+                                .clickable {
+                                    if (selectedGame != 1) {
+                                        ddzEngine.leaveRoomAndResetLobby()
+                                        rmkEngine.leaveRoomAndResetLobby()
+                                        selectedGame = 1
+                                    }
+                                }
+                                .padding(vertical = 7.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                tr("🀄 红中麻将 (4人)", "🀄 紅中麻將 (4人)", "🀄 Mahjong (4P)"),
+                                color = Color.White,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Black,
+                                maxLines = 1
+                            )
+                        }
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(9.dp))
+                                .background(if (selectedGame == 2) Color(0xFFFB8C00) else Color.Black.copy(alpha = 0.42f))
+                                .border(
+                                    if (selectedGame == 2) 1.5.dp else 1.dp,
+                                    if (selectedGame == 2) MjGold else MjGold.copy(alpha = 0.35f),
+                                    RoundedCornerShape(9.dp)
+                                )
+                                .clickable {
+                                    if (selectedGame != 2) {
+                                        ddzEngine.leaveRoomAndResetLobby()
+                                        mjEngine.leaveRoomAndResetLobby()
+                                        selectedGame = 2
+                                    }
+                                }
+                                .padding(vertical = 7.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                tr("🔢 拉密数字牌 (2-4人)", "🔢 拉密數字牌 (2-4人)", "🔢 Rummikub (2-4P)"),
+                                color = Color.White,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Black,
+                                maxLines = 1
+                            )
+                        }
+                    }
                 }
 
                 Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
                     if (selectedGame == 0) {
                         KOnDoudizhuSheetDialog(onDismiss = onDismiss, embeddedInGameRoom = true)
-                    } else {
+                    } else if (selectedGame == 1) {
                         KOnMahjongSheetDialog(onDismiss = onDismiss, embeddedInGameRoom = true)
+                    } else {
+                        KOnRummikubContent()
                     }
                 }
             }
@@ -352,6 +428,13 @@ fun KOnMahjongSheetDialog(onDismiss: () -> Unit, embeddedInGameRoom: Boolean = f
                                 contentAlignment = Alignment.Center
                             ) { Text("☁️ 在线服务器联机", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Black) }
                         }
+                        Text(
+                            "💡 联机说明：面对面(免流量)仅限安卓设备之间局域网/蓝牙直连；与 iOS / Switch 跨平台同桌请用【在线服务器联机】(可开热点共享网络)",
+                            color = MjGold.copy(alpha = 0.95f),
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(7.dp)).background(Color.Black.copy(alpha = 0.35f)).padding(horizontal = 8.dp, vertical = 5.dp)
+                        )
 
                         // 1. Profile
                         Column(
@@ -583,9 +666,18 @@ fun KOnMahjongSheetDialog(onDismiss: () -> Unit, embeddedInGameRoom: Boolean = f
                                     MjTileCard(cl.tile, 36.dp, 50.dp, isSelected = false, isHighlight = true)
                                 }
                                 phase == MahjongGamePhase.ROUND_OVER -> Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                    Text(if (winnerSeat != null) "🀄 胡!" else "🌊 流局", color = Color.Yellow, fontSize = 22.sp, fontWeight = FontWeight.Black, textAlign = TextAlign.Center)
-                                    if (winnerSeat != null) {
-                                        Text("${seats.getOrNull(winnerSeat!!)?.name} · $winReason", color = Color.White, fontSize = 10.sp, textAlign = TextAlign.Center)
+                                    val isSeriesDone = totalRounds > 0 && currentRound >= totalRounds
+                                    if (isSeriesDone) {
+                                        Text("🏆 整场积分排名", color = Color.Yellow, fontSize = 12.sp, fontWeight = FontWeight.Black)
+                                        seats.sortedByDescending { it.score }.forEachIndexed { idx, rs ->
+                                            val medal = when (idx) { 0 -> "🥇"; 1 -> "🥈"; 2 -> "🥉"; else -> "4." }
+                                            Text("$medal ${rs.name}: ${rs.score}分", color = Color.White, fontSize = 9.sp, maxLines = 1)
+                                        }
+                                    } else {
+                                        Text(if (winnerSeat != null) "🀄 胡!" else "🌊 流局", color = Color.Yellow, fontSize = 20.sp, fontWeight = FontWeight.Black, textAlign = TextAlign.Center)
+                                        if (winnerSeat != null) {
+                                            Text("${seats.getOrNull(winnerSeat!!)?.name} · $winReason", color = Color.White, fontSize = 10.sp, textAlign = TextAlign.Center)
+                                        }
                                     }
                                 }
                                 else -> {
@@ -730,9 +822,7 @@ fun KOnMahjongSheetDialog(onDismiss: () -> Unit, embeddedInGameRoom: Boolean = f
                         // Melds + Hand Tiles side-by-side on bottom row so tiles are 100% visible!
                         BoxWithConstraints(modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp)) {
                             val totalW = maxWidth
-                            val meldW = (me.melds.size * 84).dp
-                            val handW = (totalW - meldW - 12.dp).coerceAtLeast(220.dp)
-                            val tileW = (handW / me.hand.size.coerceAtLeast(1)).coerceIn(26.dp, 36.dp)
+                            val tileW = (totalW / 16.2f).coerceIn(30.dp, 36.dp)
                             val tileH = tileW * 1.4f
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
@@ -777,7 +867,7 @@ fun KOnMahjongSheetDialog(onDismiss: () -> Unit, embeddedInGameRoom: Boolean = f
                                 Row(horizontalArrangement = Arrangement.spacedBy(1.5.dp), verticalAlignment = Alignment.Bottom) {
                                     shownTiles.forEachIndexed { idx, t ->
                                         if (!isMjDealing && drawnTileId == t.id && idx == shownTiles.lastIndex && shownTiles.size > 1) {
-                                            Spacer(Modifier.width(10.dp))
+                                            Spacer(Modifier.width(tileW * 0.48f))
                                         }
                                         MjTileCard(t, tileW, tileH, selectedTileId == t.id, drawnTileId == t.id) { engine.selectOrDiscardTile(t) }
                                     }
@@ -863,7 +953,8 @@ private fun MjDiscardRiver(seat: MahjongSeat) {
             }
         }
         val latestId = seat.discards.lastOrNull()?.id
-        seat.discards.chunked(6).forEach { row ->
+        val recentDiscards = if (seat.discards.size > 12) seat.discards.takeLast(12) else seat.discards
+        recentDiscards.chunked(6).forEach { row ->
             Row(horizontalArrangement = Arrangement.spacedBy(1.5.dp)) {
                 row.forEach { t ->
                     val isLatest = (t.id == latestId)
@@ -925,4 +1016,503 @@ private fun MjTileBack(w: Dp, h: Dp) {
             .background(Color(0xFF0E7A48))
             .border(0.8.dp, Color(0xFFD8F3E4).copy(alpha = 0.75f), RoundedCornerShape(3.dp))
     )
+}
+
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+fun KOnRummikubContent() {
+    val app = HTTNaviApp.instance
+    val manager = app.audioPlayerManager
+    val rmk = manager.rummikubEngine
+    val allFrames by manager.allMemberFrames.collectAsState()
+    val lang by manager.language.collectAsState()
+
+    val phase by rmk.phase.collectAsState()
+    val playerCnt by rmk.roomPlayerCount.collectAsState()
+    val seats by rmk.seats.collectAsState()
+    val mySeat by rmk.mySeatIndex.collectAsState()
+    val turnSeat by rmk.currentTurnSeat.collectAsState()
+    val poolCount by rmk.poolCount.collectAsState()
+    val remSec by rmk.turnRemainingSeconds.collectAsState()
+    val banner by rmk.statusBanner.collectAsState()
+    val myNick by rmk.myNickname.collectAsState()
+    val myChar by rmk.myCharacter.collectAsState()
+    val roomCode by rmk.roomCode.collectAsState()
+    val serverUrl by rmk.serverUrl.collectAsState()
+    val isConn by rmk.isServerConnected.collectAsState()
+    val isAuth by rmk.isRoomAuthority.collectAsState()
+    val selIds by rmk.selectedTileIds.collectAsState()
+    val sortCol by rmk.sortByColor.collectAsState()
+    val isEditing by rmk.isEditingTable.collectAsState()
+    val tableMelds by rmk.tableMelds.collectAsState()
+    val workingMelds by rmk.workingMelds.collectAsState()
+    val workingHand by rmk.workingHand.collectAsState()
+    val rackCols by rmk.rackCols.collectAsState()
+    val rackSlots by rmk.rackSlots.collectAsState()
+    val liftedIdx by rmk.liftedSlotIndex.collectAsState()
+    val dealVisCnt by rmk.dealingVisibleCount.collectAsState()
+    val isDealing by rmk.isDealingAnimation.collectAsState()
+    val isDrawing by rmk.isDrawingAnimation.collectAsState()
+    val drawAnimTile by rmk.drawingAnimatedTile.collectAsState()
+
+    fun tileColor(c: RmkColor): Color = when (c) {
+        RmkColor.RED -> Color(0xFFDC2832)
+        RmkColor.BLUE -> Color(0xFF1E7AE6)
+        RmkColor.YELLOW -> Color(0xFFE6950C)
+        RmkColor.BLACK -> Color(0xFF209262)
+        RmkColor.JOKER -> Color(0xFF7E48C6)
+    }
+
+    @Composable
+    fun RmkTileCard(tile: RmkTile, selected: Boolean, compact: Boolean = false, onClick: (() -> Unit)? = null) {
+        val w = if (compact) 34.dp else 48.dp
+        val h = if (compact) 48.dp else 68.dp
+        val bmp = rmk.getAssetBitmap(tile.assetFileName)
+        Box(
+            modifier = Modifier
+                .size(width = w, height = h)
+                .offset(y = if (selected) (-6).dp else 0.dp)
+                .clip(RoundedCornerShape(6.dp))
+                .background(Color(0xFFFCF7EB))
+                .border(if (selected) 2.5.dp else 1.dp, if (selected) Color.Yellow else Color.Gray.copy(alpha = 0.4f), RoundedCornerShape(6.dp))
+                .then(if (onClick != null) Modifier.clickable { onClick() } else Modifier),
+            contentAlignment = Alignment.Center
+        ) {
+            if (bmp != null) {
+                Image(
+                    bitmap = bmp.asImageBitmap(),
+                    contentDescription = null,
+                    contentScale = ContentScale.Fit,
+                    filterQuality = FilterQuality.High,
+                    modifier = Modifier.fillMaxSize()
+                )
+            } else {
+                Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+                    Text(if (tile.isJoker) "JOKER" else "${tile.number}", color = tileColor(tile.color), fontSize = if (compact) 12.sp else 15.sp, fontWeight = FontWeight.Black)
+                    Text(if (tile.isJoker) "百搭" else tile.color.labelZh, color = tileColor(tile.color), fontSize = if (compact) 7.sp else 8.sp, fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+    }
+
+    if (phase == RmkGamePhase.LOBBY) {
+        Column(modifier = Modifier.fillMaxSize().padding(horizontal = 10.dp, vertical = 4.dp)) {
+            Box(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(9.dp)).background(Color.Black.copy(alpha = 0.45f)).border(1.dp, MjGold.copy(alpha = 0.55f), RoundedCornerShape(9.dp)).padding(8.dp)) {
+                Text("🔢 $banner", color = MjGold, fontSize = 11.sp, fontWeight = FontWeight.Bold, maxLines = 2)
+            }
+            Spacer(Modifier.height(6.dp))
+            Column(modifier = Modifier.weight(1f).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(Color.Black.copy(alpha = 0.45f)).padding(8.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("1. 昵称与角色", color = MjGold, fontSize = 12.sp, fontWeight = FontWeight.Black)
+                        Spacer(Modifier.width(8.dp))
+                        BasicTextField(value = myNick, onValueChange = { rmk.setNickname(it) }, textStyle = TextStyle(color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold),
+                            modifier = Modifier.weight(1f).clip(RoundedCornerShape(6.dp)).background(Color.White.copy(alpha = 0.12f)).padding(horizontal = 8.dp, vertical = 6.dp))
+                    }
+                    Spacer(Modifier.height(6.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                        CharacterFilter.fiveIndividuals.forEach { ch ->
+                            val sel = (myChar == ch)
+                            Column(modifier = Modifier.weight(1f).clip(RoundedCornerShape(8.dp)).background(if (sel) MjRed.copy(alpha = 0.85f) else Color.White.copy(alpha = 0.08f))
+                                .border(if (sel) 1.5.dp else 0.dp, if (sel) MjGold else Color.Transparent, RoundedCornerShape(8.dp))
+                                .clickable { rmk.setCharacter(ch); manager.playMascotVoice(ch) }.padding(vertical = 4.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                                allFrames[ch.charId]?.let { bmp -> Image(bitmap = bmp.asImageBitmap(), contentDescription = null, modifier = Modifier.size(30.dp)) }
+                                Text(ch.displayName(lang), color = Color.White, fontSize = 9.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+                            }
+                        }
+                    }
+                }
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    val netMode by rmk.networkMode.collectAsState()
+                    val isP2P = (netMode == RmkNetworkMode.LOCAL_LAN)
+                    Box(modifier = Modifier.weight(1f).clip(RoundedCornerShape(9.dp)).background(if (isP2P) MjRed else Color.Black.copy(alpha = 0.45f))
+                        .border(1.5.dp, if (isP2P) MjGold else Color.Transparent, RoundedCornerShape(9.dp))
+                        .clickable { rmk.setNetworkMode(RmkNetworkMode.LOCAL_LAN) }.padding(vertical = 7.dp), contentAlignment = Alignment.Center) {
+                        Text("📡 面对面开房联机 (免流量)", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Black)
+                    }
+                    Box(modifier = Modifier.weight(1f).clip(RoundedCornerShape(9.dp)).background(if (!isP2P) MjBlue else Color.Black.copy(alpha = 0.45f))
+                        .border(1.5.dp, if (!isP2P) MjGold else Color.Transparent, RoundedCornerShape(9.dp))
+                        .clickable { rmk.setNetworkMode(RmkNetworkMode.ONLINE_SERVER) }.padding(vertical = 7.dp), contentAlignment = Alignment.Center) {
+                        Text("☁️ 在线服务器联机", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Black)
+                    }
+                }
+                Text(
+                    "💡 联机说明：面对面(免流量)仅限安卓设备之间局域网直连；与 iOS / Switch 跨平台同桌请用【在线服务器联机】(可开热点共享网络)",
+                    color = MjGold.copy(alpha = 0.95f), fontSize = 10.sp, fontWeight = FontWeight.Bold,
+                    modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(7.dp)).background(Color.Black.copy(alpha = 0.35f)).padding(horizontal = 8.dp, vertical = 5.dp)
+                )
+                Column(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(Color.Black.copy(alpha = 0.45f)).padding(8.dp)) {
+                    val netMode by rmk.networkMode.collectAsState()
+                    val isHosting by rmk.isHostingRoom.collectAsState()
+                    val isScanning by rmk.isScanningRooms.collectAsState()
+                    val discRooms by rmk.discoveredRooms.collectAsState()
+                    val directIp by rmk.directConnectIp.collectAsState()
+                    val localIp by rmk.localIpAddress.collectAsState()
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(if (netMode == RmkNetworkMode.LOCAL_LAN) "2. 面对面开房联机 (本机IP: $localIp)" else "2. 跨平台远程联机 (2~4人拉密数字牌)", color = MjGold, fontSize = 11.sp, fontWeight = FontWeight.Black, modifier = Modifier.weight(1f))
+                        Text("房号:", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        Spacer(Modifier.width(4.dp))
+                        BasicTextField(value = roomCode, onValueChange = { rmk.setRoomCode(it) }, textStyle = TextStyle(color = MjGold, fontSize = 12.sp, fontWeight = FontWeight.Black),
+                            modifier = Modifier.width(72.dp).clip(RoundedCornerShape(6.dp)).background(Color.White.copy(alpha = 0.14f)).padding(6.dp))
+                    }
+                    Spacer(Modifier.height(6.dp))
+                    if (netMode == RmkNetworkMode.LOCAL_LAN) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Box(modifier = Modifier.weight(1f).clip(RoundedCornerShape(8.dp)).background(if (isHosting) Color(0xFF2E7D32) else MjRed).clickable { rmk.startHostingFaceToFaceRoom() }.padding(vertical = 7.dp), contentAlignment = Alignment.Center) {
+                                Text(if (isHosting) "已建房($roomCode)" else "创建面对面房间", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Black)
+                            }
+                            Box(modifier = Modifier.weight(1f).clip(RoundedCornerShape(8.dp)).background(MjBlue).clickable { rmk.startScanningFaceToFaceRooms() }.padding(vertical = 7.dp), contentAlignment = Alignment.Center) {
+                                Text(if (isScanning) "扫描中..." else "扫描附近房间", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Black)
+                            }
+                            if (isHosting) {
+                                Box(modifier = Modifier.clip(RoundedCornerShape(8.dp)).background(Color.Gray).clickable { rmk.leaveRoomAndResetLobby() }.padding(horizontal = 9.dp, vertical = 7.dp)) {
+                                    Text("退出", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Black)
+                                }
+                            }
+                        }
+                        Spacer(Modifier.height(6.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                            BasicTextField(value = directIp, onValueChange = { rmk.setDirectConnectIp(it) }, textStyle = TextStyle(color = Color.White, fontSize = 11.sp),
+                                modifier = Modifier.weight(1f).clip(RoundedCornerShape(6.dp)).background(Color.White.copy(alpha = 0.12f)).padding(7.dp))
+                            Box(modifier = Modifier.clip(RoundedCornerShape(8.dp)).background(Color(0xFF00897B)).clickable { rmk.connectDirectToHostIp() }.padding(horizontal = 10.dp, vertical = 7.dp)) {
+                                Text("IP直连加入", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Black)
+                            }
+                        }
+                        discRooms.forEach { rm ->
+                            Spacer(Modifier.height(4.dp))
+                            Row(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(6.dp)).background(Color.White.copy(alpha = 0.12f)).clickable { rmk.joinDiscoveredRoom(rm) }.padding(7.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Text("📡 ${rm.hostName} (房号: ${rm.roomCode})", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                                Text("点击加入", color = MjGold, fontSize = 10.sp, fontWeight = FontWeight.Black)
+                            }
+                        }
+                    } else {
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                            BasicTextField(value = serverUrl, onValueChange = { rmk.setServerUrl(it) }, textStyle = TextStyle(color = Color.White, fontSize = 11.sp),
+                                modifier = Modifier.weight(1f).clip(RoundedCornerShape(6.dp)).background(Color.White.copy(alpha = 0.12f)).padding(7.dp))
+                            Box(modifier = Modifier.clip(RoundedCornerShape(8.dp)).background(if (isConn) Color(0xFF2E7D32) else Color(0xFF1976D2)).clickable { rmk.connectOnlineServerRoom() }.padding(horizontal = 10.dp, vertical = 7.dp)) {
+                                Text(if (isConn) "已连($roomCode)" else "连接房间", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Black)
+                            }
+                            if (isConn) {
+                                Box(modifier = Modifier.clip(RoundedCornerShape(8.dp)).background(MjRed).clickable { rmk.leaveRoomAndResetLobby() }.padding(horizontal = 9.dp, vertical = 7.dp)) {
+                                    Text("退出", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Black)
+                                }
+                            }
+                        }
+                    }
+                }
+                Column(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(Color.Black.copy(alpha = 0.45f)).padding(8.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("3. 房间人数与规则 (真人进房自动替换AI)", color = MjGold, fontSize = 11.sp, fontWeight = FontWeight.Black, modifier = Modifier.weight(1f))
+                        listOf(2, 3, 4).forEach { cnt ->
+                            val isCntSel = (playerCnt == cnt)
+                            Box(
+                                modifier = Modifier.padding(start = 5.dp).clip(RoundedCornerShape(6.dp))
+                                    .background(if (isCntSel) Color(0xFFFB8C00) else Color.White.copy(alpha = 0.12f))
+                                    .border(1.dp, if (isCntSel) MjGold else Color.Transparent, RoundedCornerShape(6.dp))
+                                    .clickable(enabled = !isConn || isAuth) { rmk.setRoomPlayerCount(cnt) }
+                                    .padding(horizontal = 10.dp, vertical = 4.dp)
+                            ) {
+                                Text("${cnt}人局", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Black)
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(4.dp))
+                    Text("• 轻音部定制106张牌：唯(红)/澪(蓝)/律(黄)/紬(绿) 1~13各2张 + 梓喵百搭牌2张\n• 支持 2~4 人自由开房，不足人数由轻音AI补位，真人进房自动替换AI\n• 首次破冰 ≥30分（仅用自己牌架）；破冰后可自由拆解重组桌面；每回合限时60秒", color = Color.White.copy(alpha = 0.88f), fontSize = 10.sp)
+                }
+                Column(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(Color.Black.copy(alpha = 0.45f)).padding(8.dp)) {
+                    Text("4. 牌桌座位预览 (${playerCnt}人局 · 1号为房主，真人进房自动替换AI)", color = MjGold, fontSize = 11.sp, fontWeight = FontWeight.Black)
+                    Spacer(Modifier.height(4.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        seats.forEach { s ->
+                            Column(modifier = Modifier.weight(1f).clip(RoundedCornerShape(7.dp)).background(Color.White.copy(alpha = 0.09f))
+                                .border(1.dp, if (s.isAI) Color.White.copy(alpha = 0.2f) else Color(0xFF00E676), RoundedCornerShape(7.dp)).padding(vertical = 4.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally) {
+                                allFrames[s.characterId]?.let { bmp -> Image(bitmap = bmp.asImageBitmap(), contentDescription = null, modifier = Modifier.size(26.dp)) }
+                                Text(s.name, color = Color.White, fontSize = 8.sp, fontWeight = FontWeight.Black, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Text(if (s.isAI) "🤖 AI补位" else "📱 真人玩家", color = if (s.isAI) MjGold else Color(0xFF00E676), fontSize = 7.sp, fontWeight = FontWeight.Bold)
+                                Text("${s.score}分", color = Color.White.copy(alpha = 0.8f), fontSize = 8.sp)
+                            }
+                        }
+                    }
+                }
+            }
+            Spacer(Modifier.height(6.dp))
+            val guestWait = isConn && !isAuth
+            Box(modifier = Modifier.fillMaxWidth().height(42.dp).clip(RoundedCornerShape(10.dp)).background(if (guestWait) Color.Gray else Color(0xFFFB8C00))
+                .border(1.5.dp, MjGold, RoundedCornerShape(10.dp)).clickable(enabled = !guestWait) { rmk.startNewRound() }, contentAlignment = Alignment.Center) {
+                Text(if (guestWait) "⏳ 等待 1 号房主开始拉密数字牌..." else "🔢 立即开始拉密数字牌 (${playerCnt}人局 · 30分破冰)", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Black)
+            }
+        }
+    } else {
+        val myTurn = (turnSeat == mySeat && phase == RmkGamePhase.PLAYING)
+        val dispMelds = if (isEditing) workingMelds else tableMelds
+        val cols = maxOf(10, rackCols)
+        var dragSlotIdx by remember { mutableStateOf<Int?>(null) }
+        var dragOffsetX by remember { mutableStateOf(0f) }
+        var dragOffsetY by remember { mutableStateOf(0f) }
+        val drawAnimProg by animateFloatAsState(targetValue = if (isDrawing) 1f else 0f, animationSpec = spring())
+
+        Box(modifier = Modifier.fillMaxSize()) {
+            Column(modifier = Modifier.fillMaxSize().padding(horizontal = 8.dp, vertical = 4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Row(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(Color.Black.copy(alpha = 0.45f)).padding(horizontal = 8.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text(banner, color = MjGold, fontSize = 10.sp, fontWeight = FontWeight.Bold, maxLines = 1, modifier = Modifier.weight(1f))
+                    Spacer(Modifier.width(6.dp))
+                    Text("⏱ ${remSec}s", color = if (remSec <= 10) Color.Red else Color(0xFF00E676), fontSize = 11.sp, fontWeight = FontWeight.Black)
+                    if (!isConn || isAuth) {
+                        Spacer(Modifier.width(6.dp))
+                        Text("↻", color = MjGold, fontSize = 17.sp, fontWeight = FontWeight.Black, modifier = Modifier.clickable { rmk.nextRound() })
+                    }
+                }
+
+                Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                    seats.forEach { s ->
+                        val iturn = (turnSeat == s.id)
+                        Row(modifier = Modifier.weight(1f).clip(RoundedCornerShape(7.dp)).background(if (iturn) Color(0xFFFB8C00).copy(alpha = 0.30f) else Color.Black.copy(alpha = 0.35f))
+                            .border(if (iturn) 1.5.dp else 1.dp, if (iturn) MjGold else (if (s.isAI) Color.White.copy(alpha = 0.15f) else Color(0xFF00E676)), RoundedCornerShape(7.dp)).padding(4.dp), verticalAlignment = Alignment.CenterVertically) {
+                            allFrames[s.characterId]?.let { bmp -> Image(bitmap = bmp.asImageBitmap(), contentDescription = null, modifier = Modifier.size(20.dp)) }
+                            Spacer(Modifier.width(4.dp))
+                            Column {
+                                Text(s.name, color = Color.White, fontSize = 9.sp, fontWeight = FontWeight.Black, maxLines = 1)
+                                Text("🃏${s.hand.size}张 · ${if (s.hasBrokenIce) "已破冰" else "未破冰"} · ${s.score}分", color = if (s.hasBrokenIce) Color(0xFF00E676) else MjGold, fontSize = 8.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+                }
+
+                // Middle Area: Center Table Melds + Right-Side 789 / 777 / 打乱 / +摸牌 Control Tower (1:1 like Video!)
+                Row(modifier = Modifier.weight(1f).fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Box(modifier = Modifier.weight(1f).fillMaxHeight().clip(RoundedCornerShape(10.dp)).background(Color.Black.copy(alpha = 0.25f)).padding(6.dp)) {
+                        if (dispMelds.isEmpty()) {
+                            Column(modifier = Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text("桌面暂无牌组 · 首次破冰需选牌总和 ≥30 分后点【放上桌面】", color = Color.White.copy(alpha = 0.68f), fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                Spacer(Modifier.height(4.dp))
+                                Text("💡 点右侧【789】或【777】可自动识别可出牌组并在牌架上留空隔开；点选或拖拽牌架可自由移动位置", color = MjGold.copy(alpha = 0.88f), fontSize = 9.sp)
+                            }
+                        } else {
+                            Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                dispMelds.chunked(3).forEach { rowMelds ->
+                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        rowMelds.forEach { meld ->
+                                            val ok = RmkEvaluator.evaluateMeld(meld.tiles) != null
+                                            Row(modifier = Modifier.clip(RoundedCornerShape(7.dp)).background(Color.Black.copy(alpha = 0.35f))
+                                                .border(1.5.dp, if (ok) MjGold.copy(alpha = 0.6f) else Color.Red, RoundedCornerShape(7.dp))
+                                                .padding(4.dp), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                                                meld.tiles.forEach { t ->
+                                                    RmkTileCard(tile = t, selected = false, compact = true, onClick = if (myTurn) {
+                                                        {
+                                                            if (selIds.isNotEmpty()) rmk.addSelectedToTableMeld(meld.id)
+                                                            else rmk.splitMeldToWorkspace(meld.id, tileId = t.id)
+                                                        }
+                                                    } else null)
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Right-Side Video-Style Control Tower: [789] [777] [🔀打乱] + [+ 摸牌(余X张)]
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                        Box(
+                            modifier = Modifier.size(width = 52.dp, height = 26.dp).clip(RoundedCornerShape(8.dp))
+                                .background(if (sortCol) Color(0xFF2874E0) else Color(0xFF263D6B))
+                                .border(if (sortCol) 2.dp else 1.dp, if (sortCol) Color.Cyan else Color.White.copy(alpha = 0.25f), RoundedCornerShape(8.dp))
+                                .clickable { rmk.organizeRack(preferRuns = true) },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text("789", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Black)
+                        }
+                        Box(
+                            modifier = Modifier.size(width = 52.dp, height = 26.dp).clip(RoundedCornerShape(8.dp))
+                                .background(if (!sortCol) Color(0xFF2874E0) else Color(0xFF263D6B))
+                                .border(if (!sortCol) 2.dp else 1.dp, if (!sortCol) Color.Cyan else Color.White.copy(alpha = 0.25f), RoundedCornerShape(8.dp))
+                                .clickable { rmk.organizeRack(preferRuns = false) },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text("777", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Black)
+                        }
+                        Box(
+                            modifier = Modifier.size(width = 52.dp, height = 22.dp).clip(RoundedCornerShape(7.dp))
+                                .background(Color(0xFF7B1FA2))
+                                .border(1.dp, MjGold.copy(alpha = 0.5f), RoundedCornerShape(7.dp))
+                                .clickable { rmk.shuffleRackRandomly() },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text("🔀打乱", color = Color.White, fontSize = 9.sp, fontWeight = FontWeight.Black)
+                        }
+                        Box(
+                            modifier = Modifier.size(width = 52.dp, height = 52.dp).clip(RoundedCornerShape(10.dp))
+                                .background(Color(0xFF243B66))
+                                .border(if (myTurn) 2.dp else 1.dp, if (myTurn) Color(0xFFFB8C00) else Color.White.copy(alpha = 0.22f), RoundedCornerShape(10.dp))
+                                .clickable(enabled = myTurn && !isDrawing) { rmk.drawTilePassTapped() },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text("+", color = if (myTurn) Color(0xFFFB8C00) else Color.Gray, fontSize = 20.sp, fontWeight = FontWeight.Black)
+                                Text("🃏$poolCount", color = Color.White, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+                }
+
+                // Action Bar
+                Row(horizontalArrangement = Arrangement.spacedBy(5.dp), verticalAlignment = Alignment.CenterVertically) {
+                    if (phase == RmkGamePhase.ROUND_OVER) {
+                        Box(modifier = Modifier.weight(1f).clip(RoundedCornerShape(8.dp)).background(MjRed).clickable { rmk.nextRound() }.padding(vertical = 6.dp), contentAlignment = Alignment.Center) {
+                            Text("🏆 再来一局", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Black)
+                        }
+                    } else {
+                        Box(modifier = Modifier.clip(RoundedCornerShape(7.dp)).background(if (myTurn) Color(0xFF7B1FA2) else Color.Gray).clickable(enabled = myTurn) { rmk.smartHint() }.padding(horizontal = 8.dp, vertical = 5.dp)) {
+                            Text("💡 提示", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Black)
+                        }
+                        Box(modifier = Modifier.clip(RoundedCornerShape(7.dp)).background(if (myTurn && selIds.isNotEmpty()) Color(0xFFFB8C00) else Color.Gray).clickable(enabled = myTurn && selIds.isNotEmpty()) { rmk.placeSelectedAsNewMeld() }.padding(horizontal = 8.dp, vertical = 5.dp)) {
+                            Text("⬆️ 放上桌面", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Black)
+                        }
+                        Box(modifier = Modifier.clip(RoundedCornerShape(7.dp)).background(if (myTurn && isEditing) Color(0xFF6D4C41) else Color.Gray).clickable(enabled = myTurn && isEditing) { rmk.restoreWorkspaceSnapshot() }.padding(horizontal = 8.dp, vertical = 5.dp)) {
+                            Text("↩️ 复原", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Black)
+                        }
+                        Box(modifier = Modifier.clip(RoundedCornerShape(7.dp)).background(if (myTurn) Color(0xFF00897B) else Color.Gray).clickable(enabled = myTurn && !isDrawing) { rmk.drawTilePassTapped() }.padding(horizontal = 8.dp, vertical = 5.dp)) {
+                            Text("🃏 摸牌过", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Black)
+                        }
+                        Box(modifier = Modifier.weight(1f).clip(RoundedCornerShape(7.dp)).background(if (myTurn && isEditing) Color(0xFF2E7D32) else Color.Gray).clickable(enabled = myTurn && isEditing) { rmk.commitMyTurn() }.padding(vertical = 5.dp), contentAlignment = Alignment.Center) {
+                            Text("✅ 确认出牌", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Black)
+                        }
+                    }
+                }
+
+                // Bottom Fixed 2-Row Wooden Rack (Stationary rack, 10x2=20 slots, only expands if >20 tiles, only tiles move!)
+                BoxWithConstraints(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(124.dp)
+                        .padding(bottom = 8.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(Color(0xFFA8703E))
+                        .border(2.dp, Color(0xFFD9A35C), RoundedCornerShape(10.dp))
+                        .padding(horizontal = 8.dp, vertical = 4.dp)
+                ) {
+                    val slotW = ((maxWidth - 8.dp - 4.dp * (cols - 1)) / cols).coerceIn(26.dp, 52.dp)
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.fillMaxWidth()) {
+                        for (row in 0..1) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .background(if (row == 0) Color(0xFF8C582B) else Color(0xFF7D4D25))
+                                    .padding(horizontal = 4.dp, vertical = 2.dp)
+                            ) {
+                                Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    for (col in 0 until cols) {
+                                        val slotIdx = row * cols + col
+                                        val tileOpt = rackSlots.getOrNull(slotIdx)
+                                        var ordinal = 0
+                                        for (k in 0..minOf(slotIdx, rackSlots.size - 1)) {
+                                            if (rackSlots[k] != null) ordinal++
+                                        }
+                                        val isDealtVis = !isDealing || ordinal <= dealVisCnt
+                                        val isLifted = (liftedIdx == slotIdx) || (dragSlotIdx == slotIdx)
+
+                                        Box(
+                                            modifier = Modifier
+                                                .size(width = slotW, height = 50.dp)
+                                                .clip(RoundedCornerShape(5.dp))
+                                                .background(if (liftedIdx != null && tileOpt == null) Color.Yellow.copy(alpha = 0.16f) else Color.Black.copy(alpha = 0.12f))
+                                                .border(1.dp, if (liftedIdx != null) Color.Yellow.copy(alpha = 0.55f) else Color.Black.copy(alpha = 0.22f), RoundedCornerShape(5.dp))
+                                                .pointerInput(slotIdx, cols) {
+                                                    detectDragGestures(
+                                                        onDragStart = {
+                                                            if (rackSlots.getOrNull(slotIdx) != null) {
+                                                                dragSlotIdx = slotIdx
+                                                                dragOffsetX = 0f
+                                                                dragOffsetY = 0f
+                                                            }
+                                                        },
+                                                        onDrag = { change, dragAmount ->
+                                                            change.consume()
+                                                            dragOffsetX += dragAmount.x
+                                                            dragOffsetY += dragAmount.y
+                                                        },
+                                                        onDragEnd = {
+                                                            val curDrag = dragSlotIdx
+                                                            if (curDrag != null) {
+                                                                if (dragOffsetY < -110f && tileOpt != null) {
+                                                                    rmk.dropRackTilesToTable(tileOpt.id)
+                                                                } else {
+                                                                    val stepPx = (size.width + 10).coerceAtLeast(40)
+                                                                    val colShift = (dragOffsetX / stepPx).roundToInt()
+                                                                    val rowShift = (dragOffsetY / 110f).roundToInt()
+                                                                    val dstRow = (row + rowShift).coerceIn(0, 1)
+                                                                    val dstCol = (col + colShift).coerceIn(0, cols - 1)
+                                                                    rmk.moveRackSlot(curDrag, dstRow * cols + dstCol)
+                                                                }
+                                                            }
+                                                            dragSlotIdx = null
+                                                            dragOffsetX = 0f
+                                                            dragOffsetY = 0f
+                                                        },
+                                                        onDragCancel = {
+                                                            dragSlotIdx = null
+                                                            dragOffsetX = 0f
+                                                            dragOffsetY = 0f
+                                                        }
+                                                    )
+                                                }
+                                                .combinedClickable(
+                                                    onLongClick = {
+                                                        if (tileOpt != null) rmk.startLongPressCascadeSelect(slotIdx)
+                                                    },
+                                                    onClick = {
+                                                        val curLifted = liftedIdx
+                                                        if (curLifted != null) {
+                                                            if (curLifted == slotIdx) {
+                                                                rmk.setLiftedSlot(null)
+                                                                if (tileOpt != null && myTurn) rmk.toggleSelectTile(tileOpt.id)
+                                                            } else {
+                                                                rmk.moveRackSlot(curLifted, slotIdx)
+                                                            }
+                                                        } else if (tileOpt != null) {
+                                                            rmk.toggleSelectTile(tileOpt.id)
+                                                            rmk.setLiftedSlot(slotIdx)
+                                                        }
+                                                    }
+                                                ),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            if (tileOpt != null && isDealtVis) {
+                                                val sel = selIds.contains(tileOpt.id) || isLifted
+                                                Box(
+                                                    modifier = if (dragSlotIdx == slotIdx) {
+                                                        Modifier.offset { IntOffset(dragOffsetX.roundToInt(), dragOffsetY.roundToInt()) }
+                                                    } else Modifier
+                                                ) {
+                                                    RmkTileCard(tile = tileOpt, selected = sel, compact = true)
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 1.5s Flying Draw Tile Animation Overlay
+            if (isDrawing && drawAnimTile != null) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .offset(
+                            x = (-40 - (drawAnimProg * 180)).dp,
+                            y = (-140 + (drawAnimProg * 80)).dp
+                        )
+                ) {
+                    RmkTileCard(tile = drawAnimTile!!, selected = true, compact = false)
+                }
+            }
+        }
+    }
 }

@@ -31,7 +31,7 @@ CXXFLAGS    := $(CFLAGS) -fno-rtti -std=gnu++17
 ASFLAGS     := -g $(ARCH)
 LDFLAGS     = -specs=$(DEVKITPRO)/libnx/switch.specs -g $(ARCH) -Wl,-Map,$(notdir $*.map)
 
-LIBS        := -lSDL2_image -lSDL2_ttf -lSDL2 -lwebp -lpng -ljpeg -lfreetype -lharfbuzz -lbz2 -lz \
+LIBS        := -lSDL2_image -lSDL2_ttf -lSDL2 -lEGL -lglapi -ldrm_nouveau -lwebp -lpng -ljpeg -lfreetype -lharfbuzz -lbz2 -lz \
                -lmbedtls -lmbedx509 -lmbedcrypto -lnx -lm
 
 LIBDIRS     := $(PORTLIBS) $(LIBNX)
@@ -113,6 +113,7 @@ endif
 all: $(BUILD)
 
 $(BUILD):
+	@[ ! -f $(CURDIR)/romfs/cards_pack.zip ] || (mkdir -p $(CURDIR)/romfs/cards && unzip -oq $(CURDIR)/romfs/cards_pack.zip -d $(CURDIR)/romfs/cards)
 	@[ -d $@ ] || mkdir -p $@
 	@$(MAKE) --no-print-directory -C $(BUILD) -f $(CURDIR)/Makefile
 

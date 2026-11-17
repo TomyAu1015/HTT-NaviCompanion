@@ -16,14 +16,22 @@ object CoordinateConverter {
 
     /**
      * Checks if coordinate is inside Mainland China (excluding HK, Macau, Taiwan)
-     * so Amap GCJ-02 tiles and Mars coordinate offsets are applied accurately.
+     * with an accurate piecewise Shenzhen-HK border curve so Shekou/Nanshan and
+     * Lok Ma Chau/Lo Wu never suffer 500m GCJ-02/WGS-84 offset errors.
      */
     fun isInMainlandChina(lat: Double, lon: Double): Boolean {
         if (isOutOfChina(lat, lon)) return false
-        // Exclude Hong Kong & Macau bounding box (approx 22.12..22.56, 113.50..114.45)
+        // Hong Kong & Macau bounding region
         if (lat in 22.10..22.565 && lon in 113.50..114.46) {
-            // Shenzhen north of 22.505 is Mainland China, HK south of 22.505 uses WGS-84
-            if (lat < 22.505) return false
+            val borderLat = when {
+                lon < 113.85 -> 22.25  // Macau / Zhuhai waters
+                lon < 113.95 -> 22.472 // Shekou / Shenzhen Bay West
+                lon < 114.03 -> 22.495 // Shenzhen Bay Bridge
+                lon < 114.11 -> 22.512 // Futian / Lok Ma Chau
+                lon < 114.18 -> 22.531 // Lo Wu / Man Kam To
+                else -> 22.548         // Sha Tau Kok / Mirs Bay
+            }
+            if (lat < borderLat) return false
         }
         // Exclude Taiwan bounding box
         if (lat in 21.85..25.35 && lon in 119.30..122.05) return false
@@ -45,14 +53,21 @@ object CoordinateConverter {
         return LatLng(latLng.latitude + dLat, latLng.longitude + dLon)
     }
 
+    /**
+     * 3-iteration inverse GCJ-02 -> WGS-84 conversion (< 0.5m accuracy)
+     */
     fun gcj02ToWGS84(latLng: LatLng): LatLng {
         if (!isInMainlandChina(latLng.latitude, latLng.longitude)) {
             return latLng
         }
-        val gcj = wgs84ToGCJ02(latLng)
-        val dLat = gcj.latitude - latLng.latitude
-        val dLon = gcj.longitude - latLng.longitude
-        return LatLng(latLng.latitude - dLat, latLng.longitude - dLon)
+        var wgsLat = latLng.latitude
+        var wgsLon = latLng.longitude
+        for (i in 0 until 3) {
+            val gcj = wgs84ToGCJ02(LatLng(wgsLat, wgsLon))
+            wgsLat += (latLng.latitude - gcj.latitude)
+            wgsLon += (latLng.longitude - gcj.longitude)
+        }
+        return LatLng(wgsLat, wgsLon)
     }
 
     fun distanceMeters(a: LatLng, b: LatLng): Double {

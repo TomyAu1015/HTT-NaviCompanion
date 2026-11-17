@@ -1536,6 +1536,34 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
             val myKey = myPeerKey()
 
             when (kind) {
+                "leaveRoom" -> {
+                    val leftPeer = obj.optString("senderPeerName", "")
+                    if (leftPeer.isBlank() || leftPeer == myPeerKey() || leftPeer == _myNickname.value) return
+                    val cleanLeft = cleanPeerLabel(leftPeer)
+                    orderedRoomPeers.removeAll { it.first == leftPeer || cleanPeerLabel(it.first) == cleanLeft }
+                    _connectedPeerNames.value = orderedRoomPeers.map { it.first }.filter { it != myPeerKey() && it != _myNickname.value }
+                    val newAuth = orderedRoomPeers.isEmpty() || orderedRoomPeers.first().first == myPeerKey() || orderedRoomPeers.first().first == _myNickname.value
+                    _isRoomAuthority.value = newAuth
+                    if (_phase.value == DoudizhuGamePhase.LOBBY) {
+                        rebuildLobbySeats(forceRebuild = true)
+                        _statusBanner.value = "玩家 [$cleanLeft] 已离开房间"
+                    } else {
+                        val list = _seats.value.toMutableList()
+                        for (i in list.indices) {
+                            if (list[i].peerDisplayName == leftPeer || cleanPeerLabel(list[i].peerDisplayName) == cleanLeft) {
+                                val orig = cleanPeerLabel(list[i].name)
+                                val aiLabel = if (orig.contains("AI接管")) orig else "$orig (AI接管)"
+                                list[i] = list[i].copy(isAI = true, name = aiLabel, lastActionText = "🤖 AI接管")
+                            }
+                        }
+                        _seats.value = list
+                        _statusBanner.value = "🤖 玩家 [$cleanLeft] 已退房，由 AI 自动接管出牌！"
+                        if (newAuth) {
+                            broadcastFullStateSync()
+                            scheduleAiTurnIfNeeded()
+                        }
+                    }
+                }
                 "roomFull" -> {
                     val msg = obj.optString("statusBanner").ifBlank { "⚠️ 房间 [$myCode] 人数已满 (3/3人)，无法进入！请更换其他房号" }
                     stopNetworking()
