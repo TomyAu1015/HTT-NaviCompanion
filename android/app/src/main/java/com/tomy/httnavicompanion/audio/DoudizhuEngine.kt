@@ -1558,9 +1558,9 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
                         }
                         _seats.value = list
                         _statusBanner.value = "🤖 玩家 [$cleanLeft] 已退房，由 AI 自动接管出牌！"
-                        if (newAuth) {
+                        promoteAuthorityIfNeededAndResumeAI()
+                        if (_isRoomAuthority.value) {
                             broadcastFullStateSync()
-                            scheduleAiTurnIfNeeded()
                         }
                     }
                 }

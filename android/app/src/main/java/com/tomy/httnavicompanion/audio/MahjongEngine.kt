@@ -942,14 +942,18 @@ class MahjongEngine(private val context: Context, private val audioMgr: AudioPla
                         }
                         _seats.value = list
                         _statusBanner.value = "🤖 玩家 [$cleanLeft] 已退房，由 AI 自动接管摸打！"
-                        if (newAuth) {
+                        promoteAuthorityIfNeeded()
+                        if (_isRoomAuthority.value) {
                             val pc = _pendingClaim.value
-                            if (leftSeatIdx != null && pc != null && pc.waitingSeats.contains(leftSeatIdx)) {
+                            val isWaitingOnLeft = leftSeatIdx != null && pc != null &&
+                                (pc.eligibleHuSeats.contains(leftSeatIdx) || pc.eligibleKongSeats.contains(leftSeatIdx) || pc.eligiblePongSeats.contains(leftSeatIdx)) &&
+                                !pc.passedSeats.contains(leftSeatIdx)
+                            if (isWaitingOnLeft && leftSeatIdx != null) {
                                 handleClaimResponse("pass", leftSeatIdx)
                             } else {
                                 broadcastFullStateSync()
-                                scheduleAiActionIfNeeded()
-                                scheduleAiClaimIfNeeded()
+                                scheduleAIActionIfNeeded()
+                                scheduleAIClaimIfNeeded()
                             }
                         }
                     }
