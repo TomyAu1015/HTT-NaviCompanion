@@ -498,35 +498,24 @@ namespace MjEvaluator {
             counts[firstIdx] += 1;
         }
 
-        // 2. Sequence (顺子) ONLY for W/T/D (0..26)
+        // 2. Sequence (顺子) across ALL 3 windows containing firstIdx
         if (firstIdx < 27) {
-            int rankInSuit = firstIdx % 9;
-            if (rankInSuit <= 6) {
-                int i1 = firstIdx + 1, i2 = firstIdx + 2;
-                int miss = (counts[i1] > 0 ? 0 : 1) + (counts[i2] > 0 ? 0 : 1);
-                if (laizi >= miss) {
-                    counts[firstIdx]--;
-                    if (counts[i1] > 0) counts[i1]--;
-                    if (counts[i2] > 0) counts[i2]--;
-                    if (canFormMelds(counts, laizi - miss, meldsNeeded - 1)) {
-                        counts[firstIdx]++;
-                        if (miss == 0 || (counts[i1] >= 0)) {} // restore properly below
+            int suitBase = (firstIdx / 9) * 9;
+            for (int start = firstIdx - 2; start <= firstIdx; ++start) {
+                if (start >= suitBase && start + 2 <= suitBase + 8) {
+                    int miss = 0;
+                    int used[3] = {0, 0, 0};
+                    int usedCnt = 0;
+                    for (int k = start; k <= start + 2; ++k) {
+                        if (counts[k] > 0) {
+                            counts[k]--;
+                            used[usedCnt++] = k;
+                        } else {
+                            miss++;
+                        }
                     }
-                }
-            }
-            // Clean backtracking sequence check
-            if (rankInSuit <= 6) {
-                int i1 = firstIdx + 1, i2 = firstIdx + 2;
-                bool has1 = counts[i1] > 0, has2 = counts[i2] > 0;
-                int miss = (has1 ? 0 : 1) + (has2 ? 0 : 1);
-                if (laizi >= miss) {
-                    counts[firstIdx]--;
-                    if (has1) counts[i1]--;
-                    if (has2) counts[i2]--;
-                    bool ok = canFormMelds(counts, laizi - miss, meldsNeeded - 1);
-                    counts[firstIdx]++;
-                    if (has1) counts[i1]++;
-                    if (has2) counts[i2]++;
+                    bool ok = (laizi >= miss) && canFormMelds(counts, laizi - miss, meldsNeeded - 1);
+                    for (int u = 0; u < usedCnt; ++u) counts[used[u]]++;
                     if (ok) return true;
                 }
             }
@@ -826,10 +815,8 @@ namespace RmkEvaluator {
         std::vector<RmkTile> pool = hand;
         if (preferRuns) {
             extractRunsFromPool(pool, outMelds);
-            extractGroupsFromPool(pool, outMelds);
         } else {
             extractGroupsFromPool(pool, outMelds);
-            extractRunsFromPool(pool, outMelds);
         }
 
         // Try pairing 1 Joker with a 2-tile near-meld

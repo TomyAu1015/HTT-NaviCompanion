@@ -1203,9 +1203,9 @@ static void organizeRmkRack(bool preferRuns) {
     gRmkLiftedSlot = -1;
     syncRmkHandFromRackSlots();
     if (!rawMelds.empty()) {
-        gStatusBanner = std::string(preferRuns ? "[789 顺子理牌] " : "[777 群组理牌] ") + "已整理出 " + std::to_string(rawMelds.size()) + " 组可出牌型，并用空位与其他牌隔开！";
+        gStatusBanner = std::string(preferRuns ? "[789类型组合] " : "[777(888)类型组合] ") + "已整理出 " + std::to_string(rawMelds.size()) + " 组可出牌型，并用空位与其他牌隔开！";
     } else {
-        gStatusBanner = std::string(preferRuns ? "[789 顺子理牌] " : "[777 群组理牌] ") + "已整理牌架（当前暂无满3张直出牌组）";
+        gStatusBanner = std::string(preferRuns ? "[789类型组合] " : "[777(888)类型组合] ") + "当前暂无对应类型可出牌组（未混入其他类型）";
     }
 }
 
@@ -1453,8 +1453,53 @@ static void processIncomingNetworkMessages() {
             gRoomPeers.erase(std::remove_if(gRoomPeers.begin(), gRoomPeers.end(), [&](const RoomPeer& p) {
                 return p.name == sender;
             }), gRoomPeers.end());
-            rebuildLobbySeats();
-            gStatusBanner = "玩家 [" + cleanSender + "] 已离开房间";
+            if (!gRoomPeers.empty() && gRoomPeers.front().name == gMyPeerName) {
+                gIsRoomAuthority = true;
+            }
+            if (gScreen == MODE_LOBBY) {
+                rebuildLobbySeats();
+                gStatusBanner = "玩家 [" + cleanSender + "] 已离开房间";
+            } else if (gScreen == MODE_DDZ_TABLE) {
+                for (int i = 0; i < (int)gDdzSeats.size(); ++i) {
+                    if (gDdzSeats[i].peerDisplayName == sender) {
+                        gDdzSeats[i].isAI = true;
+                        std::string orig = cleanPeerLabel(gDdzSeats[i].name);
+                        if (orig.find("AI接管") == std::string::npos) gDdzSeats[i].name = orig + " (AI接管)";
+                        gDdzSeats[i].lastActionText = "AI接管中";
+                    }
+                }
+                gStatusBanner = "玩家 [" + cleanSender + "] 已退出，由AI自动接管出牌！";
+                if (gIsRoomAuthority) {
+                    broadcastDdzState();
+                    gDdzAiNextTick = SDL_GetTicks() + 600;
+                }
+            } else if (gScreen == MODE_MJ_TABLE) {
+                for (int i = 0; i < (int)gMjSeats.size(); ++i) {
+                    if (gMjSeats[i].peerDisplayName == sender) {
+                        gMjSeats[i].isAI = true;
+                        std::string orig = cleanPeerLabel(gMjSeats[i].name);
+                        if (orig.find("AI接管") == std::string::npos) gMjSeats[i].name = orig + " (AI接管)";
+                    }
+                }
+                gStatusBanner = "玩家 [" + cleanSender + "] 已退出，由AI自动接管！";
+                if (gIsRoomAuthority) {
+                    broadcastMjState();
+                    gMjAiNextTick = SDL_GetTicks() + 600;
+                }
+            } else if (gScreen == MODE_RMK_TABLE) {
+                for (int i = 0; i < (int)gRmkSeats.size(); ++i) {
+                    if (gRmkSeats[i].peerDisplayName == sender) {
+                        gRmkSeats[i].isAI = true;
+                        std::string orig = cleanPeerLabel(gRmkSeats[i].name);
+                        if (orig.find("AI接管") == std::string::npos) gRmkSeats[i].name = orig + " (AI接管)";
+                    }
+                }
+                gStatusBanner = "玩家 [" + cleanSender + "] 已退出，由AI自动接管！";
+                if (gIsRoomAuthority) {
+                    broadcastRmkState();
+                    gRmkAiNextTick = SDL_GetTicks() + 600;
+                }
+            }
         } else if (kind == "bidAction" && gIsRoomAuthority && !isMjPkt && !isRmkPkt) {
             int bid = MiniJson::getInt(raw, "bidScore", 0);
             handleDdzBid(gDdzTurnSeat, bid);
@@ -2863,32 +2908,66 @@ int main(int argc, char* argv[]) {
                             gStatusBanner = "已拎起该牌（点击任意空位或其他牌即可换位，或直接点【放上桌面】）";
                         }
                     }
-                } else if (pointInRect(tx, ty, 20, 152, 1240, 314) && gRmkPhase == "playing" && gRmkTurnSeat == gRmkMySeat && gRmkSeats[gRmkMySeat].hasBrokenIce) {
-                    // Touch on table meld tile after Icebreak -> pick up to rack for rearrange!
+                } else if (pointInRect(tx, ty, 20, 152, 1240, 314) && gRmkPhase == "playing" && gRmkTurnSeat == gRmkMySeat) {
                     if (!gRmkEditing) {
                         gRmkSnapHand = gRmkSeats[gRmkMySeat].hand;
                         gRmkWorkHand = gRmkSnapHand;
                         gRmkSnapMelds = gRmkTableMelds;
                         gRmkWorkMelds = gRmkSnapMelds;
                         gRmkEditing = true;
+                        for (const auto& sl : gRmkRackSlots) {
+                            if (!sl.id.empty() && sl.selected) {
+                                for (auto& wt : gRmkWorkHand) if (wt.id == sl.id) wt.selected = true;
+                            }
+                        }
                     }
+                    std::vector<RmkTile> handSel;
+                    for (const auto& wt : gRmkWorkHand) if (wt.selected) handSel.push_back(wt);
+
                     int mx = 34, my = 164;
                     bool hit = false;
                     for (size_t i = 0; i < gRmkWorkMelds.size() && !hit; ++i) {
                         int mw = (int)gRmkWorkMelds[i].tiles.size() * 44 + 12;
                         if (mx + mw > 1240) { mx = 34; my += 74; }
-                        for (size_t k = 0; k < gRmkWorkMelds[i].tiles.size(); ++k) {
-                            int trx = mx + 6 + (int)k * 44;
-                            if (pointInRect(tx, ty, trx, my + 5, 40, 54)) {
-                                RmkTile picked = gRmkWorkMelds[i].tiles[k];
-                                picked.selected = true;
-                                gRmkWorkMelds[i].tiles.erase(gRmkWorkMelds[i].tiles.begin() + k);
-                                if (gRmkWorkMelds[i].tiles.empty()) gRmkWorkMelds.erase(gRmkWorkMelds.begin() + i);
-                                gRmkWorkHand.push_back(picked);
+                        if (pointInRect(tx, ty, mx, my, mw, 64)) {
+                            hit = true;
+                            if (!handSel.empty() && (gRmkSeats[gRmkMySeat].hasBrokenIce || i >= gRmkSnapMelds.size())) {
+                                // Append selected rack tiles (e.g. 4 onto 1 2 3!) into this table meld
+                                std::vector<RmkTile> comb = gRmkWorkMelds[i].tiles;
+                                comb.insert(comb.end(), handSel.begin(), handSel.end());
+                                if (RmkEvaluator::evaluateMeld(comb) >= 0) {
+                                    gRmkWorkMelds[i].tiles = RmkEvaluator::sortMeldForDisplay(comb);
+                                    std::set<std::string> rmIds;
+                                    for (const auto& ht : handSel) rmIds.insert(ht.id);
+                                    gRmkWorkHand.erase(std::remove_if(gRmkWorkHand.begin(), gRmkWorkHand.end(), [&](const RmkTile& t){ return rmIds.count(t.id) > 0; }), gRmkWorkHand.end());
+                                    for (auto& sl : gRmkRackSlots) if (!sl.id.empty() && rmIds.count(sl.id)) sl = RmkTile{};
+                                    gStatusBanner = "已将选牌并入桌面牌组（点击【确认出牌】完成回合）";
+                                } else {
+                                    gStatusBanner = "[注意] 拼接后不符合顺组或群组规则";
+                                }
+                            } else if ((int)i >= (int)gRmkSnapMelds.size() && handSel.empty()) {
+                                // Tap meld placed in current turn -> return entire meld to rack
+                                for (auto t : gRmkWorkMelds[i].tiles) { t.selected = false; gRmkWorkHand.push_back(t); }
+                                gRmkWorkMelds.erase(gRmkWorkMelds.begin() + i);
                                 syncRmkRackFromHand(true);
-                                gStatusBanner = "已从桌面取回1张牌重组（回合结束前桌面所有牌组须满3张合法）";
-                                hit = true;
-                                break;
+                                gStatusBanner = "已撤回本回合暂放的牌组回牌架";
+                            } else if (gRmkSeats[gRmkMySeat].hasBrokenIce) {
+                                // Pick ANY single tile from table meld to rack for free Rummikub rearrangement (4567 -> take 4)!
+                                for (size_t k = 0; k < gRmkWorkMelds[i].tiles.size(); ++k) {
+                                    int trx = mx + 6 + (int)k * 44;
+                                    if (pointInRect(tx, ty, trx, my + 5, 40, 54)) {
+                                        RmkTile picked = gRmkWorkMelds[i].tiles[k];
+                                        picked.selected = true;
+                                        gRmkWorkMelds[i].tiles.erase(gRmkWorkMelds[i].tiles.begin() + k);
+                                        if (gRmkWorkMelds[i].tiles.empty()) gRmkWorkMelds.erase(gRmkWorkMelds.begin() + i);
+                                        gRmkWorkHand.push_back(picked);
+                                        syncRmkRackFromHand(true);
+                                        gStatusBanner = "已从桌面取下1张牌到牌架重组（确认前桌面所有牌组须合法）";
+                                        break;
+                                    }
+                                }
+                            } else {
+                                gStatusBanner = "[注意] 尚未破冰！首次出牌只能操作自己牌架摆出的牌组";
                             }
                         }
                         mx += mw + 12;

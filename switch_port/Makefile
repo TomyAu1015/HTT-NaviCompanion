@@ -113,6 +113,7 @@ endif
 all: $(BUILD)
 
 $(BUILD):
+	@[ ! -f $(CURDIR)/romfs/cards_pack.zip ] || (mkdir -p $(CURDIR)/romfs/cards && unzip -oq $(CURDIR)/romfs/cards_pack.zip -d $(CURDIR)/romfs/cards)
 	@[ -d $@ ] || mkdir -p $@
 	@$(MAKE) --no-print-directory -C $(BUILD) -f $(CURDIR)/Makefile
 
