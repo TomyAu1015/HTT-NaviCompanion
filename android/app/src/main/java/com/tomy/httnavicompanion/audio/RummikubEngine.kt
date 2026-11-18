@@ -1814,9 +1814,10 @@ class RummikubEngine(
         syncEditingStateWithSnapshot()
     }
 
-    fun returnTableTileToRackIfFromThisTurn(meldId: String, tileId: String): Boolean {
+    fun returnTableTileToRackIfFromThisTurn(meldId: String, tileId: String, preferredRackSlot: Int? = null): Boolean {
         if (_currentTurnSeat.value != _mySeatIndex.value || _phase.value != RmkGamePhase.PLAYING) return false
         if (snapshotHand.none { it.id == tileId }) {
+            RmkSoundFX.playUndo()
             _statusBanner.value = "⚠️ 桌面原有的牌不能放回牌架，请在桌面上拖动拆组！"
             return false
         }
@@ -1847,7 +1848,14 @@ class RummikubEngine(
         }
         _workingMelds.value = ms
         _workingHand.value = _workingHand.value + tile
-        syncRackFromHand(_workingHand.value, preserveExistingPositions = true)
+        if (preferredRackSlot != null && preferredRackSlot in _rackSlots.value.indices && _rackSlots.value[preferredRackSlot] == null) {
+            val nextSlots = _rackSlots.value.toMutableList()
+            nextSlots[preferredRackSlot] = tile
+            _rackSlots.value = nextSlots
+            syncHandOrderFromRackSlots()
+        } else {
+            syncRackFromHand(_workingHand.value, preserveExistingPositions = true)
+        }
         _selectedTableTileSource.value = null
         _selectedTileIds.value = emptySet()
         _liftedSlotIndex.value = null
