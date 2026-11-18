@@ -10897,6 +10897,7 @@ struct KOnRummikubSheetView: View {
         guard !incoming.isEmpty else { return true }
         let comb = existing + incoming
         if RmkEvaluator.evaluateMeld(comb) != nil { return true }
+        if RmkEvaluator.autoSplitMeldTiles(comb).count > 1 { return true }
         let norms = comb.filter { !$0.isJoker }
         if norms.count <= 1 { return true }
         let sameNum = norms.allSatisfy { $0.number == norms[0].number } && Set(norms.map { $0.color }).count == norms.count && comb.count <= 4
@@ -10911,10 +10912,9 @@ struct KOnRummikubSheetView: View {
         return false
     }
 
-    /// Magnetic Meld Hit-Testing (1:1 like Rummikub Video):
-    /// - Captures drops directly on a meld OR up to 1.15x tileWidth to the left/right ends of a meld (so placing `1` to the left of `2,3,4` or `5` to the right of `2,3,4` never falls outside the box!).
-    /// - Prioritizes compatible melds and closest center distance so adjacent melds never steal drops.
-    /// - Returns (targetMeldId, preferLeading, insertAtMeldIndex).
+    /// Magnetic Meld Hit-Testing + Exact Open-Space Insertion Index:
+    /// - Captures drops directly on a meld OR within 0.45x tileW of its left/right ends when compatible (so open space between melds stays open!).
+    /// - When dropped in open space (`meldId == nil`), finds the closest row vertically and the exact horizontal slot within that row so the tile NEVER jumps to the end!
     private func findTargetMeldHit(
         at globalPt: CGPoint,
         excludingId: String? = nil,
@@ -10922,76 +10922,76 @@ struct KOnRummikubSheetView: View {
         displayMelds: [RmkMeld],
         layout: (rows: [[RmkMeld]], tileW: CGFloat, tileH: CGFloat)
     ) -> (meldId: String?, preferLeading: Bool, insertIndex: Int?) {
-        let snapX = max(28, layout.tileW * 1.15)
-        let snapY = max(16, layout.tileH * 0.42)
+        let snapX = max(12, layout.tileW * 0.45)
+        let snapY = max(6, layout.tileH * 0.16)
         var candidates: [(meld: RmkMeld, rect: CGRect, directHit: Bool, compatible: Bool, dist: CGFloat)] = []
 
         for m in displayMelds where m.id != excludingId {
             if let rect = meldGlobalFrames[m.id], rect.width > 4 {
-                let directRect = rect.insetBy(dx: -6, dy: -6)
+                let directRect = rect.insetBy(dx: -3, dy: -3)
                 let edgeRect = rect.insetBy(dx: -snapX, dy: -snapY)
                 if edgeRect.contains(globalPt) {
                     let isDirect = directRect.contains(globalPt)
                     let compat = areTilesCompatibleForSnap(m.tiles, draggedTiles)
-                    // Only allow wide left/right edge snap if compatible OR if direct hit
                     if isDirect || compat {
-                        let dx = max(0, abs(globalPt.x - rect.midX) - rect.width * 0.35)
-                        let dy = abs(globalPt.y - rect.midY) * 1.5
+                        let dx = max(0, abs(globalPt.x - rect.midX) - rect.width * 0.38)
+                        let dy = abs(globalPt.y - rect.midY) * 1.6
                         candidates.append((m, rect, isDirect, compat, hypot(dx, dy)))
                     }
                 }
             }
         }
 
-        if candidates.isEmpty && tableAreaGlobalFrame.width > 10 {
-            let relX = globalPt.x - tableAreaGlobalFrame.minX - 6
-            let relY = globalPt.y - tableAreaGlobalFrame.minY - 6
-            var curY: CGFloat = 0
-            let rowH = layout.tileH + 6
-            for rowMelds in layout.rows {
-                var curX: CGFloat = 0
-                for m in rowMelds {
-                    let mW = CGFloat(max(1, m.tiles.count)) * (layout.tileW + 1.5) + 6
-                    let rect = CGRect(x: tableAreaGlobalFrame.minX + 6 + curX, y: tableAreaGlobalFrame.minY + 6 + curY, width: mW, height: rowH)
-                    if m.id != excludingId && rect.insetBy(dx: -snapX, dy: -snapY).contains(globalPt) {
-                        let isDirect = rect.insetBy(dx: -6, dy: -6).contains(globalPt)
-                        let compat = areTilesCompatibleForSnap(m.tiles, draggedTiles)
-                        if isDirect || compat {
-                            let dx = max(0, abs(globalPt.x - rect.midX) - rect.width * 0.35)
-                            let dy = abs(globalPt.y - rect.midY) * 1.5
-                            candidates.append((m, rect, isDirect, compat, hypot(dx, dy)))
-                        }
-                    }
-                    curX += mW + 10
-                }
-                curY += rowH + 6
-            }
-        }
-
         if let best = candidates.sorted(by: { a, b in
-            if a.compatible != b.compatible { return a.compatible && !b.compatible }
             if a.directHit != b.directHit { return a.directHit && !b.directHit }
+            if a.compatible != b.compatible { return a.compatible && !b.compatible }
             return a.dist < b.dist
         }).first {
             let preferLead = globalPt.x < best.rect.midX
             return (best.meld.id, preferLead, nil)
         }
 
-        // Compute open-space insertion index based on row/column of globalPt so dropped tiles stay where placed!
-        var flatIdx = 0
-        for rowMelds in layout.rows {
-            for m in rowMelds {
-                if let r = meldGlobalFrames[m.id] {
-                    if globalPt.y < r.minY - 8 {
-                        return (nil, false, flatIdx)
-                    } else if globalPt.y <= r.maxY + 12 && globalPt.x < r.midX {
-                        return (nil, false, flatIdx)
-                    }
-                }
-                flatIdx += 1
+        // Open-space drop: find the closest row vertically and insert at the exact horizontal position in that row!
+        guard !layout.rows.isEmpty else { return (nil, false, 0) }
+        var rowStartIndices: [Int] = []
+        var running = 0
+        for r in layout.rows {
+            rowStartIndices.append(running)
+            running += r.count
+        }
+
+        var rowBounds: [(rowIdx: Int, minY: CGFloat, maxY: CGFloat, midY: CGFloat)] = []
+        for (rIdx, rowMelds) in layout.rows.enumerated() {
+            let rects = rowMelds.compactMap { meldGlobalFrames[$0.id] }.filter { $0.width > 4 }
+            if !rects.isEmpty {
+                let minY = rects.map { $0.minY }.min()!
+                let maxY = rects.map { $0.maxY }.max()!
+                rowBounds.append((rIdx, minY, maxY, (minY + maxY) * 0.5))
+            } else {
+                let estMinY = tableAreaGlobalFrame.minY + 6 + CGFloat(rIdx) * (layout.tileH + 12)
+                let estMaxY = estMinY + layout.tileH
+                rowBounds.append((rIdx, estMinY, estMaxY, (estMinY + estMaxY) * 0.5))
             }
         }
-        return (nil, false, displayMelds.count)
+
+        if let firstRow = rowBounds.first, globalPt.y < firstRow.minY - layout.tileH * 0.45 {
+            return (nil, false, 0)
+        }
+        if let lastRow = rowBounds.last, globalPt.y > lastRow.maxY + layout.tileH * 0.55 {
+            return (nil, false, displayMelds.count)
+        }
+
+        let targetRow = rowBounds.min(by: { abs(globalPt.y - $0.midY) < abs(globalPt.y - $1.midY) })?.rowIdx ?? (layout.rows.count - 1)
+        let rowMelds = layout.rows[targetRow]
+        let baseFlatIdx = rowStartIndices[targetRow]
+        for (colIdx, m) in rowMelds.enumerated() {
+            if let r = meldGlobalFrames[m.id], r.width > 4 {
+                if globalPt.x < r.midX {
+                    return (nil, false, baseFlatIdx + colIdx)
+                }
+            }
+        }
+        return (nil, false, baseFlatIdx + rowMelds.count)
     }
 
     private func tileColor(_ c: RmkColor) -> Color {
@@ -11508,12 +11508,11 @@ struct KOnRummikubSheetView: View {
                                                 let isHoveredTarget = (hoveredTargetMeldId == meld.id)
                                                 HStack(spacing: 1.5) {
                                                     ForEach(meld.tiles) { t in
-                                                        let isPickedTableTile = (rmk.selectedTableTileSource?.meldId == meld.id && rmk.selectedTableTileSource?.tileId == t.id)
                                                         let isHigh = rmk.lastTurnHighlightedTileIds.contains(t.id)
                                                         let isDraggingThisTbl = (dragTableSource?.meldId == meld.id && dragTableSource?.tileId == t.id)
                                                         tileChip(
                                                             t,
-                                                            selected: isPickedTableTile,
+                                                            selected: false,
                                                             highlighted: isHigh,
                                                             compact: layout.tileW < 36,
                                                             customW: layout.tileW,
@@ -11521,29 +11520,43 @@ struct KOnRummikubSheetView: View {
                                                         )
                                                         .opacity(isDraggingThisTbl ? 0.20 : 1.0)
                                                         .onTapGesture {
-                                                            withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
-                                                                rmk.handleTableTileTapOrMove(meldId: meld.id, tileId: t.id)
+                                                            if myTurn && !rmk.selectedTileIds.isEmpty {
+                                                                withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
+                                                                    rmk.handleTableTileTapOrMove(meldId: meld.id, tileId: t.id)
+                                                                }
                                                             }
                                                         }
                                                         .highPriorityGesture(
-                                                            DragGesture(minimumDistance: 4, coordinateSpace: .global)
+                                                            DragGesture(minimumDistance: 3, coordinateSpace: .global)
                                                                 .onChanged { val in
                                                                     guard myTurn else { return }
                                                                     dragTableSource = (meldId: meld.id, tileId: t.id)
                                                                     dragTableOffset = val.translation
                                                                     dragTableGlobalLocation = val.location
-                                                                    let hit = findTargetMeldHit(at: val.location, excludingId: meld.id, draggedTiles: [t], displayMelds: displayMelds, layout: layout)
-                                                                    hoveredTargetMeldId = hit.meldId
+                                                                    let isOverRack = (rackAreaGlobalFrame.width > 10 && rackAreaGlobalFrame.insetBy(dx: -20, dy: -22).contains(val.location))
+                                                                        || (tableAreaGlobalFrame.height > 10 && val.location.y >= tableAreaGlobalFrame.maxY - 12)
+                                                                    if isOverRack {
+                                                                        hoveredTargetMeldId = nil
+                                                                    } else {
+                                                                        let hit = findTargetMeldHit(at: val.location, excludingId: meld.id, draggedTiles: [t], displayMelds: displayMelds, layout: layout)
+                                                                        hoveredTargetMeldId = hit.meldId
+                                                                    }
                                                                 }
                                                                 .onEnded { val in
                                                                     guard myTurn else { return }
                                                                     let dropPt = val.location
                                                                     let movedDist = hypot(val.translation.width, val.translation.height)
+                                                                    let hitSlotIdx = rackSlotGlobalFrames.first(where: { $0.value.insetBy(dx: -8, dy: -12).contains(dropPt) })?.key
+                                                                    let isDroppedOnRack = (hitSlotIdx != nil)
+                                                                        || (rackAreaGlobalFrame.width > 10 && rackAreaGlobalFrame.insetBy(dx: -20, dy: -22).contains(dropPt))
+                                                                        || (tableAreaGlobalFrame.height > 10 && dropPt.y >= tableAreaGlobalFrame.maxY - 12 && val.translation.height > 24)
                                                                     withAnimation(.spring(response: 0.26, dampingFraction: 0.82)) {
-                                                                        if movedDist < 10 {
-                                                                            rmk.handleTableTileTapOrMove(meldId: meld.id, tileId: t.id)
-                                                                        } else if !tableAreaGlobalFrame.contains(dropPt) && rackAreaGlobalFrame.insetBy(dx: -12, dy: -12).contains(dropPt) {
-                                                                            _ = rmk.returnTableTileToRackIfFromThisTurn(meldId: meld.id, tileId: t.id)
+                                                                        if movedDist < 8 {
+                                                                            if !rmk.selectedTileIds.isEmpty {
+                                                                                rmk.handleTableTileTapOrMove(meldId: meld.id, tileId: t.id)
+                                                                            }
+                                                                        } else if isDroppedOnRack {
+                                                                            _ = rmk.returnTableTileToRackIfFromThisTurn(meldId: meld.id, tileId: t.id, preferredRackSlot: hitSlotIdx)
                                                                         } else {
                                                                             let hit = findTargetMeldHit(at: dropPt, excludingId: meld.id, draggedTiles: [t], displayMelds: displayMelds, layout: layout)
                                                                             rmk.moveTableTile(fromMeldId: meld.id, tileId: t.id, toMeldId: hit.meldId, preferLeading: hit.preferLeading, insertAtMeldIndex: hit.insertIndex)
@@ -12043,156 +12056,149 @@ struct KOnRummikubSheetView: View {
             .zIndex(950)
             .allowsHitTesting(false)
 
-            // B. Initial 14-Tile Dealing Flight Animation (White Tile Backs Flying from `+` to Opponents & Player Rack!)
+            // B. Initial 14-Tile Dealing Flight Animation (60fps TimelineView: White Tile Backs Flying from `+` to Opponents & Player Rack!)
             if rmk.isDealingAnimation && rmk.dealingVisibleCount >= 1 && rmk.dealingVisibleCount <= 14 {
-                GeometryReader { dealGeo in
-                    let overlayGlobal = dealGeo.frame(in: .global)
-                    let startPt = drawButtonGlobalFrame.width > 5
-                        ? CGPoint(x: drawButtonGlobalFrame.midX - overlayGlobal.minX, y: drawButtonGlobalFrame.midY - overlayGlobal.minY)
-                        : CGPoint(x: overlayGlobal.width - 36, y: overlayGlobal.height - 62)
-                    let stepPhase = CGFloat((rmk.dealingVisibleCount % 2 == 0) ? 0.72 : 0.38)
-                    ZStack {
-                        ForEach(orderedVerticalSeats, id: \.id) { seat in
-                            let endPt: CGPoint = {
-                                if seat.id == rmk.mySeatIndex {
-                                    if let rRect = rackSlotGlobalFrames[max(0, rmk.dealingVisibleCount - 1)] {
-                                        return CGPoint(x: rRect.midX - overlayGlobal.minX, y: rRect.midY - overlayGlobal.minY)
+                TimelineView(.animation(minimumInterval: 1.0 / 60.0)) { tlContext in
+                    GeometryReader { dealGeo in
+                        let overlayGlobal = dealGeo.frame(in: .global)
+                        let startPt = drawButtonGlobalFrame.width > 5
+                            ? CGPoint(x: drawButtonGlobalFrame.midX - overlayGlobal.minX, y: drawButtonGlobalFrame.midY - overlayGlobal.minY)
+                            : CGPoint(x: overlayGlobal.width - 36, y: overlayGlobal.height - 62)
+                        let elapsed = tlContext.date.timeIntervalSince(rmk.dealAnimStartTime)
+                        let rawT = max(0.0, min(1.0, elapsed / 0.105))
+                        let stepPhase = CGFloat(1.0 - pow(1.0 - rawT, 2.2))
+                        ZStack {
+                            ForEach(orderedVerticalSeats, id: \.id) { seat in
+                                let endPt: CGPoint = {
+                                    if seat.id == rmk.mySeatIndex {
+                                        if let rRect = rackSlotGlobalFrames[max(0, rmk.dealingVisibleCount - 1)] {
+                                            return CGPoint(x: rRect.midX - overlayGlobal.minX, y: rRect.midY - overlayGlobal.minY)
+                                        }
+                                        return CGPoint(x: overlayGlobal.width * 0.48, y: overlayGlobal.height - 55)
+                                    } else if let sRect = seatGlobalFrames[seat.id] {
+                                        return CGPoint(x: sRect.midX - overlayGlobal.minX, y: sRect.midY - overlayGlobal.minY)
+                                    } else {
+                                        return CGPoint(x: 42, y: CGFloat(60 + seat.id * 70))
                                     }
-                                    return CGPoint(x: overlayGlobal.width * 0.48, y: overlayGlobal.height - 55)
-                                } else if let sRect = seatGlobalFrames[seat.id] {
-                                    return CGPoint(x: sRect.midX - overlayGlobal.minX, y: sRect.midY - overlayGlobal.minY)
-                                } else {
-                                    return CGPoint(x: 42, y: CGFloat(60 + seat.id * 70))
-                                }
-                            }()
-                            RoundedRectangle(cornerRadius: 6)
-                                .fill(Color(red: 0.96, green: 0.95, blue: 0.92))
-                                .frame(width: 30, height: 42)
-                                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.gray.opacity(0.45), lineWidth: 1))
-                                .shadow(color: .black.opacity(0.45), radius: 4, y: 2)
-                                .position(
-                                    x: startPt.x + (endPt.x - startPt.x) * stepPhase,
-                                    y: startPt.y + (endPt.y - startPt.y) * stepPhase - 18
-                                )
+                                }()
+                                RoundedRectangle(cornerRadius: 6)
+                                    .fill(Color(red: 0.96, green: 0.95, blue: 0.92))
+                                    .frame(width: 30, height: 42)
+                                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.gray.opacity(0.45), lineWidth: 1))
+                                    .shadow(color: .black.opacity(0.45), radius: 4, y: 2)
+                                    .position(
+                                        x: startPt.x + (endPt.x - startPt.x) * stepPhase,
+                                        y: startPt.y + (endPt.y - startPt.y) * stepPhase - sin(stepPhase * .pi) * 24.0
+                                    )
+                            }
                         }
                     }
-                    .animation(.easeOut(duration: 0.11), value: rmk.dealingVisibleCount)
                 }
                 .zIndex(920)
                 .allowsHitTesting(false)
             }
 
-            // C. Player Draw Flight Animation (`+` Button -> Target Empty Rack Slot!)
+            // C. Player Draw Flight Animation (60fps TimelineView: `+` Button -> Target Empty Rack Slot!)
             if rmk.isDrawingAnimation, let animTile = rmk.drawingAnimatedTile {
-                GeometryReader { overlayGeo in
-                    let overlayGlobal = overlayGeo.frame(in: .global)
-                    let startGlobal = drawButtonGlobalFrame.width > 5
-                        ? CGPoint(x: drawButtonGlobalFrame.midX, y: drawButtonGlobalFrame.midY)
-                        : CGPoint(x: overlayGlobal.maxX - 36, y: overlayGlobal.maxY - 62)
-                    let targetSlotRect = rackSlotGlobalFrames[rmk.drawnTargetSlotIndex]
-                    let endGlobal: CGPoint = {
-                        if let rect = targetSlotRect, rect.width > 5 {
-                            return CGPoint(x: rect.midX, y: rect.midY)
-                        }
-                        let tRow = rmk.drawnTargetSlotIndex / max(1, cols)
-                        let tCol = rmk.drawnTargetSlotIndex % max(1, cols)
-                        let baseRack = rackAreaGlobalFrame.width > 5 ? rackAreaGlobalFrame : CGRect(x: 90, y: overlayGlobal.maxY - 110, width: overlayGlobal.width - 160, height: 104)
-                        let sW = baseRack.width / CGFloat(cols)
-                        return CGPoint(
-                            x: baseRack.minX + (CGFloat(tCol) + 0.5) * sW,
-                            y: baseRack.minY + (tRow == 0 ? 28 : 80)
-                        )
-                    }()
-                    let curX = (startGlobal.x - overlayGlobal.minX) + ((endGlobal.x - startGlobal.x) * drawAnimProgress)
-                    let curY = (startGlobal.y - overlayGlobal.minY) + ((endGlobal.y - startGlobal.y) * drawAnimProgress) - sin(drawAnimProgress * .pi) * 32.0
-                    let targetW = max(28, (targetSlotRect?.width ?? 42) - 2)
-                    let targetH = max(40, (targetSlotRect?.height ?? 48) - 2)
-
-                    tileChip(animTile, selected: false, highlighted: true, compact: true, customW: targetW, customH: targetH)
-                        .position(x: curX, y: curY)
-                        .shadow(color: httGold.opacity(0.9), radius: 8)
-                        .onAppear {
-                            drawAnimProgress = 0.0
-                            DispatchQueue.main.async {
-                                withAnimation(.easeOut(duration: 0.42)) {
-                                    drawAnimProgress = 1.0
-                                }
+                TimelineView(.animation(minimumInterval: 1.0 / 60.0)) { tlContext in
+                    GeometryReader { overlayGeo in
+                        let overlayGlobal = overlayGeo.frame(in: .global)
+                        let startGlobal = drawButtonGlobalFrame.width > 5
+                            ? CGPoint(x: drawButtonGlobalFrame.midX, y: drawButtonGlobalFrame.midY)
+                            : CGPoint(x: overlayGlobal.maxX - 36, y: overlayGlobal.maxY - 62)
+                        let targetSlotRect = rackSlotGlobalFrames[rmk.drawnTargetSlotIndex]
+                        let endGlobal: CGPoint = {
+                            if let rect = targetSlotRect, rect.width > 5 {
+                                return CGPoint(x: rect.midX, y: rect.midY)
                             }
-                        }
+                            let tRow = rmk.drawnTargetSlotIndex / max(1, cols)
+                            let tCol = rmk.drawnTargetSlotIndex % max(1, cols)
+                            let baseRack = rackAreaGlobalFrame.width > 5 ? rackAreaGlobalFrame : CGRect(x: 90, y: overlayGlobal.maxY - 110, width: overlayGlobal.width - 160, height: 104)
+                            let sW = baseRack.width / CGFloat(cols)
+                            return CGPoint(
+                                x: baseRack.minX + (CGFloat(tCol) + 0.5) * sW,
+                                y: baseRack.minY + (tRow == 0 ? 28 : 80)
+                            )
+                        }()
+                        let elapsed = tlContext.date.timeIntervalSince(rmk.drawAnimStartTime)
+                        let rawT = max(0.0, min(1.0, elapsed / 0.42))
+                        let prog = CGFloat(1.0 - pow(1.0 - rawT, 3.0))
+                        let curX = (startGlobal.x - overlayGlobal.minX) + ((endGlobal.x - startGlobal.x) * prog)
+                        let curY = (startGlobal.y - overlayGlobal.minY) + ((endGlobal.y - startGlobal.y) * prog) - sin(prog * .pi) * 38.0
+                        let targetW = max(28, (targetSlotRect?.width ?? 42) - 2)
+                        let targetH = max(40, (targetSlotRect?.height ?? 48) - 2)
+
+                        tileChip(animTile, selected: false, highlighted: true, compact: true, customW: targetW, customH: targetH)
+                            .position(x: curX, y: curY)
+                            .shadow(color: httGold.opacity(0.9), radius: 8)
+                    }
                 }
                 .zIndex(930)
                 .allowsHitTesting(false)
             }
 
-            // D. Opponent Draw Flight Animation (`+` Button -> Opponent Avatar on Left, 1:1 like Video!)
+            // D. Opponent Draw Flight Animation (60fps TimelineView: `+` Button -> Opponent Avatar on Left, 1:1 like Video!)
             if let oppSeat = rmk.opponentDrawingSeatIndex {
-                GeometryReader { oppGeo in
-                    let overlayGlobal = oppGeo.frame(in: .global)
-                    let startGlobal = drawButtonGlobalFrame.width > 5
-                        ? CGPoint(x: drawButtonGlobalFrame.midX, y: drawButtonGlobalFrame.midY)
-                        : CGPoint(x: overlayGlobal.maxX - 36, y: overlayGlobal.maxY - 62)
-                    let endGlobal: CGPoint = {
-                        if let sRect = seatGlobalFrames[oppSeat], sRect.width > 5 {
-                            return CGPoint(x: sRect.midX, y: sRect.midY)
-                        }
-                        return CGPoint(x: overlayGlobal.minX + 42, y: overlayGlobal.minY + CGFloat(55 + oppSeat * 80))
-                    }()
-                    let curX = (startGlobal.x - overlayGlobal.minX) + ((endGlobal.x - startGlobal.x) * oppDrawAnimProgress)
-                    let curY = (startGlobal.y - overlayGlobal.minY) + ((endGlobal.y - startGlobal.y) * oppDrawAnimProgress) - sin(oppDrawAnimProgress * .pi) * 28.0
-
-                    RoundedRectangle(cornerRadius: 6)
-                        .fill(Color(red: 0.95, green: 0.94, blue: 0.90))
-                        .frame(width: 32, height: 44)
-                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.white.opacity(0.7), lineWidth: 1.2))
-                        .shadow(color: .black.opacity(0.55), radius: 6, y: 2)
-                        .position(x: curX, y: curY)
-                        .onAppear {
-                            oppDrawAnimProgress = 0.0
-                            DispatchQueue.main.async {
-                                withAnimation(.easeOut(duration: 0.40)) {
-                                    oppDrawAnimProgress = 1.0
-                                }
+                TimelineView(.animation(minimumInterval: 1.0 / 60.0)) { tlContext in
+                    GeometryReader { oppGeo in
+                        let overlayGlobal = oppGeo.frame(in: .global)
+                        let startGlobal = drawButtonGlobalFrame.width > 5
+                            ? CGPoint(x: drawButtonGlobalFrame.midX, y: drawButtonGlobalFrame.midY)
+                            : CGPoint(x: overlayGlobal.maxX - 36, y: overlayGlobal.maxY - 62)
+                        let endGlobal: CGPoint = {
+                            if let sRect = seatGlobalFrames[oppSeat], sRect.width > 5 {
+                                return CGPoint(x: sRect.midX, y: sRect.midY)
                             }
-                        }
+                            return CGPoint(x: overlayGlobal.minX + 42, y: overlayGlobal.minY + CGFloat(55 + oppSeat * 80))
+                        }()
+                        let elapsed = tlContext.date.timeIntervalSince(rmk.oppDrawAnimStartTime)
+                        let rawT = max(0.0, min(1.0, elapsed / 0.42))
+                        let prog = CGFloat(1.0 - pow(1.0 - rawT, 3.0))
+                        let curX = (startGlobal.x - overlayGlobal.minX) + ((endGlobal.x - startGlobal.x) * prog)
+                        let curY = (startGlobal.y - overlayGlobal.minY) + ((endGlobal.y - startGlobal.y) * prog) - sin(prog * .pi) * 32.0
+
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(Color(red: 0.95, green: 0.94, blue: 0.90))
+                            .frame(width: 32, height: 44)
+                            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.white.opacity(0.7), lineWidth: 1.2))
+                            .shadow(color: .black.opacity(0.55), radius: 6, y: 2)
+                            .position(x: curX, y: curY)
+                    }
                 }
                 .zIndex(935)
                 .allowsHitTesting(false)
             }
 
-            // E. Opponent Step-by-Step Play Flight Animation (Opponent Avatar on Left -> Target Table Meld, 1:1 like Video!)
+            // E. Opponent Step-by-Step Play Flight Animation (60fps TimelineView: Opponent Avatar on Left -> Target Table Meld, 1:1 like Video!)
             if let playSeat = rmk.opponentPlayingSeatIndex, let playTile = rmk.opponentPlayingTile {
-                GeometryReader { playGeo in
-                    let overlayGlobal = playGeo.frame(in: .global)
-                    let startGlobal: CGPoint = {
-                        if let sRect = seatGlobalFrames[playSeat], sRect.width > 5 {
-                            return CGPoint(x: sRect.midX, y: sRect.midY)
-                        }
-                        return CGPoint(x: overlayGlobal.minX + 42, y: overlayGlobal.minY + CGFloat(55 + playSeat * 80))
-                    }()
-                    let endGlobal: CGPoint = {
-                        if let tId = rmk.opponentPlayingTargetMeldId, let mRect = meldGlobalFrames[tId], mRect.width > 5 {
-                            return CGPoint(x: mRect.maxX, y: mRect.midY)
-                        }
-                        if tableAreaGlobalFrame.width > 10 {
-                            return CGPoint(x: tableAreaGlobalFrame.midX, y: tableAreaGlobalFrame.midY)
-                        }
-                        return CGPoint(x: overlayGlobal.width * 0.50, y: overlayGlobal.height * 0.42)
-                    }()
-                    let curX = (startGlobal.x - overlayGlobal.minX) + ((endGlobal.x - startGlobal.x) * oppPlayAnimProgress)
-                    let curY = (startGlobal.y - overlayGlobal.minY) + ((endGlobal.y - startGlobal.y) * oppPlayAnimProgress) - sin(oppPlayAnimProgress * .pi) * 22.0
-
-                    tileChip(playTile, selected: false, highlighted: true, compact: false, customW: 36, customH: 50)
-                        .position(x: curX, y: curY)
-                        .shadow(color: .orange.opacity(0.85), radius: 8, y: 3)
-                        .id("opp_play_\(playTile.id)")
-                        .onAppear {
-                            oppPlayAnimProgress = 0.0
-                            DispatchQueue.main.async {
-                                withAnimation(.easeOut(duration: 0.34)) {
-                                    oppPlayAnimProgress = 1.0
-                                }
+                TimelineView(.animation(minimumInterval: 1.0 / 60.0)) { tlContext in
+                    GeometryReader { playGeo in
+                        let overlayGlobal = playGeo.frame(in: .global)
+                        let startGlobal: CGPoint = {
+                            if let sRect = seatGlobalFrames[playSeat], sRect.width > 5 {
+                                return CGPoint(x: sRect.midX, y: sRect.midY)
                             }
-                        }
+                            return CGPoint(x: overlayGlobal.minX + 42, y: overlayGlobal.minY + CGFloat(55 + playSeat * 80))
+                        }()
+                        let endGlobal: CGPoint = {
+                            if let tId = rmk.opponentPlayingTargetMeldId, let mRect = meldGlobalFrames[tId], mRect.width > 5 {
+                                return CGPoint(x: mRect.maxX, y: mRect.midY)
+                            }
+                            if tableAreaGlobalFrame.width > 10 {
+                                return CGPoint(x: tableAreaGlobalFrame.midX, y: tableAreaGlobalFrame.midY)
+                            }
+                            return CGPoint(x: overlayGlobal.width * 0.50, y: overlayGlobal.height * 0.42)
+                        }()
+                        let elapsed = tlContext.date.timeIntervalSince(rmk.oppPlayAnimStartTime)
+                        let rawT = max(0.0, min(1.0, elapsed / 0.34))
+                        let prog = CGFloat(1.0 - pow(1.0 - rawT, 3.0))
+                        let curX = (startGlobal.x - overlayGlobal.minX) + ((endGlobal.x - startGlobal.x) * prog)
+                        let curY = (startGlobal.y - overlayGlobal.minY) + ((endGlobal.y - startGlobal.y) * prog) - sin(prog * .pi) * 26.0
+
+                        tileChip(playTile, selected: false, highlighted: true, compact: false, customW: 36, customH: 50)
+                            .position(x: curX, y: curY)
+                            .shadow(color: .orange.opacity(0.85), radius: 8, y: 3)
+                    }
                 }
                 .zIndex(940)
                 .allowsHitTesting(false)

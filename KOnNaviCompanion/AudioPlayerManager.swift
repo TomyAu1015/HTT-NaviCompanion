@@ -13570,6 +13570,115 @@ struct RmkEvaluator {
         return nil
     }
 
+    /// Automatically splits combined/duplicate/gapped runs or groups on the table into separate valid sub-melds!
+    /// Examples:
+    /// - Inserting `4` into `2 3 4 5 6 7` -> `2 3 4 4 5 6 7` automatically splits into `[2, 3, 4]` and `[4, 5, 6, 7]`!
+    /// - Inserting `4` into `1 2 3 4 5 6 7` -> `1 2 3 4 4 5 6 7` automatically splits into `[1, 2, 3, 4]` and `[4, 5, 6, 7]`!
+    /// - Removing `4` from `1 2 3 4 5 6 7` -> `1 2 3 5 6 7` automatically splits into `[1, 2, 3]` and `[5, 6, 7]`!
+    /// - Inserting `4` into `2 3 4 5` -> `2 3 4 4 5` splits into valid `[2, 3, 4]` + staging `[4, 5]`!
+    static func autoSplitMeldTiles(_ tiles: [RmkTile], preferLeadingJoker: Bool = false) -> [[RmkTile]] {
+        if tiles.count <= 2 {
+            return [sortMeldForDisplay(tiles, preferLeadingJoker: preferLeadingJoker)]
+        }
+        if evaluateMeld(tiles) != nil {
+            return [sortMeldForDisplay(tiles, preferLeadingJoker: preferLeadingJoker)]
+        }
+
+        let jokers = tiles.filter { $0.isJoker }
+        let normals = tiles.filter { !$0.isJoker }.sorted {
+            if $0.number != $1.number { return $0.number < $1.number }
+            return $0.color.rawValue < $1.color.rawValue
+        }
+        guard !normals.isEmpty else {
+            return [tiles]
+        }
+
+        // Case A: All non-Joker tiles have the same color (Run with duplicate tile like 2-3-4-4-5-6-7 or gap like 1-2-3-5-6-7)
+        let sameCol = normals.allSatisfy { $0.color == normals[0].color }
+        if sameCol {
+            // First check if a simple contiguous cut of the sorted tiles yields two valid melds
+            let rawSorted = normals + jokers
+            if rawSorted.count >= 6 {
+                for cut in 3...(rawSorted.count - 3) {
+                    let left = Array(rawSorted[0..<cut])
+                    let right = Array(rawSorted[cut...])
+                    if evaluateMeld(left) != nil && evaluateMeld(right) != nil {
+                        return [
+                            sortMeldForDisplay(left, preferLeadingJoker: preferLeadingJoker),
+                            sortMeldForDisplay(right, preferLeadingJoker: false)
+                        ]
+                    }
+                }
+            }
+
+            // Build ascending chains (handles overlapping duplicates like 2-3-4-4-5-6-7, 1-2-3-3-4-4-5-6, or 2-3-4-4-5 + gaps)
+            var chains: [[RmkTile]] = []
+            for t in normals {
+                // Find all chains whose last tile is strictly t.number - 1
+                let matchingIndices = chains.indices.filter { idx in
+                    guard let last = chains[idx].last else { return false }
+                    return last.number == t.number - 1
+                }
+                if let bestIdx = matchingIndices.sorted(by: { a, b in
+                    // If a chain has < 3 tiles, prioritize completing it to 3 tiles first!
+                    let aNeed = chains[a].count < 3
+                    let bNeed = chains[b].count < 3
+                    if aNeed != bNeed { return aNeed && !bNeed }
+                    return chains[a].count < chains[b].count
+                }).first {
+                    chains[bestIdx].append(t)
+                } else {
+                    chains.append([t])
+                }
+            }
+
+            var remJokers = jokers
+            // Attach any Jokers to chains of size 2 first so they become valid 3-tile runs, then to the last chain
+            for idx in chains.indices where !remJokers.isEmpty && chains[idx].count == 2 {
+                chains[idx].append(remJokers.removeFirst())
+            }
+            while !remJokers.isEmpty {
+                if !chains.isEmpty {
+                    chains[chains.count - 1].append(remJokers.removeFirst())
+                } else {
+                    chains.append([remJokers.removeFirst()])
+                }
+            }
+
+            if chains.count >= 2 && chains.contains(where: { evaluateMeld($0) != nil }) {
+                return chains.map { sortMeldForDisplay($0, preferLeadingJoker: preferLeadingJoker) }
+            }
+        }
+
+        // Case B: All non-Joker tiles have the same number (Group overflow, e.g., 5 tiles or duplicate color added to 777 group)
+        let sameNum = normals.allSatisfy { $0.number == normals[0].number }
+        if sameNum && tiles.count >= 4 {
+            var grp1: [RmkTile] = []
+            var seenCols = Set<RmkColor>()
+            var extras: [RmkTile] = []
+            for t in normals {
+                if !seenCols.contains(t.color) && grp1.count < 4 {
+                    seenCols.insert(t.color)
+                    grp1.append(t)
+                } else {
+                    extras.append(t)
+                }
+            }
+            for j in jokers {
+                if grp1.count < 3 {
+                    grp1.append(j)
+                } else {
+                    extras.append(j)
+                }
+            }
+            if evaluateMeld(grp1) != nil && !extras.isEmpty {
+                return [sortMeldForDisplay(grp1), sortMeldForDisplay(extras)]
+            }
+        }
+
+        return [sortMeldForDisplay(tiles, preferLeadingJoker: preferLeadingJoker)]
+    }
+
     static func findBestMeld(in hand: [RmkTile]) -> [RmkTile]? {
         let byNum = Dictionary(grouping: hand.filter { !$0.isJoker }, by: { $0.number })
         let jokers = hand.filter { $0.isJoker }
@@ -13875,6 +13984,135 @@ struct RmkEvaluator {
 
 }
 
+/// Dedicated Rummikub Sound Effects Synthesizer (with a fixed, unmistakable special chime when acquiring a Joker!)
+final class RmkSoundFX {
+    static let shared = RmkSoundFX()
+    private var players: [AVAudioPlayer] = []
+    private var cachedSounds: [String: Data] = [:]
+
+    private init() {
+        cachedSounds["joker"] = Self.makeWav(notes: [
+            (freq: 523.25, dur: 0.075, amp: 0.48, harmonic: 2.0),
+            (freq: 659.25, dur: 0.075, amp: 0.50, harmonic: 2.0),
+            (freq: 783.99, dur: 0.080, amp: 0.52, harmonic: 2.0),
+            (freq: 987.77, dur: 0.085, amp: 0.54, harmonic: 2.0),
+            (freq: 1046.50, dur: 0.110, amp: 0.58, harmonic: 3.0),
+            (freq: 1318.51, dur: 0.240, amp: 0.62, harmonic: 2.0)
+        ])
+        cachedSounds["click"] = Self.makeWav(notes: [
+            (freq: 1480.0, dur: 0.022, amp: 0.36, harmonic: 1.5),
+            (freq: 680.0, dur: 0.028, amp: 0.28, harmonic: 1.2)
+        ])
+        cachedSounds["snap"] = Self.makeWav(notes: [
+            (freq: 880.0, dur: 0.028, amp: 0.36, harmonic: 1.5),
+            (freq: 1320.0, dur: 0.045, amp: 0.42, harmonic: 2.0)
+        ])
+        cachedSounds["split"] = Self.makeWav(notes: [
+            (freq: 1180.0, dur: 0.032, amp: 0.40, harmonic: 1.8),
+            (freq: 820.0, dur: 0.030, amp: 0.34, harmonic: 1.5),
+            (freq: 1560.0, dur: 0.055, amp: 0.44, harmonic: 2.0)
+        ])
+        cachedSounds["draw"] = Self.makeWav(notes: [
+            (freq: 460.0, dur: 0.035, amp: 0.30, harmonic: 1.2),
+            (freq: 740.0, dur: 0.045, amp: 0.36, harmonic: 1.5)
+        ])
+        cachedSounds["organize"] = Self.makeWav(notes: [
+            (freq: 587.33, dur: 0.030, amp: 0.32, harmonic: 1.5),
+            (freq: 739.99, dur: 0.030, amp: 0.34, harmonic: 1.5),
+            (freq: 880.00, dur: 0.035, amp: 0.36, harmonic: 1.5),
+            (freq: 1174.66, dur: 0.060, amp: 0.40, harmonic: 2.0)
+        ])
+        cachedSounds["commit"] = Self.makeWav(notes: [
+            (freq: 659.25, dur: 0.065, amp: 0.44, harmonic: 2.0),
+            (freq: 783.99, dur: 0.065, amp: 0.46, harmonic: 2.0),
+            (freq: 1046.50, dur: 0.160, amp: 0.52, harmonic: 2.0)
+        ])
+        cachedSounds["undo"] = Self.makeWav(notes: [
+            (freq: 784.0, dur: 0.040, amp: 0.32, harmonic: 1.3),
+            (freq: 523.25, dur: 0.055, amp: 0.30, harmonic: 1.2)
+        ])
+        cachedSounds["win"] = Self.makeWav(notes: [
+            (freq: 523.25, dur: 0.09, amp: 0.50, harmonic: 2.0),
+            (freq: 659.25, dur: 0.09, amp: 0.52, harmonic: 2.0),
+            (freq: 783.99, dur: 0.09, amp: 0.54, harmonic: 2.0),
+            (freq: 1046.50, dur: 0.28, amp: 0.60, harmonic: 2.5)
+        ])
+    }
+
+    private static func makeWav(notes: [(freq: Double, dur: Double, amp: Double, harmonic: Double)]) -> Data {
+        let sampleRate = 44100
+        var samples: [Int16] = []
+        for n in notes {
+            let count = max(1, Int(Double(sampleRate) * n.dur))
+            for i in 0..<count {
+                let t = Double(i) / Double(sampleRate)
+                let progress = Double(i) / Double(count)
+                let attack = min(1.0, Double(i) / Double(max(1, Int(Double(sampleRate) * 0.004))))
+                let decay = exp(-3.8 * progress)
+                let env = attack * decay
+                let fundamental = sin(2.0 * .pi * n.freq * t)
+                let overtone = 0.32 * sin(2.0 * .pi * (n.freq * n.harmonic) * t)
+                let shimmer = 0.14 * sin(2.0 * .pi * (n.freq * 3.0) * t)
+                let raw = (fundamental + overtone + shimmer) * n.amp * env
+                let clamped = max(-0.98, min(0.98, raw))
+                samples.append(Int16(clamped * 32767.0))
+            }
+        }
+        let dataSize = samples.count * 2
+        let totalSize = 36 + dataSize
+        var wav = Data()
+        wav.append(contentsOf: [0x52, 0x49, 0x46, 0x46]) // "RIFF"
+        var chunkSize = UInt32(totalSize).littleEndian
+        wav.append(Data(bytes: &chunkSize, count: 4))
+        wav.append(contentsOf: [0x57, 0x41, 0x56, 0x45]) // "WAVE"
+        wav.append(contentsOf: [0x66, 0x6D, 0x74, 0x20]) // "fmt "
+        var fmtSize = UInt32(16).littleEndian
+        var audioFormat = UInt16(1).littleEndian
+        var numChannels = UInt16(1).littleEndian
+        var sRate = UInt32(sampleRate).littleEndian
+        var byteRate = UInt32(sampleRate * 2).littleEndian
+        var blockAlign = UInt16(2).littleEndian
+        var bitsPerSample = UInt16(16).littleEndian
+        wav.append(Data(bytes: &fmtSize, count: 4))
+        wav.append(Data(bytes: &audioFormat, count: 2))
+        wav.append(Data(bytes: &numChannels, count: 2))
+        wav.append(Data(bytes: &sRate, count: 4))
+        wav.append(Data(bytes: &byteRate, count: 4))
+        wav.append(Data(bytes: &blockAlign, count: 2))
+        wav.append(Data(bytes: &bitsPerSample, count: 2))
+        wav.append(contentsOf: [0x64, 0x61, 0x74, 0x61]) // "data"
+        var dSize = UInt32(dataSize).littleEndian
+        wav.append(Data(bytes: &dSize, count: 4))
+        samples.withUnsafeBufferPointer { ptr in
+            wav.append(UnsafeBufferPointer(start: UnsafeRawPointer(ptr.baseAddress)?.assumingMemoryBound(to: UInt8.self), count: dataSize))
+        }
+        return wav
+    }
+
+    private func play(_ key: String) {
+        guard let data = cachedSounds[key] else { return }
+        DispatchQueue.main.async {
+            self.players.removeAll { !$0.isPlaying }
+            if let p = try? AVAudioPlayer(data: data) {
+                p.prepareToPlay()
+                p.play()
+                self.players.append(p)
+            }
+        }
+    }
+
+    /// Fixed, unmistakable special sound effect played every time the player gets a Joker tile!
+    func playJokerAcquired() { play("joker") }
+    func playTileClick() { play("click") }
+    func playTileSnap() { play("snap") }
+    func playMeldSplit() { play("split") }
+    func playTileDraw() { play("draw") }
+    func playRackOrganize() { play("organize") }
+    func playTurnCommit() { play("commit") }
+    func playUndo() { play("undo") }
+    func playRoundWin() { play("win") }
+}
+
 final class RummikubEngine: NSObject, ObservableObject {
     static let shared = RummikubEngine()
 
@@ -14010,6 +14248,10 @@ final class RummikubEngine: NSObject, ObservableObject {
     @Published var opponentPlayingSeatIndex: Int? = nil
     @Published var opponentPlayingTile: RmkTile? = nil
     @Published var opponentPlayingTargetMeldId: String? = nil
+    @Published var dealAnimStartTime: Date = Date()
+    @Published var drawAnimStartTime: Date = Date()
+    @Published var oppDrawAnimStartTime: Date = Date()
+    @Published var oppPlayAnimStartTime: Date = Date()
 
     var hasUncommittedTableChanges: Bool {
         guard isEditingTable else { return false }
@@ -14183,6 +14425,7 @@ final class RummikubEngine: NSObject, ObservableObject {
         updated[srcIdx] = temp
         rackSlots = updated
         liftedSlotIndex = nil
+        RmkSoundFX.shared.playTileClick()
     }
 
     /// Shuffle tiles randomly across the 2-row rack ("牌型可以打乱")
@@ -14196,6 +14439,7 @@ final class RummikubEngine: NSObject, ObservableObject {
         syncRackFromHand(activeTiles, preserveExistingPositions: false)
         selectedTileIds.removeAll()
         liftedSlotIndex = nil
+        RmkSoundFX.shared.playRackOrganize()
         statusBanner = "🎲 已随机打乱牌架顺序（可点击或拖拽任意牌自由移动位置）"
     }
 
@@ -14589,12 +14833,22 @@ final class RummikubEngine: NSObject, ObservableObject {
         dealAnimTimer?.invalidate()
         isDealingAnimation = true
         dealingVisibleCount = 0
+        dealAnimStartTime = Date()
         let total = 14
         let stepInterval = 1.5 / Double(total)
+        let myDealtTiles = rackSlots.compactMap { $0 }
         dealAnimTimer = Timer.scheduledTimer(withTimeInterval: stepInterval, repeats: true) { [weak self] t in
             guard let self = self else { t.invalidate(); return }
             if self.dealingVisibleCount < total {
                 self.dealingVisibleCount += 1
+                self.dealAnimStartTime = Date()
+                let idx = self.dealingVisibleCount - 1
+                if idx >= 0 && idx < myDealtTiles.count && myDealtTiles[idx].isJoker {
+                    RmkSoundFX.shared.playJokerAcquired()
+                    self.statusBanner = "🌟 恭喜拿到梓喵【百搭牌 (JOKER)】！百搭牌可替代任意颜色与数字"
+                } else if self.dealingVisibleCount % 2 == 1 {
+                    RmkSoundFX.shared.playTileClick()
+                }
             } else {
                 self.dealingVisibleCount = 99
                 self.isDealingAnimation = false
@@ -14639,6 +14893,8 @@ final class RummikubEngine: NSObject, ObservableObject {
             selectedTableMeldId = nil
             liftedSlotIndex = nil
             isEditingTable = false
+            selectedTableTileSource = nil
+            RmkSoundFX.shared.playUndo()
             statusBanner = "↩️ 已复原到本回合初始牌面与牌架位置"
         }
     }
@@ -14646,6 +14902,7 @@ final class RummikubEngine: NSObject, ObservableObject {
     func toggleSelectHandTile(_ id: String) {
         if selectedTileIds.contains(id) { selectedTileIds.remove(id) }
         else { selectedTileIds.insert(id) }
+        RmkSoundFX.shared.playTileClick()
     }
 
     func placeSelectedAsNewMeld() {
@@ -14740,8 +14997,10 @@ final class RummikubEngine: NSObject, ObservableObject {
     /// - Tapping or dragging a table tile NEVER sends a prior-turn table tile back to your rack!
     /// - If you tap/drag a tile from a table meld, it detaches/splits on the table or moves into another table meld!
     /// - Only tiles that originated from your own rack in the current turn can return to your rack.
+    /// Table tiles NEVER lift up when tapped! Only if the user has selected tiles on their rack and taps a table meld do those rack tiles merge into the tapped meld.
     func handleTableTileTapOrMove(meldId: String, tileId: String) {
         guard currentTurnSeat == mySeatIndex, phase == .playing else { return }
+        selectedTableTileSource = nil
         if !selectedTileIds.isEmpty {
             let baseMelds = isEditingTable ? workingMelds : tableMelds
             guard let mIdx = baseMelds.firstIndex(where: { $0.id == meldId }) else { return }
@@ -14750,38 +15009,8 @@ final class RummikubEngine: NSObject, ObservableObject {
                 statusBanner = "⚠️ 尚未破冰！首次出牌请先将牌拖到桌面空白处或自己本回合牌组上"
                 return
             }
-            addSelectedToTableMeld(meldId, allowInvalidSplit: true)
-            return
+            dropRackTilesToTable(primaryTileId: selectedTileIds.first ?? "", targetMeldId: meldId)
         }
-
-        let baseMelds = isEditingTable ? workingMelds : tableMelds
-        guard let mIdx = baseMelds.firstIndex(where: { $0.id == meldId }),
-              let tIdx = baseMelds[mIdx].tiles.firstIndex(where: { $0.id == tileId }) else { return }
-        let isSnapshotMeld = snapshotMelds.contains(where: { $0.id == meldId })
-        guard seats[mySeatIndex].hasBrokenIce || !isSnapshotMeld else {
-            statusBanner = "⚠️ 尚未破冰！首次出牌需使用自己牌架摆出 ≥30 分牌组"
-            return
-        }
-
-        if let src = selectedTableTileSource {
-            if src.meldId == meldId && src.tileId == tileId {
-                selectedTableTileSource = nil
-                if snapshotHand.contains(where: { $0.id == tileId }) {
-                    _ = returnTableTileToRackIfFromThisTurn(meldId: meldId, tileId: tileId)
-                } else {
-                    moveTableTile(fromMeldId: meldId, tileId: tileId, toMeldId: nil)
-                }
-                return
-            } else if src.meldId != meldId {
-                moveTableTile(fromMeldId: src.meldId, tileId: src.tileId, toMeldId: meldId)
-                selectedTableTileSource = nil
-                return
-            }
-        }
-
-        selectedTableTileSource = (meldId: meldId, tileId: tileId)
-        let picked = baseMelds[mIdx].tiles[tIdx]
-        statusBanner = "🖐 已选中桌面牌 [\(picked.isJoker ? "百搭" : "\(picked.color.labelZh)\(picked.number)")]：可拖到其他牌组/空位重组，或点另一组移入，再点一次单独拆出！"
     }
 
     func moveTableTile(fromMeldId: String, tileId: String, toMeldId: String?, preferLeading: Bool = false, insertAtMeldIndex: Int? = nil) {
@@ -14796,6 +15025,16 @@ final class RummikubEngine: NSObject, ObservableObject {
         }
 
         beginOrEnsureWorkspace()
+        selectedTableTileSource = nil
+        if toMeldId == fromMeldId {
+            if let idx = workingMelds.firstIndex(where: { $0.id == fromMeldId }) {
+                workingMelds[idx].tiles = RmkEvaluator.sortMeldForDisplay(workingMelds[idx].tiles, preferLeadingJoker: preferLeading)
+                RmkSoundFX.shared.playTileClick()
+                syncEditingStateWithSnapshot()
+            }
+            return
+        }
+
         guard let srcMIdx = workingMelds.firstIndex(where: { $0.id == fromMeldId }),
               let srcTIdx = workingMelds[srcMIdx].tiles.firstIndex(where: { $0.id == tileId }) else {
             syncEditingStateWithSnapshot()
@@ -14803,55 +15042,57 @@ final class RummikubEngine: NSObject, ObservableObject {
         }
 
         // If the source meld only has 1 tile and is dragged to open space (toMeldId == nil),
-        // move that 1-tile meld to the desired table position instead of snapping back or auto-merging into unrelated melds!
+        // move that 1-tile meld to the exact desired table position without jumping!
         if toMeldId == nil && workingMelds[srcMIdx].tiles.count == 1 {
             let singleMeld = workingMelds.remove(at: srcMIdx)
-            if let insIdx = insertAtMeldIndex {
+            if var insIdx = insertAtMeldIndex {
+                if srcMIdx < insIdx { insIdx -= 1 }
                 let clamped = max(0, min(workingMelds.count, insIdx))
                 workingMelds.insert(singleMeld, at: clamped)
             } else {
                 workingMelds.append(singleMeld)
             }
-            selectedTableTileSource = (meldId: singleMeld.id, tileId: tileId)
-            statusBanner = "🧩 已移动桌面单牌位置（将牌直接拖到目标牌组上即可合并成组）"
+            RmkSoundFX.shared.playTileClick()
+            statusBanner = "🧩 已移动桌面单牌位置（拖到目标牌组上可合入，本回合出的牌直接向下拉回牌架即可取消）"
             syncEditingStateWithSnapshot()
             return
         }
 
-        let origTiles = workingMelds[srcMIdx].tiles
-        let movingTile = origTiles[srcTIdx]
+        var origTiles = workingMelds[srcMIdx].tiles
+        let movingTile = origTiles.remove(at: srcTIdx)
 
-        // Smart Rummikub middle-tile split: if taking a middle tile out of a long run (e.g. 4 from 2-3-4-5-6-7),
-        // split the remaining tiles into leftSlice and rightSlice so valid sub-runs stay valid!
-        if srcTIdx > 0 && srcTIdx < origTiles.count - 1 {
-            let leftSlice = Array(origTiles[0..<srcTIdx])
-            let rightSlice = Array(origTiles[(srcTIdx + 1)...])
-            if leftSlice.count >= 2 && rightSlice.count >= 2 {
-                workingMelds[srcMIdx].tiles = leftSlice
-                workingMelds.insert(RmkMeld(id: UUID().uuidString, tiles: rightSlice), at: srcMIdx + 1)
-            } else if leftSlice.count >= 3 || rightSlice.count >= 3 {
-                workingMelds[srcMIdx].tiles = leftSlice
-                workingMelds.insert(RmkMeld(id: UUID().uuidString, tiles: rightSlice), at: srcMIdx + 1)
-            } else {
-                workingMelds[srcMIdx].tiles.remove(at: srcTIdx)
-            }
+        if origTiles.isEmpty {
+            workingMelds.remove(at: srcMIdx)
         } else {
-            workingMelds[srcMIdx].tiles.remove(at: srcTIdx)
-            if workingMelds[srcMIdx].tiles.isEmpty {
-                workingMelds.remove(at: srcMIdx)
+            // Auto-split remaining tiles if taking a middle tile out of a run (e.g., removing 4 from 1-2-3-4-5-6-7 -> [1,2,3] + [5,6,7])
+            let splitRem = RmkEvaluator.autoSplitMeldTiles(origTiles)
+            workingMelds[srcMIdx].tiles = splitRem[0]
+            if splitRem.count > 1 {
+                for sIdx in 1..<splitRem.count {
+                    workingMelds.insert(RmkMeld(id: UUID().uuidString, tiles: splitRem[sIdx]), at: srcMIdx + sIdx)
+                }
             }
         }
 
         lastTurnHighlightedTileIds.insert(movingTile.id)
 
         if let targetId = toMeldId, let dstIdx = workingMelds.firstIndex(where: { $0.id == targetId }) {
-            let comb = RmkEvaluator.sortMeldForDisplay(workingMelds[dstIdx].tiles + [movingTile], preferLeadingJoker: preferLeading)
-            workingMelds[dstIdx].tiles = comb
-            selectedTableTileSource = nil
-            let isValid = RmkEvaluator.evaluateMeld(comb) != nil
-            statusBanner = isValid
-                ? "✅ 已将桌面牌并入目标牌组！"
-                : "🧩 已并入目标牌组（当前 \(comb.count) 张，继续拖入匹配牌即可成组）"
+            let rawCombined = preferLeading ? ([movingTile] + workingMelds[dstIdx].tiles) : (workingMelds[dstIdx].tiles + [movingTile])
+            let splitGroups = RmkEvaluator.autoSplitMeldTiles(rawCombined, preferLeadingJoker: preferLeading)
+            workingMelds[dstIdx].tiles = splitGroups[0]
+            if splitGroups.count > 1 {
+                for k in 1..<splitGroups.count {
+                    workingMelds.insert(RmkMeld(id: UUID().uuidString, tiles: splitGroups[k]), at: dstIdx + k)
+                }
+                RmkSoundFX.shared.playMeldSplit()
+                statusBanner = "✨ 已插入 [\(movingTile.isJoker ? "百搭" : "\(movingTile.color.labelZh)\(movingTile.number)")] 并自动分裂为 \(splitGroups.count) 组牌！"
+            } else {
+                RmkSoundFX.shared.playTileSnap()
+                let isValid = RmkEvaluator.evaluateMeld(splitGroups[0]) != nil
+                statusBanner = isValid
+                    ? "✅ 已将桌面牌并入目标牌组！"
+                    : "🧩 已并入目标牌组（当前 \(splitGroups[0].count) 张，继续拖入匹配牌即可成组）"
+            }
         } else {
             let newMeld = RmkMeld(id: UUID().uuidString, tiles: [movingTile])
             if let insIdx = insertAtMeldIndex {
@@ -14860,13 +15101,13 @@ final class RummikubEngine: NSObject, ObservableObject {
             } else {
                 workingMelds.append(newMeld)
             }
-            selectedTableTileSource = (meldId: newMeld.id, tileId: movingTile.id)
-            statusBanner = "🧩 已从牌组拆出单牌到桌面！直接拖其他牌到这张牌上即可合并成新牌组"
+            RmkSoundFX.shared.playTileClick()
+            statusBanner = "🧩 已从牌组拆出单牌到指定位置（继续拖其他牌到这张牌上即可合并成组）"
         }
         syncEditingStateWithSnapshot()
     }
 
-    func returnTableTileToRackIfFromThisTurn(meldId: String, tileId: String) -> Bool {
+    func returnTableTileToRackIfFromThisTurn(meldId: String, tileId: String, preferredRackSlot: Int? = nil) -> Bool {
         guard currentTurnSeat == mySeatIndex, phase == .playing else { return false }
         guard snapshotHand.contains(where: { $0.id == tileId }) else {
             statusBanner = "⚠️ 桌面原有的牌不能放回牌架，请在桌面上拖动拆组！"
@@ -14881,60 +15122,44 @@ final class RummikubEngine: NSObject, ObservableObject {
         let tile = workingMelds[mIdx].tiles.remove(at: tIdx)
         if workingMelds[mIdx].tiles.isEmpty {
             workingMelds.remove(at: mIdx)
+        } else {
+            let splitRem = RmkEvaluator.autoSplitMeldTiles(workingMelds[mIdx].tiles)
+            workingMelds[mIdx].tiles = splitRem[0]
+            if splitRem.count > 1 {
+                for k in 1..<splitRem.count {
+                    workingMelds.insert(RmkMeld(id: UUID().uuidString, tiles: splitRem[k]), at: mIdx + k)
+                }
+            }
         }
         workingHand.append(tile)
-        syncRackFromHand(workingHand, preserveExistingPositions: true)
+        if let prefSlot = preferredRackSlot, prefSlot >= 0, prefSlot < rackSlots.count, rackSlots[prefSlot] == nil {
+            var updated = rackSlots
+            updated[prefSlot] = tile
+            rackSlots = updated
+        } else {
+            syncRackFromHand(workingHand, preserveExistingPositions: true)
+        }
         selectedTableTileSource = nil
+        selectedTileIds.removeAll()
+        liftedSlotIndex = nil
+        RmkSoundFX.shared.playUndo()
         syncEditingStateWithSnapshot()
         statusBanner = "↩️ 已将本回合打出的牌拉回牌架"
         return true
     }
 
     func combineSelectedRackTilesWithTableTile() -> Bool {
-        guard let src = selectedTableTileSource, !selectedTileIds.isEmpty else { return false }
-        let checkMelds = isEditingTable ? workingMelds : tableMelds
-        guard let checkMIdx = checkMelds.firstIndex(where: { $0.id == src.meldId }),
-              checkMelds[checkMIdx].tiles.contains(where: { $0.id == src.tileId }) else { return false }
-        let isFromSnapshot = snapshotMelds.contains(where: { $0.id == src.meldId })
-        guard seats[mySeatIndex].hasBrokenIce || !isFromSnapshot else { return false }
-
-        beginOrEnsureWorkspace()
-        guard let srcMIdx = workingMelds.firstIndex(where: { $0.id == src.meldId }),
-              let srcTIdx = workingMelds[srcMIdx].tiles.firstIndex(where: { $0.id == src.tileId }) else {
-            syncEditingStateWithSnapshot()
-            return false
-        }
-        let tableTile = workingMelds[srcMIdx].tiles[srcTIdx]
-        let rackPicked = workingHand.filter { selectedTileIds.contains($0.id) }
-        guard !rackPicked.isEmpty else {
-            syncEditingStateWithSnapshot()
-            return false
-        }
-        let newGroup = RmkEvaluator.sortMeldForDisplay([tableTile] + rackPicked)
-        workingMelds[srcMIdx].tiles.remove(at: srcTIdx)
-        if workingMelds[srcMIdx].tiles.isEmpty {
-            workingMelds.remove(at: srcMIdx)
-        }
-        workingHand.removeAll { selectedTileIds.contains($0.id) }
-        for i in 0..<rackSlots.count { if let t = rackSlots[i], selectedTileIds.contains(t.id) { rackSlots[i] = nil } }
-        workingMelds.append(RmkMeld(id: UUID().uuidString, tiles: newGroup))
-        for t in newGroup { lastTurnHighlightedTileIds.insert(t.id) }
-        selectedTileIds.removeAll()
-        selectedTableTileSource = nil
-        liftedSlotIndex = nil
-        syncEditingStateWithSnapshot()
-        statusBanner = "✅ 已将牌架选牌与桌面拆出的牌组合成新牌组！"
-        return true
+        return false
     }
 
-    /// Drag-to-table play: supports dragging a single tile or multiple selected tiles onto the table at ANY time (before or after icebreak)!
+    /// Drag-to-table play: places tiles at the exact dropped meld OR exact open-space position, and auto-splits runs like 234567 + 4 -> 234 + 4567!
     func dropRackTilesToTable(primaryTileId: String, targetMeldId: String? = nil, preferLeading: Bool = false, insertAtMeldIndex: Int? = nil) {
         guard currentTurnSeat == mySeatIndex, phase == .playing else {
             statusBanner = "⏳ 当前不是您的回合，无法拖上桌面出牌"
             return
         }
         let activeHand = isEditingTable ? workingHand : (mySeatIndex < seats.count ? seats[mySeatIndex].hand : [])
-        let targetIds: Set<String> = selectedTileIds.contains(primaryTileId) ? selectedTileIds : selectedTileIds.union([primaryTileId])
+        let targetIds: Set<String> = selectedTileIds.contains(primaryTileId) ? selectedTileIds : [primaryTileId]
         let picked = activeHand.filter { targetIds.contains($0.id) }
         guard !picked.isEmpty else {
             syncEditingStateWithSnapshot()
@@ -14942,7 +15167,7 @@ final class RummikubEngine: NSObject, ObservableObject {
         }
 
         beginOrEnsureWorkspace()
-        selectedTileIds = targetIds
+        selectedTableTileSource = nil
         for t in picked { lastTurnHighlightedTileIds.insert(t.id) }
 
         // 1. If dropped directly onto a specific table meld:
@@ -14952,68 +15177,66 @@ final class RummikubEngine: NSObject, ObservableObject {
             if seats[mySeatIndex].hasBrokenIce || !isFromSnapshot {
                 workingHand.removeAll { targetIds.contains($0.id) }
                 for i in 0..<rackSlots.count { if let t = rackSlots[i], targetIds.contains(t.id) { rackSlots[i] = nil } }
-                let combined = RmkEvaluator.sortMeldForDisplay(workingMelds[mIdx].tiles + picked, preferLeadingJoker: preferLeading)
-                workingMelds[mIdx].tiles = combined
+                let rawCombined = preferLeading ? (picked + workingMelds[mIdx].tiles) : (workingMelds[mIdx].tiles + picked)
+                let splitGroups = RmkEvaluator.autoSplitMeldTiles(rawCombined, preferLeadingJoker: preferLeading)
+                workingMelds[mIdx].tiles = splitGroups[0]
+                if splitGroups.count > 1 {
+                    for k in 1..<splitGroups.count {
+                        workingMelds.insert(RmkMeld(id: UUID().uuidString, tiles: splitGroups[k]), at: mIdx + k)
+                    }
+                    RmkSoundFX.shared.playMeldSplit()
+                    statusBanner = "✨ 已插入牌组并自动分裂为 \(splitGroups.count) 组牌！（若想撤回单牌可直接向下拉回牌架）"
+                } else {
+                    RmkSoundFX.shared.playTileSnap()
+                    let isValid = RmkEvaluator.evaluateMeld(splitGroups[0]) != nil
+                    statusBanner = isValid
+                        ? "✅ 已并入桌面牌组（点击右侧绿色 ✓ 确认出牌，或向下拉回牌架取消）"
+                        : "🧩 已放入桌面牌组（满3张同色顺子或同数不同色群组后即可点 ✓ 确认）"
+                }
                 selectedTileIds.removeAll()
-                selectedTableTileSource = nil
                 liftedSlotIndex = nil
-                let isValid = RmkEvaluator.evaluateMeld(combined) != nil
-                statusBanner = isValid
-                    ? "✅ 已并入桌面牌组（点击右侧绿色 ✓ 确认出牌）"
-                    : "🧩 已放入桌面牌组（满3张同色顺子或同数不同色群组后即可点 ✓ 确认）"
+                syncEditingStateWithSnapshot()
+                return
+            } else {
+                statusBanner = "⚠️ 首次破冰 ≥30 分前，请将牌拖到桌面空白处摆出自己的牌组！"
+                selectedTileIds.removeAll()
+                liftedSlotIndex = nil
                 syncEditingStateWithSnapshot()
                 return
             }
         }
 
-        // 2. If the picked tiles themselves already form a valid 3+ tile meld, place as a new valid meld on the table:
-        if RmkEvaluator.evaluateMeld(picked) != nil {
-            placeSelectedAsNewMeld()
-            syncEditingStateWithSnapshot()
-            return
-        }
-
-        // 3. Only auto-merge into an incomplete staging meld if the combined tiles actually form a valid meld OR share compatible color/number!
-        if let stageIdx = workingMelds.lastIndex(where: { m in
-            guard RmkEvaluator.evaluateMeld(m.tiles) == nil && (seats[mySeatIndex].hasBrokenIce || !snapshotMelds.contains(where: { s in s.id == m.id })) else { return false }
-            let cand = m.tiles + picked
-            if RmkEvaluator.evaluateMeld(cand) != nil { return true }
-            let norms = cand.filter { !$0.isJoker }
-            if norms.count <= 1 { return true }
-            let sameNum = norms.allSatisfy { $0.number == norms[0].number } && Set(norms.map { $0.color }).count == norms.count && cand.count <= 4
-            let sameCol = norms.allSatisfy { $0.color == norms[0].color } && ((norms.map { $0.number }.max()! - norms.map { $0.number }.min()!) <= 3)
-            return sameNum || sameCol
-        }) {
-            workingHand.removeAll { targetIds.contains($0.id) }
-            for i in 0..<rackSlots.count { if let t = rackSlots[i], targetIds.contains(t.id) { rackSlots[i] = nil } }
-            let combined = RmkEvaluator.sortMeldForDisplay(workingMelds[stageIdx].tiles + picked, preferLeadingJoker: preferLeading)
-            workingMelds[stageIdx].tiles = combined
-            selectedTileIds.removeAll()
-            selectedTableTileSource = nil
-            liftedSlotIndex = nil
-            if let pts = RmkEvaluator.evaluateMeld(combined) {
-                statusBanner = "✅ 已在桌面拼成有效牌组 (\(pts)分)！点击右侧绿色 ✓ 确认出牌"
-            } else {
-                statusBanner = "🧩 已并入桌面待组牌组（当前 \(combined.count) 张，继续拖牌满3张即可成组）"
-            }
-            syncEditingStateWithSnapshot()
-            return
-        }
-
-        // 4. Place single tile or 2 tiles on the table as an independent staging group at the desired position!
-        let ordered = RmkEvaluator.sortMeldForDisplay(picked, preferLeadingJoker: preferLeading)
+        // 2. Dropped in open space on the table: place at the EXACT insertAtMeldIndex where the user dropped it (never teleport to other staging melds!)
+        let splitPicked = RmkEvaluator.autoSplitMeldTiles(picked, preferLeadingJoker: preferLeading)
         workingHand.removeAll { targetIds.contains($0.id) }
         for i in 0..<rackSlots.count { if let t = rackSlots[i], targetIds.contains(t.id) { rackSlots[i] = nil } }
-        let newMeld = RmkMeld(id: UUID().uuidString, tiles: ordered)
-        if let insIdx = insertAtMeldIndex {
-            let clamped = max(0, min(workingMelds.count, insIdx))
-            workingMelds.insert(newMeld, at: clamped)
-        } else {
-            workingMelds.append(newMeld)
+
+        var insPos = insertAtMeldIndex ?? workingMelds.count
+        insPos = max(0, min(workingMelds.count, insPos))
+        for grp in splitPicked {
+            let newMeld = RmkMeld(id: UUID().uuidString, tiles: grp)
+            workingMelds.insert(newMeld, at: insPos)
+            insPos += 1
         }
         selectedTileIds.removeAll()
         liftedSlotIndex = nil
-        statusBanner = "🧩 已拖上桌面暂放（可继续从牌架或桌面拖牌与它组合成 ≥3 张牌组）"
+        RmkSoundFX.shared.playTileClick()
+
+        if let pts = RmkEvaluator.evaluateMeld(splitPicked[0]) {
+            if !seats[mySeatIndex].hasBrokenIce {
+                var icePts = 0
+                for m in workingMelds where !snapshotMelds.contains(where: { $0.id == m.id }) {
+                    icePts += RmkEvaluator.evaluateMeld(m.tiles) ?? 0
+                }
+                statusBanner = icePts >= 30
+                    ? "✅ 已放置 \(pts) 分牌组（累计 \(icePts) 分 ≥30 分），点右侧绿色 ✓ 完成破冰！"
+                    : "ℹ️ 已放置 \(pts) 分牌组（本回合累计 \(icePts)/30 分，首次破冰需满30分；向下拉回牌架可取消）"
+            } else {
+                statusBanner = "✅ 已放置有效牌组 (\(pts)分)！点击右侧绿色 ✓ 确认出牌，或向下拉回牌架取消"
+            }
+        } else {
+            statusBanner = "🧩 已放置在桌面指定位置（继续拖牌到该牌上即可合成 ≥3 张牌组，向下拉回牌架可取消）"
+        }
         syncEditingStateWithSnapshot()
     }
 
@@ -15155,28 +15378,40 @@ final class RummikubEngine: NSObject, ObservableObject {
             statusBanner = "⚠️ 本回合尚未从牌架打出任何牌（若不出请点【复原】后点【+】摸牌）"
             return
         }
+        // Auto-split any composite melds on the table before validating
+        var normalizedMelds: [RmkMeld] = []
+        for m in workingMelds {
+            let splits = RmkEvaluator.autoSplitMeldTiles(m.tiles)
+            if splits.count == 1 {
+                normalizedMelds.append(RmkMeld(id: m.id, tiles: splits[0]))
+            } else {
+                for (k, sp) in splits.enumerated() {
+                    normalizedMelds.append(RmkMeld(id: k == 0 ? m.id : UUID().uuidString, tiles: sp))
+                }
+            }
+        }
+        workingMelds = normalizedMelds
+
         for m in workingMelds {
             guard RmkEvaluator.evaluateMeld(m.tiles) != nil else {
-                statusBanner = "⚠️ 桌面存在无效牌组，请继续重组或点【复原】"
+                statusBanner = "⚠️ 桌面存在未满3张或不合法的红框牌组，请继续补齐、向下拉回牌架或点右侧【↺】复原"
                 return
             }
         }
         if !seats[mySeatIndex].hasBrokenIce {
-            let newMeldsCount = workingMelds.count - snapshotMelds.count
-            guard newMeldsCount > 0 else {
+            let newMelds = workingMelds.filter { m in !snapshotMelds.contains(where: { $0.id == m.id }) }
+            guard !newMelds.isEmpty else {
                 statusBanner = "⚠️ 首次破冰只能出自己牌架的牌组！"
                 return
             }
-            var icePts = 0
-            for i in snapshotMelds.count..<workingMelds.count {
-                icePts += RmkEvaluator.evaluateMeld(workingMelds[i].tiles) ?? 0
-            }
+            let icePts = newMelds.reduce(0) { $0 + (RmkEvaluator.evaluateMeld($1.tiles) ?? 0) }
             guard icePts >= 30 else {
                 statusBanner = "⚠️ 破冰总分仅 \(icePts) 分，必须 ≥30 分才能首次出牌！"
                 return
             }
         }
 
+        RmkSoundFX.shared.playTurnCommit()
         if (isOnlineConnected || !connectedPeerNames.isEmpty) && !isRoomAuthority {
             sendPacket(RmkNetPacket(kind: .commitTurnAction, roomCode: wireRoomCode(), senderPeerName: myPeerName, senderCharId: myCharacter.charId, tableMelds: workingMelds, committedHandIds: playedIds))
             isEditingTable = false
@@ -15189,10 +15424,18 @@ final class RummikubEngine: NSObject, ObservableObject {
         guard currentTurnSeat == mySeatIndex, phase == .playing, !isDrawingAnimation else { return }
         restoreWorkspaceSnapshot()
         drawnTargetSlotIndex = rackSlots.firstIndex(where: { $0 == nil }) ?? max(0, rackSlots.count - 1)
+        let upcomingTile = pool.first ?? RmkTile(id: "anim_draw", color: .red, number: 7)
+        drawAnimStartTime = Date()
         isDrawingAnimation = true
-        drawingAnimatedTile = pool.first ?? RmkTile(id: "anim_draw", color: .red, number: 7)
-        statusBanner = "🃏 正在从摸牌区抽取 1 张新牌飞入牌架空位..."
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.46) { [weak self] in
+        drawingAnimatedTile = upcomingTile
+        if upcomingTile.isJoker {
+            RmkSoundFX.shared.playJokerAcquired()
+            statusBanner = "🌟 惊喜抽中梓喵【百搭牌 (JOKER)】！正在飞入牌架空位..."
+        } else {
+            RmkSoundFX.shared.playTileDraw()
+            statusBanner = "🃏 正在从摸牌区抽取 1 张新牌飞入牌架空位..."
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.44) { [weak self] in
             guard let self = self else { return }
             self.isDrawingAnimation = false
             self.drawingAnimatedTile = nil
@@ -15256,6 +15499,7 @@ final class RummikubEngine: NSObject, ObservableObject {
             totalGain += pen
         }
         seats[winner].score += totalGain
+        RmkSoundFX.shared.playRoundWin()
         statusBanner = "🏆 [\(seats[winner].name)] 清空牌架获胜！(赢得 +\(totalGain) 分)"
         broadcastFullState()
     }
@@ -15323,9 +15567,11 @@ final class RummikubEngine: NSObject, ObservableObject {
 
             let tileToPlay = orderedPlayedTiles[stepIdx]
             let targetMeldId = finalMelds.first(where: { $0.tiles.contains(where: { $0.id == tileToPlay.id }) })?.id
+            self.oppPlayAnimStartTime = Date()
             self.opponentPlayingSeatIndex = seatIdx
             self.opponentPlayingTile = tileToPlay
             self.opponentPlayingTargetMeldId = targetMeldId
+            RmkSoundFX.shared.playTileSnap()
             self.statusBanner = "🤖 [\(self.seats[seatIdx].name)] 正在出牌 [\(tileToPlay.isJoker ? "百搭" : "\(tileToPlay.color.labelZh)\(tileToPlay.number)")] (\(stepIdx + 1)/\(totalSteps))..."
 
             // After 0.36s flight from AI avatar to table, land this tile on the table and decrement AI's hand count by 1!
