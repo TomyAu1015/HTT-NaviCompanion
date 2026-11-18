@@ -129,6 +129,13 @@ static std::string gMjClaimBannerText;
 static int gMjClaimBannerCharId = 1;
 static MjTile gMjClaimBannerTile;
 static uint32_t gMjClaimBannerTick = 0;
+static std::vector<MjTile> gMjHorseTiles;
+static std::set<std::string> gMjHitHorseIds;
+static bool gMjLastWinHasRedDragon = true;
+static int gMjLastWinScoreDelta = 0;
+static uint32_t gMjDiscardFlightTick = 0;
+static int gMjDiscardFlightSeat = -1;
+static MjTile gMjDiscardFlightTile;
 static std::string cleanPeerLabel(const std::string& rawName);
 static void triggerMjClaimBanner(int seatIdx, const std::string& label, const MjTile& tile) {
     if (seatIdx >= 0 && seatIdx < (int)gMjSeats.size()) {
@@ -916,6 +923,10 @@ static void startNewMahjongRound() {
     gMjTurnSeat = dealer;
     gMjWinnerSeat = -1;
     gMjWinReason = "";
+    gMjHorseTiles.clear();
+    gMjHitHorseIds.clear();
+    gMjLastWinScoreDelta = 0;
+    gMjDiscardFlightTick = 0;
     gMjHasClaim = false;
     gMjSelectedIdx = -1;
     gMjCursor = (int)gMjSeats[gMjMySeat].hand.size() - 1;
@@ -931,17 +942,30 @@ static void executeMjWin(int winner, int loser, const std::string& reason) {
     gMjPhase = "roundOver";
     gMjWinnerSeat = winner;
     gMjHasClaim = false;
+    int laiziCnt = 0;
+    for (const auto& t : gMjSeats[winner].hand) if (t.isLaizi()) laiziCnt++;
+    for (const auto& m : gMjSeats[winner].melds) if (m.tile.isLaizi()) laiziCnt++;
+    gMjLastWinHasRedDragon = (laiziCnt > 0);
+
+    // 广东红中麻将摸马规则：有红中摸4马，无红中摸6马（1、5、9、红中为中马）！
+    int targetHorses = gMjLastWinHasRedDragon ? 4 : 6;
+    int drawCount = std::min(targetHorses, (int)gMjWall.size());
+    gMjHorseTiles.clear();
+    gMjHitHorseIds.clear();
     int horseHits = 0;
-    int drawCount = std::min(4, (int)gMjWall.size());
     for (int i = 0; i < drawCount; ++i) {
         const auto& ht = gMjWall[i];
+        gMjHorseTiles.push_back(ht);
         if (ht.isLaizi() || ((ht.suit == "W" || ht.suit == "T" || ht.suit == "D") && (ht.rank == 1 || ht.rank == 5 || ht.rank == 9))) {
             horseHits++;
+            gMjHitHorseIds.insert(ht.id);
         }
     }
-    int horseMult = 1 + horseHits;
-    gMjWinReason = reason + " (中" + std::to_string(horseHits) + "马)";
+    int horseMult = (1 + horseHits) * (gMjLastWinHasRedDragon ? 1 : 2);
+    std::string ruleTag = gMjLastWinHasRedDragon ? "有红中摸4马" : "无红中摸6马";
+    gMjWinReason = (laiziCnt >= 4 ? "四红中自摸" : reason) + " · " + ruleTag + " · 中" + std::to_string(horseHits) + "马";
     int delta = gMjBaseScore * 2 * horseMult;
+    gMjLastWinScoreDelta = (loser < 0) ? (delta * 3) : delta;
     if (loser < 0) {
         for (int i = 0; i < 4; ++i) {
             if (i == winner) gMjSeats[i].score += delta * 3;
@@ -995,6 +1019,9 @@ static void executeMjDiscard(int seatIdx, const std::string& tileId) {
     gMjDrawnTileId = "";
     gMjSeats[seatIdx].discards.push_back(discarded);
     gMjSeats[seatIdx].lastActionText = "打出 " + discarded.fullName();
+    gMjDiscardFlightTick = SDL_GetTicks();
+    gMjDiscardFlightSeat = seatIdx;
+    gMjDiscardFlightTile = discarded;
     if (seatIdx == gMjMySeat) {
         gMjSelectedIdx = -1;
         if (gMjCursor >= (int)hand.size()) gMjCursor = std::max(0, (int)hand.size() - 1);
@@ -1372,32 +1399,34 @@ static void dropRmkSlotToTable(int slotIdx, int dropX, int dropY) {
         return;
     }
 
-    // 4. Otherwise auto-find any compatible table meld (e.g. 4 onto 123)
-    for (size_t i = 0; i < gRmkWorkMelds.size(); ++i) {
-        if (!gRmkSeats[gRmkMySeat].hasBrokenIce && i < gRmkSnapMelds.size()) continue;
-        std::vector<RmkTile> comb = gRmkWorkMelds[i].tiles;
-        comb.insert(comb.end(), picked.begin(), picked.end());
-        if (RmkEvaluator::evaluateMeld(comb) >= 0) {
+    // 4. If there is an incomplete staging meld on the table (<3 tiles or not yet valid), merge into it!
+    for (int i = (int)gRmkWorkMelds.size() - 1; i >= 0; --i) {
+        if (!gRmkSeats[gRmkMySeat].hasBrokenIce && i < (int)gRmkSnapMelds.size()) continue;
+        if (RmkEvaluator::evaluateMeld(gRmkWorkMelds[i].tiles) < 0) {
+            std::vector<RmkTile> comb = gRmkWorkMelds[i].tiles;
+            comb.insert(comb.end(), picked.begin(), picked.end());
             gRmkWorkMelds[i].tiles = RmkEvaluator::sortMeldForDisplay(comb);
             gRmkWorkHand.erase(std::remove_if(gRmkWorkHand.begin(), gRmkWorkHand.end(), [&](const RmkTile& t){ return selIds.count(t.id) > 0; }), gRmkWorkHand.end());
             for (auto& sl : gRmkRackSlots) if (!sl.id.empty() && selIds.count(sl.id)) sl = RmkTile{};
+            for (auto& wt : gRmkWorkHand) wt.selected = false;
+            for (auto& sl : gRmkRackSlots) sl.selected = false;
             gRmkLiftedSlot = -1;
-            gStatusBanner = "已自动拼接到桌面兼容牌组（点右侧绿色[OK]或按[X]确认出牌）";
+            gStatusBanner = (RmkEvaluator::evaluateMeld(gRmkWorkMelds[i].tiles) >= 0)
+                ? "已在桌面拼成有效牌组！点右侧绿色[OK]或按[X]确认出牌"
+                : "已并入桌面待组牌组（满3张后即可按[X]确认出牌）";
             return;
         }
     }
 
-    // 5. After icebreak, allow placing temporary tile on table workspace for free rearrangement
-    if (gRmkSeats[gRmkMySeat].hasBrokenIce) {
-        auto ordered = RmkEvaluator::sortMeldForDisplay(picked);
-        gRmkWorkHand.erase(std::remove_if(gRmkWorkHand.begin(), gRmkWorkHand.end(), [&](const RmkTile& t){ return selIds.count(t.id) > 0; }), gRmkWorkHand.end());
-        for (auto& sl : gRmkRackSlots) if (!sl.id.empty() && selIds.count(sl.id)) sl = RmkTile{};
-        gRmkWorkMelds.push_back({"m_" + std::to_string(SDL_GetTicks()), ordered});
-        gRmkLiftedSlot = -1;
-        gStatusBanner = "已暂放桌面待重组（可继续拖桌面牌或手牌拼成>=3张合法牌组后点[OK]）";
-    } else {
-        gStatusBanner = "[注意] 尚未破冰：请选中>=3张且总分>=30的牌组后再拖上桌面";
-    }
+    // 5. Place single tile or 2 tiles on the table as a new staging group (allowed both before and after icebreak!)
+    auto ordered = RmkEvaluator::sortMeldForDisplay(picked);
+    gRmkWorkHand.erase(std::remove_if(gRmkWorkHand.begin(), gRmkWorkHand.end(), [&](const RmkTile& t){ return selIds.count(t.id) > 0; }), gRmkWorkHand.end());
+    for (auto& sl : gRmkRackSlots) if (!sl.id.empty() && selIds.count(sl.id)) sl = RmkTile{};
+    for (auto& wt : gRmkWorkHand) wt.selected = false;
+    for (auto& sl : gRmkRackSlots) sl.selected = false;
+    gRmkWorkMelds.push_back({"m_" + std::to_string(SDL_GetTicks()), ordered});
+    gRmkLiftedSlot = -1;
+    gStatusBanner = "已拖上桌面暂放（可继续拖其他牌与它拼成>=3张牌组后按[X]确认）";
 }
 
 static void dropRmkTableTileToTarget(int srcMeldIdx, int srcTileIdx, int dropX, int dropY) {
@@ -1452,9 +1481,34 @@ static void dropRmkTableTileToTarget(int srcMeldIdx, int srcTileIdx, int dropX, 
         mx += mw + 16;
     }
 
-    // 3. Dropped onto open table space -> detach this tile as a new group on the table so player can combine other tiles with it!
-    if (gRmkWorkMelds[srcMeldIdx].tiles.size() > 1) {
-        gRmkWorkMelds[srcMeldIdx].tiles.erase(gRmkWorkMelds[srcMeldIdx].tiles.begin() + srcTileIdx);
+    // 3. Dropped onto open table space -> smart split if middle tile, and merge into existing incomplete staging meld or detach as new group!
+    auto origTiles = gRmkWorkMelds[srcMeldIdx].tiles;
+    if (origTiles.size() > 1) {
+        if (srcTileIdx > 0 && srcTileIdx < (int)origTiles.size() - 1) {
+            std::vector<RmkTile> leftSlice(origTiles.begin(), origTiles.begin() + srcTileIdx);
+            std::vector<RmkTile> rightSlice(origTiles.begin() + srcTileIdx + 1, origTiles.end());
+            if (leftSlice.size() >= 3 || rightSlice.size() >= 3) {
+                gRmkWorkMelds[srcMeldIdx].tiles = leftSlice;
+                gRmkWorkMelds.insert(gRmkWorkMelds.begin() + srcMeldIdx + 1, {"m_" + std::to_string(SDL_GetTicks()) + "_r", rightSlice});
+            } else {
+                gRmkWorkMelds[srcMeldIdx].tiles.erase(gRmkWorkMelds[srcMeldIdx].tiles.begin() + srcTileIdx);
+            }
+        } else {
+            gRmkWorkMelds[srcMeldIdx].tiles.erase(gRmkWorkMelds[srcMeldIdx].tiles.begin() + srcTileIdx);
+        }
+        for (int i = (int)gRmkWorkMelds.size() - 1; i >= 0; --i) {
+            if (i == srcMeldIdx) continue;
+            if (!gRmkSeats[gRmkMySeat].hasBrokenIce && i < (int)gRmkSnapMelds.size()) continue;
+            if (gRmkWorkMelds[i].tiles.size() < 3 && RmkEvaluator::evaluateMeld(gRmkWorkMelds[i].tiles) < 0) {
+                auto comb = gRmkWorkMelds[i].tiles;
+                comb.push_back(movingTile);
+                gRmkWorkMelds[i].tiles = RmkEvaluator::sortMeldForDisplay(comb);
+                gRmkSelectedTableMeldIdx = -1;
+                gRmkSelectedTableTileIdx = -1;
+                gStatusBanner = "已将拆出的桌面牌并入桌面待组新牌组！";
+                return;
+            }
+        }
         gRmkWorkMelds.push_back({"m_" + std::to_string(SDL_GetTicks()), {movingTile}});
         gRmkSelectedTableMeldIdx = (int)gRmkWorkMelds.size() - 1;
         gRmkSelectedTableTileIdx = 0;
@@ -1571,7 +1625,7 @@ static void startRmkPlayerDrawAnimation() {
     } else {
         gRmkDrawAnimTile = {"TEMP_DRAW", "R", 7, false};
     }
-    gStatusBanner = "正在从牌堆摸取 1 张牌 (1.5秒飞牌动画)...";
+    gStatusBanner = "正在从摸牌区抽取 1 张新牌飞入牌架空槽...";
 }
 
 static void executeRmkCommit(int seatIdx, const std::vector<RmkMeld>& newMelds, const std::set<std::string>& playedIds) {
@@ -2629,6 +2683,72 @@ static void renderMahjongTable() {
         drawMahjongTile(me.hand[i], curX + i * (tileW + 4) + extraGap, 526, tileW, tileH,
                         (i == gMjCursor), (i == gMjSelectedIdx), isDrawn);
     }
+
+    // 8. 4-Seat Discard Flight Animation (flies from discarding seat's hand into discard river!)
+    uint32_t discElapsed = SDL_GetTicks() - gMjDiscardFlightTick;
+    if (gMjDiscardFlightTick > 0 && discElapsed < 420 && gMjDiscardFlightSeat >= 0) {
+        float prog = std::min(1.0f, (float)discElapsed / 420.0f);
+        int rel = (gMjDiscardFlightSeat - gMjMySeat + 4) % 4;
+        int sx = 640, sy = 520, ex = 640, ey = 370;
+        if (rel == 1) { sx = 1140; sy = 250; ex = 840; ey = 235; }
+        else if (rel == 2) { sx = 640; sy = 105; ex = 640; ey = 165; }
+        else if (rel == 3) { sx = 140; sy = 250; ex = 420; ey = 235; }
+        int fx = sx + (int)((ex - sx) * prog);
+        int fy = sy + (int)((ey - sy) * prog) - (int)(sinf(prog * 3.14159f) * 24.0f);
+        drawMahjongTile(gMjDiscardFlightTile, fx - 22, fy - 30, 44, 62, true, false, true);
+    }
+
+    // 9. Celebratory Winner & 4/6 Horse Settlement Modal Overlay when Round Over!
+    if (gMjPhase == "roundOver" && gMjWinnerSeat >= 0 && gMjWinnerSeat < (int)gMjSeats.size()) {
+        const auto& wSeat = gMjSeats[gMjWinnerSeat];
+        drawRoundedRectFill(280, 126, 720, 312, 18, {9, 38, 25, 248});
+        drawRoundedRectOutline(280, 126, 720, 312, 18, COL_GOLD, 3);
+        drawRoundedRectOutline(284, 130, 712, 304, 16, COL_GOLD_DIM, 1);
+
+        drawRoundedRectFill(304, 144, 76, 76, 38, COL_CRIMSON);
+        drawRoundedRectOutline(304, 144, 76, 76, 38, COL_GOLD, 2);
+        drawCharAvatar(wSeat.characterId, 310, 148, 64, 68, true);
+
+        drawText(gFontLarge, "胡牌大吉！ +" + std::to_string(std::max(gMjBaseScore * 2, gMjLastWinScoreDelta)) + " 分", 398, 146, COL_GOLD);
+        drawText(gFontMed, cleanPeerLabel(wSeat.name) + " · " + gMjWinReason, 398, 184, COL_WHITE);
+
+        // Winning hand preview
+        int hx = 304;
+        for (const auto& m : wSeat.melds) {
+            int cnt = (m.kind == "碰") ? 3 : 4;
+            for (int k = 0; k < cnt; ++k) {
+                drawMahjongTile(m.tile, hx, 228, 24, 34, false, false, false);
+                hx += 25;
+            }
+            hx += 6;
+        }
+        for (const auto& t : wSeat.hand) {
+            drawMahjongTile(t, hx, 226, 26, 36, false, false, t.isLaizi());
+            hx += 28;
+        }
+
+        // 4 / 6 Horse Tiles Visual Display
+        if (!gMjHorseTiles.empty()) {
+            drawRoundedRectFill(304, 272, 672, 114, 12, {5, 22, 14, 235});
+            drawRoundedRectOutline(304, 272, 672, 114, 12, COL_GOLD_DIM, 1);
+            std::string hTitle = gMjLastWinHasRedDragon ? "摸马开奖（有红中 · 摸 4 马）" : "摸马开奖（无红中 · 摸 6 马）";
+            drawText(gFontSmall, hTitle, 320, 280, COL_GOLD);
+            drawText(gFontSmall, "中 " + std::to_string(gMjHitHorseIds.size()) + " / " + std::to_string(gMjHorseTiles.size()) + " 马", 956, 280, COL_HUMAN_GREEN, false, true);
+
+            int startHx = 640 - ((int)gMjHorseTiles.size() * 64) / 2;
+            for (size_t i = 0; i < gMjHorseTiles.size(); ++i) {
+                const auto& ht = gMjHorseTiles[i];
+                bool isHit = (gMjHitHorseIds.count(ht.id) > 0);
+                int tx = startHx + (int)i * 64;
+                drawMahjongTile(ht, tx, 308, 42, 58, isHit, false, isHit);
+                if (isHit) {
+                    drawRoundedRectFill(tx + 2, 294, 38, 16, 4, COL_CRIMSON);
+                    drawText(gFontSmall, "中马", tx + 21, 292, COL_GOLD, true);
+                }
+            }
+        }
+        drawText(gFontSmall, "按 [A] 开始下一局   |   按 [-] 返回大厅", 640, 404, COL_GOLD, true);
+    }
 }
 
 
@@ -2790,7 +2910,13 @@ static void renderRummikubTable() {
     drawRoundedRectOutline(1146, 278, 120, 40, 10, COL_GOLD_DIM, 1);
     drawText(gFontSmall, "打乱牌架", 1206, 288, COL_WHITE, true);
 
-    if (gRmkEditing && myTurn) {
+    bool hasRmkTableChanges = gRmkEditing && (gRmkWorkHand.size() != gRmkSnapHand.size() || gRmkWorkMelds.size() != gRmkSnapMelds.size());
+    if (!hasRmkTableChanges && gRmkEditing) {
+        for (size_t i = 0; i < gRmkWorkMelds.size(); ++i) {
+            if (gRmkWorkMelds[i].tiles.size() != gRmkSnapMelds[i].tiles.size()) { hasRmkTableChanges = true; break; }
+        }
+    }
+    if (hasRmkTableChanges && myTurn) {
         drawRoundedRectFill(1158, 366, 96, 72, 36, {32, 56, 102, 248});
         drawRoundedRectOutline(1158, 366, 96, 72, 36, {255, 92, 72, 255}, 3);
         drawText(gFontLarge, "复原", 1206, 376, {255, 105, 85, 255}, true);
@@ -2878,7 +3004,7 @@ static void renderRummikubTable() {
     }
 
     if (gRmkDrawAnimActive) {
-        float prog = std::min(1.0f, (float)(nowT - gRmkDrawAnimStartTick) / 1500.0f);
+        float prog = std::min(1.0f, (float)(nowT - gRmkDrawAnimStartTick) / 460.0f);
         int startX = 1175, startY = 440;
         int targetSlot = 0;
         for (size_t i = 0; i < gRmkRackSlots.size(); ++i) {
@@ -2980,7 +3106,7 @@ static void updateAiTurns() {
 
     if (gScreen == MODE_RMK_TABLE && gRmkPhase == "playing") {
         if (gRmkDrawAnimActive) {
-            if (now - gRmkDrawAnimStartTick >= 1500) {
+            if (now - gRmkDrawAnimStartTick >= 460) {
                 gRmkDrawAnimActive = false;
                 if (gIsOnlineRoom && !gIsRoomAuthority) {
                     gWs.sendText("{\"kind\":\"drawTileAction\",\"roomCode\":\"RMK_" + MiniJson::esc(gRoomCode) +

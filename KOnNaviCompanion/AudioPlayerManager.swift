@@ -11508,6 +11508,8 @@ struct MahjongNetPacket: Codable {
     var pendingClaim: MahjongPendingClaim? = nil
     var winnerSeat: Int? = nil
     var winReason: String? = nil
+    var horseTiles: [MahjongTile]? = nil
+    var hitHorseIds: [String]? = nil
     var statusBanner: String? = nil
     var totalRounds: Int? = nil
     var currentRound: Int? = nil
@@ -11711,18 +11713,29 @@ struct HTTGameRoomLocalizer {
     private static let enPhrases: [(String, String)] = [
         ("欢迎来到广东红中麻将！红中为赖子，不能吃，可碰杠胡", "Welcome to Hongzhong Mahjong! Red Dragon is Wild, Pong/Kong/Self-Draw Win"),
         ("欢迎来到拉密数字牌！首次出牌需 ≥30 分破冰，支持 2~4 人跨平台同桌", "Welcome to Rummikub! Initial icebreak requires ≥30 pts (2-4 Players)"),
+        ("欢迎来到轻音拉密数字牌 (2~4人自由开房 · 30分破冰 · 60秒限时)", "Welcome to K-ON! Rummikub (2-4P · 30pt Icebreak · 60s Timer)"),
         ("欢迎来到放课后茶会斗地主！支持面对面开房与在线联机", "Welcome to HTT Doudizhu! Face-to-Face P2P & Online Multiplayer"),
+        ("已退出拉密数字牌房间", "Left Rummikub room"),
+        ("已退出麻将房间，座位已重置为单人+AI补位", "Left Mahjong room — reset to solo + AI"),
         ("已复原到本回合初始牌面与牌架位置", "Restored table & rack to start of turn"),
-        ("桌面存在无效牌组，请继续重组或点【复原】", "Invalid table group(s) — fix or tap [Restore]"),
+        ("桌面存在无效牌组，请继续重组或点【复原】", "Invalid table group(s) — complete ≥3 tiles per group or tap ↺"),
         ("尚未破冰！不能拆解其他玩家的桌面牌组", "Not broken ice yet! Cannot split other players' table melds"),
-        ("尚未破冰：请选中≥3张且总分≥30的牌组后再拖上桌面", "Icebreak requires ≥30 pts from your rack"),
-        ("已拆出单牌到桌面空位，可继续拖动组牌", "Detached tile to open table — drag other tiles to combine"),
-        ("已将桌面牌拖入目标牌组", "Moved table tile into target group"),
-        ("已暂放牌组到桌面（点击【确认出牌】完成回合", "Placed meld on table (Tap ✓ to confirm turn"),
+        ("尚未破冰：请选中≥3张且总分≥30的牌组后再拖上桌面", "Drag tiles to table to assemble ≥30 pts for initial icebreak"),
+        ("已拆出单牌到桌面空位，可继续拖动组牌！", "Detached tile to table — drag other tiles onto it to combine!"),
+        ("已拆出单牌到桌面空位，可继续拖动组牌", "Detached tile to table — drag other tiles onto it to combine"),
+        ("已将桌面牌拖入目标牌组！", "Merged tile into target group!"),
+        ("已将桌面牌拖入目标牌组", "Merged tile into target group"),
+        ("已暂放牌组到桌面（点击【确认出牌】完成回合，点击该牌组可撤回）", "Placed on table (Tap ✓ to confirm turn, or drag/tap to edit)"),
+        ("正在派发 14 张初始手牌 (1.5秒发牌动画)... 轮到", "Dealing 14 initial tiles... Turn:"),
         ("正在派发 14 张初始手牌 (1.5 秒发牌动画)... 轮到", "Dealing 14 initial tiles... Turn:"),
-        ("正在从牌堆摸取 1 张新牌 (1.5 秒摸牌动画)...", "Drawing 1 tile from pool..."),
-        ("摸牌结束回合 · 轮到", "drew a tile · Turn:"),
+        ("正在从摸牌区抽取 1 张新牌飞入牌架空位...", "Drawing 1 tile into empty rack slot..."),
+        ("正在从牌堆摸取 1 张新牌 (1.5秒摸牌动画)...", "Drawing 1 tile into empty rack slot..."),
+        ("正在从牌堆摸取 1 张新牌 (1.5 秒摸牌动画)...", "Drawing 1 tile into empty rack slot..."),
+        ("摸牌结束回合 · 轮到", "drew 1 tile · Turn:"),
         ("从共用牌堆摸 1 张牌 · 轮到", "drew 1 tile · Turn:"),
+        ("摸牌过", "drew 1 tile"),
+        ("(需≥30分破冰)", "(Need ≥30 pts icebreak)"),
+        ("(需≥30 pts 破冰)", "(Need ≥30 pts icebreak)"),
         ("当前暂无可出顺子（未混入同数群组）", "No valid runs found (groups excluded)"),
         ("当前暂无可出同数群组（未混入顺子）", "No valid groups found (runs excluded)"),
         ("789类型组合", "789 Run Sort"),
@@ -11742,24 +11755,77 @@ struct HTTGameRoomLocalizer {
         ("地主胜利!", "Landlord Wins!"),
         ("农民胜利!", "Peasants Win!"),
         ("本局流局，无人胡牌！", "Draw round — no winner!"),
+        ("荒庄流局（牌墙已摸完）", "Draw Round (Wall Empty)"),
+        ("有红中摸4马", "With Red Dragon: 4 Horses"),
+        ("无红中摸6马", "No Red Dragon: 6 Horses"),
+        ("摸马中", "Horses Hit: "),
+        ("四红中自摸", "4 Red Dragons Self-Draw"),
         ("自摸胡牌", "Self-Draw Win"),
-        ("四红中自摸", "4 Red Dragons Win"),
+        ("自摸胡!", "Self-Draw Win!"),
+        ("自摸胡", "Self-Draw"),
         ("明杠", "Exposed Kong"),
         ("暗杠", "Concealed Kong"),
         ("补杠", "Added Kong"),
         ("碰了", "Ponged"),
-        ("打出", "Played"),
+        ("单张", "Single"),
+        ("单張", "Single"),
+        ("对子", "Pair"),
+        ("對子", "Pair"),
+        ("三不带", "Triple"),
+        ("三不帶", "Triple"),
+        ("三带一", "Triple+1"),
+        ("三帶一", "Triple+1"),
+        ("三带二", "Triple+2"),
+        ("三帶二", "Triple+2"),
+        ("顺子", "Straight"),
+        ("順子", "Straight"),
+        ("连对", "Pairs Run"),
+        ("連對", "Pairs Run"),
+        ("飞机带翅膀", "Airplane+Wings"),
+        ("飞机", "Airplane"),
+        ("飛機", "Airplane"),
+        ("四带二", "Quad+2"),
+        ("四帶二", "Quad+2"),
+        ("炸弹", "Bomb"),
+        ("炸彈", "Bomb"),
+        ("王炸", "Rocket"),
+        ("红中", "Red Dragon"),
+        ("發財", "Green Dragon"),
+        ("发财", "Green Dragon"),
+        ("白板", "White Dragon"),
+        ("东风", "East Wind"),
+        ("南风", "South Wind"),
+        ("西风", "West Wind"),
+        ("北风", "North Wind"),
+        ("上家", "Left"),
+        ("下家", "Right"),
+        ("我方", "Me"),
+        ("打出", "Play"),
         ("不叫", "Pass"),
         ("不出", "Pass"),
         ("要不起", "Pass"),
+        ("出牌", "Play"),
+        ("破冰", "Icebreak"),
         ("轮到", "Turn:"),
+        ("第 ", "Round "),
         ("第", "Round "),
+        (" 局开始！", " Started!"),
         ("局开始！", " Started!"),
         ("房主", "Host"),
         ("轻音车友", "HTT Driver"),
         ("轻音雀友", "HTT Player"),
+        ("平泽唯", "Yui"),
+        ("秋山澪", "Mio"),
+        ("田井中律", "Ritsu"),
+        ("琴吹紬", "Mugi"),
+        ("中野梓", "Azusa"),
+        ("万", " Wan"),
+        ("条", " Bam"),
+        ("筒", " Dot"),
+        ("余 ", "Left: "),
         ("余", "Left:"),
         ("张", ""),
+        ("匹", ""),
         ("分", " pts")
     ]
 
@@ -11788,9 +11854,13 @@ struct HTTGameRoomLocalizer {
         ("昵称与角色", "暱稱與角色"),
         ("输入房间昵称", "輸入房間暱稱"),
         ("输入你的房间昵称", "輸入你的房間暱稱"),
+        ("必填房号", "必填房號"),
         ("房号", "房號"),
         ("创建", "創建"),
         ("房间", "房間"),
+        ("已退出拉密数字牌房间", "已退出拉密數字牌房間"),
+        ("拉密数字牌", "拉密數字牌"),
+        ("数字牌", "數字牌"),
         ("扫描", "掃描"),
         ("连接", "連接"),
         ("已连", "已連"),
@@ -11822,10 +11892,15 @@ struct HTTGameRoomLocalizer {
         ("响应", "響應"),
         ("红中为赖子", "紅中為賴子"),
         ("红中赖子", "紅中賴子"),
+        ("四红中", "四紅中"),
+        ("有红中摸4马", "有紅中摸4馬"),
+        ("无红中摸6马", "無紅中摸6馬"),
+        ("摸马", "摸馬"),
+        ("中马", "中馬"),
+        ("马", "馬"),
+        ("红中", "紅中"),
         ("赖子", "賴子"),
         ("赖", "賴"),
-        ("第", "第"),
-        ("局", "局"),
         ("轮到", "輪到"),
         ("摸牌", "摸牌"),
         ("出牌", "出牌"),
@@ -11839,8 +11914,8 @@ struct HTTGameRoomLocalizer {
         ("杠", "槓"),
         ("胡牌", "糊牌"),
         ("自摸胡", "自摸糊"),
+        ("胡!", "糊!"),
         ("荒庄流局", "荒莊流局"),
-        ("流局", "流局"),
         ("再来一局", "再來一局"),
         ("整场积分排名", "整場積分排名"),
         ("地主胜利", "地主勝利"),
@@ -11848,16 +11923,26 @@ struct HTTGameRoomLocalizer {
         ("农民", "農民"),
         ("阶段", "階段"),
         ("重选", "重選"),
-        ("炸弹", "炸彈"),
+        ("单张", "單張"),
+        ("单張", "單張"),
+        ("对子", "對子"),
+        ("三不带", "三不帶"),
+        ("三带一", "三帶一"),
+        ("三带二", "三帶二"),
+        ("顺子", "順子"),
+        ("连对", "連對"),
+        ("飞机带翅膀", "飛機帶翅膀"),
         ("飞机", "飛機"),
+        ("四带二", "四帶二"),
+        ("炸弹", "炸彈"),
         ("万", "萬"),
         ("条", "條"),
         ("东", "東"),
         ("发", "發"),
+        ("庄", "莊"),
         ("余 ", "餘 "),
         ("余", "餘"),
         ("张", "張"),
-        ("秒", "秒"),
         ("首次破冰需从牌架拖出", "首次破冰需從牌架拖出"),
         ("桌面暂无牌组", "桌面暫無牌組"),
         ("长按牌架上的牌可自动连选整组顺子/群组", "長按牌架上的牌可自動連選整組順子/群組"),
@@ -11865,11 +11950,13 @@ struct HTTGameRoomLocalizer {
         ("尚未破冰", "尚未破冰"),
         ("不能拆解其他玩家的桌面牌组", "不能拆解其他玩家的桌面牌組"),
         ("已复原到本回合初始牌面与牌架位置", "已復原到本回合初始牌面與牌架位置"),
-        ("桌面存在无效牌组，请继续重组或点", "桌面存在無效牌組，請繼績重組或點"),
+        ("桌面存在无效牌组，请继续重组或点", "桌面存在無效牌組，請繼續重組或點"),
         ("复原", "復原"),
         ("确认出牌", "確認出牌"),
         ("已拆出单牌到桌面空位，可继续拖动组牌", "已拆出單牌到桌面空位，可繼續拖動組牌"),
+        ("已将桌面牌拖入目标牌组", "已將桌面牌拖入目標牌組"),
         ("已暂放牌组", "已暫放牌組"),
+        ("已暂放桌面", "已暫放桌面"),
         ("本回合累计", "本回合累計"),
         ("类型组合", "類型組合"),
         ("共识别", "共識別"),
@@ -11878,15 +11965,17 @@ struct HTTGameRoomLocalizer {
         ("当前暂无可出顺子", "當前暫無可出順子"),
         ("未混入同数群组", "未混入同數群組"),
         ("未混入顺子", "未混入順子"),
-        ("顺子", "順子"),
+        ("顺组", "順組"),
         ("群组", "群組"),
         ("牌组", "牌組"),
+        ("牌架", "牌架"),
         ("牌堆", "牌堆"),
         ("正在派发", "正在派發"),
         ("初始手牌", "初始手牌"),
         ("发牌动画", "發牌動畫"),
+        ("正在从摸牌区抽取", "正在從摸牌區抽取"),
         ("正在从牌堆摸取", "正在從牌堆摸取"),
-        ("新牌", "新牌"),
+        ("飞入牌架空位", "飛入牌架空位"),
         ("摸牌动画", "摸牌動畫"),
         ("结束回合", "結束回合"),
         ("从共用牌堆摸", "從共用牌堆摸"),
@@ -11929,6 +12018,14 @@ struct MahjongClaimEvent: Identifiable, Equatable {
     let seatName: String
     let characterId: Int
     let actionLabel: String
+    let tile: MahjongTile
+}
+
+struct MahjongDiscardFlight: Identifiable, Equatable {
+    let id: String
+    let seatIndex: Int
+    let seatName: String
+    let characterId: Int
     let tile: MahjongTile
 }
 
@@ -12168,8 +12265,30 @@ class KOnMahjongManager: NSObject, ObservableObject, MCSessionDelegate, MCNearby
             }
         }
     }
+    @Published var activeDiscardFlight: MahjongDiscardFlight? = nil
+    @Published var horseTiles: [MahjongTile] = []
+    @Published var hitHorseIds: Set<String> = []
+    @Published var lastWinScoreDelta: Int = 0
+    @Published var lastWinHasRedDragon: Bool = true
     @Published var winnerSeat: Int? = nil
     @Published var winReason: String = ""
+
+    private func triggerDiscardFlight(seatIdx: Int, tile: MahjongTile) {
+        guard seatIdx >= 0 && seatIdx < seats.count else { return }
+        let flight = MahjongDiscardFlight(
+            id: "\(tile.id)_\(UUID().uuidString.prefix(6))",
+            seatIndex: seatIdx,
+            seatName: seats[seatIdx].name,
+            characterId: seats[seatIdx].characterId,
+            tile: tile
+        )
+        activeDiscardFlight = flight
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.55) { [weak self] in
+            if self?.activeDiscardFlight?.id == flight.id {
+                self?.activeDiscardFlight = nil
+            }
+        }
+    }
 
     private var wall: [MahjongTile] = []
     private let serviceType = "kon-mj"
@@ -12556,6 +12675,10 @@ class KOnMahjongManager: NSObject, ObservableObject, MCSessionDelegate, MCNearby
         pendingClaim = nil
         winnerSeat = nil
         winReason = ""
+        horseTiles = []
+        hitHorseIds = []
+        lastWinScoreDelta = 0
+        activeDiscardFlight = nil
         phase = .playing
         currentTurnSeat = dealerIdx
         statusBanner = "🀄 第 \(currentRound) 局开始！[\(seats[dealerIdx].name)] 坐庄先出牌 (红中为赖子)"
@@ -12696,6 +12819,7 @@ class KOnMahjongManager: NSObject, ObservableObject, MCSessionDelegate, MCNearby
         seats[actor].discards.append(tile)
         seats[actor].lastActionText = "打出 \(tile.fullName)"
         drawnTileId = nil
+        triggerDiscardFlight(seatIdx: actor, tile: tile)
         AudioPlayerManager.shared.playMascotVoice(for: characterFilter(for: seats[actor].characterId))
 
         // Check claims from the other 3 seats (NO Chow in Guangdong Mahjong; Hongzhong cannot be ponged/konged/claimed)
@@ -12825,30 +12949,41 @@ class KOnMahjongManager: NSObject, ObservableObject, MCSessionDelegate, MCNearby
             seats[winner].hand.append(wt)
             seats[winner].hand = MahjongEvaluator.sortHand(seats[winner].hand)
         }
-        let laiziCount = seats[winner].hand.filter { $0.isLaizi }.count
+        let laiziCount = seats[winner].hand.filter { $0.isLaizi }.count + seats[winner].melds.filter { $0.tile.isLaizi }.count
+        let hasRedDragon = (laiziCount > 0)
+        lastWinHasRedDragon = hasRedDragon
 
-        // 摸马 (Draw up to 4 Horse tiles; 1, 5, 9, or 红中 hits!)
-        let horseCount = min(4, wall.count)
+        // 广东红中麻将摸马规则：有红中摸4个马，无红中摸6个马（1、5、9、红中为中马）！
+        let targetHorses = hasRedDragon ? 4 : 6
+        let horseCount = min(targetHorses, wall.count)
+        var drawnHorses: [MahjongTile] = []
+        var hitIds: Set<String> = []
         var horseHits = 0
         var horseNames: [String] = []
         for _ in 0..<horseCount {
             let h = wall.removeFirst()
-            let isHit = h.isLaizi || (h.suit != .honor && (h.rank == 1 || h.rank == 5 || h.rank == 9))
+            drawnHorses.append(h)
+            let isHit = h.isLaizi || ((h.suit == .wan || h.suit == .tiao || h.suit == .tong) && (h.rank == 1 || h.rank == 5 || h.rank == 9))
             if isHit {
                 horseHits += 1
+                hitIds.insert(h.id)
                 horseNames.append(h.fullName)
             }
         }
+        horseTiles = drawnHorses
+        hitHorseIds = hitIds
         wallCount = wall.count
 
-        let mult = (2 + horseHits) * (laiziCount >= 4 ? 2 : 1)
+        let mult = (2 + horseHits) * (laiziCount >= 4 ? 2 : (hasRedDragon ? 1 : 2))
         let pts = baseScore * mult
+        lastWinScoreDelta = pts * 3
         for i in 0..<4 {
             seats[i].score += (i == winner) ? (pts * 3) : (-pts)
         }
         pendingClaim = nil
         winnerSeat = winner
-        let horseDesc = horseCount > 0 ? " · 摸马中\(horseHits)匹\(horseHits > 0 ? "[\(horseNames.joined(separator: ","))]" : "")" : ""
+        let ruleTag = hasRedDragon ? "有红中摸4马" : "无红中摸6马"
+        let horseDesc = horseCount > 0 ? " · \(ruleTag) · 摸马中\(horseHits)匹\(horseHits > 0 ? "[\(horseNames.joined(separator: ","))]" : "")" : ""
         winReason = (laiziCount >= 4 ? "四红中自摸" : "自摸胡牌") + " (x\(mult))" + horseDesc
         phase = .roundOver
         seats[winner].lastActionText = "🎉 自摸胡!"
@@ -12930,6 +13065,8 @@ class KOnMahjongManager: NSObject, ObservableObject, MCSessionDelegate, MCNearby
             pendingClaim: pendingClaim,
             winnerSeat: winnerSeat,
             winReason: winReason,
+            horseTiles: horseTiles,
+            hitHorseIds: Array(hitHorseIds),
             statusBanner: statusBanner,
             totalRounds: totalRounds,
             currentRound: currentRound,
@@ -13064,6 +13201,12 @@ class KOnMahjongManager: NSObject, ObservableObject, MCSessionDelegate, MCNearby
             }
             if !isRoomAuthority { aiWorkItem?.cancel(); aiWorkItem = nil }
             if let s = pkt.seats {
+                // Detect if any seat just discarded a new tile to trigger discard flight animation on guest devices
+                for idx in 0..<min(seats.count, s.count) {
+                    if s[idx].discards.count > seats[idx].discards.count, let newDisc = s[idx].discards.last {
+                        DispatchQueue.main.async { self.triggerDiscardFlight(seatIdx: idx, tile: newDisc) }
+                    }
+                }
                 seats = s
                 if let idx = s.firstIndex(where: { $0.peerDisplayName == myPeerID.displayName }) {
                     mySeatIndex = idx
@@ -13081,6 +13224,8 @@ class KOnMahjongManager: NSObject, ObservableObject, MCSessionDelegate, MCNearby
             pendingClaim = pkt.pendingClaim
             winnerSeat = pkt.winnerSeat
             if let wr = pkt.winReason { winReason = wr }
+            if let ht = pkt.horseTiles { horseTiles = ht }
+            if let hh = pkt.hitHorseIds { hitHorseIds = Set(hh) }
             if let sb = pkt.statusBanner { statusBanner = sb }
             if let tr = pkt.totalRounds { totalRounds = tr }
             if let cr = pkt.currentRound { currentRound = cr }
@@ -13730,6 +13875,19 @@ final class RummikubEngine: NSObject, ObservableObject {
     @Published var isDealingAnimation: Bool = false
     @Published var drawingAnimatedTile: RmkTile? = nil
     @Published var isDrawingAnimation: Bool = false
+    @Published var drawnTargetSlotIndex: Int = 0
+
+    var hasUncommittedTableChanges: Bool {
+        guard isEditingTable else { return false }
+        return workingMelds != snapshotMelds || workingHand.count != snapshotHand.count
+    }
+
+    func syncEditingStateWithSnapshot() {
+        if isEditingTable && workingMelds == snapshotMelds && workingHand.count == snapshotHand.count {
+            isEditingTable = false
+            selectedTableTileSource = nil
+        }
+    }
     private var dealAnimTimer: Timer? = nil
     private var snapshotMelds: [RmkMeld] = []
     private var snapshotHand: [RmkTile] = []
@@ -14450,29 +14608,34 @@ final class RummikubEngine: NSObject, ObservableObject {
     func handleTableTileTapOrMove(meldId: String, tileId: String) {
         guard currentTurnSeat == mySeatIndex, phase == .playing else { return }
         if !selectedTileIds.isEmpty {
+            let baseMelds = isEditingTable ? workingMelds : tableMelds
+            guard let mIdx = baseMelds.firstIndex(where: { $0.id == meldId }) else { return }
+            let isSnapshotMeld = snapshotMelds.contains(where: { $0.id == meldId })
+            guard seats[mySeatIndex].hasBrokenIce || !isSnapshotMeld || mIdx >= snapshotMelds.count else {
+                statusBanner = "⚠️ 尚未破冰！首次出牌请先将牌拖到桌面空白处或自己本回合牌组上"
+                return
+            }
             addSelectedToTableMeld(meldId, allowInvalidSplit: true)
             return
         }
-        beginOrEnsureWorkspace()
-        guard let mIdx = workingMelds.firstIndex(where: { $0.id == meldId }),
-              let tIdx = workingMelds[mIdx].tiles.firstIndex(where: { $0.id == tileId }) else { return }
 
-        guard seats[mySeatIndex].hasBrokenIce || mIdx >= snapshotMelds.count else {
+        let baseMelds = isEditingTable ? workingMelds : tableMelds
+        guard let mIdx = baseMelds.firstIndex(where: { $0.id == meldId }),
+              let tIdx = baseMelds[mIdx].tiles.firstIndex(where: { $0.id == tileId }) else { return }
+        let isSnapshotMeld = snapshotMelds.contains(where: { $0.id == meldId })
+        guard seats[mySeatIndex].hasBrokenIce || !isSnapshotMeld else {
             statusBanner = "⚠️ 尚未破冰！首次出牌需使用自己牌架摆出 ≥30 分牌组"
             return
         }
 
         if let src = selectedTableTileSource {
             if src.meldId == meldId && src.tileId == tileId {
-                // Tapping the same table tile again detaches/splits it ON THE TABLE (never forces prior-turn table tiles onto your rack!)
                 selectedTableTileSource = nil
-                let tile = workingMelds[mIdx].tiles.remove(at: tIdx)
-                if workingMelds[mIdx].tiles.isEmpty {
-                    workingMelds.remove(at: mIdx)
+                if snapshotHand.contains(where: { $0.id == tileId }) {
+                    _ = returnTableTileToRackIfFromThisTurn(meldId: meldId, tileId: tileId)
+                } else {
+                    moveTableTile(fromMeldId: meldId, tileId: tileId, toMeldId: nil)
                 }
-                workingMelds.append(RmkMeld(id: UUID().uuidString, tiles: [tile]))
-                lastTurnHighlightedTileIds.insert(tile.id)
-                statusBanner = "🧩 已从桌面牌组拆出单牌到桌面！可继续拖动其他牌与它组合"
                 return
             } else if src.meldId != meldId {
                 moveTableTile(fromMeldId: src.meldId, tileId: src.tileId, toMeldId: meldId)
@@ -14482,36 +14645,92 @@ final class RummikubEngine: NSObject, ObservableObject {
         }
 
         selectedTableTileSource = (meldId: meldId, tileId: tileId)
-        let picked = workingMelds[mIdx].tiles[tIdx]
-        statusBanner = "🖐 已选中桌面牌 [\(picked.isJoker ? "百搭" : "\(picked.color.labelZh)\(picked.number)")]：可直接拖到其他牌组，或点另一组移入，再点一次单独拆出！"
+        let picked = baseMelds[mIdx].tiles[tIdx]
+        statusBanner = "🖐 已选中桌面牌 [\(picked.isJoker ? "百搭" : "\(picked.color.labelZh)\(picked.number)")]：可拖到其他牌组/空位重组，或点另一组移入，再点一次单独拆出！"
     }
 
     func moveTableTile(fromMeldId: String, tileId: String, toMeldId: String?) {
         guard currentTurnSeat == mySeatIndex, phase == .playing else { return }
-        beginOrEnsureWorkspace()
-        guard let srcMIdx = workingMelds.firstIndex(where: { $0.id == fromMeldId }),
-              let srcTIdx = workingMelds[srcMIdx].tiles.firstIndex(where: { $0.id == tileId }) else { return }
-        guard seats[mySeatIndex].hasBrokenIce || srcMIdx >= snapshotMelds.count else {
+        let checkMelds = isEditingTable ? workingMelds : tableMelds
+        guard let checkMIdx = checkMelds.firstIndex(where: { $0.id == fromMeldId }),
+              checkMelds[checkMIdx].tiles.contains(where: { $0.id == tileId }) else { return }
+        let isFromSnapshot = snapshotMelds.contains(where: { $0.id == fromMeldId })
+        guard seats[mySeatIndex].hasBrokenIce || !isFromSnapshot else {
             statusBanner = "⚠️ 尚未破冰！不能拆解其他玩家的桌面牌组"
             return
         }
-        let movingTile = workingMelds[srcMIdx].tiles.remove(at: srcTIdx)
-        if workingMelds[srcMIdx].tiles.isEmpty {
-            workingMelds.remove(at: srcMIdx)
+
+        beginOrEnsureWorkspace()
+        guard let srcMIdx = workingMelds.firstIndex(where: { $0.id == fromMeldId }),
+              let srcTIdx = workingMelds[srcMIdx].tiles.firstIndex(where: { $0.id == tileId }) else {
+            syncEditingStateWithSnapshot()
+            return
         }
-        lastTurnHighlightedTileIds.insert(movingTile.id)
-        if let targetId = toMeldId, let dstIdx = workingMelds.firstIndex(where: { $0.id == targetId }) {
-            var comb = workingMelds[dstIdx].tiles + [movingTile]
-            if RmkEvaluator.evaluateMeld(comb) != nil {
-                comb = RmkEvaluator.sortMeldForDisplay(comb)
+
+        // If the source meld only has 1 tile and is dropped on open table space (toMeldId == nil),
+        // check if there is another incomplete (<3 tiles) staging meld on the table to merge with!
+        if toMeldId == nil && workingMelds[srcMIdx].tiles.count == 1 {
+            if let otherStageIdx = workingMelds.lastIndex(where: { $0.id != fromMeldId && RmkEvaluator.evaluateMeld($0.tiles) == nil && (seats[mySeatIndex].hasBrokenIce || !snapshotMelds.contains(where: { s in s.id == $0.id })) }) {
+                let movingTile = workingMelds[srcMIdx].tiles[0]
+                let otherId = workingMelds[otherStageIdx].id
+                workingMelds.remove(at: srcMIdx)
+                if let dstIdx = workingMelds.firstIndex(where: { $0.id == otherId }) {
+                    let comb = RmkEvaluator.sortMeldForDisplay(workingMelds[dstIdx].tiles + [movingTile])
+                    workingMelds[dstIdx].tiles = comb
+                    lastTurnHighlightedTileIds.insert(movingTile.id)
+                    selectedTableTileSource = nil
+                    statusBanner = "✅ 已将两张桌面散牌合并成新牌组！"
+                    syncEditingStateWithSnapshot()
+                    return
+                }
+            } else {
+                selectedTableTileSource = (meldId: fromMeldId, tileId: tileId)
+                statusBanner = "🧩 该牌已独立在桌面，可继续拖其他桌面牌或手牌与它合并！"
+                return
             }
-            workingMelds[dstIdx].tiles = comb
-            statusBanner = "✅ 已将桌面牌拖入目标牌组！"
-        } else {
-            workingMelds.append(RmkMeld(id: UUID().uuidString, tiles: [movingTile]))
-            statusBanner = "🧩 已拆出单牌到桌面空位，可继续拖动组牌！"
         }
-        selectedTableTileSource = nil
+
+        let origTiles = workingMelds[srcMIdx].tiles
+        let movingTile = origTiles[srcTIdx]
+
+        // Smart Rummikub middle-tile split: if taking a middle tile out of a long run (e.g. 4 from 2-3-4-5-6-7),
+        // split the remaining tiles into leftSlice and rightSlice so valid sub-runs stay valid!
+        if srcTIdx > 0 && srcTIdx < origTiles.count - 1 {
+            let leftSlice = Array(origTiles[0..<srcTIdx])
+            let rightSlice = Array(origTiles[(srcTIdx + 1)...])
+            if leftSlice.count >= 3 || rightSlice.count >= 3 {
+                workingMelds[srcMIdx].tiles = leftSlice
+                workingMelds.insert(RmkMeld(id: UUID().uuidString, tiles: rightSlice), at: srcMIdx + 1)
+            } else {
+                workingMelds[srcMIdx].tiles.remove(at: srcTIdx)
+            }
+        } else {
+            workingMelds[srcMIdx].tiles.remove(at: srcTIdx)
+            if workingMelds[srcMIdx].tiles.isEmpty {
+                workingMelds.remove(at: srcMIdx)
+            }
+        }
+
+        lastTurnHighlightedTileIds.insert(movingTile.id)
+
+        if let targetId = toMeldId, let dstIdx = workingMelds.firstIndex(where: { $0.id == targetId }) {
+            let comb = RmkEvaluator.sortMeldForDisplay(workingMelds[dstIdx].tiles + [movingTile])
+            workingMelds[dstIdx].tiles = comb
+            statusBanner = "✅ 已将桌面牌并入目标牌组！"
+        } else if let stageIdx = workingMelds.lastIndex(where: { $0.id != fromMeldId && $0.tiles.count < 3 && RmkEvaluator.evaluateMeld($0.tiles) == nil && (seats[mySeatIndex].hasBrokenIce || !snapshotMelds.contains(where: { s in s.id == $0.id })) }) {
+            // Automatically combine into the active incomplete staging group on the table!
+            let comb = RmkEvaluator.sortMeldForDisplay(workingMelds[stageIdx].tiles + [movingTile])
+            workingMelds[stageIdx].tiles = comb
+            statusBanner = RmkEvaluator.evaluateMeld(comb) != nil
+                ? "✅ 已在桌面组合成有效新牌组！"
+                : "🧩 已并入桌面待组新牌组（还差 \(max(1, 3 - comb.count)) 张即可成组）！"
+        } else {
+            let newMeld = RmkMeld(id: UUID().uuidString, tiles: [movingTile])
+            workingMelds.append(newMeld)
+            selectedTableTileSource = (meldId: newMeld.id, tileId: movingTile.id)
+            statusBanner = "🧩 已从牌组拆出单牌到桌面！继续拖其他桌面牌或手牌即可与它组成新牌组"
+        }
+        syncEditingStateWithSnapshot()
     }
 
     func returnTableTileToRackIfFromThisTurn(meldId: String, tileId: String) -> Bool {
@@ -14522,7 +14741,10 @@ final class RummikubEngine: NSObject, ObservableObject {
         }
         beginOrEnsureWorkspace()
         guard let mIdx = workingMelds.firstIndex(where: { $0.id == meldId }),
-              let tIdx = workingMelds[mIdx].tiles.firstIndex(where: { $0.id == tileId }) else { return false }
+              let tIdx = workingMelds[mIdx].tiles.firstIndex(where: { $0.id == tileId }) else {
+            syncEditingStateWithSnapshot()
+            return false
+        }
         let tile = workingMelds[mIdx].tiles.remove(at: tIdx)
         if workingMelds[mIdx].tiles.isEmpty {
             workingMelds.remove(at: mIdx)
@@ -14530,89 +14752,128 @@ final class RummikubEngine: NSObject, ObservableObject {
         workingHand.append(tile)
         syncRackFromHand(workingHand, preserveExistingPositions: true)
         selectedTableTileSource = nil
+        syncEditingStateWithSnapshot()
         statusBanner = "↩️ 已将本回合打出的牌拉回牌架"
         return true
     }
 
     func combineSelectedRackTilesWithTableTile() -> Bool {
         guard let src = selectedTableTileSource, !selectedTileIds.isEmpty else { return false }
+        let checkMelds = isEditingTable ? workingMelds : tableMelds
+        guard let checkMIdx = checkMelds.firstIndex(where: { $0.id == src.meldId }),
+              checkMelds[checkMIdx].tiles.contains(where: { $0.id == src.tileId }) else { return false }
+        let isFromSnapshot = snapshotMelds.contains(where: { $0.id == src.meldId })
+        guard seats[mySeatIndex].hasBrokenIce || !isFromSnapshot else { return false }
+
         beginOrEnsureWorkspace()
         guard let srcMIdx = workingMelds.firstIndex(where: { $0.id == src.meldId }),
-              let srcTIdx = workingMelds[srcMIdx].tiles.firstIndex(where: { $0.id == src.tileId }) else { return false }
+              let srcTIdx = workingMelds[srcMIdx].tiles.firstIndex(where: { $0.id == src.tileId }) else {
+            syncEditingStateWithSnapshot()
+            return false
+        }
         let tableTile = workingMelds[srcMIdx].tiles[srcTIdx]
         let rackPicked = workingHand.filter { selectedTileIds.contains($0.id) }
-        let newGroup = [tableTile] + rackPicked
+        guard !rackPicked.isEmpty else {
+            syncEditingStateWithSnapshot()
+            return false
+        }
+        let newGroup = RmkEvaluator.sortMeldForDisplay([tableTile] + rackPicked)
         workingMelds[srcMIdx].tiles.remove(at: srcTIdx)
         if workingMelds[srcMIdx].tiles.isEmpty {
             workingMelds.remove(at: srcMIdx)
         }
         workingHand.removeAll { selectedTileIds.contains($0.id) }
         for i in 0..<rackSlots.count { if let t = rackSlots[i], selectedTileIds.contains(t.id) { rackSlots[i] = nil } }
-        let ordered = RmkEvaluator.evaluateMeld(newGroup) != nil ? RmkEvaluator.sortMeldForDisplay(newGroup) : newGroup
-        workingMelds.append(RmkMeld(id: UUID().uuidString, tiles: ordered))
-        for t in ordered { lastTurnHighlightedTileIds.insert(t.id) }
+        workingMelds.append(RmkMeld(id: UUID().uuidString, tiles: newGroup))
+        for t in newGroup { lastTurnHighlightedTileIds.insert(t.id) }
         selectedTileIds.removeAll()
         selectedTableTileSource = nil
         liftedSlotIndex = nil
+        syncEditingStateWithSnapshot()
         statusBanner = "✅ 已将牌架选牌与桌面拆出的牌组合成新牌组！"
         return true
     }
 
-    /// Drag-to-table play: drops selected/lifted rack tiles onto the table (auto-merges onto 123->1234 if valid, or places new meld!)
+    /// Drag-to-table play: supports dragging a single tile or multiple selected tiles onto the table at ANY time (before or after icebreak)!
     func dropRackTilesToTable(primaryTileId: String, targetMeldId: String? = nil) {
         guard currentTurnSeat == mySeatIndex, phase == .playing else {
             statusBanner = "⏳ 当前不是您的回合，无法拖上桌面出牌"
             return
         }
-        beginOrEnsureWorkspace()
-        var targetIds = selectedTileIds
-        targetIds.insert(primaryTileId)
-        selectedTileIds = targetIds
-        if selectedTableTileSource != nil && seats[mySeatIndex].hasBrokenIce {
-            if combineSelectedRackTilesWithTableTile() { return }
+        let activeHand = isEditingTable ? workingHand : (mySeatIndex < seats.count ? seats[mySeatIndex].hand : [])
+        let targetIds: Set<String> = selectedTileIds.contains(primaryTileId) ? selectedTileIds : selectedTileIds.union([primaryTileId])
+        let picked = activeHand.filter { targetIds.contains($0.id) }
+        guard !picked.isEmpty else {
+            syncEditingStateWithSnapshot()
+            return
         }
-        let picked = workingHand.filter { targetIds.contains($0.id) }
-        guard !picked.isEmpty else { return }
+
+        beginOrEnsureWorkspace()
+        selectedTileIds = targetIds
         for t in picked { lastTurnHighlightedTileIds.insert(t.id) }
 
+        // 1. If dropped directly onto a specific table meld:
         if let tMeldId = targetMeldId,
-           let mIdx = workingMelds.firstIndex(where: { $0.id == tMeldId }),
-           (seats[mySeatIndex].hasBrokenIce || mIdx >= snapshotMelds.count) {
-            addSelectedToTableMeld(tMeldId, allowInvalidSplit: true)
-            return
-        }
-
-        if RmkEvaluator.evaluateMeld(picked) != nil {
-            selectedTileIds = targetIds
-            placeSelectedAsNewMeld()
-            return
-        }
-
-        for idx in 0..<workingMelds.count {
-            if !seats[mySeatIndex].hasBrokenIce && idx < snapshotMelds.count { continue }
-            let combined = workingMelds[idx].tiles + picked
-            if RmkEvaluator.evaluateMeld(combined) != nil {
+           let mIdx = workingMelds.firstIndex(where: { $0.id == tMeldId }) {
+            let isFromSnapshot = snapshotMelds.contains(where: { $0.id == tMeldId })
+            if seats[mySeatIndex].hasBrokenIce || !isFromSnapshot {
                 workingHand.removeAll { targetIds.contains($0.id) }
                 for i in 0..<rackSlots.count { if let t = rackSlots[i], targetIds.contains(t.id) { rackSlots[i] = nil } }
-                workingMelds[idx].tiles = RmkEvaluator.sortMeldForDisplay(combined)
+                let combined = RmkEvaluator.sortMeldForDisplay(workingMelds[mIdx].tiles + picked)
+                workingMelds[mIdx].tiles = combined
                 selectedTileIds.removeAll()
+                selectedTableTileSource = nil
                 liftedSlotIndex = nil
-                statusBanner = "✅ 已拖放拼接到桌面牌组（点击【确认出牌】完成回合）"
+                let isValid = RmkEvaluator.evaluateMeld(combined) != nil
+                statusBanner = isValid
+                    ? "✅ 已并入桌面牌组（点击右侧绿色 ✓ 确认出牌）"
+                    : "🧩 已放入桌面牌组（满3张同色顺子或同数不同色群组后即可点 ✓ 确认）"
+                syncEditingStateWithSnapshot()
                 return
             }
         }
 
-        if seats[mySeatIndex].hasBrokenIce {
-            let ordered = RmkEvaluator.sortMeldForDisplay(picked)
+        // 2. If a table tile was explicitly selected and no targetMeldId was hit, combine with that selected table tile!
+        if selectedTableTileSource != nil {
+            if combineSelectedRackTilesWithTableTile() { return }
+        }
+
+        // 3. If the picked tiles themselves already form a valid 3+ tile meld, place as a new valid meld on the table:
+        if RmkEvaluator.evaluateMeld(picked) != nil {
+            placeSelectedAsNewMeld()
+            syncEditingStateWithSnapshot()
+            return
+        }
+
+        // 4. If there is an incomplete staging meld (<3 tiles or not yet valid) on the table that we are building this turn,
+        // automatically merge the dragged tile(s) into that staging meld!
+        if let stageIdx = workingMelds.lastIndex(where: { RmkEvaluator.evaluateMeld($0.tiles) == nil && (seats[mySeatIndex].hasBrokenIce || !snapshotMelds.contains(where: { s in s.id == $0.id })) }) {
             workingHand.removeAll { targetIds.contains($0.id) }
             for i in 0..<rackSlots.count { if let t = rackSlots[i], targetIds.contains(t.id) { rackSlots[i] = nil } }
-            workingMelds.append(RmkMeld(id: UUID().uuidString, tiles: ordered))
+            let combined = RmkEvaluator.sortMeldForDisplay(workingMelds[stageIdx].tiles + picked)
+            workingMelds[stageIdx].tiles = combined
             selectedTileIds.removeAll()
+            selectedTableTileSource = nil
             liftedSlotIndex = nil
-            statusBanner = "🧩 已暂放桌面待重组（请点击桌面牌组/红框牌组拼成≥3张合法牌组后再【确认出牌】）"
-        } else {
-            statusBanner = "⚠️ 尚未破冰：请选中≥3张且总分≥30的牌组后再拖上桌面"
+            if let pts = RmkEvaluator.evaluateMeld(combined) {
+                statusBanner = "✅ 已在桌面拼成有效牌组 (\(pts)分)！点击右侧绿色 ✓ 确认出牌"
+            } else {
+                statusBanner = "🧩 已并入桌面待组牌组（当前 \(combined.count) 张，继续拖牌满3张即可成组）"
+            }
+            syncEditingStateWithSnapshot()
+            return
         }
+
+        // 5. Place single tile or 2 tiles on the table as a new staging group so the player can drag more tiles onto it!
+        let ordered = RmkEvaluator.sortMeldForDisplay(picked)
+        workingHand.removeAll { targetIds.contains($0.id) }
+        for i in 0..<rackSlots.count { if let t = rackSlots[i], targetIds.contains(t.id) { rackSlots[i] = nil } }
+        let newMeld = RmkMeld(id: UUID().uuidString, tiles: ordered)
+        workingMelds.append(newMeld)
+        selectedTileIds.removeAll()
+        liftedSlotIndex = nil
+        statusBanner = "🧩 已拖上桌面暂放（可继续从牌架或桌面拖牌与它组合成 ≥3 张牌组）"
+        syncEditingStateWithSnapshot()
     }
 
     /// Long-press cascade lift: pressing tile 1 slowly lifts 1 -> 2 -> 3 (or 7 -> 7 -> 7) in sequence!
@@ -14653,7 +14914,7 @@ final class RummikubEngine: NSObject, ObservableObject {
         selectedTileIds.removeAll()
         liftedSlotIndex = slotIdx
         for (i, t) in seq.enumerated() {
-            DispatchQueue.main.asyncAfter(deadline: .now() + Double(i) * 0.16) { [weak self] in
+            DispatchQueue.main.asyncAfter(deadline: .now() + Double(i) * 0.14) { [weak self] in
                 guard let self = self else { return }
                 self.selectedTileIds.insert(t.id)
                 if i == seq.count - 1 {
@@ -14665,26 +14926,28 @@ final class RummikubEngine: NSObject, ObservableObject {
 
     func smartHintOrAutoPlace() {
         guard currentTurnSeat == mySeatIndex, phase == .playing else { return }
-        beginOrEnsureWorkspace()
-        let (allMelds, _) = RmkEvaluator.organizeHandIntoGroups(workingHand, preferRuns: sortByColor)
-        if let best = allMelds.max(by: { (RmkEvaluator.evaluateMeld($0) ?? 0) < (RmkEvaluator.evaluateMeld($1) ?? 0) }) ?? RmkEvaluator.findBestMeld(in: workingHand) {
+        let activeHand = isEditingTable ? workingHand : (mySeatIndex < seats.count ? seats[mySeatIndex].hand : [])
+        let (allMelds, _) = RmkEvaluator.organizeHandIntoGroups(activeHand, preferRuns: sortByColor)
+        if let best = allMelds.max(by: { (RmkEvaluator.evaluateMeld($0) ?? 0) < (RmkEvaluator.evaluateMeld($1) ?? 0) }) ?? RmkEvaluator.findBestMeld(in: activeHand) {
             let bestPts = RmkEvaluator.evaluateMeld(best) ?? 0
             let totalPts = allMelds.reduce(0) { $0 + (RmkEvaluator.evaluateMeld($1) ?? 0) }
             selectedTileIds = Set(best.map { $0.id })
             if !seats[mySeatIndex].hasBrokenIce {
                 var alreadyOnTablePts = 0
-                for i in snapshotMelds.count..<workingMelds.count {
-                    alreadyOnTablePts += RmkEvaluator.evaluateMeld(workingMelds[i].tiles) ?? 0
+                if isEditingTable {
+                    for i in snapshotMelds.count..<workingMelds.count {
+                        alreadyOnTablePts += RmkEvaluator.evaluateMeld(workingMelds[i].tiles) ?? 0
+                    }
                 }
                 if alreadyOnTablePts + bestPts >= 30 {
-                    statusBanner = "💡 已选中推荐牌组 (\(bestPts)分)，点【放上桌面】即可达标破冰！"
+                    statusBanner = "💡 已选中推荐牌组 (\(bestPts)分)，向上拖到桌面或点【出到桌面】即可达标破冰！"
                 } else if alreadyOnTablePts + totalPts >= 30 {
-                    statusBanner = "💡 已选中第1组 (\(bestPts)分)，牌架可出牌组共 \(totalPts) 分 ≥30 分，可分批点【放上桌面】联合破冰！"
+                    statusBanner = "💡 已选中第1组 (\(bestPts)分)，牌架可出牌组共 \(totalPts) 分 ≥30 分，可分批放上桌面联合破冰！"
                 } else {
                     statusBanner = "💡 当前牌架可出牌组最高 \(max(bestPts, totalPts)) 分（首次破冰需满30分），建议点右侧【+】摸牌"
                 }
             } else {
-                statusBanner = "💡 已为您选中推荐牌组 (\(bestPts)分，点【放上桌面】即可出牌)"
+                statusBanner = "💡 已为您选中推荐牌组 (\(bestPts)分，向上拖到桌面或点【出到桌面】即可出牌)"
             }
         } else {
             statusBanner = "💡 牌架暂无可直出牌组，建议点击右侧【+】摸牌"
@@ -14693,10 +14956,14 @@ final class RummikubEngine: NSObject, ObservableObject {
 
     func commitMyTurn() {
         guard currentTurnSeat == mySeatIndex, phase == .playing else { return }
-        beginOrEnsureWorkspace()
+        guard hasUncommittedTableChanges else {
+            statusBanner = "⚠️ 本回合尚未移动任何牌到桌面（若不出请点右侧【+】摸牌）"
+            isEditingTable = false
+            return
+        }
         let playedIds = snapshotHand.map { $0.id }.filter { id in !workingHand.contains(where: { $0.id == id }) }
         guard !playedIds.isEmpty else {
-            statusBanner = "⚠️ 本回合尚未打出任何牌架上的牌（若不出请点【摸牌过】）"
+            statusBanner = "⚠️ 本回合尚未从牌架打出任何牌（若不出请点【复原】后点【+】摸牌）"
             return
         }
         for m in workingMelds {
@@ -14732,10 +14999,11 @@ final class RummikubEngine: NSObject, ObservableObject {
     func drawTilePassTapped() {
         guard currentTurnSeat == mySeatIndex, phase == .playing, !isDrawingAnimation else { return }
         restoreWorkspaceSnapshot()
+        drawnTargetSlotIndex = rackSlots.firstIndex(where: { $0 == nil }) ?? max(0, rackSlots.count - 1)
         isDrawingAnimation = true
         drawingAnimatedTile = pool.first ?? RmkTile(id: "anim_draw", color: .red, number: 7)
-        statusBanner = "🃏 正在从牌堆摸取 1 张新牌 (1.5秒摸牌动画)..."
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+        statusBanner = "🃏 正在从摸牌区抽取 1 张新牌飞入牌架空位..."
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.46) { [weak self] in
             guard let self = self else { return }
             self.isDrawingAnimation = false
             self.drawingAnimatedTile = nil

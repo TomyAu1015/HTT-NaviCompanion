@@ -439,6 +439,21 @@ class MahjongEngine(private val context: Context, private val audioMgr: AudioPla
     private val _lastClaimEvent = MutableStateFlow<MahjongClaimEvent?>(null)
     val lastClaimEvent: StateFlow<MahjongClaimEvent?> = _lastClaimEvent
 
+    private val _activeDiscardFlight = MutableStateFlow<MahjongClaimEvent?>(null)
+    val activeDiscardFlight: StateFlow<MahjongClaimEvent?> = _activeDiscardFlight
+
+    private val _horseTiles = MutableStateFlow<List<MahjongTile>>(emptyList())
+    val horseTiles: StateFlow<List<MahjongTile>> = _horseTiles
+
+    private val _hitHorseIds = MutableStateFlow<Set<String>>(emptySet())
+    val hitHorseIds: StateFlow<Set<String>> = _hitHorseIds
+
+    private val _lastWinScoreDelta = MutableStateFlow(0)
+    val lastWinScoreDelta: StateFlow<Int> = _lastWinScoreDelta
+
+    private val _lastWinHasRedDragon = MutableStateFlow(true)
+    val lastWinHasRedDragon: StateFlow<Boolean> = _lastWinHasRedDragon
+
     private fun triggerClaimEvent(seatIdx: Int, actionLabel: String, tile: MahjongTile) {
         val seat = _seats.value.getOrNull(seatIdx) ?: return
         val ev = MahjongClaimEvent(UUID.randomUUID().toString(), seatIdx, seat.name, seat.character, actionLabel, tile)
@@ -448,6 +463,17 @@ class MahjongEngine(private val context: Context, private val audioMgr: AudioPla
                 _lastClaimEvent.value = null
             }
         }, 1850L)
+    }
+
+    private fun triggerDiscardFlight(seatIdx: Int, tile: MahjongTile) {
+        val seat = _seats.value.getOrNull(seatIdx) ?: return
+        val ev = MahjongClaimEvent(UUID.randomUUID().toString(), seatIdx, seat.name, seat.character, "打出", tile)
+        _activeDiscardFlight.value = ev
+        mainHandler.postDelayed({
+            if (_activeDiscardFlight.value?.id == ev.id) {
+                _activeDiscardFlight.value = null
+            }
+        }, 520L)
     }
 
     private val _totalRounds = MutableStateFlow(4)
@@ -1186,6 +1212,10 @@ class MahjongEngine(private val context: Context, private val audioMgr: AudioPla
         _pendingClaim.value = null
         _winnerSeat.value = null
         _winReason.value = ""
+        _horseTiles.value = emptyList()
+        _hitHorseIds.value = emptySet()
+        _lastWinScoreDelta.value = 0
+        _activeDiscardFlight.value = null
         _phase.value = MahjongGamePhase.PLAYING
         _currentTurnSeat.value = dealerIdx
         _turnRemainingSeconds.value = if (_turnTimeLimit.value > 0) _turnTimeLimit.value else 20
@@ -1313,6 +1343,7 @@ class MahjongEngine(private val context: Context, private val audioMgr: AudioPla
         cur[actor] = s.copy(hand = newHand, discards = s.discards + tile, lastActionText = "打出 ${tile.fullName}")
         _seats.value = cur
         _drawnTileId.value = null
+        triggerDiscardFlight(actor, tile)
         audioMgr.playMascotVoice(s.character)
 
         val huSeats = mutableListOf<Int>()
@@ -1434,22 +1465,44 @@ class MahjongEngine(private val context: Context, private val audioMgr: AudioPla
         if (winningTile != null) {
             cur[winner] = cur[winner].copy(hand = MahjongEvaluator.sortHand(cur[winner].hand + winningTile))
         }
-        val laizi = cur[winner].hand.count { it.isLaizi }
-        val mult = (if (isSelfDrawn) 2 else 1) * (if (laizi >= 4) 2 else 1)
-        val pts = _baseScore.value * mult
-        val settled = cur.mapIndexed { idx, s ->
-            val delta = when {
-                isSelfDrawn -> if (idx == winner) pts * 3 else -pts
-                idx == winner -> pts * 2
-                idx == loser -> -pts * 2
-                else -> 0
+        val laizi = cur[winner].hand.count { it.isLaizi } + cur[winner].melds.count { it.tile.isLaizi }
+        val hasRedDragon = (laizi > 0)
+        _lastWinHasRedDragon.value = hasRedDragon
+
+        // 广东红中麻将摸马规则：有红中摸4个马，无红中摸6个马（1、5、9、红中为中马）！
+        val targetHorses = if (hasRedDragon) 4 else 6
+        val horseCount = minOf(targetHorses, wall.size)
+        val drawnHorses = mutableListOf<MahjongTile>()
+        val hitIds = mutableSetOf<String>()
+        val horseNames = mutableListOf<String>()
+        var horseHits = 0
+        repeat(horseCount) {
+            val h = wall.removeAt(0)
+            drawnHorses.add(h)
+            val isHit = h.isLaizi || ((h.suit == MahjongSuit.WAN || h.suit == MahjongSuit.TIAO || h.suit == MahjongSuit.TONG) && (h.rank == 1 || h.rank == 5 || h.rank == 9))
+            if (isHit) {
+                horseHits++
+                hitIds.add(h.id)
+                horseNames.add(h.fullName)
             }
-            if (idx == winner) s.copy(score = s.score + delta, lastActionText = "🎉 胡牌!") else s.copy(score = s.score + delta)
+        }
+        _horseTiles.value = drawnHorses
+        _hitHorseIds.value = hitIds
+        _wallCount.value = wall.size
+
+        val mult = (2 + horseHits) * (if (laizi >= 4) 2 else if (hasRedDragon) 1 else 2)
+        val pts = _baseScore.value * mult
+        _lastWinScoreDelta.value = pts * 3
+        val settled = cur.mapIndexed { idx, s ->
+            val delta = if (idx == winner) pts * 3 else -pts
+            if (idx == winner) s.copy(score = s.score + delta, lastActionText = "🎉 自摸胡!") else s.copy(score = s.score + delta)
         }
         _seats.value = settled
         _pendingClaim.value = null
         _winnerSeat.value = winner
-        _winReason.value = if (isSelfDrawn) "自摸胡牌 (x$mult)" else "点炮胡牌 (x$mult)"
+        val ruleTag = if (hasRedDragon) "有红中摸4马" else "无红中摸6马"
+        val horseDesc = if (horseCount > 0) " · $ruleTag · 摸马中${horseHits}匹${if (horseNames.isNotEmpty()) "[${horseNames.joinToString(",")}]" else ""}" else ""
+        _winReason.value = (if (laizi >= 4) "四红中自摸" else "自摸胡牌") + " (x$mult)" + horseDesc
         _phase.value = MahjongGamePhase.ROUND_OVER
         _statusBanner.value = "🎉 恭喜 [${settled[winner].name}] ${_winReason.value}！"
         audioMgr.triggerBirthdaySpecialVoice()
@@ -1468,7 +1521,7 @@ class MahjongEngine(private val context: Context, private val audioMgr: AudioPla
             if (k != null) { executeSelfKong(k, turn); return@postDelayed }
             val d = MahjongEvaluator.bestAIDiscard(_seats.value[turn].hand, _seats.value[turn].melds.size, _aiDifficulty.value)
             executeDiscard(d.id, turn)
-        }, 850L)
+        }, 1650L)
     }
 
     private fun scheduleAIClaimIfNeeded() {
