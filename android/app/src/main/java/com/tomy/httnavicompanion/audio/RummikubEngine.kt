@@ -1852,7 +1852,6 @@ class RummikubEngine(
             val nextSlots = _rackSlots.value.toMutableList()
             nextSlots[preferredRackSlot] = tile
             _rackSlots.value = nextSlots
-            syncHandOrderFromRackSlots()
         } else {
             syncRackFromHand(_workingHand.value, preserveExistingPositions = true)
         }
