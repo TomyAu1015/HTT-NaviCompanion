@@ -1471,6 +1471,10 @@ fun KOnRummikubContent() {
     val drawnTargetSlotIdx by rmk.drawnTargetSlotIndex.collectAsState()
     val highlightedIds by rmk.lastTurnHighlightedTileIds.collectAsState()
     val selectedTableTile by rmk.selectedTableTileSource.collectAsState()
+    val oppDrawSeatIdx by rmk.opponentDrawingSeatIndex.collectAsState()
+    val oppPlaySeatIdx by rmk.opponentPlayingSeatIndex.collectAsState()
+    val oppPlayTile by rmk.opponentPlayingTile.collectAsState()
+    val oppPlayTargetMeldId by rmk.opponentPlayingTargetMeldId.collectAsState()
 
     fun tileColor(c: RmkColor): Color = when (c) {
         RmkColor.RED -> Color(0xFFDC2832)
@@ -1682,12 +1686,76 @@ fun KOnRummikubContent() {
         var dragOffsetX by remember { mutableStateOf(0f) }
         var dragOffsetY by remember { mutableStateOf(0f) }
         var dragTableTileKey by remember { mutableStateOf<Pair<String, String>?>(null) }
+        var dragTableTileObj by remember { mutableStateOf<RmkTile?>(null) }
+        var dragTableStartCenter by remember { mutableStateOf(Offset.Zero) }
         var dragTableOffX by remember { mutableStateOf(0f) }
         var dragTableOffY by remember { mutableStateOf(0f) }
+        var dragRackStartCenter by remember { mutableStateOf(Offset.Zero) }
         val meldBoundsMap = remember { mutableStateMapOf<String, Rect>() }
+        val seatBoundsMap = remember { mutableStateMapOf<Int, Rect>() }
+        var drawBtnBounds by remember { mutableStateOf<Rect?>(null) }
         var tableAreaBounds by remember { mutableStateOf<Rect?>(null) }
         var rackAreaBounds by remember { mutableStateOf<Rect?>(null) }
         val drawAnimProg by animateFloatAsState(targetValue = if (isDrawing) 1f else 0f, animationSpec = spring())
+        val oppDrawAnimProg by animateFloatAsState(targetValue = if (oppDrawSeatIdx != null) 1f else 0f, animationSpec = spring())
+        val oppPlayAnimProg by animateFloatAsState(targetValue = if (oppPlayTile != null) 1f else 0f, animationSpec = spring())
+
+        fun findMagneticMeldHit(
+            pt: Offset,
+            excludeMeldId: String? = null,
+            draggingTiles: List<RmkTile> = emptyList()
+        ): Triple<String?, Boolean, Int?> {
+            var bestId: String? = null
+            var bestPreferLeading = false
+            var bestScore = Float.MAX_VALUE
+            for (meld in dispMelds) {
+                if (meld.id == excludeMeldId) continue
+                val rect = meldBoundsMap[meld.id] ?: continue
+                val expanded = Rect(
+                    left = rect.left - 34f,
+                    top = rect.top - 16f,
+                    right = rect.right + 34f,
+                    bottom = rect.bottom + 16f
+                )
+                if (!expanded.contains(pt)) continue
+                val dx = pt.x - rect.center.x
+                val dy = pt.y - rect.center.y
+                var score = kotlin.math.hypot(dx, dy * 1.35f)
+                if (rect.contains(pt)) score *= 0.45f
+                if (draggingTiles.isNotEmpty()) {
+                    val cand = meld.tiles + draggingTiles
+                    if (RmkEvaluator.evaluateMeld(cand) != null) {
+                        score *= 0.35f
+                    } else {
+                        val norms = cand.filter { !it.isJoker }
+                        val sameNum = norms.all { it.number == (norms.firstOrNull()?.number ?: 0) } &&
+                            norms.map { it.color }.distinct().size == norms.size
+                        val sameCol = norms.all { it.color == norms.firstOrNull()?.color } &&
+                            norms.map { it.number }.distinct().size == norms.size
+                        if (!sameNum && !sameCol) score *= 2.4f
+                    }
+                }
+                if (score < bestScore) {
+                    bestScore = score
+                    bestId = meld.id
+                    bestPreferLeading = pt.x < rect.center.x
+                }
+            }
+            if (bestId != null) return Triple(bestId, bestPreferLeading, null)
+            var insertIdx = dispMelds.size
+            for ((idx, meld) in dispMelds.withIndex()) {
+                val rect = meldBoundsMap[meld.id] ?: continue
+                if (pt.y < rect.top - 8f) {
+                    insertIdx = idx
+                    break
+                }
+                if (pt.y <= rect.bottom + 8f && pt.x < rect.center.x) {
+                    insertIdx = idx
+                    break
+                }
+            }
+            return Triple(null, false, insertIdx)
+        }
 
         // Order seats so opponents are at top-left and local player (me) is anchored at bottom-left next to the rack (1:1 like video!)
         val orderedSeats = remember(seats, mySeat) {
@@ -1727,7 +1795,12 @@ fun KOnRummikubContent() {
                         val prog = (remSec.toFloat() / 60f).coerceIn(0f, 1f)
 
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Box(modifier = Modifier.size(52.dp), contentAlignment = Alignment.Center) {
+                            Box(
+                                modifier = Modifier
+                                    .size(52.dp)
+                                    .onGloballyPositioned { seatBoundsMap[s.id] = it.boundsInRoot() },
+                                contentAlignment = Alignment.Center
+                            ) {
                                 Box(
                                     modifier = Modifier
                                         .size(46.dp)
@@ -1934,10 +2007,14 @@ fun KOnRummikubContent() {
                                                 modifier = Modifier
                                                     .onGloballyPositioned { meldBoundsMap[meld.id] = it.boundsInRoot() }
                                                     .clip(RoundedCornerShape(7.dp))
-                                                    .background(Color.Black.copy(alpha = 0.28f))
-                                                    .border(if (ok) 1.dp else 2.5.dp, if (ok) Color.White.copy(alpha = 0.18f) else Color.Red, RoundedCornerShape(7.dp))
-                                                    .padding(3.dp),
-                                                horizontalArrangement = Arrangement.spacedBy(2.dp)
+                                                    .background(if (ok) Color.Transparent else Color.Red.copy(alpha = 0.16f))
+                                                    .border(
+                                                        width = if (ok) 0.dp else 2.2.dp,
+                                                        color = if (ok) Color.Transparent else Color(0xFFFF5252),
+                                                        shape = RoundedCornerShape(7.dp)
+                                                    )
+                                                    .padding(horizontal = 3.dp, vertical = 2.dp),
+                                                horizontalArrangement = Arrangement.spacedBy(1.5.dp)
                                             ) {
                                                 meld.tiles.forEach { t ->
                                                     val isPickedTable = (selectedTableTile?.first == meld.id && selectedTableTile?.second == t.id)
@@ -1947,12 +2024,13 @@ fun KOnRummikubContent() {
                                                     Box(
                                                         modifier = Modifier
                                                             .onGloballyPositioned { tileRootPos = it.boundsInRoot().center }
-                                                            .offset { if (isDragTbl) IntOffset(dragTableOffX.roundToInt(), dragTableOffY.roundToInt()) else IntOffset.Zero }
                                                             .pointerInput(meld.id, t.id, myTurn) {
                                                                 if (!myTurn) return@pointerInput
                                                                 detectDragGestures(
                                                                     onDragStart = {
                                                                         dragTableTileKey = meld.id to t.id
+                                                                        dragTableTileObj = t
+                                                                        dragTableStartCenter = tileRootPos
                                                                         dragTableOffX = 0f
                                                                         dragTableOffY = 0f
                                                                     },
@@ -1966,36 +2044,49 @@ fun KOnRummikubContent() {
                                                                         if (rackAreaBounds?.contains(dropPt) == true) {
                                                                             rmk.returnTableTileToRackIfFromThisTurn(meld.id, t.id)
                                                                         } else {
-                                                                            val targetMeld = meldBoundsMap.entries.firstOrNull { it.key != meld.id && it.value.inflate(18f).contains(dropPt) }?.key
+                                                                            val (targetMeld, preferLead, insIdx) = findMagneticMeldHit(dropPt, excludeMeldId = meld.id, draggingTiles = listOf(t))
                                                                             if (targetMeld != null) {
-                                                                                rmk.moveTableTile(meld.id, t.id, targetMeld)
-                                                                            } else if (tableAreaBounds?.contains(dropPt) == true) {
-                                                                                rmk.moveTableTile(meld.id, t.id, null)
+                                                                                rmk.moveTableTile(meld.id, t.id, targetMeld, preferLeading = preferLead)
+                                                                            } else if (tableAreaBounds?.inflate(32f)?.contains(dropPt) == true) {
+                                                                                rmk.moveTableTile(meld.id, t.id, null, preferLeading = false, insertAtMeldIndex = insIdx)
                                                                             }
                                                                         }
                                                                         dragTableTileKey = null
+                                                                        dragTableTileObj = null
                                                                         dragTableOffX = 0f
                                                                         dragTableOffY = 0f
                                                                     },
                                                                     onDragCancel = {
                                                                         dragTableTileKey = null
+                                                                        dragTableTileObj = null
                                                                         dragTableOffX = 0f
                                                                         dragTableOffY = 0f
                                                                     }
                                                                 )
                                                             }
                                                     ) {
-                                                        RmkTileCard(
-                                                            tile = t,
-                                                            selected = isPickedTable || isDragTbl,
-                                                            highlighted = isHigh,
-                                                            compact = chosenW < 34f,
-                                                            customW = tileWDp,
-                                                            customH = tileHDp,
-                                                            onClick = if (myTurn) {
-                                                                { rmk.handleTableTileTapOrMove(meld.id, t.id) }
-                                                            } else null
-                                                        )
+                                                        Box(modifier = Modifier.then(if (isDragTbl) Modifier.background(Color.Transparent) else Modifier)) {
+                                                            if (!isDragTbl) {
+                                                                RmkTileCard(
+                                                                    tile = t,
+                                                                    selected = isPickedTable,
+                                                                    highlighted = isHigh,
+                                                                    compact = chosenW < 34f,
+                                                                    customW = tileWDp,
+                                                                    customH = tileHDp,
+                                                                    onClick = if (myTurn) {
+                                                                        { rmk.handleTableTileTapOrMove(meld.id, t.id) }
+                                                                    } else null
+                                                                )
+                                                            } else {
+                                                                Box(
+                                                                    modifier = Modifier
+                                                                        .size(width = tileWDp, height = tileHDp)
+                                                                        .clip(RoundedCornerShape(6.dp))
+                                                                        .border(1.5.dp, Color.Cyan.copy(alpha = 0.45f), RoundedCornerShape(6.dp))
+                                                                )
+                                                            }
+                                                        }
                                                     }
                                                 }
                                             }
@@ -2065,8 +2156,15 @@ fun KOnRummikubContent() {
                                                                         val estDrop = tableAreaBounds?.let { tb ->
                                                                             Offset(tb.left + tb.width * ((col + 0.5f) / cols) + dragOffsetX, tb.bottom + dragOffsetY)
                                                                         }
-                                                                        val targetMeld = if (estDrop != null) meldBoundsMap.entries.firstOrNull { it.value.inflate(22f).contains(estDrop) }?.key else null
-                                                                        rmk.dropRackTilesToTable(tileOpt.id, targetMeld)
+                                                                        if (estDrop != null) {
+                                                                            val movingList = if (selIds.contains(tileOpt.id) && selIds.size > 1) {
+                                                                                rackSlots.filterNotNull().filter { selIds.contains(it.id) }
+                                                                            } else listOf(tileOpt)
+                                                                            val (targetMeld, preferLead, insIdx) = findMagneticMeldHit(estDrop, excludeMeldId = null, draggingTiles = movingList)
+                                                                            rmk.dropRackTilesToTable(tileOpt.id, targetMeld, preferLeading = preferLead, insertAtMeldIndex = insIdx)
+                                                                        } else {
+                                                                            rmk.dropRackTilesToTable(tileOpt.id, null)
+                                                                        }
                                                                     } else {
                                                                         val stepPx = (size.width + 10).coerceAtLeast(38)
                                                                         val colShift = (dragOffsetX / stepPx).roundToInt()
@@ -2230,6 +2328,7 @@ fun KOnRummikubContent() {
                         Box(
                             modifier = Modifier
                                 .size(width = 56.dp, height = 86.dp)
+                                .onGloballyPositioned { drawBtnBounds = it.boundsInRoot() }
                                 .clip(RoundedCornerShape(14.dp))
                                 .background(if (myTurn) Color(0xFF2A4A7C) else Color(0xFF182C4F))
                                 .border(if (myTurn) 2.2.dp else 1.dp, if (myTurn) Color(0xFFFB8C00) else Color.White.copy(alpha = 0.25f), RoundedCornerShape(14.dp))
@@ -2316,17 +2415,89 @@ fun KOnRummikubContent() {
                 }
             }
 
-            // 1.5s Flying Draw Tile Animation Overlay
+            // Top-level Floating Table Drag Tile Overlay (never clipped inside meld row box!)
+            if (dragTableTileKey != null && dragTableTileObj != null) {
+                val curX = dragTableStartCenter.x + dragTableOffX
+                val curY = dragTableStartCenter.y + dragTableOffY
+                Box(
+                    modifier = Modifier
+                        .offset {
+                            IntOffset(
+                                (curX - 65f).roundToInt(),
+                                (curY - 88f).roundToInt()
+                            )
+                        }
+                ) {
+                    RmkTileCard(
+                        tile = dragTableTileObj!!,
+                        selected = true,
+                        highlighted = true,
+                        compact = false,
+                        customW = 42.dp,
+                        customH = 58.dp
+                    )
+                }
+            }
+
+            // 1. Player Draw Tile Flight Animation Overlay (From `+` button into target empty rack slot)
             if (isDrawing && drawAnimTile != null) {
+                val targetCol = drawnTargetSlotIdx % cols
+                val targetRow = drawnTargetSlotIdx / cols
+                val targetX = -48f - ((cols - 1 - targetCol) * 32f)
+                val targetY = if (targetRow == 0) -64f else -18f
                 Box(
                     modifier = Modifier
                         .align(Alignment.BottomEnd)
                         .offset(
-                            x = (-40 - (drawAnimProg * 180)).dp,
-                            y = (-140 + (drawAnimProg * 80)).dp
+                            x = (-24f + (targetX + 24f) * drawAnimProg).dp,
+                            y = (-54f + (targetY + 54f) * drawAnimProg - kotlin.math.sin(drawAnimProg * Math.PI.toFloat()) * 42f).dp
                         )
                 ) {
                     RmkTileCard(tile = drawAnimTile!!, selected = true, compact = false)
+                }
+            }
+
+            // 2. Opponent Draw Tile Back Flight Animation Overlay (From `+` button across table to opponent avatar on left)
+            if (oppDrawSeatIdx != null) {
+                val oppPosIdx = orderedSeats.indexOfFirst { it.id == oppDrawSeatIdx }.coerceAtLeast(0)
+                val endY = (-220f + oppPosIdx * 72f)
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .offset(
+                            x = (-28f - oppDrawAnimProg * 560f).dp,
+                            y = (-56f + (endY + 56f) * oppDrawAnimProg - kotlin.math.sin(oppDrawAnimProg * Math.PI.toFloat()) * 36f).dp
+                        )
+                        .size(width = 34.dp, height = 48.dp)
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(Color(0xFFFCF8F2))
+                        .border(1.5.dp, MjGold, RoundedCornerShape(6.dp)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text("R", color = Color(0xFF1E5096), fontSize = 13.sp, fontWeight = FontWeight.Black)
+                }
+            }
+
+            // 3. Opponent Step-by-Step Play Tile Flight Animation Overlay (From opponent avatar on left to target meld on table)
+            if (oppPlaySeatIdx != null && oppPlayTile != null) {
+                val oppPosIdx = orderedSeats.indexOfFirst { it.id == oppPlaySeatIdx }.coerceAtLeast(0)
+                val startY = 36f + oppPosIdx * 72f
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .offset(
+                            x = (38f + oppPlayAnimProg * 240f).dp,
+                            y = (startY + (110f - startY) * oppPlayAnimProg - kotlin.math.sin(oppPlayAnimProg * Math.PI.toFloat()) * 28f).dp
+                        )
+                ) {
+                    RmkTileCard(
+                        tile = oppPlayTile!!,
+                        selected = true,
+                        highlighted = true,
+                        compact = true,
+                        customW = 38.dp,
+                        customH = 52.dp
+                    )
                 }
             }
         }

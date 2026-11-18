@@ -73,14 +73,14 @@ enum class RmkGamePhase { LOBBY, PLAYING, ROUND_OVER }
 enum class RmkNetworkMode { LOCAL_LAN, ONLINE_SERVER }
 
 object RmkEvaluator {
-    fun sortMeldForDisplay(tiles: List<RmkTile>): List<RmkTile> {
+    fun sortMeldForDisplay(tiles: List<RmkTile>, preferLeadingJoker: Boolean = false): List<RmkTile> {
         val jokers = tiles.filter { it.isJoker }.toMutableList()
         val normals = tiles.filter { !it.isJoker }.sortedWith(Comparator { a, b ->
             if (a.number != b.number) a.number - b.number else a.color.code.compareTo(b.color.code)
         })
         if (normals.isEmpty()) return tiles
         if (normals.all { it.number == normals[0].number }) {
-            return normals + jokers
+            return if (preferLeadingJoker) jokers + normals else normals + jokers
         }
         val res = ArrayList<RmkTile>(tiles.size)
         for (i in normals.indices) {
@@ -92,7 +92,24 @@ object RmkEvaluator {
                 }
             }
         }
-        while (jokers.isNotEmpty()) res.add(jokers.removeAt(0))
+        var curLow = normals.first().number
+        var curHigh = normals.last().number
+        while (jokers.isNotEmpty()) {
+            val j = jokers.removeAt(0)
+            if (preferLeadingJoker && curLow > 1) {
+                res.add(0, j)
+                curLow -= 1
+            } else if (curHigh >= 13 && curLow > 1) {
+                res.add(0, j)
+                curLow -= 1
+            } else if (curHigh < 13) {
+                res.add(j)
+                curHigh += 1
+            } else {
+                res.add(0, j)
+                curLow -= 1
+            }
+        }
         return res
     }
 
@@ -316,6 +333,11 @@ object RmkEvaluator {
                 if (accPts >= 30) break
             }
             chosenHandMelds = minMelds
+        } else if (chosenHandMelds.size > 1) {
+            val totalPlayedCount = chosenHandMelds.sumOf { it.size }
+            if (totalPlayedCount < hand.size) {
+                chosenHandMelds = chosenHandMelds.sortedByDescending { evaluateMeld(it) ?: 0 }.take(2)
+            }
         }
 
         if (hasBrokenIce || totalHandPts >= 30) {
@@ -334,7 +356,9 @@ object RmkEvaluator {
         // Step 2: Only after already breaking ice on a prior turn can AI manipulate existing table melds
         if (hasBrokenIce) {
             var changed = true
-            while (changed) {
+            var tableActionsThisTurn = 0
+            val maxTableActions = if (remHand.size <= 3) 4 else if (chosenHandMelds.isEmpty()) 2 else 1
+            while (changed && tableActionsThisTurn < maxTableActions) {
                 changed = false
                 // 2A. Append/prepend any single hand tile onto an existing table run or 3-tile group
                 outerSingle@ for (hIdx in remHand.indices) {
@@ -346,6 +370,7 @@ object RmkEvaluator {
                             playedIds.add(ht.id)
                             highlightedIds.add(ht.id)
                             remHand.removeAt(hIdx)
+                            tableActionsThisTurn += 1
                             changed = true
                             break@outerSingle
                         }
@@ -379,6 +404,7 @@ object RmkEvaluator {
                                         highlightedIds.add(h1.id)
                                         highlightedIds.add(h2.id)
                                         remHand.removeAll { it.id == h1.id || it.id == h2.id }
+                                        tableActionsThisTurn += 1
                                         changed = true
                                         break@outerSplit
                                     }
@@ -524,6 +550,18 @@ class RummikubEngine(
 
     private val _drawnTargetSlotIndex = MutableStateFlow(0)
     val drawnTargetSlotIndex: StateFlow<Int> = _drawnTargetSlotIndex.asStateFlow()
+
+    private val _opponentDrawingSeatIndex = MutableStateFlow<Int?>(null)
+    val opponentDrawingSeatIndex: StateFlow<Int?> = _opponentDrawingSeatIndex.asStateFlow()
+
+    private val _opponentPlayingSeatIndex = MutableStateFlow<Int?>(null)
+    val opponentPlayingSeatIndex: StateFlow<Int?> = _opponentPlayingSeatIndex.asStateFlow()
+
+    private val _opponentPlayingTile = MutableStateFlow<RmkTile?>(null)
+    val opponentPlayingTile: StateFlow<RmkTile?> = _opponentPlayingTile.asStateFlow()
+
+    private val _opponentPlayingTargetMeldId = MutableStateFlow<String?>(null)
+    val opponentPlayingTargetMeldId: StateFlow<String?> = _opponentPlayingTargetMeldId.asStateFlow()
 
     fun hasUncommittedTableChanges(): Boolean {
         if (!_isEditingTable.value) return false
@@ -768,6 +806,7 @@ class RummikubEngine(
         for (i in row1.indices) if (i < finalCols) next[finalCols + i] = row1[i]
         _rackSlots.value = next
         _liftedSlotIndex.value = null
+        _selectedTileIds.value = emptySet()
         _statusBanner.value = if (melds.isNotEmpty()) {
             "✨ [${if (preferRuns) "789类型组合" else "777(888)类型组合"}] 共识别 ${melds.size} 组可出牌型（已自动留空隔开，不混入其他类型）"
         } else {
@@ -827,7 +866,7 @@ class RummikubEngine(
 
     private fun sendPacketText(jsonStr: String) {
         if (_isServerConnected.value) {
-            sendPacketText(jsonStr)
+            webSocket?.send(jsonStr)
         }
         if (lanWriters.isNotEmpty()) {
             Thread {
@@ -1470,7 +1509,13 @@ class RummikubEngine(
         _statusBanner.value = "🖐 已选中桌面牌 [${if (picked.isJoker) "百搭" else "${picked.color.labelZh}${picked.number}"}]：可拖到其他牌组/空位重组，或点另一组移入，再点一次单独拆出！"
     }
 
-    fun moveTableTile(fromMeldId: String, tileId: String, toMeldId: String?) {
+    fun moveTableTile(
+        fromMeldId: String,
+        tileId: String,
+        toMeldId: String?,
+        preferLeading: Boolean = false,
+        insertAtMeldIndex: Int? = null
+    ) {
         if (_currentTurnSeat.value != _mySeatIndex.value || _phase.value != RmkGamePhase.PLAYING) return
         val brokenIce = _seats.value.getOrNull(_mySeatIndex.value)?.hasBrokenIce == true
         val isFromSnapshot = snapshotMelds.any { it.id == fromMeldId }
@@ -1480,6 +1525,16 @@ class RummikubEngine(
         }
 
         ensureWorkspace()
+        if (toMeldId == fromMeldId) {
+            val ms = _workingMelds.value.toMutableList()
+            val idx = ms.indexOfFirst { it.id == fromMeldId }
+            if (idx >= 0) {
+                ms[idx] = ms[idx].copy(tiles = RmkEvaluator.sortMeldForDisplay(ms[idx].tiles, preferLeadingJoker = preferLeading))
+                _workingMelds.value = ms
+                syncEditingStateWithSnapshot()
+            }
+            return
+        }
         val ms = _workingMelds.value.toMutableList()
         val srcMIdx = ms.indexOfFirst { it.id == fromMeldId }
         if (srcMIdx < 0) {
@@ -1494,27 +1549,19 @@ class RummikubEngine(
         }
 
         if (toMeldId == null && origTiles.size == 1) {
-            val otherStageIdx = ms.indexOfLast { it.id != fromMeldId && RmkEvaluator.evaluateMeld(it.tiles) == null && (brokenIce || snapshotMelds.none { s -> s.id == it.id }) }
-            if (otherStageIdx >= 0) {
-                val movingTile = origTiles[0]
-                val otherId = ms[otherStageIdx].id
-                ms.removeAt(srcMIdx)
-                val dstIdx = ms.indexOfFirst { it.id == otherId }
-                if (dstIdx >= 0) {
-                    val comb = RmkEvaluator.sortMeldForDisplay(ms[dstIdx].tiles + movingTile)
-                    ms[dstIdx] = ms[dstIdx].copy(tiles = comb)
-                    _workingMelds.value = ms
-                    _lastTurnHighlightedTileIds.value = _lastTurnHighlightedTileIds.value + movingTile.id
-                    _selectedTableTileSource.value = null
-                    _statusBanner.value = "✅ 已将两张桌面散牌合并成新牌组！"
-                    syncEditingStateWithSnapshot()
-                    return
-                }
+            val movingTile = origTiles[0]
+            ms.removeAt(srcMIdx)
+            val newMeld = RmkMeld(UUID.randomUUID().toString(), listOf(movingTile))
+            if (insertAtMeldIndex != null && insertAtMeldIndex in 0..ms.size) {
+                ms.add(insertAtMeldIndex, newMeld)
             } else {
-                _selectedTableTileSource.value = fromMeldId to tileId
-                _statusBanner.value = "🧩 该牌已独立在桌面，可继续拖其他桌面牌或手牌与它合并！"
-                return
+                ms.add(newMeld)
             }
+            _workingMelds.value = ms
+            _selectedTableTileSource.value = newMeld.id to movingTile.id
+            _statusBanner.value = "🧩 已将该牌移至桌面新位置，可继续拖其他牌与它合并！"
+            syncEditingStateWithSnapshot()
+            return
         }
 
         val movingTile = origTiles[srcTIdx]
@@ -1527,34 +1574,32 @@ class RummikubEngine(
             } else {
                 val mList = origTiles.toMutableList()
                 mList.removeAt(srcTIdx)
-                ms[srcMIdx] = ms[srcMIdx].copy(tiles = mList)
+                ms[srcMIdx] = ms[srcMIdx].copy(tiles = RmkEvaluator.sortMeldForDisplay(mList))
             }
         } else {
             val mList = origTiles.toMutableList()
             mList.removeAt(srcTIdx)
-            if (mList.isEmpty()) ms.removeAt(srcMIdx) else ms[srcMIdx] = ms[srcMIdx].copy(tiles = mList)
+            if (mList.isEmpty()) ms.removeAt(srcMIdx) else ms[srcMIdx] = ms[srcMIdx].copy(tiles = RmkEvaluator.sortMeldForDisplay(mList))
         }
         _lastTurnHighlightedTileIds.value = _lastTurnHighlightedTileIds.value + movingTile.id
 
         val dstIdx = if (toMeldId != null) ms.indexOfFirst { it.id == toMeldId } else -1
         if (dstIdx >= 0) {
-            val comb = RmkEvaluator.sortMeldForDisplay(ms[dstIdx].tiles + movingTile)
+            val rawComb = if (preferLeading) listOf(movingTile) + ms[dstIdx].tiles else ms[dstIdx].tiles + movingTile
+            val comb = RmkEvaluator.sortMeldForDisplay(rawComb, preferLeadingJoker = preferLeading)
             ms[dstIdx] = ms[dstIdx].copy(tiles = comb)
-            _statusBanner.value = "✅ 已将桌面牌并入目标牌组！"
+            val pts = RmkEvaluator.evaluateMeld(comb)
+            _statusBanner.value = if (pts != null) "✅ 已将桌面牌并入目标牌组 (${pts}分)！" else "🧩 已将牌放入目标牌组（当前 ${comb.size} 张，继续调整使其合法）"
             _selectedTableTileSource.value = null
         } else {
-            val stageIdx = ms.indexOfLast { it.id != fromMeldId && it.tiles.size < 3 && RmkEvaluator.evaluateMeld(it.tiles) == null && (brokenIce || snapshotMelds.none { s -> s.id == it.id }) }
-            if (stageIdx >= 0) {
-                val comb = RmkEvaluator.sortMeldForDisplay(ms[stageIdx].tiles + movingTile)
-                ms[stageIdx] = ms[stageIdx].copy(tiles = comb)
-                _statusBanner.value = if (RmkEvaluator.evaluateMeld(comb) != null) "✅ 已在桌面组合成有效新牌组！" else "🧩 已并入桌面待组新牌组（还差 ${(3 - comb.size).coerceAtLeast(1)} 张即可成组）！"
-                _selectedTableTileSource.value = null
+            val newMeld = RmkMeld(UUID.randomUUID().toString(), listOf(movingTile))
+            if (insertAtMeldIndex != null && insertAtMeldIndex in 0..ms.size) {
+                ms.add(insertAtMeldIndex, newMeld)
             } else {
-                val newMeld = RmkMeld(UUID.randomUUID().toString(), listOf(movingTile))
                 ms.add(newMeld)
-                _selectedTableTileSource.value = newMeld.id to movingTile.id
-                _statusBanner.value = "🧩 已从牌组拆出单牌到桌面！继续拖其他桌面牌或手牌即可与它组成新牌组"
             }
+            _selectedTableTileSource.value = newMeld.id to movingTile.id
+            _statusBanner.value = "🧩 已从牌组拆出单牌到桌面！继续拖其他桌面牌或手牌至该牌处即可组成新牌组"
         }
         _workingMelds.value = ms
         syncEditingStateWithSnapshot()
@@ -1628,7 +1673,12 @@ class RummikubEngine(
         return true
     }
 
-    fun dropRackTilesToTable(primaryTileId: String, targetMeldId: String? = null) {
+    fun dropRackTilesToTable(
+        primaryTileId: String,
+        targetMeldId: String? = null,
+        preferLeading: Boolean = false,
+        insertAtMeldIndex: Int? = null
+    ) {
         val myIdx = _mySeatIndex.value
         if (_currentTurnSeat.value != myIdx || _phase.value != RmkGamePhase.PLAYING) {
             _statusBanner.value = "⏳ 当前不是您的回合，无法拖上桌面出牌"
@@ -1654,7 +1704,8 @@ class RummikubEngine(
             if (mIdx >= 0 && (brokenIce || !isFromSnapshot)) {
                 _workingHand.value = _workingHand.value.filterNot { targetIds.contains(it.id) }
                 _rackSlots.value = _rackSlots.value.map { if (it != null && targetIds.contains(it.id)) null else it }
-                val combined = RmkEvaluator.sortMeldForDisplay(ms[mIdx].tiles + picked)
+                val rawComb = if (preferLeading) picked + ms[mIdx].tiles else ms[mIdx].tiles + picked
+                val combined = RmkEvaluator.sortMeldForDisplay(rawComb, preferLeadingJoker = preferLeading)
                 ms[mIdx] = ms[mIdx].copy(tiles = combined)
                 _workingMelds.value = ms
                 _selectedTileIds.value = emptySet()
@@ -1677,11 +1728,26 @@ class RummikubEngine(
         }
 
         val ms = _workingMelds.value.toMutableList()
-        val stageIdx = ms.indexOfLast { RmkEvaluator.evaluateMeld(it.tiles) == null && (brokenIce || snapshotMelds.none { s -> s.id == it.id }) }
+        val stageIdx = if (insertAtMeldIndex == null) {
+            ms.indexOfLast { m ->
+                if (RmkEvaluator.evaluateMeld(m.tiles) != null) return@indexOfLast false
+                if (!brokenIce && snapshotMelds.any { s -> s.id == m.id }) return@indexOfLast false
+                val cand = m.tiles + picked
+                if (RmkEvaluator.evaluateMeld(cand) != null) return@indexOfLast true
+                val norms = cand.filter { !it.isJoker }
+                if (norms.size <= 1) return@indexOfLast true
+                val sameNum = norms.all { it.number == norms[0].number } && norms.map { it.color }.distinct().size == norms.size
+                val sameCol = norms.all { it.color == norms[0].color } &&
+                    norms.map { it.number }.distinct().size == norms.size &&
+                    ((norms.maxOf { it.number } - norms.minOf { it.number }) <= cand.size)
+                sameNum || sameCol
+            }
+        } else -1
+
         if (stageIdx >= 0) {
             _workingHand.value = _workingHand.value.filterNot { targetIds.contains(it.id) }
             _rackSlots.value = _rackSlots.value.map { if (it != null && targetIds.contains(it.id)) null else it }
-            val combined = RmkEvaluator.sortMeldForDisplay(ms[stageIdx].tiles + picked)
+            val combined = RmkEvaluator.sortMeldForDisplay(ms[stageIdx].tiles + picked, preferLeadingJoker = preferLeading)
             ms[stageIdx] = ms[stageIdx].copy(tiles = combined)
             _workingMelds.value = ms
             _selectedTileIds.value = emptySet()
@@ -1695,7 +1761,13 @@ class RummikubEngine(
 
         _workingHand.value = _workingHand.value.filterNot { targetIds.contains(it.id) }
         _rackSlots.value = _rackSlots.value.map { if (it != null && targetIds.contains(it.id)) null else it }
-        _workingMelds.value = ms + RmkMeld(UUID.randomUUID().toString(), RmkEvaluator.sortMeldForDisplay(picked))
+        val newMeld = RmkMeld(UUID.randomUUID().toString(), RmkEvaluator.sortMeldForDisplay(picked, preferLeadingJoker = preferLeading))
+        if (insertAtMeldIndex != null && insertAtMeldIndex in 0..ms.size) {
+            ms.add(insertAtMeldIndex, newMeld)
+        } else {
+            ms.add(newMeld)
+        }
+        _workingMelds.value = ms
         _selectedTileIds.value = emptySet()
         _liftedSlotIndex.value = null
         _statusBanner.value = "🧩 已拖上桌面暂放（可继续从牌架或桌面拖牌与它组合成 ≥3 张牌组）"
@@ -1704,6 +1776,26 @@ class RummikubEngine(
 
     fun startLongPressCascadeSelect(slotIdx: Int) {
         val anchor = _rackSlots.value.getOrNull(slotIdx) ?: return
+        // 1. First check contiguous tiles placed side-by-side on the same rack row around slotIdx
+        val cols = maxOf(10, _rackCols.value)
+        val rowStart = (slotIdx / cols) * cols
+        val rowEnd = minOf(_rackSlots.value.size - 1, rowStart + cols - 1)
+        var leftIdx = slotIdx
+        while (leftIdx > rowStart && _rackSlots.value[leftIdx - 1] != null) {
+            leftIdx -= 1
+        }
+        var rightIdx = slotIdx
+        while (rightIdx < rowEnd && _rackSlots.value[rightIdx + 1] != null) {
+            rightIdx += 1
+        }
+        val contiguousBlock = (leftIdx..rightIdx).mapNotNull { _rackSlots.value[it] }
+        if (contiguousBlock.size >= 3 && RmkEvaluator.evaluateMeld(contiguousBlock) != null) {
+            _selectedTileIds.value = contiguousBlock.map { it.id }.toSet()
+            _liftedSlotIndex.value = slotIdx
+            val pts = RmkEvaluator.evaluateMeld(contiguousBlock) ?: 0
+            _statusBanner.value = "✨ 已整组连选 ${contiguousBlock.size} 张牌 ($pts 分)，直接向上拖到桌面即可整组出牌！"
+            return
+        }
         val active = currentCanonicalHand()
         val jokers = active.filter { it.isJoker && it.id != anchor.id }
         var seq: List<RmkTile> = listOf(anchor)
@@ -1868,6 +1960,14 @@ class RummikubEngine(
     private fun executeDrawAndAdvance(seatIdx: Int, reason: String) {
         _isDealingAnimation.value = false
         _dealingVisibleCount.value = 999
+        if (seatIdx != _mySeatIndex.value && pool.isNotEmpty()) {
+            _opponentDrawingSeatIndex.value = seatIdx
+            mainHandler.postDelayed({
+                if (_opponentDrawingSeatIndex.value == seatIdx) {
+                    _opponentDrawingSeatIndex.value = null
+                }
+            }, 460L)
+        }
         val pCnt = _seats.value.size.coerceAtLeast(2)
         val list = _seats.value.toMutableList()
         if (pool.isNotEmpty()) {
@@ -1912,16 +2012,88 @@ class RummikubEngine(
                 if (_phase.value == RmkGamePhase.PLAYING && _currentTurnSeat.value == cur) {
                     val s = _seats.value[cur]
                     val aiMove = RmkEvaluator.findAITableCombinationMove(s.hand, _tableMelds.value, s.hasBrokenIce)
-                    if (aiMove != null) {
-                        _lastTurnHighlightedTileIds.value = aiMove.highlightedIds
-                        executeCommitTurn(cur, aiMove.newMelds, aiMove.playedIds)
+                    if (aiMove != null && aiMove.playedIds.isNotEmpty()) {
+                        performAIStepByStepPlay(cur, aiMove)
                     } else {
                         executeDrawAndAdvance(cur, "从共用牌堆摸1张牌")
                     }
                 }
             }
             aiRunnable = r
-            mainHandler.postDelayed(r, 1850L)
+            mainHandler.postDelayed(r, 1150L)
         }
+    }
+
+    private data class AIStepPlacement(val tile: RmkTile, val targetMeldId: String)
+
+    private fun performAIStepByStepPlay(seatIdx: Int, aiMove: RmkEvaluator.AITableMoveResult) {
+        val oldMelds = _tableMelds.value
+        val oldTileIdsByMeld = oldMelds.associate { m -> m.id to m.tiles.map { it.id }.toSet() }
+        val steps = ArrayList<AIStepPlacement>()
+        for (meld in aiMove.newMelds) {
+            val prevIds = oldTileIdsByMeld[meld.id] ?: emptySet()
+            for (tile in meld.tiles) {
+                if (aiMove.playedIds.contains(tile.id) || !prevIds.contains(tile.id)) {
+                    steps.add(AIStepPlacement(tile, meld.id))
+                }
+            }
+        }
+        if (steps.isEmpty()) {
+            _lastTurnHighlightedTileIds.value = aiMove.highlightedIds
+            executeCommitTurn(seatIdx, aiMove.newMelds, aiMove.playedIds)
+            return
+        }
+
+        val initialHand = _seats.value[seatIdx].hand
+        val revealedIds = HashSet<String>()
+        val stepIntervalMs = 580L
+
+        for ((idx, step) in steps.withIndex()) {
+            mainHandler.postDelayed({
+                if (_phase.value != RmkGamePhase.PLAYING || _currentTurnSeat.value != seatIdx) return@postDelayed
+                _opponentPlayingSeatIndex.value = seatIdx
+                _opponentPlayingTile.value = step.tile
+                _opponentPlayingTargetMeldId.value = step.targetMeldId
+                CharacterFilter.fiveIndividuals.firstOrNull { it.charId == _seats.value[seatIdx].characterId }?.let {
+                    audioManager.playMascotVoice(it)
+                }
+
+                mainHandler.postDelayed({
+                    if (_phase.value != RmkGamePhase.PLAYING || _currentTurnSeat.value != seatIdx) return@postDelayed
+                    revealedIds.add(step.tile.id)
+                    _opponentPlayingTile.value = null
+                    _opponentPlayingSeatIndex.value = null
+                    _opponentPlayingTargetMeldId.value = null
+
+                    val partialMelds = ArrayList<RmkMeld>()
+                    for (m in aiMove.newMelds) {
+                        val visibleTiles = m.tiles.filter { t ->
+                            !aiMove.playedIds.contains(t.id) || revealedIds.contains(t.id)
+                        }
+                        if (visibleTiles.isNotEmpty()) {
+                            partialMelds.add(RmkMeld(m.id, visibleTiles))
+                        }
+                    }
+                    _tableMelds.value = partialMelds
+                    _lastTurnHighlightedTileIds.value = revealedIds.toSet()
+                    val sList = _seats.value.toMutableList()
+                    sList[seatIdx] = sList[seatIdx].copy(hand = initialHand.filterNot { revealedIds.contains(it.id) })
+                    _seats.value = sList
+                }, 360L)
+            }, idx * stepIntervalMs)
+        }
+
+        val totalDelayMs = steps.size * stepIntervalMs + 180L
+        mainHandler.postDelayed({
+            if (_phase.value != RmkGamePhase.PLAYING || _currentTurnSeat.value != seatIdx) return@postDelayed
+            _opponentPlayingTile.value = null
+            _opponentPlayingSeatIndex.value = null
+            _opponentPlayingTargetMeldId.value = null
+            val sList = _seats.value.toMutableList()
+            sList[seatIdx] = sList[seatIdx].copy(hand = initialHand)
+            _seats.value = sList
+            _lastTurnHighlightedTileIds.value = aiMove.highlightedIds
+            executeCommitTurn(seatIdx, aiMove.newMelds, aiMove.playedIds)
+        }, totalDelayMs)
     }
 }
