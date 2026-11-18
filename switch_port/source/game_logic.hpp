@@ -785,6 +785,84 @@ namespace RmkEvaluator {
         return -1;
     }
 
+    // Smart Auto-Splitter: e.g. 234567 + 4 -> 2344567 -> [234, 4567], or 12344567 -> [1234, 4567]
+    inline std::vector<std::vector<RmkTile>> autoSplitMeldTiles(const std::vector<RmkTile>& tiles) {
+        if (evaluateMeld(tiles) >= 0) {
+            return {sortMeldForDisplay(tiles)};
+        }
+        if (tiles.size() < 4) {
+            return {sortMeldForDisplay(tiles)};
+        }
+        std::vector<RmkTile> norms, jokers;
+        for (const auto& t : tiles) {
+            if (t.isJoker()) jokers.push_back(t);
+            else norms.push_back(t);
+        }
+        if (norms.empty()) return {tiles};
+
+        // Case 1: Same-color run with duplicate number (e.g. 2,3,4,4,5,6,7) or gap (e.g. 1,2,3,5,6,7)
+        std::string firstCol = norms[0].color;
+        bool allSameCol = true;
+        for (const auto& t : norms) if (t.color != firstCol) allSameCol = false;
+        if (allSameCol) {
+            auto sortedNorms = norms;
+            std::sort(sortedNorms.begin(), sortedNorms.end(), [](const RmkTile& a, const RmkTile& b) {
+                if (a.number != b.number) return a.number < b.number;
+                return a.id < b.id;
+            });
+            for (size_t i = 0; i + 1 < sortedNorms.size(); ++i) {
+                if (sortedNorms[i].number == sortedNorms[i + 1].number) {
+                    std::vector<RmkTile> leftNorms(sortedNorms.begin(), sortedNorms.begin() + i + 1);
+                    std::vector<RmkTile> rightNorms(sortedNorms.begin() + i + 1, sortedNorms.end());
+                    for (size_t jLeft = 0; jLeft <= jokers.size(); ++jLeft) {
+                        std::vector<RmkTile> leftCand = leftNorms;
+                        leftCand.insert(leftCand.end(), jokers.begin(), jokers.begin() + jLeft);
+                        std::vector<RmkTile> rightCand = rightNorms;
+                        rightCand.insert(rightCand.end(), jokers.begin() + jLeft, jokers.end());
+                        if (evaluateMeld(leftCand) >= 0 && evaluateMeld(rightCand) >= 0) {
+                            return {sortMeldForDisplay(leftCand), sortMeldForDisplay(rightCand)};
+                        }
+                    }
+                    std::vector<RmkTile> leftFallback = leftNorms;
+                    leftFallback.insert(leftFallback.end(), jokers.begin(), jokers.end());
+                    if (evaluateMeld(leftFallback) >= 0 || evaluateMeld(rightNorms) >= 0) {
+                        return {sortMeldForDisplay(leftFallback), sortMeldForDisplay(rightNorms)};
+                    }
+                }
+            }
+            for (size_t i = 0; i + 1 < sortedNorms.size(); ++i) {
+                if (sortedNorms[i + 1].number - sortedNorms[i].number > 1) {
+                    std::vector<RmkTile> leftNorms(sortedNorms.begin(), sortedNorms.begin() + i + 1);
+                    std::vector<RmkTile> rightNorms(sortedNorms.begin() + i + 1, sortedNorms.end());
+                    if (evaluateMeld(leftNorms) >= 0 && evaluateMeld(rightNorms) >= 0 && jokers.empty()) {
+                        return {sortMeldForDisplay(leftNorms), sortMeldForDisplay(rightNorms)};
+                    }
+                }
+            }
+        }
+
+        // Case 2: Same-number group with duplicate colors (>4 tiles)
+        int firstNum = norms[0].number;
+        bool allSameNum = true;
+        for (const auto& t : norms) if (t.number != firstNum) allSameNum = false;
+        if (allSameNum && tiles.size() >= 4) {
+            std::set<std::string> seenCols;
+            std::vector<RmkTile> g1, g2;
+            for (const auto& t : norms) {
+                if (seenCols.insert(t.color).second && g1.size() < 4) g1.push_back(t);
+                else g2.push_back(t);
+            }
+            for (const auto& j : jokers) {
+                if (g1.size() < 3) g1.push_back(j);
+                else g2.push_back(j);
+            }
+            if (!g2.empty() && (evaluateMeld(g1) >= 0 || evaluateMeld(g2) >= 0)) {
+                return {sortMeldForDisplay(g1), sortMeldForDisplay(g2)};
+            }
+        }
+        return {sortMeldForDisplay(tiles)};
+    }
+
     inline std::vector<RmkTile> findBestMeld(const std::vector<RmkTile>& hand) {
         std::vector<RmkTile> jokers;
         std::map<int, std::vector<RmkTile>> byNum;

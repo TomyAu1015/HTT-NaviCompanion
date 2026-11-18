@@ -411,6 +411,181 @@ static int drawText(TTF_Font* font, const std::string& rawText, int x, int y, SD
 }
 
 // ============================================================================
+// Rummikub Crisp Audio Synthesizer (SDL2 QueueAudio) + Fixed Special Joker Sound
+// ============================================================================
+namespace RmkSoundFX {
+    static SDL_AudioDeviceID sAudioDev = 0;
+
+    inline void initAudio() {
+        if (sAudioDev != 0) return;
+        SDL_AudioSpec want, have;
+        SDL_zero(want);
+        want.freq = 44100;
+        want.format = AUDIO_S16SYS;
+        want.channels = 1;
+        want.samples = 1024;
+        want.callback = nullptr;
+        sAudioDev = SDL_OpenAudioDevice(nullptr, 0, &want, &have, 0);
+        if (sAudioDev != 0) {
+            SDL_PauseAudioDevice(sAudioDev, 0);
+        }
+    }
+
+    struct NoteSeg {
+        double freq;
+        double durSec;
+        double gapSec;
+        double vol;
+        bool harmonic;
+    };
+
+    inline void playNotes(const std::vector<NoteSeg>& notes) {
+        initAudio();
+        if (sAudioDev == 0) return;
+        const int sr = 44100;
+        std::vector<int16_t> pcm;
+        for (const auto& n : notes) {
+            int nSamp = std::max(1, (int)(n.durSec * sr));
+            int gSamp = std::max(0, (int)(n.gapSec * sr));
+            for (int i = 0; i < nSamp; ++i) {
+                double t = (double)i / (double)sr;
+                double attack = std::min(1.0, (double)i / (0.004 * sr));
+                double decay = std::exp(-4.2 * (double)i / (double)nSamp);
+                double env = attack * decay;
+                double sig = std::sin(2.0 * M_PI * n.freq * t);
+                if (n.harmonic) {
+                    sig = 0.62 * sig
+                        + 0.26 * std::sin(2.0 * M_PI * (n.freq * 2.0) * t)
+                        + 0.12 * std::sin(2.0 * M_PI * (n.freq * 3.0) * t);
+                }
+                int val = (int)(sig * env * n.vol * 32767.0);
+                pcm.push_back((int16_t)std::max(-32767, std::min(32767, val)));
+            }
+            for (int i = 0; i < gSamp; ++i) pcm.push_back(0);
+        }
+        if (!pcm.empty()) {
+            SDL_ClearQueuedAudio(sAudioDev);
+            SDL_QueueAudio(sAudioDev, pcm.data(), (Uint32)(pcm.size() * sizeof(int16_t)));
+        }
+    }
+
+    inline void playClick()    { playNotes({{980.0, 0.032, 0.0, 0.25, false}}); }
+    inline void playSnap()     { playNotes({{660.0, 0.040, 0.008, 0.28, true}, {880.0, 0.065, 0.0, 0.30, true}}); }
+    inline void playSplit()    { playNotes({{784.0, 0.045, 0.010, 0.28, true}, {587.33, 0.045, 0.010, 0.28, true}, {1046.5, 0.075, 0.0, 0.32, true}}); }
+    inline void playDraw()     { playNotes({{523.25, 0.048, 0.008, 0.26, true}, {659.25, 0.070, 0.0, 0.28, true}}); }
+    inline void playOrganize() { playNotes({{523.25, 0.040, 0.008, 0.24, true}, {659.25, 0.040, 0.008, 0.26, true}, {783.99, 0.065, 0.0, 0.28, true}}); }
+    inline void playUndo()     { playNotes({{659.25, 0.045, 0.008, 0.25, false}, {493.88, 0.065, 0.0, 0.25, false}}); }
+    inline void playCommit()   { playNotes({{523.25, 0.055, 0.010, 0.30, true}, {659.25, 0.055, 0.010, 0.32, true}, {783.99, 0.055, 0.010, 0.34, true}, {1046.5, 0.140, 0.0, 0.38, true}}); }
+    inline void playWin()      { playNotes({{523.25, 0.07, 0.015, 0.34, true}, {659.25, 0.07, 0.015, 0.34, true}, {783.99, 0.07, 0.015, 0.36, true}, {1046.5, 0.11, 0.02, 0.38, true}, {1318.5, 0.22, 0.0, 0.42, true}}); }
+
+    // Fixed Special Sound Effect Exclusively for Acquiring a Joker Tile (拿到百搭牌固定专属音效)
+    // Signature 6-note sparkling crystal bell fanfare (C5 -> E5 -> G5 -> B5 -> C6 -> E6)
+    inline void playJokerAcquired() {
+        playNotes({
+            {523.25, 0.055, 0.010, 0.38, true},
+            {659.25, 0.055, 0.010, 0.40, true},
+            {783.99, 0.055, 0.010, 0.42, true},
+            {987.77, 0.065, 0.010, 0.44, true},
+            {1046.50, 0.080, 0.012, 0.46, true},
+            {1318.51, 0.240, 0.000, 0.50, true}
+        });
+    }
+}
+
+// ============================================================================
+// Crisp Vector Icons for Switch UI (6-Point Snowflake, 5-Point Star, Ring, Chevron)
+// ============================================================================
+static void drawThickLine(int x1, int y1, int x2, int y2, SDL_Color col, int thickness = 2) {
+    SDL_SetRenderDrawBlendMode(gRenderer, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(gRenderer, col.r, col.g, col.b, col.a);
+    SDL_RenderDrawLine(gRenderer, x1, y1, x2, y2);
+    for (int t = 1; t < thickness; ++t) {
+        int off = (t % 2 == 1) ? ((t + 1) / 2) : -(t / 2);
+        if (std::abs(x2 - x1) >= std::abs(y2 - y1)) {
+            SDL_RenderDrawLine(gRenderer, x1, y1 + off, x2, y2 + off);
+        } else {
+            SDL_RenderDrawLine(gRenderer, x1 + off, y1, x2 + off, y2);
+        }
+    }
+}
+
+static void drawSnowflakeIcon(int cx, int cy, int r, SDL_Color col) {
+    SDL_SetRenderDrawBlendMode(gRenderer, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(gRenderer, col.r, col.g, col.b, col.a);
+    for (int i = 0; i < 6; ++i) {
+        double ang = i * M_PI / 3.0 - M_PI / 2.0;
+        int ex = cx + (int)std::round(std::cos(ang) * r);
+        int ey = cy + (int)std::round(std::sin(ang) * r);
+        drawThickLine(cx, cy, ex, ey, col, 2);
+        // Chevron V-branches at 60% radius
+        double bx = cx + std::cos(ang) * (r * 0.58);
+        double by = cy + std::sin(ang) * (r * 0.58);
+        double bLen = r * 0.38;
+        int lx = (int)std::round(bx + std::cos(ang - M_PI / 3.2) * bLen);
+        int ly = (int)std::round(by + std::sin(ang - M_PI / 3.2) * bLen);
+        int rx = (int)std::round(bx + std::cos(ang + M_PI / 3.2) * bLen);
+        int ry = (int)std::round(by + std::sin(ang + M_PI / 3.2) * bLen);
+        SDL_RenderDrawLine(gRenderer, (int)std::round(bx), (int)std::round(by), lx, ly);
+        SDL_RenderDrawLine(gRenderer, (int)std::round(bx), (int)std::round(by), rx, ry);
+    }
+    SDL_Rect core = {cx - 1, cy - 1, 3, 3};
+    SDL_RenderFillRect(gRenderer, &core);
+}
+
+static void drawStarIcon(int cx, int cy, int rOuter, int rInner, SDL_Color col) {
+    SDL_SetRenderDrawBlendMode(gRenderer, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(gRenderer, col.r, col.g, col.b, col.a);
+    int vx[10], vy[10];
+    for (int i = 0; i < 10; ++i) {
+        double ang = -M_PI / 2.0 + i * M_PI / 5.0;
+        double rad = (i % 2 == 0) ? rOuter : rInner;
+        vx[i] = cx + (int)std::round(std::cos(ang) * rad);
+        vy[i] = cy + (int)std::round(std::sin(ang) * rad);
+    }
+    for (int y = cy - rOuter; y <= cy + rOuter; ++y) {
+        std::vector<int> nodes;
+        int j = 9;
+        for (int i = 0; i < 10; ++i) {
+            if ((vy[i] < y && vy[j] >= y) || (vy[j] < y && vy[i] >= y)) {
+                nodes.push_back(vx[i] + (y - vy[i]) * (vx[j] - vx[i]) / (vy[j] - vy[i]));
+            }
+            j = i;
+        }
+        std::sort(nodes.begin(), nodes.end());
+        for (size_t k = 0; k + 1 < nodes.size(); k += 2) {
+            SDL_RenderDrawLine(gRenderer, nodes[k], y, nodes[k + 1], y);
+        }
+    }
+}
+
+static void drawCircularProgressRing(int cx, int cy, int r, int thickness, float progress, SDL_Color ringCol, SDL_Color trackCol) {
+    SDL_SetRenderDrawBlendMode(gRenderer, SDL_BLENDMODE_BLEND);
+    int steps = 96;
+    int activeSteps = (int)std::round(std::max(0.0f, std::min(1.0f, progress)) * steps);
+    for (int s = 0; s < steps; ++s) {
+        double a1 = -M_PI / 2.0 + (2.0 * M_PI * s) / steps;
+        double a2 = -M_PI / 2.0 + (2.0 * M_PI * (s + 1)) / steps;
+        SDL_Color c = (s < activeSteps) ? ringCol : trackCol;
+        for (int dr = 0; dr < thickness; ++dr) {
+            double rad = r - dr;
+            int x1 = cx + (int)std::round(std::cos(a1) * rad);
+            int y1 = cy + (int)std::round(std::sin(a1) * rad);
+            int x2 = cx + (int)std::round(std::cos(a2) * rad);
+            int y2 = cy + (int)std::round(std::sin(a2) * rad);
+            SDL_SetRenderDrawColor(gRenderer, c.r, c.g, c.b, c.a);
+            SDL_RenderDrawLine(gRenderer, x1, y1, x2, y2);
+        }
+    }
+}
+
+static void drawDoubleChevronLeft(int cx, int cy, int sz, SDL_Color col) {
+    drawThickLine(cx, cy - sz, cx - sz, cy, col, 2);
+    drawThickLine(cx - sz, cy, cx, cy + sz, col, 2);
+    drawThickLine(cx + sz, cy - sz, cx, cy, col, 2);
+    drawThickLine(cx, cy, cx + sz, cy + sz, col, 2);
+}
+
+// ============================================================================
 // Switch System On-Screen Keyboard (Swkbd) for Room Code & Nickname Input
 // ============================================================================
 static void openSwitchRoomCodeKeyboard() {
@@ -1323,6 +1498,66 @@ static void ensureRmkWorkspaceStarted() {
     }
 }
 
+struct SwitchMeldLayoutItem {
+    int idx;
+    int x, y, w, h;
+};
+
+static std::vector<SwitchMeldLayoutItem> computeSwitchMeldLayout(const std::vector<RmkMeld>& melds, int& outTw, int& outTh) {
+    outTw = 50; outTh = 68;
+    for (int candW = 50; candW >= 28; candW -= 4) {
+        int candH = (candW * 68) / 50;
+        int tx = 172, ty = 52;
+        for (size_t i = 0; i < melds.size(); ++i) {
+            int mw = (int)melds[i].tiles.size() * (candW + 2) + 14;
+            if (tx > 172 && tx + mw > 1118) { tx = 172; ty += candH + 12; }
+            tx += mw + 12;
+        }
+        outTw = candW; outTh = candH;
+        if (ty + candH + 8 <= 478) break;
+    }
+    std::vector<SwitchMeldLayoutItem> items;
+    int mx = 172, my = 52;
+    for (size_t i = 0; i < melds.size(); ++i) {
+        int mw = (int)melds[i].tiles.size() * (outTw + 2) + 14;
+        if (mx > 172 && mx + mw > 1118) { mx = 172; my += outTh + 12; }
+        items.push_back({(int)i, mx, my, mw, outTh + 8});
+        mx += mw + 12;
+    }
+    return items;
+}
+
+static int computeSwitchOpenTableInsertIndex(const std::vector<RmkMeld>& melds, int dropX, int dropY) {
+    if (melds.empty()) return 0;
+    int tw = 50, th = 68;
+    auto items = computeSwitchMeldLayout(melds, tw, th);
+    if (items.empty()) return 0;
+
+    std::vector<std::vector<SwitchMeldLayoutItem>> rows;
+    for (const auto& it : items) {
+        if (!rows.empty() && std::abs((it.y + it.h / 2) - (rows.back()[0].y + rows.back()[0].h / 2)) < 28) {
+            rows.back().push_back(it);
+        } else {
+            rows.push_back({it});
+        }
+    }
+    if (dropY < rows.front().front().y - 16) return 0;
+    if (dropY > rows.back().front().y + rows.back().front().h + 24) return (int)melds.size();
+
+    int bestRowIdx = 0;
+    int bestRowDist = 999999;
+    for (size_t r = 0; r < rows.size(); ++r) {
+        int midY = rows[r][0].y + rows[r][0].h / 2;
+        int d = std::abs(dropY - midY);
+        if (d < bestRowDist) { bestRowDist = d; bestRowIdx = (int)r; }
+    }
+    const auto& row = rows[bestRowIdx];
+    for (const auto& it : row) {
+        if (dropX < it.x + it.w / 2) return it.idx;
+    }
+    return std::min((int)melds.size(), row.back().idx + 1);
+}
+
 static void dropRmkSlotToTable(int slotIdx, int dropX, int dropY) {
     if (gRmkPhase != "playing" || gRmkTurnSeat != gRmkMySeat) {
         gStatusBanner = "当前不是您的回合，无法拖上桌面出牌";
@@ -1339,94 +1574,60 @@ static void dropRmkSlotToTable(int slotIdx, int dropX, int dropY) {
     if (picked.empty()) return;
     for (const auto& pt : picked) gRmkHighlightedIds.insert(pt.id);
 
-    // 1. Check if dropped directly onto a specific table meld bounding box (large 50x68 tiles!)
-    int mx = 172, my = 56;
-    for (size_t i = 0; i < gRmkWorkMelds.size(); ++i) {
-        int mw = (int)gRmkWorkMelds[i].tiles.size() * 52 + 16;
-        if (mx + mw > 1118) { mx = 172; my += 82; }
-        if (dropX >= mx - 18 && dropX <= mx + mw + 18 && dropY >= my - 12 && dropY <= my + 82) {
+    // 1. Check if dropped directly onto a specific table meld bounding box (tight 6px padding so open space isn't hijacked)
+    int tw = 50, th = 68;
+    auto layoutItems = computeSwitchMeldLayout(gRmkWorkMelds, tw, th);
+    for (const auto& item : layoutItems) {
+        size_t i = (size_t)item.idx;
+        if (dropX >= item.x - 6 && dropX <= item.x + item.w + 6 && dropY >= item.y - 6 && dropY <= item.y + item.h + 6) {
             if (gRmkSeats[gRmkMySeat].hasBrokenIce || i >= gRmkSnapMelds.size()) {
                 std::vector<RmkTile> comb = gRmkWorkMelds[i].tiles;
-                comb.insert(comb.end(), picked.begin(), picked.end());
-                if (RmkEvaluator::evaluateMeld(comb) >= 0) {
-                    gRmkWorkMelds[i].tiles = RmkEvaluator::sortMeldForDisplay(comb);
+                if (dropX < item.x + item.w / 2) {
+                    comb.insert(comb.begin(), picked.begin(), picked.end());
                 } else {
-                    gRmkWorkMelds[i].tiles = comb;
+                    comb.insert(comb.end(), picked.begin(), picked.end());
+                }
+                auto splitGroups = RmkEvaluator::autoSplitMeldTiles(comb);
+                if (splitGroups.size() >= 2) {
+                    gRmkWorkMelds[i].tiles = splitGroups[0];
+                    for (size_t s = 1; s < splitGroups.size(); ++s) {
+                        gRmkWorkMelds.insert(gRmkWorkMelds.begin() + i + s, {"m_" + std::to_string(SDL_GetTicks()) + "_" + std::to_string(s), splitGroups[s]});
+                    }
+                    RmkSoundFX::playSplit();
+                    gStatusBanner = "已插入顺子并自动拆分为两组有效牌组！（按 [X] 确认出牌）";
+                } else {
+                    gRmkWorkMelds[i].tiles = splitGroups[0];
+                    RmkSoundFX::playSnap();
+                    gStatusBanner = "已拖放并入桌面牌组（点右侧[OK]或按[X]确认出牌，点[复原]或按[R]撤回）";
                 }
                 gRmkWorkHand.erase(std::remove_if(gRmkWorkHand.begin(), gRmkWorkHand.end(), [&](const RmkTile& t){ return selIds.count(t.id) > 0; }), gRmkWorkHand.end());
                 for (auto& sl : gRmkRackSlots) if (!sl.id.empty() && selIds.count(sl.id)) sl = RmkTile{};
+                for (auto& wt : gRmkWorkHand) wt.selected = false;
+                for (auto& sl : gRmkRackSlots) sl.selected = false;
                 gRmkLiftedSlot = -1;
                 gRmkSelectedTableMeldIdx = -1;
                 gRmkSelectedTableTileIdx = -1;
-                gStatusBanner = "已拖放并入桌面牌组（点右侧绿色[OK]或按[X]确认出牌，点红色[复原]或按[R]撤回）";
                 return;
             }
         }
-        mx += mw + 16;
     }
 
-    // 2. If a table tile was selected for combination and player is broken ice, combine them into a new meld!
-    if (gRmkSeats[gRmkMySeat].hasBrokenIce &&
-        gRmkSelectedTableMeldIdx >= 0 && gRmkSelectedTableMeldIdx < (int)gRmkWorkMelds.size() &&
-        gRmkSelectedTableTileIdx >= 0 && gRmkSelectedTableTileIdx < (int)gRmkWorkMelds[gRmkSelectedTableMeldIdx].tiles.size()) {
-        RmkTile tblTile = gRmkWorkMelds[gRmkSelectedTableMeldIdx].tiles[gRmkSelectedTableTileIdx];
-        gRmkWorkMelds[gRmkSelectedTableMeldIdx].tiles.erase(gRmkWorkMelds[gRmkSelectedTableMeldIdx].tiles.begin() + gRmkSelectedTableTileIdx);
-        if (gRmkWorkMelds[gRmkSelectedTableMeldIdx].tiles.empty()) {
-            gRmkWorkMelds.erase(gRmkWorkMelds.begin() + gRmkSelectedTableMeldIdx);
-        }
-        std::vector<RmkTile> comb = {tblTile};
-        comb.insert(comb.end(), picked.begin(), picked.end());
-        if (RmkEvaluator::evaluateMeld(comb) >= 0) comb = RmkEvaluator::sortMeldForDisplay(comb);
-        gRmkWorkMelds.push_back({"m_" + std::to_string(SDL_GetTicks()), comb});
-        gRmkHighlightedIds.insert(tblTile.id);
-        gRmkWorkHand.erase(std::remove_if(gRmkWorkHand.begin(), gRmkWorkHand.end(), [&](const RmkTile& t){ return selIds.count(t.id) > 0; }), gRmkWorkHand.end());
-        for (auto& sl : gRmkRackSlots) if (!sl.id.empty() && selIds.count(sl.id)) sl = RmkTile{};
-        gRmkLiftedSlot = -1;
-        gRmkSelectedTableMeldIdx = -1;
-        gRmkSelectedTableTileIdx = -1;
-        gStatusBanner = "已与桌面牌组合成新牌组（点右侧绿色[OK]或按[X]确认出牌）";
-        return;
-    }
-
-    // 3. If picked tiles themselves form a valid meld (>=3), place as new meld
-    if (RmkEvaluator::evaluateMeld(picked) >= 0) {
-        auto ordered = RmkEvaluator::sortMeldForDisplay(picked);
-        gRmkWorkHand.erase(std::remove_if(gRmkWorkHand.begin(), gRmkWorkHand.end(), [&](const RmkTile& t){ return selIds.count(t.id) > 0; }), gRmkWorkHand.end());
-        for (auto& sl : gRmkRackSlots) if (!sl.id.empty() && selIds.count(sl.id)) sl = RmkTile{};
-        gRmkWorkMelds.push_back({"m_" + std::to_string(SDL_GetTicks()), ordered});
-        gRmkLiftedSlot = -1;
-        gStatusBanner = "已拖上桌面成组（点右侧绿色[OK]或按[X]确认出牌）";
-        return;
-    }
-
-    // 4. If there is an incomplete staging meld on the table (<3 tiles or not yet valid), merge into it!
-    for (int i = (int)gRmkWorkMelds.size() - 1; i >= 0; --i) {
-        if (!gRmkSeats[gRmkMySeat].hasBrokenIce && i < (int)gRmkSnapMelds.size()) continue;
-        if (RmkEvaluator::evaluateMeld(gRmkWorkMelds[i].tiles) < 0) {
-            std::vector<RmkTile> comb = gRmkWorkMelds[i].tiles;
-            comb.insert(comb.end(), picked.begin(), picked.end());
-            gRmkWorkMelds[i].tiles = RmkEvaluator::sortMeldForDisplay(comb);
-            gRmkWorkHand.erase(std::remove_if(gRmkWorkHand.begin(), gRmkWorkHand.end(), [&](const RmkTile& t){ return selIds.count(t.id) > 0; }), gRmkWorkHand.end());
-            for (auto& sl : gRmkRackSlots) if (!sl.id.empty() && selIds.count(sl.id)) sl = RmkTile{};
-            for (auto& wt : gRmkWorkHand) wt.selected = false;
-            for (auto& sl : gRmkRackSlots) sl.selected = false;
-            gRmkLiftedSlot = -1;
-            gStatusBanner = (RmkEvaluator::evaluateMeld(gRmkWorkMelds[i].tiles) >= 0)
-                ? "已在桌面拼成有效牌组！点右侧绿色[OK]或按[X]确认出牌"
-                : "已并入桌面待组牌组（满3张后即可按[X]确认出牌）";
-            return;
-        }
-    }
-
-    // 5. Place single tile or 2 tiles on the table as a new staging group (allowed both before and after icebreak!)
-    auto ordered = RmkEvaluator::sortMeldForDisplay(picked);
+    // 2. Place in open table space at the exact dropped slot (never jumping to the end or hijacked by a distant group!)
+    int insIdx = computeSwitchOpenTableInsertIndex(gRmkWorkMelds, dropX, dropY);
+    auto splitPicked = RmkEvaluator::autoSplitMeldTiles(picked);
     gRmkWorkHand.erase(std::remove_if(gRmkWorkHand.begin(), gRmkWorkHand.end(), [&](const RmkTile& t){ return selIds.count(t.id) > 0; }), gRmkWorkHand.end());
     for (auto& sl : gRmkRackSlots) if (!sl.id.empty() && selIds.count(sl.id)) sl = RmkTile{};
     for (auto& wt : gRmkWorkHand) wt.selected = false;
     for (auto& sl : gRmkRackSlots) sl.selected = false;
-    gRmkWorkMelds.push_back({"m_" + std::to_string(SDL_GetTicks()), ordered});
+    for (size_t s = 0; s < splitPicked.size(); ++s) {
+        int pos = std::min((int)gRmkWorkMelds.size(), insIdx + (int)s);
+        gRmkWorkMelds.insert(gRmkWorkMelds.begin() + pos, {"m_" + std::to_string(SDL_GetTicks()) + "_" + std::to_string(s), splitPicked[s]});
+    }
     gRmkLiftedSlot = -1;
-    gStatusBanner = "已拖上桌面暂放（可继续拖其他牌与它拼成>=3张牌组后按[X]确认）";
+    RmkSoundFX::playSnap();
+    gStatusBanner = (RmkEvaluator::evaluateMeld(picked) >= 0)
+        ? "已放置到指定桌面位置成组（点右侧绿色[OK]或按[X]确认出牌）"
+        : "已放置到指定桌面位置（可继续拖其他牌与它合并，或拖回下方牌架取消）";
 }
 
 static void dropRmkTableTileToTarget(int srcMeldIdx, int srcTileIdx, int dropX, int dropY) {
@@ -1442,78 +1643,111 @@ static void dropRmkTableTileToTarget(int srcMeldIdx, int srcTileIdx, int dropX, 
     RmkTile movingTile = gRmkWorkMelds[srcMeldIdx].tiles[srcTileIdx];
     gRmkHighlightedIds.insert(movingTile.id);
 
-    // 1. If dropped down onto the wooden rack (dropY >= 488):
-    if (dropY >= 488) {
+    // 1. If dragged down onto the wooden rack (dropY >= 475): cancel & return tile to rack!
+    if (dropY >= 475) {
         bool cameFromRackThisTurn = false;
         for (const auto& st : gRmkSnapHand) if (st.id == movingTile.id) { cameFromRackThisTurn = true; break; }
         if (cameFromRackThisTurn) {
-            gRmkWorkMelds[srcMeldIdx].tiles.erase(gRmkWorkMelds[srcMeldIdx].tiles.begin() + srcTileIdx);
-            if (gRmkWorkMelds[srcMeldIdx].tiles.empty()) gRmkWorkMelds.erase(gRmkWorkMelds.begin() + srcMeldIdx);
+            auto remTiles = gRmkWorkMelds[srcMeldIdx].tiles;
+            remTiles.erase(remTiles.begin() + srcTileIdx);
+            if (remTiles.empty()) {
+                gRmkWorkMelds.erase(gRmkWorkMelds.begin() + srcMeldIdx);
+            } else {
+                auto splitRem = RmkEvaluator::autoSplitMeldTiles(remTiles);
+                gRmkWorkMelds[srcMeldIdx].tiles = splitRem[0];
+                for (size_t s = 1; s < splitRem.size(); ++s) {
+                    gRmkWorkMelds.insert(gRmkWorkMelds.begin() + srcMeldIdx + s, {"m_" + std::to_string(SDL_GetTicks()) + "_r" + std::to_string(s), splitRem[s]});
+                }
+            }
             movingTile.selected = false;
             gRmkWorkHand.push_back(movingTile);
-            syncRmkRackFromHand(true);
-            gStatusBanner = "已将该牌退回牌架";
+            int cols = std::max(10, gRmkRackCols);
+            int slotPitch = std::max(44, std::min(94, 944 / cols));
+            int rackStartX = 162 + (960 - cols * slotPitch) / 2;
+            int dstR = (dropY >= 596) ? 1 : 0;
+            int dstC = std::max(0, std::min(cols - 1, (dropX - rackStartX) / slotPitch));
+            int prefSlot = dstR * cols + dstC;
+            if (prefSlot >= 0 && prefSlot < (int)gRmkRackSlots.size() && gRmkRackSlots[prefSlot].id.empty()) {
+                gRmkRackSlots[prefSlot] = movingTile;
+                syncRmkHandFromRackSlots();
+            } else {
+                syncRmkRackFromHand(true);
+            }
+            gRmkSelectedTableMeldIdx = -1;
+            gRmkSelectedTableTileIdx = -1;
+            RmkSoundFX::playUndo();
+            gStatusBanner = "已将该牌拉回牌架取消出牌";
+            return;
+        } else {
+            RmkSoundFX::playUndo();
+            gStatusBanner = "[注意] 桌面原有的公共牌不能收回自己的牌架！";
             return;
         }
     }
 
     // 2. Check if dropped onto another table meld
-    int mx = 172, my = 56;
-    for (size_t i = 0; i < gRmkWorkMelds.size(); ++i) {
-        int mw = (int)gRmkWorkMelds[i].tiles.size() * 52 + 16;
-        if (mx + mw > 1118) { mx = 172; my += 82; }
-        if ((int)i != srcMeldIdx && dropX >= mx - 16 && dropX <= mx + mw + 16 && dropY >= my - 12 && dropY <= my + 82) {
-            gRmkWorkMelds[srcMeldIdx].tiles.erase(gRmkWorkMelds[srcMeldIdx].tiles.begin() + srcTileIdx);
-            int targetIdx = (int)i;
-            if (gRmkWorkMelds[srcMeldIdx].tiles.empty()) {
+    int tw = 50, th = 68;
+    auto layoutItems = computeSwitchMeldLayout(gRmkWorkMelds, tw, th);
+    for (const auto& item : layoutItems) {
+        int i = item.idx;
+        if (i != srcMeldIdx && dropX >= item.x - 6 && dropX <= item.x + item.w + 6 && dropY >= item.y - 6 && dropY <= item.y + item.h + 6) {
+            auto srcTiles = gRmkWorkMelds[srcMeldIdx].tiles;
+            srcTiles.erase(srcTiles.begin() + srcTileIdx);
+            int targetIdx = i;
+            if (srcTiles.empty()) {
                 gRmkWorkMelds.erase(gRmkWorkMelds.begin() + srcMeldIdx);
                 if (targetIdx > srcMeldIdx) targetIdx--;
+            } else {
+                auto splitSrc = RmkEvaluator::autoSplitMeldTiles(srcTiles);
+                gRmkWorkMelds[srcMeldIdx].tiles = splitSrc[0];
+                for (size_t s = 1; s < splitSrc.size(); ++s) {
+                    gRmkWorkMelds.insert(gRmkWorkMelds.begin() + srcMeldIdx + s, {"m_" + std::to_string(SDL_GetTicks()) + "_s" + std::to_string(s), splitSrc[s]});
+                    if (targetIdx > srcMeldIdx) targetIdx++;
+                }
             }
             auto comb = gRmkWorkMelds[targetIdx].tiles;
-            comb.push_back(movingTile);
-            if (RmkEvaluator::evaluateMeld(comb) >= 0) comb = RmkEvaluator::sortMeldForDisplay(comb);
-            gRmkWorkMelds[targetIdx].tiles = comb;
+            if (dropX < item.x + item.w / 2) comb.insert(comb.begin(), movingTile);
+            else comb.push_back(movingTile);
+            auto splitTarget = RmkEvaluator::autoSplitMeldTiles(comb);
+            gRmkWorkMelds[targetIdx].tiles = splitTarget[0];
+            for (size_t s = 1; s < splitTarget.size(); ++s) {
+                gRmkWorkMelds.insert(gRmkWorkMelds.begin() + targetIdx + s, {"m_" + std::to_string(SDL_GetTicks()) + "_t" + std::to_string(s), splitTarget[s]});
+            }
             gRmkSelectedTableMeldIdx = -1;
             gRmkSelectedTableTileIdx = -1;
-            gStatusBanner = "已将桌面牌拖入目标牌组重组！";
+            if (splitTarget.size() >= 2) RmkSoundFX::playSplit();
+            else RmkSoundFX::playSnap();
+            gStatusBanner = (splitTarget.size() >= 2) ? "已插入顺子并自动拆分为两组有效牌组！" : "已将桌面牌拖入目标牌组重组！";
             return;
         }
-        mx += mw + 16;
     }
 
-    // 3. Dropped onto open table space -> smart split if middle tile, and merge into existing incomplete staging meld or detach as new group!
+    // 3. Dropped onto open table space -> auto-split source if needed, and place at the exact open-space position!
     auto origTiles = gRmkWorkMelds[srcMeldIdx].tiles;
-    if (origTiles.size() > 1) {
-        if (srcTileIdx > 0 && srcTileIdx < (int)origTiles.size() - 1) {
-            std::vector<RmkTile> leftSlice(origTiles.begin(), origTiles.begin() + srcTileIdx);
-            std::vector<RmkTile> rightSlice(origTiles.begin() + srcTileIdx + 1, origTiles.end());
-            if (leftSlice.size() >= 3 || rightSlice.size() >= 3) {
-                gRmkWorkMelds[srcMeldIdx].tiles = leftSlice;
-                gRmkWorkMelds.insert(gRmkWorkMelds.begin() + srcMeldIdx + 1, {"m_" + std::to_string(SDL_GetTicks()) + "_r", rightSlice});
-            } else {
-                gRmkWorkMelds[srcMeldIdx].tiles.erase(gRmkWorkMelds[srcMeldIdx].tiles.begin() + srcTileIdx);
-            }
-        } else {
-            gRmkWorkMelds[srcMeldIdx].tiles.erase(gRmkWorkMelds[srcMeldIdx].tiles.begin() + srcTileIdx);
-        }
-        for (int i = (int)gRmkWorkMelds.size() - 1; i >= 0; --i) {
-            if (i == srcMeldIdx) continue;
-            if (!gRmkSeats[gRmkMySeat].hasBrokenIce && i < (int)gRmkSnapMelds.size()) continue;
-            if (gRmkWorkMelds[i].tiles.size() < 3 && RmkEvaluator::evaluateMeld(gRmkWorkMelds[i].tiles) < 0) {
-                auto comb = gRmkWorkMelds[i].tiles;
-                comb.push_back(movingTile);
-                gRmkWorkMelds[i].tiles = RmkEvaluator::sortMeldForDisplay(comb);
-                gRmkSelectedTableMeldIdx = -1;
-                gRmkSelectedTableTileIdx = -1;
-                gStatusBanner = "已将拆出的桌面牌并入桌面待组新牌组！";
-                return;
-            }
-        }
-        gRmkWorkMelds.push_back({"m_" + std::to_string(SDL_GetTicks()), {movingTile}});
-        gRmkSelectedTableMeldIdx = (int)gRmkWorkMelds.size() - 1;
-        gRmkSelectedTableTileIdx = 0;
-        gStatusBanner = "已从牌组拆出单牌到桌面！可继续拖其他桌面牌或手牌与它合并";
+    if (origTiles.size() == 1) {
+        RmkMeld singleMeld = gRmkWorkMelds[srcMeldIdx];
+        gRmkWorkMelds.erase(gRmkWorkMelds.begin() + srcMeldIdx);
+        int insIdx = computeSwitchOpenTableInsertIndex(gRmkWorkMelds, dropX, dropY);
+        gRmkWorkMelds.insert(gRmkWorkMelds.begin() + std::min((int)gRmkWorkMelds.size(), insIdx), singleMeld);
+        gRmkSelectedTableMeldIdx = -1;
+        gRmkSelectedTableTileIdx = -1;
+        RmkSoundFX::playClick();
+        gStatusBanner = "已移动桌面牌到指定位置";
+        return;
     }
+
+    origTiles.erase(origTiles.begin() + srcTileIdx);
+    auto splitOrig = RmkEvaluator::autoSplitMeldTiles(origTiles);
+    gRmkWorkMelds[srcMeldIdx].tiles = splitOrig[0];
+    for (size_t s = 1; s < splitOrig.size(); ++s) {
+        gRmkWorkMelds.insert(gRmkWorkMelds.begin() + srcMeldIdx + s, {"m_" + std::to_string(SDL_GetTicks()) + "_r" + std::to_string(s), splitOrig[s]});
+    }
+    int insIdx = computeSwitchOpenTableInsertIndex(gRmkWorkMelds, dropX, dropY);
+    gRmkWorkMelds.insert(gRmkWorkMelds.begin() + std::min((int)gRmkWorkMelds.size(), insIdx), {"m_" + std::to_string(SDL_GetTicks()), {movingTile}});
+    gRmkSelectedTableMeldIdx = -1;
+    gRmkSelectedTableTileIdx = -1;
+    RmkSoundFX::playSnap();
+    gStatusBanner = "已从牌组拆出单牌到指定位置（拖到其他牌组可合并，本回合手牌拖回下方牌架可取消）";
 }
 
 static void broadcastRmkState() {
@@ -1594,6 +1828,10 @@ static void startNewRmkRound() {
     gRmkSnapMelds.clear();
     gRmkWorkMelds.clear();
     syncRmkRackFromHand(false);
+    bool gotJokerInInitHand = false;
+    for (const auto& t : gRmkSeats[gRmkMySeat].hand) if (t.isJoker()) { gotJokerInInitHand = true; break; }
+    if (gotJokerInInitHand) RmkSoundFX::playJokerAcquired();
+    else RmkSoundFX::playOrganize();
     gStatusBanner = "正在派发初始14张拉密牌 (1.5秒动画)... 轮到 [" + cleanPeerLabel(gRmkSeats[gRmkTurnSeat].name) + "] 出牌";
     broadcastRmkState();
 }
@@ -1625,12 +1863,32 @@ static void startRmkPlayerDrawAnimation() {
     } else {
         gRmkDrawAnimTile = {"TEMP_DRAW", "R", 7, false};
     }
-    gStatusBanner = "正在从摸牌区抽取 1 张新牌飞入牌架空槽...";
+    if (gRmkDrawAnimTile.isJoker()) {
+        RmkSoundFX::playJokerAcquired();
+        gStatusBanner = "恭喜摸到【百搭牌 JOKER】！正在飞入牌架空槽...";
+    } else {
+        RmkSoundFX::playDraw();
+        gStatusBanner = "正在从摸牌区抽取 1 张新牌飞入牌架空槽...";
+    }
 }
 
 static void executeRmkCommit(int seatIdx, const std::vector<RmkMeld>& newMelds, const std::set<std::string>& playedIds) {
     int pCnt = std::max(2, (int)gRmkSeats.size());
-    gRmkTableMelds = newMelds;
+    std::vector<RmkMeld> normalizedMelds;
+    int subSeq = 1;
+    for (const auto& m : newMelds) {
+        if (m.tiles.empty()) continue;
+        auto splits = RmkEvaluator::autoSplitMeldTiles(m.tiles);
+        if (splits.size() == 1) {
+            normalizedMelds.push_back({m.id, splits[0]});
+        } else {
+            for (const auto& sp : splits) {
+                normalizedMelds.push_back({m.id + "_s" + std::to_string(subSeq++), sp});
+            }
+        }
+    }
+    gRmkTableMelds = normalizedMelds;
+    RmkSoundFX::playCommit();
     if (seatIdx == gRmkMySeat || gRmkHighlightedIds.empty()) {
         gRmkHighlightedIds = playedIds;
     }
@@ -2808,33 +3066,45 @@ static void renderRummikubTable() {
         bool isMe = (sIdx == gRmkMySeat);
         int sy = (pos == seatCnt - 1) ? 556 : (26 + pos * vStep);
 
-        // Player Avatar Card with Glowing Countdown Ring
-        drawRoundedRectFill(12, sy, 134, 128, 16, iturn ? SDL_Color{28, 76, 148, 248} : SDL_Color{9, 26, 56, 225});
+        // Player Avatar Card with Glowing Border
+        drawRoundedRectFill(10, sy, 136, 130, 16, iturn ? SDL_Color{24, 68, 136, 248} : SDL_Color{9, 26, 56, 228});
         SDL_Color ringCol = iturn ? (remSec <= 10 ? COL_CRIMSON_HI : COL_HUMAN_GREEN) : SDL_Color{90, 130, 185, 120};
-        drawRoundedRectOutline(12, sy, 134, 128, 16, ringCol, iturn ? 3 : 1);
+        drawRoundedRectOutline(10, sy, 136, 130, 16, ringCol, iturn ? 3 : 1);
 
-        // Character Avatar Portrait
-        drawCharAvatar(s.characterId, 45, sy + 8, 68, 68, !s.isAI);
+        // Avatar Backdrop Circle + Circular Countdown Ring (NEVER covers character face!)
+        int avCx = 78, avCy = sy + 42;
+        drawRoundedRectFill(avCx - 32, avCy - 32, 64, 64, 32, iturn ? SDL_Color{16, 46, 98, 255} : SDL_Color{6, 18, 40, 255});
+        drawCharAvatar(s.characterId, avCx - 30, avCy - 30, 60, 60, iturn || !s.isAI);
+        float prog = iturn ? std::max(0.0f, std::min(1.0f, (float)remSec / 60.0f)) : 1.0f;
+        drawCircularProgressRing(avCx, avCy, 34, iturn ? 3 : 2, prog, ringCol, SDL_Color{255, 255, 255, 42});
 
-        // Countdown Seconds Badge Over Avatar When Active Turn (1:1 like Video!)
+        // Top-Left Non-Overlapping Countdown Timer Pill (leaves character portrait 100% visible!)
         if (iturn) {
-            drawRoundedRectFill(51, sy + 22, 56, 36, 12, {0, 0, 0, 175});
-            drawRoundedRectOutline(51, sy + 22, 56, 36, 12, ringCol, 2);
-            drawText(gFontLarge, std::to_string(remSec), 79, sy + 25, COL_WHITE, true);
+            drawRoundedRectFill(14, sy + 6, 40, 22, 8, {6, 16, 36, 235});
+            drawRoundedRectOutline(14, sy + 6, 40, 22, 8, ringCol, 1);
+            drawText(gFontSmall, std::to_string(remSec) + "s", 34, sy + 7, remSec <= 10 ? COL_CRIMSON_HI : COL_HUMAN_GREEN, true);
         }
 
-        // Star / Icebreak Badge at Top-Right of Avatar
-        drawRoundedRectFill(112, sy + 6, 28, 22, 8, s.hasBrokenIce ? SDL_Color{245, 142, 18, 255} : SDL_Color{42, 74, 126, 255});
-        drawText(gFontSmall, s.hasBrokenIce ? "★" : "冰", 126, sy + 7, COL_WHITE, true);
+        // Top-Right Vector Icon Badge: 5-Point Star (Broken Ice) or 6-Branch Crystal Snowflake (Unbroken Ice)
+        int badgeX = 114, badgeY = sy + 6, badgeW = 26, badgeH = 24;
+        drawRoundedRectFill(badgeX, badgeY, badgeW, badgeH, 12, s.hasBrokenIce ? SDL_Color{245, 142, 18, 255} : SDL_Color{36, 86, 156, 255});
+        drawRoundedRectOutline(badgeX, badgeY, badgeW, badgeH, 12, {255, 255, 255, 160}, 1);
+        if (s.hasBrokenIce) {
+            drawStarIcon(badgeX + badgeW / 2, badgeY + badgeH / 2, 7, 3, COL_WHITE);
+        } else {
+            drawSnowflakeIcon(badgeX + badgeW / 2, badgeY + badgeH / 2, 7, {215, 245, 255, 255});
+        }
 
-        // Player Name & Remaining Tile Count Badge
+        // Player Name (UTF-8 safe truncation so '平泽唯 (AI)' and '房主 Switch' are never cut off mid-letter!)
         std::string shortName = cleanPeerLabel(s.name);
-        if (shortName.size() > 12) shortName = shortName.substr(0, 12);
-        drawText(gFontSmall, shortName, 79, sy + 79, isMe ? COL_GOLD : COL_WHITE, true);
+        size_t aiPos = shortName.find(" (AI)");
+        if (aiPos != std::string::npos) shortName.replace(aiPos, 5, "·AI");
+        shortName = truncateUtf8(shortName, 9);
+        drawText(gFontSmall, shortName, 78, sy + 78, isMe ? COL_GOLD : COL_WHITE, true);
 
-        drawRoundedRectFill(34, sy + 101, 90, 22, 6, {6, 16, 36, 220});
-        drawRoundedRectOutline(34, sy + 101, 90, 22, 6, COL_CYAN_GLOW, 1);
-        drawText(gFontSmall, "余 " + std::to_string(s.hand.size()) + " 张", 79, sy + 102, COL_WHITE, true);
+        drawRoundedRectFill(31, sy + 102, 94, 22, 7, {6, 16, 36, 228});
+        drawRoundedRectOutline(31, sy + 102, 94, 22, 7, COL_CYAN_GLOW, 1);
+        drawText(gFontSmall, "余 " + std::to_string(s.hand.size()) + " 张", 78, sy + 103, COL_WHITE, true);
     }
 
     // 2. TOP COMPACT STATUS PILL & QUICK HINT BAR (x=154..1130, y=6..36)
@@ -2884,7 +3154,8 @@ static void renderRummikubTable() {
                 int txPos = mx + 7 + (int)k * (tw + 2);
                 int tyPos = my + 4;
                 if (!isBeingDraggedTbl) {
-                    drawRmkTileBox(t, txPos, tyPos, tw, th, false, isSelTbl, isHigh);
+                    // Never lift up table tiles on tap (selected=false); only highlight orange border!
+                    drawRmkTileBox(t, txPos, tyPos, tw, th, false, false, isHigh || isSelTbl);
                 } else {
                     drawRoundedRectOutline(txPos, tyPos, tw, th, 7, {255, 232, 185, 95}, 1);
                 }
@@ -2893,11 +3164,11 @@ static void renderRummikubTable() {
         }
     }
 
-    // 4. RIGHT VERTICAL CONTROL COLUMN (x=1142..1268, 1:1 like Video: Top `«` Exit, Middle `789`/`777`, Bottom Dynamic `+` ⇄ `↺` + `✓`)
-    drawRoundedRectFill(1154, 12, 104, 42, 21, {28, 58, 108, 235});
-    drawRoundedRectOutline(1154, 12, 104, 42, 21, {140, 190, 255, 160}, 1);
-    drawText(gFontLarge, "<<", 1182, 17, COL_WHITE, true);
-    drawText(gFontSmall, "[-]退房", 1226, 22, COL_GOLD, true);
+    // 4. RIGHT VERTICAL CONTROL COLUMN (x=1142..1268: Clean Non-Overlapping Exit Button, Middle `789`/`777`, Bottom Dynamic `+` ⇄ `↺` + `✓`)
+    drawRoundedRectFill(1146, 8, 120, 38, 19, {28, 58, 108, 240});
+    drawRoundedRectOutline(1146, 8, 120, 38, 19, {140, 190, 255, 175}, 1);
+    drawDoubleChevronLeft(1165, 27, 6, COL_WHITE);
+    drawText(gFontSmall, "[-] 退房", 1216, 17, COL_GOLD, true);
 
     drawRoundedRectFill(1146, 148, 120, 58, 14, gRmkSortByColor ? SDL_Color{36, 116, 234, 255} : SDL_Color{24, 48, 92, 240});
     drawRoundedRectOutline(1146, 148, 120, 58, 14, gRmkSortByColor ? COL_CYAN_GLOW : COL_GOLD_DIM, gRmkSortByColor ? 2 : 1);
@@ -2948,8 +3219,7 @@ static void renderRummikubTable() {
     drawRoundedRectFill(162, 498, 960, 96, 6, {148, 94, 44, 245});
     drawRoundedRectFill(158, 592, 968, 7, 3, {108, 64, 26, 255});
     drawRoundedRectFill(162, 601, 960, 96, 6, {138, 86, 38, 245});
-    drawRoundedRectFill(158, 696, 968, 11, 4, {92, 52, 20, 255});
-    drawText(gFontSmall, "K-ON! Rummikub", 1112, 694, {255, 228, 172, 210}, false, true);
+    drawRoundedRectFill(158, 698, 968, 10, 4, {92, 52, 20, 255});
 
     int availW = 944;
     int slotPitch = std::max(44, std::min(94, availW / cols));
@@ -3157,7 +3427,8 @@ int main(int argc, char* argv[]) {
     gMyDisplayName = "Switch";
     gMyPeerName = gMyDisplayName + "#" + std::to_string(100 + (rand() % 900));
 
-    SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER | SDL_INIT_TIMER);
+    SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMECONTROLLER | SDL_INIT_TIMER);
+    RmkSoundFX::initAudio();
     IMG_Init(IMG_INIT_JPG | IMG_INIT_PNG);
     TTF_Init();
 
@@ -3283,34 +3554,28 @@ int main(int argc, char* argv[]) {
                         (gRmkSeats[gRmkMySeat].hasBrokenIce || sMeld >= (int)gRmkSnapMelds.size())) {
                         std::vector<RmkTile> comb = gRmkWorkMelds[sMeld].tiles;
                         comb.insert(comb.end(), handSel.begin(), handSel.end());
-                        if (RmkEvaluator::evaluateMeld(comb) >= 0) {
-                            gRmkWorkMelds[sMeld].tiles = RmkEvaluator::sortMeldForDisplay(comb);
+                        auto splits = RmkEvaluator::autoSplitMeldTiles(comb);
+                        bool validMerge = (RmkEvaluator::evaluateMeld(comb) >= 0) ||
+                            (splits.size() >= 2 && RmkEvaluator::evaluateMeld(splits[0]) >= 0 && RmkEvaluator::evaluateMeld(splits[1]) >= 0);
+                        if (validMerge) {
+                            gRmkWorkMelds[sMeld].tiles = splits[0];
+                            for (size_t s = 1; s < splits.size(); ++s) {
+                                gRmkWorkMelds.insert(gRmkWorkMelds.begin() + sMeld + s, {"m_" + std::to_string(SDL_GetTicks()) + "_sp" + std::to_string(s), splits[s]});
+                            }
                             std::set<std::string> rmIds;
                             for (const auto& ht : handSel) { rmIds.insert(ht.id); gRmkHighlightedIds.insert(ht.id); }
                             gRmkWorkHand.erase(std::remove_if(gRmkWorkHand.begin(), gRmkWorkHand.end(), [&](const RmkTile& t){ return rmIds.count(t.id) > 0; }), gRmkWorkHand.end());
                             for (auto& sl : gRmkRackSlots) if (!sl.id.empty() && rmIds.count(sl.id)) sl = RmkTile{};
-                            gStatusBanner = "已将选牌并入桌面牌组（点击右侧[OK]或按[X]确认出牌）";
+                            if (splits.size() >= 2) RmkSoundFX::playSplit();
+                            else RmkSoundFX::playSnap();
+                            gStatusBanner = (splits.size() >= 2) ? "已插入顺子并自动拆分为两组有效牌组！" : "已将选牌并入桌面牌组（点击右侧[OK]或按[X]确认出牌）";
                         } else {
                             gStatusBanner = "[注意] 拼接后不符合顺组或群组规则";
                         }
-                    } else if (gRmkSelectedTableMeldIdx == sMeld && gRmkSelectedTableTileIdx == sTile) {
-                        dropRmkTableTileToTarget(sMeld, sTile, 640, (sMeld >= (int)gRmkSnapMelds.size()) ? 550 : 420);
-                        gRmkSelectedTableMeldIdx = -1;
-                        gRmkSelectedTableTileIdx = -1;
-                    } else if (gRmkSelectedTableMeldIdx >= 0 && gRmkSelectedTableMeldIdx != sMeld) {
-                        int mx = 172, my = 56;
-                        for (int i = 0; i < sMeld; ++i) {
-                            int mw = (int)gRmkWorkMelds[i].tiles.size() * 52 + 16;
-                            if (mx + mw > 1118) { mx = 172; my += 82; }
-                            mx += mw + 16;
-                        }
-                        dropRmkTableTileToTarget(gRmkSelectedTableMeldIdx, gRmkSelectedTableTileIdx, mx + 20, my + 20);
-                        gRmkSelectedTableMeldIdx = -1;
-                        gRmkSelectedTableTileIdx = -1;
                     } else {
-                        gRmkSelectedTableMeldIdx = sMeld;
-                        gRmkSelectedTableTileIdx = sTile;
-                        gStatusBanner = "已选中桌面单牌：可直接触屏拖到其他牌组，或点另一组移入，再点一次单独拆出！";
+                        gRmkSelectedTableMeldIdx = -1;
+                        gRmkSelectedTableTileIdx = -1;
+                        gStatusBanner = "请直接按住桌面牌拖动到目标位置，或拖回下方木质牌架取消本回合出牌";
                     }
                 }
             }
@@ -3433,10 +3698,10 @@ int main(int argc, char* argv[]) {
                 if (gRmkPhase == "roundOver") {
                     if (pointInRect(tx, ty, 410, 488, 210, 54)) {
                         kDown |= HidNpadButton_A;
-                    } else if (pointInRect(tx, ty, 660, 488, 210, 54) || pointInRect(tx, ty, 1154, 12, 104, 42)) {
+                    } else if (pointInRect(tx, ty, 660, 488, 210, 54) || pointInRect(tx, ty, 1142, 4, 128, 48)) {
                         kDown |= HidNpadButton_Minus;
                     }
-                } else if (pointInRect(tx, ty, 1154, 12, 104, 42)) {
+                } else if (pointInRect(tx, ty, 1142, 4, 128, 48)) {
                     kDown |= HidNpadButton_Minus;
                 } else if (pointInRect(tx, ty, 932, 9, 92, 26)) {
                     kDown |= HidNpadButton_L;
