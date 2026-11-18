@@ -977,7 +977,22 @@ namespace RmkEvaluator {
             if (p > 0) totalHandPts += p;
         }
 
-        bool canBreakIceNow = hasBrokenIce || (totalHandPts >= 30);
+        if (!hasBrokenIce) {
+            if (totalHandPts < 30) return false;
+            std::sort(chosenHandMelds.begin(), chosenHandMelds.end(), [](const auto& a, const auto& b) {
+                return evaluateMeld(a) > evaluateMeld(b);
+            });
+            std::vector<std::vector<RmkTile>> minMelds;
+            int accPts = 0;
+            for (const auto& m : chosenHandMelds) {
+                minMelds.push_back(m);
+                int p = evaluateMeld(m);
+                if (p > 0) accPts += p;
+                if (accPts >= 30) break;
+            }
+            chosenHandMelds = std::move(minMelds);
+        }
+
         int mSeq = 1;
         if (hasBrokenIce || totalHandPts >= 30) {
             for (const auto& m : chosenHandMelds) {
@@ -988,10 +1003,14 @@ namespace RmkEvaluator {
                     outHighlightedIds.insert(t.id);
                 }
             }
-            remHand = afterBoth;
+            std::vector<RmkTile> nextRem;
+            for (const auto& ht : hand) {
+                if (!outPlayedIds.count(ht.id)) nextRem.push_back(ht);
+            }
+            remHand = std::move(nextRem);
         }
 
-        if (canBreakIceNow) {
+        if (hasBrokenIce) {
             bool changed = true;
             while (changed) {
                 changed = false;

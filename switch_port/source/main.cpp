@@ -2742,8 +2742,9 @@ static void renderMahjongTable() {
                 int tx = startHx + (int)i * 64;
                 drawMahjongTile(ht, tx, 308, 42, 58, isHit, false, isHit);
                 if (isHit) {
-                    drawRoundedRectFill(tx + 2, 294, 38, 16, 4, COL_CRIMSON);
-                    drawText(gFontSmall, "中马", tx + 21, 292, COL_GOLD, true);
+                    drawRoundedRectFill(tx + 1, 290, 40, 16, 4, COL_CRIMSON);
+                    drawRoundedRectOutline(tx + 1, 290, 40, 16, 4, COL_GOLD, 1);
+                    drawText(gFontSmall, "中马", tx + 21, 290, COL_GOLD, true);
                 }
             }
         }
