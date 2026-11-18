@@ -971,6 +971,14 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         }
     }
 
+    func deleteRecentDestination(id: String) {
+        let updated = recentDestinations.filter { $0.id != id }
+        recentDestinations = updated
+        if let enc = try? JSONEncoder().encode(updated) {
+            UserDefaults.standard.set(enc, forKey: recentDestDefaultsKey)
+        }
+    }
+
     func recordRecentDestination(name: String, address: String, coord: CLLocationCoordinate2D) {
         let cleanName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleanName.isEmpty, cleanName != "目的地", cleanName != "正在获取地点..." else { return }
@@ -1424,7 +1432,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             if let first = sorted.first {
                 activeRoute = first
                 remainingRouteDistanceKm = first.distance / 1000.0
-                remainingRouteMinutes = max(1, Int(first.expectedTravelTime / 60.0))
+                remainingRouteMinutes = estimatedMinutes(for: first)
             }
             routeSelectionRenderTrigger += 1
         }
@@ -6130,10 +6138,90 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     }
 
 
+    private func cleanStationLookupName(_ raw: String) -> String {
+        var s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        for token in ["(公交站)", "（公交站）", "(地铁站)", "（地铁站）", "(港铁站)", "（港鐵站）", "地铁站", "地鐵站", "港铁站", "港鐵站", "公交站", "站"] {
+            s = s.replacingOccurrences(of: token, with: "")
+        }
+        return s.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    func resolveTransitStationCoordinate(stationName: String, near: CLLocationCoordinate2D, completion: @escaping (CLLocationCoordinate2D?) -> Void) {
+        let cleaned = cleanStationLookupName(stationName)
+        if !cleaned.isEmpty {
+            for s in AudioPlayerManager.szStationsDatabase {
+                let sClean = cleanStationLookupName(s.name)
+                if sClean == cleaned || sClean.contains(cleaned) || cleaned.contains(sClean) {
+                    completion(CLLocationCoordinate2D(latitude: s.lat, longitude: s.lon))
+                    return
+                }
+            }
+            for s in AudioPlayerManager.hkStationsDatabase {
+                let sClean = cleanStationLookupName(s.name.components(separatedBy: " ")[0])
+                if sClean == cleaned || sClean.contains(cleaned) || cleaned.contains(sClean) {
+                    completion(CLLocationCoordinate2D(latitude: s.lat, longitude: s.lon))
+                    return
+                }
+            }
+        }
+
+        if !stationName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let req = MKLocalSearch.Request()
+            req.naturalLanguageQuery = stationName
+            req.region = MKCoordinateRegion(center: near, latitudinalMeters: 9000, longitudinalMeters: 9000)
+            MKLocalSearch(request: req).start { [weak self] resp, _ in
+                DispatchQueue.main.async {
+                    if let items = resp?.mapItems, !items.isEmpty {
+                        let refLoc = CLLocation(latitude: near.latitude, longitude: near.longitude)
+                        let bestItem = items.min(by: {
+                            refLoc.distance(from: CLLocation(latitude: $0.placemark.coordinate.latitude, longitude: $0.placemark.coordinate.longitude))
+                            < refLoc.distance(from: CLLocation(latitude: $1.placemark.coordinate.latitude, longitude: $1.placemark.coordinate.longitude))
+                        })
+                        if let best = bestItem {
+                            let d = refLoc.distance(from: CLLocation(latitude: best.placemark.coordinate.latitude, longitude: best.placemark.coordinate.longitude))
+                            if d <= 15000 {
+                                completion(best.placemark.coordinate)
+                                return
+                            }
+                        }
+                    }
+                    guard let self = self else { completion(nil); return }
+                    if CoordinateConverter.isInHongKong(near) {
+                        let hkNearest = self.findNearestHKStation(to: near)
+                        completion(CLLocationCoordinate2D(latitude: hkNearest.lat, longitude: hkNearest.lon))
+                    } else if CoordinateConverter.isInShenzhen(near) {
+                        let szNearest = self.findNearestStation(to: near)
+                        completion(CLLocationCoordinate2D(latitude: szNearest.lat, longitude: szNearest.lon))
+                    } else {
+                        completion(nil)
+                    }
+                }
+            }
+            return
+        }
+
+        if CoordinateConverter.isInHongKong(near) {
+            let hkNearest = findNearestHKStation(to: near)
+            completion(CLLocationCoordinate2D(latitude: hkNearest.lat, longitude: hkNearest.lon))
+        } else if CoordinateConverter.isInShenzhen(near) {
+            let szNearest = findNearestStation(to: near)
+            completion(CLLocationCoordinate2D(latitude: szNearest.lat, longitude: szNearest.lon))
+        } else {
+            completion(nil)
+        }
+    }
+
     func calculateTransitAppleMapsRoute(from: CLLocationCoordinate2D, to: CLLocationCoordinate2D, destTitle: String, plan: TransitPlanOption?) {
         self.customTransitPolyline = nil
         self.transitSegmentPolylines = []
         let originCoord = isDemoSimulating ? from : userCoordinate
+        let firstTransitStep = plan?.steps.first(where: { $0.kind != .walk })
+        let lastTransitStep = plan?.steps.last(where: { $0.kind != .walk })
+        let boardName = firstTransitStep?.fromStation ?? ""
+        let alightName = lastTransitStep?.toStation ?? ""
+        if !boardName.isEmpty { self.transitBoardingStationName = boardName }
+        if !alightName.isEmpty { self.transitAlightStationName = alightName }
+
         let roadReq = MKDirections.Request()
         roadReq.source = MKMapItem(placemark: MKPlacemark(coordinate: originCoord))
         roadReq.destination = MKMapItem(placemark: MKPlacemark(coordinate: to))
@@ -6144,69 +6232,99 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 if let roadRoute = resp?.routes.first {
-                    let pts = roadRoute.polyline.points()
-                    let cnt = roadRoute.polyline.pointCount
                     self.activeRoute = roadRoute
                     self.customTransitPolyline = nil
                     self.remainingRouteDistanceKm = roadRoute.distance / 1000.0
                     if let p = plan {
                         self.remainingRouteMinutes = p.totalMinutes
                     } else {
-                        self.remainingRouteMinutes = max(1, Int(roadRoute.expectedTravelTime / 60.0))
+                        self.remainingRouteMinutes = self.estimatedMinutes(for: roadRoute)
                     }
                     self.candidateRoutes = [roadRoute]
                     self.selectedRouteIndex = 0
                     self.triggerDepartureGreeting(title: destTitle, isReroute: false)
 
-                    if cnt >= 6 {
-                        let boardIdx = max(1, min(cnt - 3, Int(Double(cnt) * 0.14)))
-                        let alightIdx = max(boardIdx + 1, min(cnt - 2, Int(Double(cnt) * 0.86)))
-                        let boardCoord = pts[boardIdx].coordinate
-                        let alightCoord = pts[alightIdx].coordinate
+                    let resolveGroup = DispatchGroup()
+                    var resolvedBoard: CLLocationCoordinate2D? = nil
+                    var resolvedAlight: CLLocationCoordinate2D? = nil
+
+                    resolveGroup.enter()
+                    self.resolveTransitStationCoordinate(stationName: boardName, near: originCoord) { coord in
+                        resolvedBoard = coord
+                        resolveGroup.leave()
+                    }
+                    resolveGroup.enter()
+                    self.resolveTransitStationCoordinate(stationName: alightName, near: to) { coord in
+                        resolvedAlight = coord
+                        resolveGroup.leave()
+                    }
+
+                    resolveGroup.notify(queue: .main) {
+                        let pts = roadRoute.polyline.points()
+                        let cnt = roadRoute.polyline.pointCount
+                        let fallbackBoard = (cnt >= 6) ? pts[max(1, min(cnt - 3, Int(Double(cnt) * 0.14)))].coordinate : originCoord
+                        let fallbackAlight = (cnt >= 6) ? pts[max(2, min(cnt - 2, Int(Double(cnt) * 0.86)))].coordinate : to
+                        let boardCoord = resolvedBoard ?? fallbackBoard
+                        let alightCoord = resolvedAlight ?? fallbackAlight
+
                         self.transitBoardingStationCoord = boardCoord
                         self.transitAlightStationCoord = alightCoord
                         if self.transitBoardingStationName.isEmpty { self.transitBoardingStationName = "🚇 乘车站" }
                         if self.transitAlightStationName.isEmpty { self.transitAlightStationName = "🚇 下车站" }
 
-                        // Build combined Walking + Transit + Walking polylines (with real MKDirections walking legs!)
-                        let transitSliceCount = max(2, alightIdx - boardIdx + 1)
-                        let transitPoly = MKPolyline(points: pts.advanced(by: boardIdx), count: transitSliceCount)
+                        var transitCoords = [boardCoord, alightCoord]
+                        var transitPoly = MKPolyline(coordinates: &transitCoords, count: 2)
                         transitPoly.title = "TRANSIT_METRO_GREEN"
 
+                        var walk1Coords = [originCoord, boardCoord]
+                        var walk1Poly = MKPolyline(coordinates: &walk1Coords, count: 2)
+                        walk1Poly.title = "TRANSIT_WALK_BLUE"
+
+                        var walk2Coords = [alightCoord, to]
+                        var walk2Poly = MKPolyline(coordinates: &walk2Coords, count: 2)
+                        walk2Poly.title = "TRANSIT_WALK_BLUE"
+
+                        let segGroup = DispatchGroup()
                         let w1Req = MKDirections.Request()
                         w1Req.source = MKMapItem(placemark: MKPlacemark(coordinate: originCoord))
                         w1Req.destination = MKMapItem(placemark: MKPlacemark(coordinate: boardCoord))
                         w1Req.transportType = .walking
-
-                        let w2Req = MKDirections.Request()
-                        w2Req.source = MKMapItem(placemark: MKPlacemark(coordinate: alightCoord))
-                        w2Req.destination = MKMapItem(placemark: MKPlacemark(coordinate: to))
-                        w2Req.transportType = .walking
-
-                        var walk1Poly = MKPolyline(points: pts, count: boardIdx + 1)
-                        walk1Poly.title = "TRANSIT_WALK_BLUE"
-                        var walk2Poly = MKPolyline(points: pts.advanced(by: alightIdx), count: cnt - alightIdx)
-                        walk2Poly.title = "TRANSIT_WALK_BLUE"
-                        self.transitSegmentPolylines = [walk1Poly, transitPoly, walk2Poly]
-
-                        let group = DispatchGroup()
-                        group.enter()
+                        segGroup.enter()
                         MKDirections(request: w1Req).calculate { r1, _ in
                             if let p1 = r1?.routes.first?.polyline {
                                 p1.title = "TRANSIT_WALK_BLUE"
                                 walk1Poly = p1
                             }
-                            group.leave()
+                            segGroup.leave()
                         }
-                        group.enter()
+
+                        let tReq = MKDirections.Request()
+                        tReq.source = MKMapItem(placemark: MKPlacemark(coordinate: boardCoord))
+                        tReq.destination = MKMapItem(placemark: MKPlacemark(coordinate: alightCoord))
+                        tReq.transportType = .automobile
+                        segGroup.enter()
+                        MKDirections(request: tReq).calculate { rt, _ in
+                            if let pt = rt?.routes.first?.polyline {
+                                pt.title = "TRANSIT_METRO_GREEN"
+                                transitPoly = pt
+                            }
+                            segGroup.leave()
+                        }
+
+                        let w2Req = MKDirections.Request()
+                        w2Req.source = MKMapItem(placemark: MKPlacemark(coordinate: alightCoord))
+                        w2Req.destination = MKMapItem(placemark: MKPlacemark(coordinate: to))
+                        w2Req.transportType = .walking
+                        segGroup.enter()
                         MKDirections(request: w2Req).calculate { r2, _ in
                             if let p2 = r2?.routes.first?.polyline {
                                 p2.title = "TRANSIT_WALK_BLUE"
                                 walk2Poly = p2
                             }
-                            group.leave()
+                            segGroup.leave()
                         }
-                        group.notify(queue: .main) {
+
+                        segGroup.notify(queue: .main) {
                             self.transitSegmentPolylines = [walk1Poly, transitPoly, walk2Poly]
                         }
                     }
@@ -6297,65 +6415,36 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             self.transitPassStationsList = firstTransit.passStations
             self.transitCurrentStationIndex = 0
             
-            // Coordinate of boarding station
-            let boardCoord: CLLocationCoordinate2D = {
-                for s in AudioPlayerManager.szStationsDatabase {
-                    if firstTransit.fromStation.contains(s.name) {
-                        return CLLocationCoordinate2D(latitude: s.lat, longitude: s.lon)
-                    }
-                }
-                if firstTransit.fromStation.contains("沙湾天桥") {
-                    return CLLocationCoordinate2D(latitude: 22.5995, longitude: 114.1663)
-                }
-                if firstTransit.fromStation.contains("樟树布") {
-                    return CLLocationCoordinate2D(latitude: 22.6030, longitude: 114.1530)
-                }
-                if firstTransit.fromStation.contains("建设路") || firstTransit.fromStation.contains("东门") {
-                    return CLLocationCoordinate2D(latitude: 22.5440, longitude: 114.1190)
-                }
-                if CoordinateConverter.isInHongKong(self.userCoordinate) {
-                    let hkNearest = self.findNearestHKStation(to: self.userCoordinate)
-                    return CLLocationCoordinate2D(latitude: hkNearest.lat, longitude: hkNearest.lon)
-                }
-                if CoordinateConverter.isInShenzhen(self.userCoordinate) {
-                    let nearest = self.findNearestStation(to: self.userCoordinate)
-                    return CLLocationCoordinate2D(latitude: nearest.lat, longitude: nearest.lon)
-                }
-                // Overseas or other cities: place boarding stop 180m along direction toward destination
-                if let dest = self.destinationCoord {
-                    let lat = self.userCoordinate.latitude + (dest.latitude - self.userCoordinate.latitude) * 0.08
-                    let lon = self.userCoordinate.longitude + (dest.longitude - self.userCoordinate.longitude) * 0.08
-                    return CLLocationCoordinate2D(latitude: lat, longitude: lon)
-                }
-                return self.userCoordinate
-            }()
-            self.transitBoardingStationCoord = boardCoord
             self.transitPhase = .walkingToStation
-            
-            // Calculate REAL pedestrian road routing from current GPS to the station!
-            let walkReq = MKDirections.Request()
-            let src = isDemoSimulating
-                ? MKMapItem(placemark: MKPlacemark(coordinate: userCoordinate))
-                : MKMapItem.forCurrentLocation()
-            walkReq.source = src
-            walkReq.destination = MKMapItem(placemark: MKPlacemark(coordinate: boardCoord))
-            walkReq.transportType = .walking
-            
-            MKDirections(request: walkReq).calculate { [weak self] resp, _ in
-                DispatchQueue.main.async {
-                    guard let self = self else { return }
-                    if let r = resp?.routes.first {
-                        self.activeRoute = r
-                        self.currentStepIndex = 0
-                        self.remainingRouteDistanceKm = r.distance / 1000.0
-                        self.remainingRouteMinutes = max(1, Int(r.expectedTravelTime / 60.0))
-                        let stepText = r.steps.first(where: { !$0.instructions.isEmpty })?.instructions ?? "前往 \(self.transitBoardingStationName)"
-                        self.currentStepInstruction = "步行至 \(self.transitBoardingStationName) (\(stepText))"
-                        self.distanceToNextStepMeters = r.steps.first?.distance ?? r.distance
-                    } else {
-                        // Fallback straight route if directions offline
-                        self.currentStepInstruction = "步行前往 \(self.transitBoardingStationName)"
-                        self.distanceToNextStepMeters = Double(self.metersBetween(self.userCoordinate, boardCoord))
+            self.resolveTransitStationCoordinate(stationName: firstTransit.fromStation, near: self.userCoordinate) { [weak self] resolved in
+                guard let self = self else { return }
+                let boardCoord = resolved ?? self.transitBoardingStationCoord ?? self.userCoordinate
+                self.transitBoardingStationCoord = boardCoord
+
+                let walkReq = MKDirections.Request()
+                let src = self.isDemoSimulating
+                    ? MKMapItem(placemark: MKPlacemark(coordinate: self.userCoordinate))
+                    : MKMapItem.forCurrentLocation()
+                walkReq.source = src
+                walkReq.destination = MKMapItem(placemark: MKPlacemark(coordinate: boardCoord))
+                walkReq.transportType = .walking
+
+                MKDirections(request: walkReq).calculate { [weak self] resp, _ in
+                    DispatchQueue.main.async {
+                        guard let self = self else { return }
+                        if let r = resp?.routes.first {
+                            self.activeRoute = r
+                            self.currentStepIndex = 0
+                            self.remainingRouteDistanceKm = r.distance / 1000.0
+                            self.remainingRouteMinutes = max(1, Int((r.expectedTravelTime / 60.0).rounded()))
+                            let stepText = r.steps.first(where: { !$0.instructions.isEmpty })?.instructions ?? "前往 \(self.transitBoardingStationName)"
+                            self.currentStepInstruction = "步行至 \(self.transitBoardingStationName) (\(stepText))"
+                            self.distanceToNextStepMeters = r.steps.first?.distance ?? r.distance
+                        } else {
+                            // Fallback straight route if directions offline
+                            self.currentStepInstruction = "步行前往 \(self.transitBoardingStationName)"
+                            self.distanceToNextStepMeters = Double(self.metersBetween(self.userCoordinate, boardCoord))
+                        }
                     }
                 }
             }
@@ -8012,19 +8101,21 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         let distKm: Double = max(0.05, route.distance / 1000.0)
         switch travelMode {
         case .ebike:
-            // Urban e-bike average ~15.5 km/h + ~22s per km for traffic lights
-            return (distKm / 15.5) * 3600.0 + distKm * 22.0
+            return (distKm / 16.5) * 3600.0 + distKm * 15.0
         case .walking:
-            // Urban walking average ~3.8 km/h + crosswalk waits
-            return (distKm / 3.8) * 3600.0 + distKm * 18.0
+            if route.expectedTravelTime > 0 { return route.expectedTravelTime }
+            return (distKm / 4.5) * 3600.0
         case .transit:
-            // Public transit ~20 km/h + 10 min boarding/transfer/walking buffer
-            return (distKm / 20.0) * 3600.0 + 600.0
+            if selectedTransitPlanIndex < transitPlans.count {
+                return Double(max(1, transitPlans[selectedTransitPlanIndex].totalMinutes) * 60)
+            }
+            if route.expectedTravelTime > 0 { return route.expectedTravelTime }
+            return (distKm / 22.0) * 3600.0 + 360.0
         case .driving:
-            // Apple/Amap free-flow expectedTravelTime underestimates urban signals & congestion by ~30%
-            let signalPenalty = distKm * 30.0
-            let congestedFactor = isCongested ? 1.45 : 1.28
-            return max(route.expectedTravelTime * congestedFactor + signalPenalty, (distKm / 42.0) * 3600.0 + signalPenalty)
+            if route.expectedTravelTime > 0 {
+                return route.expectedTravelTime * (isCongested ? 1.12 : 1.0)
+            }
+            return (distKm / 42.0) * 3600.0
         }
     }
 
@@ -13665,9 +13756,29 @@ struct RmkEvaluator {
         var canBreakIceNow = hasBrokenIce
         if !hasBrokenIce && totalHandPts >= 30 {
             canBreakIceNow = true
-        }
-
-        if hasBrokenIce || totalHandPts >= 30 {
+            // Realistic Rummikub icebreak: only play the minimum melds needed to reach >=30 pts on icebreak turn
+            var icePts = 0
+            var iceMelds: [[RmkTile]] = []
+            for m in chosenHandMelds.sorted(by: { (evaluateMeld($0) ?? 0) > (evaluateMeld($1) ?? 0) }) {
+                iceMelds.append(m)
+                icePts += evaluateMeld(m) ?? 0
+                if icePts >= 30 { break }
+            }
+            let iceIds = Set(iceMelds.flatMap { $0.map { $0.id } })
+            for m in iceMelds {
+                let sortedM = sortMeldForDisplay(m)
+                nextMelds.append(RmkMeld(id: UUID().uuidString, tiles: sortedM))
+                for t in sortedM {
+                    playedIds.append(t.id)
+                    highlightedIds.insert(t.id)
+                }
+            }
+            remHand.removeAll { iceIds.contains($0.id) }
+            // On icebreak turn, stop here without also raiding the table immediately
+            if !playedIds.isEmpty {
+                return (nextMelds, playedIds, highlightedIds)
+            }
+        } else if hasBrokenIce {
             for m in chosenHandMelds {
                 let sortedM = sortMeldForDisplay(m)
                 nextMelds.append(RmkMeld(id: UUID().uuidString, tiles: sortedM))
@@ -14876,52 +14987,85 @@ final class RummikubEngine: NSObject, ObservableObject {
         syncEditingStateWithSnapshot()
     }
 
-    /// Long-press cascade lift: pressing tile 1 slowly lifts 1 -> 2 -> 3 (or 7 -> 7 -> 7) in sequence!
+    /// Long-press cascade lift: pressing a tile immediately lifts its matching Run/Group INCLUDING any Joker wildcards!
     func startLongPressCascadeSelect(fromSlotIndex slotIdx: Int) {
         guard slotIdx >= 0, slotIdx < rackSlots.count, let anchor = rackSlots[slotIdx] else { return }
         let active = currentCanonicalHand()
+        let jokers = active.filter { $0.isJoker && $0.id != anchor.id }
         var seq: [RmkTile] = [anchor]
 
-        if !anchor.isJoker {
+        if anchor.isJoker {
+            // Long-pressing a Joker finds the best 2+ tile run or group on the rack to complete!
+            let (melds, _) = RmkEvaluator.organizeHandIntoGroups(active, preferRuns: sortByColor)
+            if let withJoker = melds.first(where: { $0.contains(where: { $0.id == anchor.id }) }) {
+                seq = [anchor] + withJoker.filter { $0.id != anchor.id }
+            }
+        } else {
+            // 1. Check same-color run (allowing 1-tile gap if we have a Joker)
             var runTiles: [RmkTile] = [anchor]
+            var usedIds: Set<String> = [anchor.id]
+            var availJokers = jokers
             var nextNum = anchor.number + 1
             while nextNum <= 13 {
-                if let nxt = active.first(where: { $0.color == anchor.color && $0.number == nextNum }) {
+                if let nxt = active.first(where: { !$0.isJoker && $0.color == anchor.color && $0.number == nextNum && !usedIds.contains($0.id) }) {
                     runTiles.append(nxt)
+                    usedIds.insert(nxt.id)
                     nextNum += 1
+                } else if !availJokers.isEmpty,
+                          let nxt2 = active.first(where: { !$0.isJoker && $0.color == anchor.color && $0.number == nextNum + 1 && !usedIds.contains($0.id) }) {
+                    runTiles.append(availJokers.removeFirst())
+                    runTiles.append(nxt2)
+                    usedIds.insert(nxt2.id)
+                    nextNum += 2
                 } else { break }
             }
             var prevNum = anchor.number - 1
             while prevNum >= 1 {
-                if let prv = active.first(where: { $0.color == anchor.color && $0.number == prevNum }) {
+                if let prv = active.first(where: { !$0.isJoker && $0.color == anchor.color && $0.number == prevNum && !usedIds.contains($0.id) }) {
                     runTiles.insert(prv, at: 0)
+                    usedIds.insert(prv.id)
                     prevNum -= 1
+                } else if !availJokers.isEmpty,
+                          let prv2 = active.first(where: { !$0.isJoker && $0.color == anchor.color && $0.number == prevNum - 1 && !usedIds.contains($0.id) }) {
+                    runTiles.insert(availJokers.removeFirst(), at: 0)
+                    runTiles.insert(prv2, at: 0)
+                    usedIds.insert(prv2.id)
+                    prevNum -= 2
                 } else { break }
             }
-            if runTiles.count >= 2 {
-                seq = [anchor] + runTiles.filter { $0.id != anchor.id }.sorted { $0.number < $1.number }
-            } else {
-                var grp: [RmkTile] = [anchor]
-                var seenCols: Set<RmkColor> = [anchor.color]
-                for t in active where !t.isJoker && t.number == anchor.number && !seenCols.contains(t.color) {
-                    seenCols.insert(t.color)
-                    grp.append(t)
-                }
-                if grp.count >= 2 { seq = grp }
+            // If 2 consecutive same-color tiles and a Joker is available, add the Joker to make a 3-tile run!
+            if runTiles.count == 2 && !availJokers.isEmpty {
+                runTiles.append(availJokers.removeFirst())
+            }
+
+            // 2. Check same-number different-color group (plus Joker if 2 tiles or 3 tiles)
+            var grp: [RmkTile] = [anchor]
+            var seenCols: Set<RmkColor> = [anchor.color]
+            for t in active where !t.isJoker && t.number == anchor.number && !seenCols.contains(t.color) {
+                seenCols.insert(t.color)
+                grp.append(t)
+            }
+            if grp.count == 2 && !jokers.isEmpty {
+                grp.append(jokers[0])
+            }
+
+            // Prefer whichever forms a valid 3+ meld (or larger group)
+            let runValid = RmkEvaluator.evaluateMeld(runTiles) != nil
+            let grpValid = RmkEvaluator.evaluateMeld(grp) != nil
+            if grpValid && (!runValid || grp.count >= runTiles.count) {
+                seq = [anchor] + grp.filter { $0.id != anchor.id }
+            } else if runValid || runTiles.count >= 2 {
+                seq = [anchor] + runTiles.filter { $0.id != anchor.id }
+            } else if grp.count >= 2 {
+                seq = [anchor] + grp.filter { $0.id != anchor.id }
             }
         }
 
-        selectedTileIds.removeAll()
+        selectedTileIds = Set(seq.map { $0.id })
         liftedSlotIndex = slotIdx
-        for (i, t) in seq.enumerated() {
-            DispatchQueue.main.asyncAfter(deadline: .now() + Double(i) * 0.14) { [weak self] in
-                guard let self = self else { return }
-                self.selectedTileIds.insert(t.id)
-                if i == seq.count - 1 {
-                    self.statusBanner = "✨ 已长按连选 \(seq.count) 张牌，向上拖入桌面即可直接出牌！"
-                }
-            }
-        }
+        statusBanner = seq.count >= 2
+            ? "✨ 已自动抬起 \(seq.count) 张组合牌，直接向上拖到桌面即可出牌！"
+            : "🖐 已选中该牌，可继续点选其他牌或拖上桌面"
     }
 
     func smartHintOrAutoPlace() {
@@ -15090,7 +15234,7 @@ final class RummikubEngine: NSObject, ObservableObject {
             self.executeDrawAndAdvance(seatIdx: seatIdx, reason: "从共用牌堆摸1张牌")
         }
         aiWorkItem = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.85, execute: work)
     }
 }
 

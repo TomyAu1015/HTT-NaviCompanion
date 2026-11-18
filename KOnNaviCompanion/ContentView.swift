@@ -1338,7 +1338,7 @@ struct ContentView: View {
                                     .font(.system(size: 12, weight: .black))
                                     .foregroundColor(.white)
                                     .lineLimit(1)
-                                Text(String(format: "距目的地 %.1f km · 约 %d 分钟 · 点击返回导航", manager.remainingRouteDistanceKm, max(1, manager.remainingRouteMinutes)))
+                                Text(String(format: tr("距目的地 %.1f km · 约 %d 分钟 · 点击返回导航", "距目的地 %.1f km · 約 %d 分鐘 · 點擊返回導航", "%.1f km to dest · ~%d min · Tap to return"), manager.remainingRouteDistanceKm, max(1, manager.remainingRouteMinutes)))
                                     .font(.system(size: 10, weight: .semibold))
                                     .foregroundColor(httGold)
                                     .lineLimit(1)
@@ -1817,7 +1817,7 @@ struct ContentView: View {
     // Compact Landscape Pre-Navigation Card (Fits in bottom-right of Landscape screen without any vertical overflow!)
         private func landscapeRouteButton(route: MKRoute, index: Int) -> some View {
         let isSel = (manager.selectedRouteIndex == index)
-        let estMins = max(1, Int(route.expectedTravelTime / 60.0))
+        let estMins = manager.estimatedMinutes(for: route)
         let distStr = String(format: "%.1fkm", route.distance / 1000.0)
         let badge = manager.routeOptionBadgeTitle(for: route, index: index)
         return Button(action: {
@@ -4520,56 +4520,30 @@ struct DestinationSearchSheetView: View {
                                 .padding(.top, 4)
 
                             ForEach(recentMatches) { rec in
-                                Button(action: {
-                                    UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
-                                    manager.travelMode = selectedMode
-                                    manager.isMapEnlarged = true
-                                    manager.showMapMode = true
-                                    manager.calculateAndStartRoute(to: rec.coordinate, title: rec.name)
-                                    dismiss()
-                                    if selectedMode == .transit {
-                                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-                                            manager.showTransitPlanSheet = true
-                                        }
-                                    }
-                                }) {
-                                    HStack(spacing: 10) {
-                                        Image(systemName: "clock.arrow.circlepath")
-                                            .font(.title3)
-                                            .foregroundColor(.orange)
-                                        VStack(alignment: .leading, spacing: 3) {
-                                            HStack(spacing: 6) {
-                                                Text(rec.name)
-                                                    .font(.subheadline.bold())
-                                                    .foregroundColor(.primary)
-                                                    .lineLimit(1)
-                                                Text("最近")
-                                                    .font(.system(size: 10, weight: .black))
-                                                    .padding(.horizontal, 5).padding(.vertical, 1)
-                                                    .background(Color.orange.opacity(0.2))
-                                                    .foregroundColor(.orange)
-                                                    .cornerRadius(4)
-                                            }
-                                            if !rec.address.isEmpty {
-                                                Text(rec.address)
-                                                    .font(.caption)
-                                                    .foregroundColor(.secondary)
-                                                    .lineLimit(1)
+                                SwipeToDeleteRecentRow(
+                                    rec: rec,
+                                    distText: distanceString(to: rec.coordinate),
+                                    recentBadge: manager.language == .en ? "Recent" : "最近",
+                                    deleteLabel: manager.language == .en ? "Delete" : (manager.language == .zhHant ? "刪除" : "删除"),
+                                    onTap: {
+                                        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+                                        manager.travelMode = selectedMode
+                                        manager.isMapEnlarged = true
+                                        manager.showMapMode = true
+                                        manager.calculateAndStartRoute(to: rec.coordinate, title: rec.name)
+                                        dismiss()
+                                        if selectedMode == .transit {
+                                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                                                manager.showTransitPlanSheet = true
                                             }
                                         }
-                                        Spacer()
-                                        Text(distanceString(to: rec.coordinate))
-                                            .font(.caption.bold())
-                                            .foregroundColor(.orange)
+                                    },
+                                    onDelete: {
+                                        withAnimation(.spring(response: 0.25, dampingFraction: 0.85)) {
+                                            manager.deleteRecentDestination(id: rec.id)
+                                        }
                                     }
-                                    .padding(.horizontal, 16)
-                                    .padding(.vertical, 10)
-                                    .background(Color.orange.opacity(0.10))
-                                    .cornerRadius(10)
-                                    .padding(.horizontal, 12)
-                                    .contentShape(Rectangle())
-                                }
-                                .buttonStyle(PlainButtonStyle())
+                                )
                             }
                         }
 
@@ -8886,6 +8860,9 @@ struct KOnDoudizhuSheetView: View {
                             .background(Color.black.opacity(0.60))
                             .cornerRadius(8)
                             .overlay(RoundedRectangle(cornerRadius: 8).stroke(ddz.currentTurnSeat == ddz.mySeatIndex ? httGold : Color.white.opacity(0.2), lineWidth: 1))
+                            .fixedSize(horizontal: true, vertical: false)
+
+                            Spacer(minLength: 4)
 
                             // Action Control Bar inline next to player badge
                             playerActionControlBar
@@ -9197,7 +9174,7 @@ struct KOnDoudizhuSheetView: View {
                             .interpolation(.none)
                             .resizable()
                             .scaledToFit()
-                            .frame(width: isCompact ? 38 : 44, height: isCompact ? 42 : 48)
+                            .frame(width: isCompact ? 30 : 34, height: isCompact ? 34 : 38)
                     }
                     if ddz.phase != .bidding {
                         Text(seat.isLandlord ? "🎩" : "🌾")
@@ -9232,13 +9209,13 @@ struct KOnDoudizhuSheetView: View {
                                         .overlay(Text("♪").font(.system(size: 9, weight: .black)).foregroundColor(httGold))
                                 }
                             }
-                            .frame(width: 22, height: 31)
-                            .clipShape(RoundedRectangle(cornerRadius: 4))
-                            .overlay(RoundedRectangle(cornerRadius: 4).stroke(httGold, lineWidth: 1))
-                            .offset(x: CGFloat(idx) * 7)
+                            .frame(width: 17, height: 24)
+                            .clipShape(RoundedRectangle(cornerRadius: 3))
+                            .overlay(RoundedRectangle(cornerRadius: 3).stroke(httGold, lineWidth: 1))
+                            .offset(x: CGFloat(idx) * 5)
                         }
                     }
-                    .frame(width: CGFloat(22 + (stackCount - 1) * 7), height: 32, alignment: .leading)
+                    .frame(width: CGFloat(17 + (stackCount - 1) * 5), height: 25, alignment: .leading)
                 }
 
                 Text(tr("余\(seat.hand.count)张", "餘\(seat.hand.count)張", "\(seat.hand.count) left"))
@@ -9261,8 +9238,8 @@ struct KOnDoudizhuSheetView: View {
                     .cornerRadius(4)
             }
         }
-        .frame(width: isCompact ? 82 : 122)
-        .padding(isCompact ? 5 : 7)
+        .frame(width: isCompact ? 76 : 98)
+        .padding(isCompact ? 4 : 5)
         .background(Color.black.opacity(0.50))
         .cornerRadius(12)
         .overlay(
@@ -9415,6 +9392,7 @@ struct KOnMahjongSheetView: View {
     @State private var mjDealtCount: Int = 99
     @State private var mjDealingOrder: [MahjongTile] = []
     @State private var isMjDealing: Bool = false
+    @State private var mjFlightProgress: CGFloat = 0
 
     private let httGold = Color(red: 0.88, green: 0.68, blue: 0.24)
     private let httCrimson = Color(red: 0.78, green: 0.18, blue: 0.22)
@@ -10279,48 +10257,69 @@ struct KOnMahjongSheetView: View {
     @ViewBuilder
     private func mjDiscardFlightOverlay(flight: MahjongDiscardFlight) -> some View {
         let rel = (flight.seatIndex - mj.mySeatIndex + 4) % 4
-        let startOff: CGSize = {
-            switch rel {
-            case 0: return CGSize(width: 0, height: 145)
-            case 1: return CGSize(width: 240, height: 0)
-            case 2: return CGSize(width: 0, height: -135)
-            default: return CGSize(width: -240, height: 0)
-            }
-        }()
-        let endOff: CGSize = {
-            switch rel {
-            case 0: return CGSize(width: 0, height: 42)
-            case 1: return CGSize(width: 105, height: 0)
-            case 2: return CGSize(width: 0, height: -48)
-            default: return CGSize(width: -105, height: 0)
-            }
-        }()
-        ZStack {
-            VStack(spacing: 3) {
-                HStack(spacing: 4) {
-                    if let sp = manager.allMemberFrames[flight.characterId] {
-                        Image(uiImage: sp).interpolation(.none).resizable().scaledToFit().frame(width: 18, height: 20)
-                    }
-                    Text(HTTGameRoomLocalizer.localize("\(flight.seatName) 打出 \(flight.tile.fullName)", manager.language))
-                        .font(.system(size: 10, weight: .black))
-                        .foregroundColor(.yellow)
+        GeometryReader { fGeo in
+            let w = fGeo.size.width
+            let h = fGeo.size.height
+            let startOff: CGSize = {
+                switch rel {
+                case 0: return CGSize(width: 0, height: h * 0.34)
+                case 1: return CGSize(width: w * 0.35, height: 0)
+                case 2: return CGSize(width: 0, height: -h * 0.32)
+                default: return CGSize(width: -w * 0.35, height: 0)
                 }
-                .padding(.horizontal, 8).padding(.vertical, 2)
-                .background(Color.black.opacity(0.78))
-                .cornerRadius(6)
-                .overlay(RoundedRectangle(cornerRadius: 6).stroke(httGold, lineWidth: 1))
+            }()
+            let endOff: CGSize = {
+                switch rel {
+                case 0: return CGSize(width: 0, height: h * 0.10)
+                case 1: return CGSize(width: w * 0.14, height: 0)
+                case 2: return CGSize(width: 0, height: -h * 0.11)
+                default: return CGSize(width: -w * 0.14, height: 0)
+                }
+            }()
+            let curX = startOff.width + (endOff.width - startOff.width) * mjFlightProgress
+            let curY = startOff.height + (endOff.height - startOff.height) * mjFlightProgress
+            let curScale: CGFloat = 1.24 - 0.24 * mjFlightProgress
 
-                mjTileView(tile: flight.tile, width: 34, height: 48, isSelected: false, isHighlight: true)
-                    .shadow(color: httGold.opacity(0.9), radius: 8)
+            ZStack {
+                VStack(spacing: 3) {
+                    HStack(spacing: 4) {
+                        if let sp = manager.allMemberFrames[flight.characterId] {
+                            Image(uiImage: sp).interpolation(.none).resizable().scaledToFit().frame(width: 18, height: 20)
+                        }
+                        Text(HTTGameRoomLocalizer.localize("\(flight.seatName) 打出 \(flight.tile.fullName)", manager.language))
+                            .font(.system(size: 10, weight: .black))
+                            .foregroundColor(.yellow)
+                    }
+                    .padding(.horizontal, 8).padding(.vertical, 2)
+                    .background(Color.black.opacity(0.78))
+                    .cornerRadius(6)
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(httGold, lineWidth: 1))
+
+                    mjTileView(tile: flight.tile, width: 34, height: 48, isSelected: false, isHighlight: true)
+                        .shadow(color: httGold.opacity(0.9), radius: 8)
+                }
+                .scaleEffect(curScale)
+                .offset(x: curX, y: curY)
             }
-            .offset(endOff)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .id("mj_flight_\(flight.id)")
-            .transition(.asymmetric(
-                insertion: .offset(x: startOff.width - endOff.width, y: startOff.height - endOff.height).combined(with: .scale(scale: 1.32)).combined(with: .opacity),
-                removal: .scale(scale: 0.85).combined(with: .opacity)
-            ))
+            .onAppear {
+                mjFlightProgress = 0
+                DispatchQueue.main.async {
+                    withAnimation(.spring(response: 0.34, dampingFraction: 0.76)) {
+                        mjFlightProgress = 1.0
+                    }
+                }
+            }
+            .onChange(of: flight.id) { _ in
+                mjFlightProgress = 0
+                DispatchQueue.main.async {
+                    withAnimation(.spring(response: 0.34, dampingFraction: 0.76)) {
+                        mjFlightProgress = 1.0
+                    }
+                }
+            }
         }
-        .animation(.spring(response: 0.34, dampingFraction: 0.74), value: flight.id)
         .allowsHitTesting(false)
     }
 
@@ -10417,7 +10416,7 @@ struct KOnMahjongSheetView: View {
                                     let isHit = hitIds.contains(ht.id)
                                     VStack(spacing: 2) {
                                         ZStack(alignment: .top) {
-                                            mjTileView(tile: ht, width: 32, height: 45, isSelected: isHit, isHighlight: isHit)
+                                            mjTileView(tile: ht, width: 32, height: 45, isSelected: false, isHighlight: isHit)
                                                 .overlay(
                                                     RoundedRectangle(cornerRadius: 5)
                                                         .stroke(isHit ? Color.yellow : Color.white.opacity(0.25), lineWidth: isHit ? 2.5 : 1)
@@ -10430,7 +10429,8 @@ struct KOnMahjongSheetView: View {
                                                     .background(httCrimson)
                                                     .foregroundColor(.yellow)
                                                     .cornerRadius(3)
-                                                    .offset(y: -11)
+                                                    .overlay(RoundedRectangle(cornerRadius: 3).stroke(Color.yellow, lineWidth: 0.8))
+                                                    .offset(y: -9)
                                             }
                                         }
                                         Text(HTTGameRoomLocalizer.localize(ht.fullName, manager.language))
@@ -10439,7 +10439,7 @@ struct KOnMahjongSheetView: View {
                                     }
                                 }
                             }
-                            .padding(.top, 4)
+                            .padding(.top, 8)
                         }
                         .padding(.horizontal, 10).padding(.vertical, 6)
                         .background(Color.black.opacity(0.42))
@@ -11443,7 +11443,7 @@ struct KOnRummikubSheetView: View {
                                                                     withAnimation(.spring(response: 0.24, dampingFraction: 0.8)) {
                                                                         if movedDist < 12 {
                                                                             rmk.handleTableTileTapOrMove(meldId: meld.id, tileId: t.id)
-                                                                        } else if rackAreaGlobalFrame.insetBy(dx: -8, dy: -8).contains(dropPt) || val.translation.height > 75 {
+                                                                        } else if !tableAreaGlobalFrame.contains(dropPt) && rackAreaGlobalFrame.insetBy(dx: -12, dy: -12).contains(dropPt) {
                                                                             _ = rmk.returnTableTileToRackIfFromThisTurn(meldId: meld.id, tileId: t.id)
                                                                         } else {
                                                                             let targetMeld = findTargetMeldId(at: dropPt, excludingId: meld.id, layout: layout)
@@ -11473,6 +11473,7 @@ struct KOnRummikubSheetView: View {
                                     }
                                 }
                                 .padding(6)
+                                .animation(.spring(response: 0.38, dampingFraction: 0.80), value: displayMelds.map { $0.id + "_" + $0.tiles.map { $0.id }.joined(separator: ",") })
                             }
                         }
                     }
@@ -11573,22 +11574,36 @@ struct KOnRummikubSheetView: View {
                                                         customW: max(26, fitSlotW - 2),
                                                         customH: fitSlotH - 2
                                                     )
-                                                    .offset(dragSlotIndex == slotIdx ? dragOffset : .zero)
-                                                    .zIndex(dragSlotIndex == slotIdx ? 80 : 2)
-                                                    .onLongPressGesture(minimumDuration: 0.28) {
-                                                        withAnimation(.spring(response: 0.24, dampingFraction: 0.78)) {
-                                                            rmk.startLongPressCascadeSelect(fromSlotIndex: slotIdx)
+                                                    .overlay(alignment: .topTrailing) {
+                                                        if dragSlotIndex == slotIdx && rmk.selectedTileIds.count > 1 && rmk.selectedTileIds.contains(tile.id) {
+                                                            Text("+\(rmk.selectedTileIds.count - 1)")
+                                                                .font(.system(size: 9, weight: .black, design: .monospaced))
+                                                                .padding(.horizontal, 4).padding(.vertical, 1)
+                                                                .background(Color.orange)
+                                                                .foregroundColor(.white)
+                                                                .clipShape(Capsule())
+                                                                .offset(x: 4, y: -12)
                                                         }
                                                     }
-                                                    .highPriorityGesture(
-                                                        DragGesture(minimumDistance: 3, coordinateSpace: .global)
+                                                    .offset(dragSlotIndex == slotIdx ? dragOffset : .zero)
+                                                    .zIndex(dragSlotIndex == slotIdx ? 80 : 2)
+                                                    .simultaneousGesture(
+                                                        LongPressGesture(minimumDuration: 0.22)
+                                                            .onEnded { _ in
+                                                                withAnimation(.spring(response: 0.22, dampingFraction: 0.78)) {
+                                                                    rmk.startLongPressCascadeSelect(fromSlotIndex: slotIdx)
+                                                                }
+                                                            }
+                                                    )
+                                                    .gesture(
+                                                        DragGesture(minimumDistance: 9, coordinateSpace: .global)
                                                             .onChanged { val in
                                                                 dragSlotIndex = slotIdx
                                                                 dragOffset = val.translation
                                                             }
                                                             .onEnded { val in
                                                                 let dropPt = val.location
-                                                                if val.translation.height < -32 || tableAreaGlobalFrame.contains(dropPt) {
+                                                                if val.translation.height < -24 || tableAreaGlobalFrame.contains(dropPt) {
                                                                     let targetMeld = findTargetMeldId(at: dropPt, excludingId: nil, layout: currentTableLayout)
                                                                     withAnimation(.spring(response: 0.25, dampingFraction: 0.80)) {
                                                                         rmk.dropRackTilesToTable(primaryTileId: tile.id, targetMeldId: targetMeld)
@@ -11912,6 +11927,111 @@ struct KOnRummikubSheetView: View {
                 }
                 .allowsHitTesting(false)
             }
+        }
+    }
+}
+
+private struct SwipeToDeleteRecentRow: View {
+    let rec: RecentDestinationRecord
+    let distText: String
+    let recentBadge: String
+    let deleteLabel: String
+    let onTap: () -> Void
+    let onDelete: () -> Void
+
+    @State private var offsetX: CGFloat = 0
+    private let deleteRevealWidth: CGFloat = 68
+
+    var body: some View {
+        ZStack(alignment: .trailing) {
+            Button(action: onDelete) {
+                VStack(spacing: 2) {
+                    Image(systemName: "trash.fill")
+                        .font(.system(size: 15, weight: .bold))
+                    Text(deleteLabel)
+                        .font(.system(size: 10, weight: .bold))
+                }
+                .foregroundColor(.white)
+                .frame(width: deleteRevealWidth)
+                .frame(maxHeight: .infinity)
+                .background(Color.red)
+                .cornerRadius(10)
+            }
+            .buttonStyle(PlainButtonStyle())
+            .padding(.trailing, 12)
+            .opacity(offsetX < -8 ? 1 : 0)
+
+            Button(action: {
+                if offsetX < -10 {
+                    withAnimation(.spring(response: 0.22, dampingFraction: 0.85)) {
+                        offsetX = 0
+                    }
+                } else {
+                    onTap()
+                }
+            }) {
+                HStack(spacing: 10) {
+                    Image(systemName: "clock.arrow.circlepath")
+                        .font(.title3)
+                        .foregroundColor(.orange)
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack(spacing: 6) {
+                            Text(rec.name)
+                                .font(.subheadline.bold())
+                                .foregroundColor(.primary)
+                                .lineLimit(1)
+                            Text(recentBadge)
+                                .font(.system(size: 10, weight: .black))
+                                .padding(.horizontal, 5).padding(.vertical, 1)
+                                .background(Color.orange.opacity(0.2))
+                                .foregroundColor(.orange)
+                                .cornerRadius(4)
+                        }
+                        if !rec.address.isEmpty {
+                            Text(rec.address)
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                                .lineLimit(1)
+                        }
+                    }
+                    Spacer()
+                    Text(distText)
+                        .font(.caption.bold())
+                        .foregroundColor(.orange)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+                .background(Color(UIColor.secondarySystemBackground))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10)
+                        .fill(Color.orange.opacity(0.10))
+                        .allowsHitTesting(false)
+                )
+                .cornerRadius(10)
+                .padding(.horizontal, 12)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(PlainButtonStyle())
+            .offset(x: offsetX)
+            .highPriorityGesture(
+                DragGesture(minimumDistance: 14)
+                    .onChanged { val in
+                        if abs(val.translation.width) > abs(val.translation.height) {
+                            let base: CGFloat = (offsetX < -deleteRevealWidth * 0.5) ? -deleteRevealWidth : 0
+                            let next = min(0, max(-deleteRevealWidth - 12, base + val.translation.width))
+                            offsetX = next
+                        }
+                    }
+                    .onEnded { val in
+                        withAnimation(.spring(response: 0.24, dampingFraction: 0.82)) {
+                            if offsetX < -deleteRevealWidth * 0.45 || val.translation.width < -35 {
+                                offsetX = -deleteRevealWidth
+                            } else {
+                                offsetX = 0
+                            }
+                        }
+                    }
+            )
         }
     }
 }
