@@ -10835,6 +10835,13 @@ private struct RmkSlotFramesPrefKey: PreferenceKey {
     }
 }
 
+private struct RmkSeatFramesPrefKey: PreferenceKey {
+    static var defaultValue: [Int: CGRect] = [:]
+    static func reduce(value: inout [Int: CGRect], nextValue: () -> [Int: CGRect]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, new in new })
+    }
+}
+
 // MARK: - K-ON! Rummikub View (2~4 Players · K-ON! Character Tiles · 30-Pt Icebreak · Table Rearrange · 60s Timer)
 struct KOnRummikubSheetView: View {
     @ObservedObject var manager: AudioPlayerManager
@@ -10867,14 +10874,14 @@ struct KOnRummikubSheetView: View {
             var curRow: [RmkMeld] = []
             var curX: CGFloat = 0
             for m in melds {
-                let mW = CGFloat(max(1, m.tiles.count)) * (candW + 2) + 8
+                let mW = CGFloat(max(1, m.tiles.count)) * (candW + 1.5) + 8
                 if !curRow.isEmpty && curX + mW > availW {
                     rows.append(curRow)
                     curRow = [m]
-                    curX = mW + 8
+                    curX = mW + 10
                 } else {
                     curRow.append(m)
-                    curX += mW + 8
+                    curX += mW + 10
                 }
             }
             if !curRow.isEmpty { rows.append(curRow) }
@@ -10886,31 +10893,105 @@ struct KOnRummikubSheetView: View {
         return ([melds], 24, 33)
     }
 
-    /// Dual hit-testing: checks live PreferenceKey frames first (with generous 18pt snap margin),
-    /// then falls back to deterministic mathematical coordinates inside tableAreaGlobalFrame so hit-testing NEVER fails!
-    private func findTargetMeldId(at globalPt: CGPoint, excludingId: String? = nil, layout: (rows: [[RmkMeld]], tileW: CGFloat, tileH: CGFloat)) -> String? {
-        if let hit = meldGlobalFrames.first(where: { $0.key != excludingId && $0.value.insetBy(dx: -18, dy: -18).contains(globalPt) })?.key {
-            return hit
+    private func areTilesCompatibleForSnap(_ existing: [RmkTile], _ incoming: [RmkTile]) -> Bool {
+        guard !incoming.isEmpty else { return true }
+        let comb = existing + incoming
+        if RmkEvaluator.evaluateMeld(comb) != nil { return true }
+        let norms = comb.filter { !$0.isJoker }
+        if norms.count <= 1 { return true }
+        let sameNum = norms.allSatisfy { $0.number == norms[0].number } && Set(norms.map { $0.color }).count == norms.count && comb.count <= 4
+        if sameNum { return true }
+        let sameCol = norms.allSatisfy { $0.color == norms[0].color }
+        if sameCol {
+            let nums = norms.map { $0.number }
+            if Set(nums).count == nums.count, let minN = nums.min(), let maxN = nums.max(), (maxN - minN) <= max(3, comb.count) {
+                return true
+            }
         }
-        guard tableAreaGlobalFrame.width > 10 else { return nil }
-        let relX = globalPt.x - tableAreaGlobalFrame.minX - 6
-        let relY = globalPt.y - tableAreaGlobalFrame.minY - 6
-        var curY: CGFloat = 0
-        let rowH = layout.tileH + 6
-        for rowMelds in layout.rows {
-            if relY >= curY - 16 && relY <= curY + rowH + 16 {
-                var curX: CGFloat = 0
-                for m in rowMelds {
-                    let mW = CGFloat(max(1, m.tiles.count)) * (layout.tileW + 2) + 6
-                    if m.id != excludingId && relX >= curX - 18 && relX <= curX + mW + 18 {
-                        return m.id
+        return false
+    }
+
+    /// Magnetic Meld Hit-Testing (1:1 like Rummikub Video):
+    /// - Captures drops directly on a meld OR up to 1.15x tileWidth to the left/right ends of a meld (so placing `1` to the left of `2,3,4` or `5` to the right of `2,3,4` never falls outside the box!).
+    /// - Prioritizes compatible melds and closest center distance so adjacent melds never steal drops.
+    /// - Returns (targetMeldId, preferLeading, insertAtMeldIndex).
+    private func findTargetMeldHit(
+        at globalPt: CGPoint,
+        excludingId: String? = nil,
+        draggedTiles: [RmkTile] = [],
+        displayMelds: [RmkMeld],
+        layout: (rows: [[RmkMeld]], tileW: CGFloat, tileH: CGFloat)
+    ) -> (meldId: String?, preferLeading: Bool, insertIndex: Int?) {
+        let snapX = max(28, layout.tileW * 1.15)
+        let snapY = max(16, layout.tileH * 0.42)
+        var candidates: [(meld: RmkMeld, rect: CGRect, directHit: Bool, compatible: Bool, dist: CGFloat)] = []
+
+        for m in displayMelds where m.id != excludingId {
+            if let rect = meldGlobalFrames[m.id], rect.width > 4 {
+                let directRect = rect.insetBy(dx: -6, dy: -6)
+                let edgeRect = rect.insetBy(dx: -snapX, dy: -snapY)
+                if edgeRect.contains(globalPt) {
+                    let isDirect = directRect.contains(globalPt)
+                    let compat = areTilesCompatibleForSnap(m.tiles, draggedTiles)
+                    // Only allow wide left/right edge snap if compatible OR if direct hit
+                    if isDirect || compat {
+                        let dx = max(0, abs(globalPt.x - rect.midX) - rect.width * 0.35)
+                        let dy = abs(globalPt.y - rect.midY) * 1.5
+                        candidates.append((m, rect, isDirect, compat, hypot(dx, dy)))
                     }
-                    curX += mW + 8
                 }
             }
-            curY += rowH + 6
         }
-        return nil
+
+        if candidates.isEmpty && tableAreaGlobalFrame.width > 10 {
+            let relX = globalPt.x - tableAreaGlobalFrame.minX - 6
+            let relY = globalPt.y - tableAreaGlobalFrame.minY - 6
+            var curY: CGFloat = 0
+            let rowH = layout.tileH + 6
+            for rowMelds in layout.rows {
+                var curX: CGFloat = 0
+                for m in rowMelds {
+                    let mW = CGFloat(max(1, m.tiles.count)) * (layout.tileW + 1.5) + 6
+                    let rect = CGRect(x: tableAreaGlobalFrame.minX + 6 + curX, y: tableAreaGlobalFrame.minY + 6 + curY, width: mW, height: rowH)
+                    if m.id != excludingId && rect.insetBy(dx: -snapX, dy: -snapY).contains(globalPt) {
+                        let isDirect = rect.insetBy(dx: -6, dy: -6).contains(globalPt)
+                        let compat = areTilesCompatibleForSnap(m.tiles, draggedTiles)
+                        if isDirect || compat {
+                            let dx = max(0, abs(globalPt.x - rect.midX) - rect.width * 0.35)
+                            let dy = abs(globalPt.y - rect.midY) * 1.5
+                            candidates.append((m, rect, isDirect, compat, hypot(dx, dy)))
+                        }
+                    }
+                    curX += mW + 10
+                }
+                curY += rowH + 6
+            }
+        }
+
+        if let best = candidates.sorted(by: { a, b in
+            if a.compatible != b.compatible { return a.compatible && !b.compatible }
+            if a.directHit != b.directHit { return a.directHit && !b.directHit }
+            return a.dist < b.dist
+        }).first {
+            let preferLead = globalPt.x < best.rect.midX
+            return (best.meld.id, preferLead, nil)
+        }
+
+        // Compute open-space insertion index based on row/column of globalPt so dropped tiles stay where placed!
+        var flatIdx = 0
+        for rowMelds in layout.rows {
+            for m in rowMelds {
+                if let r = meldGlobalFrames[m.id] {
+                    if globalPt.y < r.minY - 8 {
+                        return (nil, false, flatIdx)
+                    } else if globalPt.y <= r.maxY + 12 && globalPt.x < r.midX {
+                        return (nil, false, flatIdx)
+                    }
+                }
+                flatIdx += 1
+            }
+        }
+        return (nil, false, displayMelds.count)
     }
 
     private func tileColor(_ c: RmkColor) -> Color {
@@ -11181,14 +11262,20 @@ struct KOnRummikubSheetView: View {
 
     @State private var dragSlotIndex: Int? = nil
     @State private var dragOffset: CGSize = .zero
+    @State private var dragGlobalLocation: CGPoint = .zero
     @State private var dragTableSource: (meldId: String, tileId: String)? = nil
     @State private var dragTableOffset: CGSize = .zero
+    @State private var dragTableGlobalLocation: CGPoint = .zero
+    @State private var hoveredTargetMeldId: String? = nil
     @State private var meldGlobalFrames: [String: CGRect] = [:]
     @State private var rackSlotGlobalFrames: [Int: CGRect] = [:]
+    @State private var seatGlobalFrames: [Int: CGRect] = [:]
     @State private var tableAreaGlobalFrame: CGRect = .zero
     @State private var rackAreaGlobalFrame: CGRect = .zero
     @State private var drawButtonGlobalFrame: CGRect = .zero
     @State private var drawAnimProgress: CGFloat = 0.0
+    @State private var oppDrawAnimProgress: CGFloat = 0.0
+    @State private var oppPlayAnimProgress: CGFloat = 0.0
 
     // Order seats so opponents are at top-left and local player (me) is anchored at bottom-left next to the rack (1:1 like video!)
     private var orderedVerticalSeats: [RmkSeat] {
@@ -11321,12 +11408,21 @@ struct KOnRummikubSheetView: View {
                             }
                         }
                         .frame(width: 76)
+                        .background(
+                            GeometryReader { avGeo in
+                                Color.clear
+                                    .preference(key: RmkSeatFramesPrefKey.self, value: [s.id: avGeo.frame(in: .global)])
+                            }
+                        )
                         if s.id != orderedVerticalSeats.last?.id {
                             Spacer(minLength: 2)
                         }
                     }
                 }
                 .padding(.vertical, 6)
+                .onPreferenceChange(RmkSeatFramesPrefKey.self) { frames in
+                    seatGlobalFrames = frames
+                }
 
                 // 2. CENTER COLUMN: Full-Height Large-Tile Table + Bottom Fixed 2-Row Wooden Rack
                 VStack(spacing: 4) {
@@ -11406,24 +11502,24 @@ struct KOnRummikubSheetView: View {
                             } else {
                                 VStack(alignment: .leading, spacing: 6) {
                                     ForEach(0..<layout.rows.count, id: \.self) { rIdx in
-                                        HStack(spacing: 8) {
+                                        HStack(spacing: 10) {
                                             ForEach(layout.rows[rIdx]) { meld in
                                                 let isValid = RmkEvaluator.evaluateMeld(meld.tiles) != nil
-                                                HStack(spacing: 2) {
+                                                let isHoveredTarget = (hoveredTargetMeldId == meld.id)
+                                                HStack(spacing: 1.5) {
                                                     ForEach(meld.tiles) { t in
                                                         let isPickedTableTile = (rmk.selectedTableTileSource?.meldId == meld.id && rmk.selectedTableTileSource?.tileId == t.id)
                                                         let isHigh = rmk.lastTurnHighlightedTileIds.contains(t.id)
                                                         let isDraggingThisTbl = (dragTableSource?.meldId == meld.id && dragTableSource?.tileId == t.id)
                                                         tileChip(
                                                             t,
-                                                            selected: isPickedTableTile || isDraggingThisTbl,
+                                                            selected: isPickedTableTile,
                                                             highlighted: isHigh,
                                                             compact: layout.tileW < 36,
                                                             customW: layout.tileW,
                                                             customH: layout.tileH
                                                         )
-                                                        .offset(isDraggingThisTbl ? dragTableOffset : .zero)
-                                                        .zIndex(isDraggingThisTbl ? 120 : 1)
+                                                        .opacity(isDraggingThisTbl ? 0.20 : 1.0)
                                                         .onTapGesture {
                                                             withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
                                                                 rmk.handleTableTileTapOrMove(meldId: meld.id, tileId: t.id)
@@ -11435,39 +11531,47 @@ struct KOnRummikubSheetView: View {
                                                                     guard myTurn else { return }
                                                                     dragTableSource = (meldId: meld.id, tileId: t.id)
                                                                     dragTableOffset = val.translation
+                                                                    dragTableGlobalLocation = val.location
+                                                                    let hit = findTargetMeldHit(at: val.location, excludingId: meld.id, draggedTiles: [t], displayMelds: displayMelds, layout: layout)
+                                                                    hoveredTargetMeldId = hit.meldId
                                                                 }
                                                                 .onEnded { val in
                                                                     guard myTurn else { return }
                                                                     let dropPt = val.location
                                                                     let movedDist = hypot(val.translation.width, val.translation.height)
-                                                                    withAnimation(.spring(response: 0.24, dampingFraction: 0.8)) {
-                                                                        if movedDist < 12 {
+                                                                    withAnimation(.spring(response: 0.26, dampingFraction: 0.82)) {
+                                                                        if movedDist < 10 {
                                                                             rmk.handleTableTileTapOrMove(meldId: meld.id, tileId: t.id)
                                                                         } else if !tableAreaGlobalFrame.contains(dropPt) && rackAreaGlobalFrame.insetBy(dx: -12, dy: -12).contains(dropPt) {
                                                                             _ = rmk.returnTableTileToRackIfFromThisTurn(meldId: meld.id, tileId: t.id)
                                                                         } else {
-                                                                            let targetMeld = findTargetMeldId(at: dropPt, excludingId: meld.id, layout: layout)
-                                                                            rmk.moveTableTile(fromMeldId: meld.id, tileId: t.id, toMeldId: targetMeld)
+                                                                            let hit = findTargetMeldHit(at: dropPt, excludingId: meld.id, draggedTiles: [t], displayMelds: displayMelds, layout: layout)
+                                                                            rmk.moveTableTile(fromMeldId: meld.id, tileId: t.id, toMeldId: hit.meldId, preferLeading: hit.preferLeading, insertAtMeldIndex: hit.insertIndex)
                                                                         }
                                                                         dragTableSource = nil
                                                                         dragTableOffset = .zero
+                                                                        hoveredTargetMeldId = nil
                                                                     }
                                                                 }
                                                         )
                                                     }
                                                 }
-                                                .padding(3)
+                                                .padding(2)
                                                 .background(
                                                     GeometryReader { mGeo in
-                                                        Color.black.opacity(0.28)
+                                                        (isHoveredTarget ? Color.cyan.opacity(0.24) : (isValid ? Color.clear : Color.red.opacity(0.14)))
                                                             .preference(key: RmkMeldFramesPrefKey.self, value: [meld.id: mGeo.frame(in: .global)])
                                                     }
                                                 )
                                                 .cornerRadius(7)
                                                 .overlay(
                                                     RoundedRectangle(cornerRadius: 7)
-                                                        .stroke(isValid ? Color.white.opacity(0.22) : Color.orange, lineWidth: isValid ? 1 : 2.5)
+                                                        .stroke(
+                                                            isHoveredTarget ? Color.cyan : (isValid ? Color.clear : Color(red: 1.0, green: 0.34, blue: 0.26)),
+                                                            lineWidth: isHoveredTarget ? 2.8 : (isValid ? 0 : 2.2)
+                                                        )
                                                 )
+                                                .scaleEffect(isHoveredTarget ? 1.04 : 1.0)
                                             }
                                         }
                                     }
@@ -11566,6 +11670,13 @@ struct KOnRummikubSheetView: View {
                                                     .frame(width: fitSlotW, height: fitSlotH)
 
                                                 if let tile = tileOpt, isDealtVisible {
+                                                    let isGroupDraggingFromRack = (dragSlotIndex != nil) && (
+                                                        dragSlotIndex == slotIdx ||
+                                                        (rmk.selectedTileIds.contains(tile.id) &&
+                                                         dragSlotIndex! < rmk.rackSlots.count &&
+                                                         rmk.rackSlots[dragSlotIndex!] != nil &&
+                                                         rmk.selectedTileIds.contains(rmk.rackSlots[dragSlotIndex!]!.id))
+                                                    )
                                                     tileChip(
                                                         tile,
                                                         selected: isSelectedOrLifted,
@@ -11574,21 +11685,9 @@ struct KOnRummikubSheetView: View {
                                                         customW: max(26, fitSlotW - 2),
                                                         customH: fitSlotH - 2
                                                     )
-                                                    .overlay(alignment: .topTrailing) {
-                                                        if dragSlotIndex == slotIdx && rmk.selectedTileIds.count > 1 && rmk.selectedTileIds.contains(tile.id) {
-                                                            Text("+\(rmk.selectedTileIds.count - 1)")
-                                                                .font(.system(size: 9, weight: .black, design: .monospaced))
-                                                                .padding(.horizontal, 4).padding(.vertical, 1)
-                                                                .background(Color.orange)
-                                                                .foregroundColor(.white)
-                                                                .clipShape(Capsule())
-                                                                .offset(x: 4, y: -12)
-                                                        }
-                                                    }
-                                                    .offset(dragSlotIndex == slotIdx ? dragOffset : .zero)
-                                                    .zIndex(dragSlotIndex == slotIdx ? 80 : 2)
+                                                    .opacity(isGroupDraggingFromRack ? 0.20 : 1.0)
                                                     .simultaneousGesture(
-                                                        LongPressGesture(minimumDuration: 0.22)
+                                                        LongPressGesture(minimumDuration: 0.20)
                                                             .onEnded { _ in
                                                                 withAnimation(.spring(response: 0.22, dampingFraction: 0.78)) {
                                                                     rmk.startLongPressCascadeSelect(fromSlotIndex: slotIdx)
@@ -11596,19 +11695,33 @@ struct KOnRummikubSheetView: View {
                                                             }
                                                     )
                                                     .gesture(
-                                                        DragGesture(minimumDistance: 9, coordinateSpace: .global)
+                                                        DragGesture(minimumDistance: 7, coordinateSpace: .global)
                                                             .onChanged { val in
                                                                 dragSlotIndex = slotIdx
                                                                 dragOffset = val.translation
+                                                                dragGlobalLocation = val.location
+                                                                if val.translation.height < -24 || tableAreaGlobalFrame.contains(val.location) {
+                                                                    let draggedList: [RmkTile] = rmk.selectedTileIds.contains(tile.id)
+                                                                        ? rmk.rackSlots.compactMap { $0 }.filter { rmk.selectedTileIds.contains($0.id) }
+                                                                        : [tile]
+                                                                    let hit = findTargetMeldHit(at: val.location, excludingId: nil, draggedTiles: draggedList, displayMelds: displayMelds, layout: currentTableLayout)
+                                                                    hoveredTargetMeldId = hit.meldId
+                                                                } else {
+                                                                    hoveredTargetMeldId = nil
+                                                                }
                                                             }
                                                             .onEnded { val in
                                                                 let dropPt = val.location
                                                                 if val.translation.height < -24 || tableAreaGlobalFrame.contains(dropPt) {
-                                                                    let targetMeld = findTargetMeldId(at: dropPt, excludingId: nil, layout: currentTableLayout)
+                                                                    let draggedList: [RmkTile] = rmk.selectedTileIds.contains(tile.id)
+                                                                        ? rmk.rackSlots.compactMap { $0 }.filter { rmk.selectedTileIds.contains($0.id) }
+                                                                        : [tile]
+                                                                    let hit = findTargetMeldHit(at: dropPt, excludingId: nil, draggedTiles: draggedList, displayMelds: displayMelds, layout: currentTableLayout)
                                                                     withAnimation(.spring(response: 0.25, dampingFraction: 0.80)) {
-                                                                        rmk.dropRackTilesToTable(primaryTileId: tile.id, targetMeldId: targetMeld)
+                                                                        rmk.dropRackTilesToTable(primaryTileId: tile.id, targetMeldId: hit.meldId, preferLeading: hit.preferLeading, insertAtMeldIndex: hit.insertIndex)
                                                                         dragSlotIndex = nil
                                                                         dragOffset = .zero
+                                                                        hoveredTargetMeldId = nil
                                                                     }
                                                                 } else {
                                                                     let colShift = Int(round(val.translation.width / (fitSlotW + hSpacing)))
@@ -11620,6 +11733,7 @@ struct KOnRummikubSheetView: View {
                                                                         rmk.moveRackSlot(from: slotIdx, to: dstIdx)
                                                                         dragSlotIndex = nil
                                                                         dragOffset = .zero
+                                                                        hoveredTargetMeldId = nil
                                                                     }
                                                                 }
                                                             }
@@ -11765,9 +11879,6 @@ struct KOnRummikubSheetView: View {
                             if myTurn && !rmk.isDrawingAnimation {
                                 drawAnimProgress = 0.0
                                 rmk.drawTilePassTapped()
-                                withAnimation(.spring(response: 0.44, dampingFraction: 0.82)) {
-                                    drawAnimProgress = 1.0
-                                }
                             }
                         }) {
                             VStack(spacing: 10) {
@@ -11895,7 +12006,83 @@ struct KOnRummikubSheetView: View {
                 }
             }
 
-            // Smooth Flight Animation from Bottom-Right `+` Button Directly into Target Empty Rack Slot!
+            // A. Top-Level Zero-Clipping Floating Drag Layer (Table Tile Drag & Multi-Tile Rack Group Drag)
+            GeometryReader { dragGeo in
+                let overlayGlobal = dragGeo.frame(in: .global)
+                ZStack {
+                    if let tblSrc = dragTableSource,
+                       let srcMeld = displayMelds.first(where: { $0.id == tblSrc.meldId }),
+                       let draggedTile = srcMeld.tiles.first(where: { $0.id == tblSrc.tileId }) {
+                        tileChip(draggedTile, selected: true, highlighted: true, compact: false, customW: 40, customH: 54)
+                            .position(
+                                x: dragTableGlobalLocation.x - overlayGlobal.minX,
+                                y: dragTableGlobalLocation.y - overlayGlobal.minY - 10
+                            )
+                            .shadow(color: .black.opacity(0.65), radius: 10, y: 4)
+                    }
+
+                    if let rSlot = dragSlotIndex,
+                       rSlot < rmk.rackSlots.count,
+                       let primaryTile = rmk.rackSlots[rSlot] {
+                        let floatingGroup: [RmkTile] = rmk.selectedTileIds.contains(primaryTile.id)
+                            ? RmkEvaluator.sortMeldForDisplay(rmk.rackSlots.compactMap { $0 }.filter { rmk.selectedTileIds.contains($0.id) })
+                            : [primaryTile]
+                        HStack(spacing: 2) {
+                            ForEach(floatingGroup) { ft in
+                                tileChip(ft, selected: true, highlighted: true, compact: false, customW: 38, customH: 52)
+                            }
+                        }
+                        .position(
+                            x: dragGlobalLocation.x - overlayGlobal.minX,
+                            y: dragGlobalLocation.y - overlayGlobal.minY - 12
+                        )
+                        .shadow(color: .black.opacity(0.65), radius: 10, y: 4)
+                    }
+                }
+            }
+            .zIndex(950)
+            .allowsHitTesting(false)
+
+            // B. Initial 14-Tile Dealing Flight Animation (White Tile Backs Flying from `+` to Opponents & Player Rack!)
+            if rmk.isDealingAnimation && rmk.dealingVisibleCount >= 1 && rmk.dealingVisibleCount <= 14 {
+                GeometryReader { dealGeo in
+                    let overlayGlobal = dealGeo.frame(in: .global)
+                    let startPt = drawButtonGlobalFrame.width > 5
+                        ? CGPoint(x: drawButtonGlobalFrame.midX - overlayGlobal.minX, y: drawButtonGlobalFrame.midY - overlayGlobal.minY)
+                        : CGPoint(x: overlayGlobal.width - 36, y: overlayGlobal.height - 62)
+                    let stepPhase = CGFloat((rmk.dealingVisibleCount % 2 == 0) ? 0.72 : 0.38)
+                    ZStack {
+                        ForEach(orderedVerticalSeats, id: \.id) { seat in
+                            let endPt: CGPoint = {
+                                if seat.id == rmk.mySeatIndex {
+                                    if let rRect = rackSlotGlobalFrames[max(0, rmk.dealingVisibleCount - 1)] {
+                                        return CGPoint(x: rRect.midX - overlayGlobal.minX, y: rRect.midY - overlayGlobal.minY)
+                                    }
+                                    return CGPoint(x: overlayGlobal.width * 0.48, y: overlayGlobal.height - 55)
+                                } else if let sRect = seatGlobalFrames[seat.id] {
+                                    return CGPoint(x: sRect.midX - overlayGlobal.minX, y: sRect.midY - overlayGlobal.minY)
+                                } else {
+                                    return CGPoint(x: 42, y: CGFloat(60 + seat.id * 70))
+                                }
+                            }()
+                            RoundedRectangle(cornerRadius: 6)
+                                .fill(Color(red: 0.96, green: 0.95, blue: 0.92))
+                                .frame(width: 30, height: 42)
+                                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.gray.opacity(0.45), lineWidth: 1))
+                                .shadow(color: .black.opacity(0.45), radius: 4, y: 2)
+                                .position(
+                                    x: startPt.x + (endPt.x - startPt.x) * stepPhase,
+                                    y: startPt.y + (endPt.y - startPt.y) * stepPhase - 18
+                                )
+                        }
+                    }
+                    .animation(.easeOut(duration: 0.11), value: rmk.dealingVisibleCount)
+                }
+                .zIndex(920)
+                .allowsHitTesting(false)
+            }
+
+            // C. Player Draw Flight Animation (`+` Button -> Target Empty Rack Slot!)
             if rmk.isDrawingAnimation, let animTile = rmk.drawingAnimatedTile {
                 GeometryReader { overlayGeo in
                     let overlayGlobal = overlayGeo.frame(in: .global)
@@ -11917,14 +12104,97 @@ struct KOnRummikubSheetView: View {
                         )
                     }()
                     let curX = (startGlobal.x - overlayGlobal.minX) + ((endGlobal.x - startGlobal.x) * drawAnimProgress)
-                    let curY = (startGlobal.y - overlayGlobal.minY) + ((endGlobal.y - startGlobal.y) * drawAnimProgress) - sin(drawAnimProgress * .pi) * 28.0
+                    let curY = (startGlobal.y - overlayGlobal.minY) + ((endGlobal.y - startGlobal.y) * drawAnimProgress) - sin(drawAnimProgress * .pi) * 32.0
                     let targetW = max(28, (targetSlotRect?.width ?? 42) - 2)
                     let targetH = max(40, (targetSlotRect?.height ?? 48) - 2)
 
                     tileChip(animTile, selected: false, highlighted: true, compact: true, customW: targetW, customH: targetH)
                         .position(x: curX, y: curY)
                         .shadow(color: httGold.opacity(0.9), radius: 8)
+                        .onAppear {
+                            drawAnimProgress = 0.0
+                            DispatchQueue.main.async {
+                                withAnimation(.easeOut(duration: 0.42)) {
+                                    drawAnimProgress = 1.0
+                                }
+                            }
+                        }
                 }
+                .zIndex(930)
+                .allowsHitTesting(false)
+            }
+
+            // D. Opponent Draw Flight Animation (`+` Button -> Opponent Avatar on Left, 1:1 like Video!)
+            if let oppSeat = rmk.opponentDrawingSeatIndex {
+                GeometryReader { oppGeo in
+                    let overlayGlobal = oppGeo.frame(in: .global)
+                    let startGlobal = drawButtonGlobalFrame.width > 5
+                        ? CGPoint(x: drawButtonGlobalFrame.midX, y: drawButtonGlobalFrame.midY)
+                        : CGPoint(x: overlayGlobal.maxX - 36, y: overlayGlobal.maxY - 62)
+                    let endGlobal: CGPoint = {
+                        if let sRect = seatGlobalFrames[oppSeat], sRect.width > 5 {
+                            return CGPoint(x: sRect.midX, y: sRect.midY)
+                        }
+                        return CGPoint(x: overlayGlobal.minX + 42, y: overlayGlobal.minY + CGFloat(55 + oppSeat * 80))
+                    }()
+                    let curX = (startGlobal.x - overlayGlobal.minX) + ((endGlobal.x - startGlobal.x) * oppDrawAnimProgress)
+                    let curY = (startGlobal.y - overlayGlobal.minY) + ((endGlobal.y - startGlobal.y) * oppDrawAnimProgress) - sin(oppDrawAnimProgress * .pi) * 28.0
+
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(Color(red: 0.95, green: 0.94, blue: 0.90))
+                        .frame(width: 32, height: 44)
+                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.white.opacity(0.7), lineWidth: 1.2))
+                        .shadow(color: .black.opacity(0.55), radius: 6, y: 2)
+                        .position(x: curX, y: curY)
+                        .onAppear {
+                            oppDrawAnimProgress = 0.0
+                            DispatchQueue.main.async {
+                                withAnimation(.easeOut(duration: 0.40)) {
+                                    oppDrawAnimProgress = 1.0
+                                }
+                            }
+                        }
+                }
+                .zIndex(935)
+                .allowsHitTesting(false)
+            }
+
+            // E. Opponent Step-by-Step Play Flight Animation (Opponent Avatar on Left -> Target Table Meld, 1:1 like Video!)
+            if let playSeat = rmk.opponentPlayingSeatIndex, let playTile = rmk.opponentPlayingTile {
+                GeometryReader { playGeo in
+                    let overlayGlobal = playGeo.frame(in: .global)
+                    let startGlobal: CGPoint = {
+                        if let sRect = seatGlobalFrames[playSeat], sRect.width > 5 {
+                            return CGPoint(x: sRect.midX, y: sRect.midY)
+                        }
+                        return CGPoint(x: overlayGlobal.minX + 42, y: overlayGlobal.minY + CGFloat(55 + playSeat * 80))
+                    }()
+                    let endGlobal: CGPoint = {
+                        if let tId = rmk.opponentPlayingTargetMeldId, let mRect = meldGlobalFrames[tId], mRect.width > 5 {
+                            return CGPoint(x: mRect.maxX, y: mRect.midY)
+                        }
+                        if tableAreaGlobalFrame.width > 10 {
+                            return CGPoint(x: tableAreaGlobalFrame.midX, y: tableAreaGlobalFrame.midY)
+                        }
+                        return CGPoint(x: overlayGlobal.width * 0.50, y: overlayGlobal.height * 0.42)
+                    }()
+                    let curX = (startGlobal.x - overlayGlobal.minX) + ((endGlobal.x - startGlobal.x) * oppPlayAnimProgress)
+                    let curY = (startGlobal.y - overlayGlobal.minY) + ((endGlobal.y - startGlobal.y) * oppPlayAnimProgress) - sin(oppPlayAnimProgress * .pi) * 22.0
+
+                    tileChip(playTile, selected: false, highlighted: true, compact: false, customW: 36, customH: 50)
+                        .position(x: curX, y: curY)
+                        .shadow(color: .orange.opacity(0.85), radius: 8, y: 3)
+                        .id("opp_play_\(playTile.id)")
+                        .onAppear {
+                            oppPlayAnimProgress = 0.0
+                            DispatchQueue.main.async {
+                                withAnimation(.easeOut(duration: 0.34)) {
+                                    oppPlayAnimProgress = 1.0
+                                }
+                            }
+                        }
+                }
+                .zIndex(940)
                 .allowsHitTesting(false)
             }
         }

@@ -2872,8 +2872,10 @@ static void renderRummikubTable() {
             int mw = (int)melds[i].tiles.size() * (tw + 2) + 14;
             if (mx > 172 && mx + mw > 1118) { mx = 172; my += th + 12; }
             bool ok = (RmkEvaluator::evaluateMeld(melds[i].tiles) >= 0);
-            drawRoundedRectFill(mx, my, mw, th + 8, 9, {6, 24, 56, 215});
-            drawRoundedRectOutline(mx, my, mw, th + 8, 9, ok ? SDL_Color{110, 175, 245, 150} : COL_CRIMSON_HI, ok ? 1 : 3);
+            if (!ok) {
+                drawRoundedRectFill(mx, my, mw, th + 8, 9, {120, 24, 32, 110});
+                drawRoundedRectOutline(mx, my, mw, th + 8, 9, COL_CRIMSON_HI, 3);
+            }
             for (size_t k = 0; k < melds[i].tiles.size(); ++k) {
                 const auto& t = melds[i].tiles[k];
                 bool isBeingDraggedTbl = (gRmkDragTableMoved && gRmkDragTableMeldIdx == (int)i && gRmkDragTableTileIdx == (int)k);

@@ -718,7 +718,21 @@ namespace RmkEvaluator {
                 }
             }
         }
-        while (jIdx < jokers.size()) res.push_back(jokers[jIdx++]);
+        int curLow = norms.front().number;
+        int curHigh = norms.back().number;
+        while (jIdx < jokers.size()) {
+            RmkTile j = jokers[jIdx++];
+            if (curHigh >= 13 && curLow > 1) {
+                res.insert(res.begin(), j);
+                curLow--;
+            } else if (curHigh < 13) {
+                res.push_back(j);
+                curHigh++;
+            } else {
+                res.insert(res.begin(), j);
+                curLow--;
+            }
+        }
         return res;
     }
 
@@ -991,6 +1005,15 @@ namespace RmkEvaluator {
                 if (accPts >= 30) break;
             }
             chosenHandMelds = std::move(minMelds);
+        } else if (chosenHandMelds.size() > 1) {
+            size_t totalPlayed = 0;
+            for (const auto& m : chosenHandMelds) totalPlayed += m.size();
+            if (totalPlayed < hand.size()) {
+                std::sort(chosenHandMelds.begin(), chosenHandMelds.end(), [](const auto& a, const auto& b) {
+                    return evaluateMeld(a) > evaluateMeld(b);
+                });
+                if (chosenHandMelds.size() > 2) chosenHandMelds.resize(2);
+            }
         }
 
         int mSeq = 1;
@@ -1012,7 +1035,9 @@ namespace RmkEvaluator {
 
         if (hasBrokenIce) {
             bool changed = true;
-            while (changed) {
+            int tableActions = 0;
+            int maxTableActions = (remHand.size() <= 3) ? 4 : (chosenHandMelds.empty() ? 2 : 1);
+            while (changed && tableActions < maxTableActions) {
                 changed = false;
                 // 1. Try appending/prepending any single hand tile onto an existing table run or 3-tile group
                 for (size_t hIdx = 0; hIdx < remHand.size() && !changed; ++hIdx) {
@@ -1025,6 +1050,7 @@ namespace RmkEvaluator {
                             outPlayedIds.insert(ht.id);
                             outHighlightedIds.insert(ht.id);
                             remHand.erase(remHand.begin() + hIdx);
+                            tableActions++;
                             changed = true;
                             break;
                         }
@@ -1062,6 +1088,7 @@ namespace RmkEvaluator {
                                         remHand.erase(std::remove_if(remHand.begin(), remHand.end(), [&](const RmkTile& t) {
                                             return t.id == id1 || t.id == id2;
                                         }), remHand.end());
+                                        tableActions++;
                                         changed = true;
                                     }
                                 }

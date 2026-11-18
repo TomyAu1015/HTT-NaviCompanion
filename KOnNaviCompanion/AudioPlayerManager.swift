@@ -13491,7 +13491,7 @@ struct RmkNetPacket: Codable {
 }
 
 struct RmkEvaluator {
-    static func sortMeldForDisplay(_ tiles: [RmkTile]) -> [RmkTile] {
+    static func sortMeldForDisplay(_ tiles: [RmkTile], preferLeadingJoker: Bool = false) -> [RmkTile] {
         let jokers = tiles.filter { $0.isJoker }
         let normals = tiles.filter { !$0.isJoker }.sorted {
             if $0.number != $1.number { return $0.number < $1.number }
@@ -13500,9 +13500,9 @@ struct RmkEvaluator {
         guard !normals.isEmpty else { return tiles }
         let sameNum = normals.allSatisfy { $0.number == normals[0].number }
         if sameNum {
-            return normals + jokers
+            return preferLeadingJoker ? (jokers + normals) : (normals + jokers)
         }
-        // Run: insert jokers into gaps first, then append remaining jokers at high/low end
+        // Run: insert jokers into internal gaps first, then place remaining jokers at valid low/high ends (never after 13 or before 1!)
         var remJ = jokers
         var result: [RmkTile] = []
         for i in 0..<normals.count {
@@ -13516,8 +13516,20 @@ struct RmkEvaluator {
                 }
             }
         }
+        var curLow = normals.first!.number
+        var curHigh = normals.last!.number
         while !remJ.isEmpty {
-            result.append(remJ.removeFirst())
+            let j = remJ.removeFirst()
+            if (preferLeadingJoker && curLow > 1) || curHigh >= 13 {
+                result.insert(j, at: 0)
+                curLow -= 1
+            } else if curHigh < 13 {
+                result.append(j)
+                curHigh += 1
+            } else {
+                result.insert(j, at: 0)
+                curLow -= 1
+            }
         }
         return result
     }
@@ -13779,7 +13791,10 @@ struct RmkEvaluator {
                 return (nextMelds, playedIds, highlightedIds)
             }
         } else if hasBrokenIce {
-            for m in chosenHandMelds {
+            let maxHandMeldsThisTurn = (tempHand.isEmpty && chosenHandMelds.count <= 3) ? chosenHandMelds.count : min(2, chosenHandMelds.count)
+            let selectedMelds = Array(chosenHandMelds.prefix(maxHandMeldsThisTurn))
+            let usedSet = Set(selectedMelds.flatMap { $0.map { $0.id } })
+            for m in selectedMelds {
                 let sortedM = sortMeldForDisplay(m)
                 nextMelds.append(RmkMeld(id: UUID().uuidString, tiles: sortedM))
                 for t in sortedM {
@@ -13787,13 +13802,15 @@ struct RmkEvaluator {
                     highlightedIds.insert(t.id)
                 }
             }
-            remHand = tempHand
+            remHand.removeAll { usedSet.contains($0.id) }
         }
 
-        // Step 2: If broken ice (already or via >=30pt hand melds this turn), actively combine remaining hand tiles with table melds!
+        // Step 2: If already broken ice, actively combine up to 2 remaining hand tiles/splits with table melds (human-like step-by-step pacing)!
+        var tableActionsCount = 0
+        let maxTableActions = playedIds.isEmpty ? 2 : 1
         if canBreakIceNow {
             var changed = true
-            while changed {
+            while changed && tableActionsCount < maxTableActions {
                 changed = false
                 // 2A. Try appending/prepending any single hand tile onto any existing table run or 3-tile group
                 outerSingle: for hIdx in 0..<remHand.count {
@@ -13805,6 +13822,7 @@ struct RmkEvaluator {
                             playedIds.append(ht.id)
                             highlightedIds.insert(ht.id)
                             remHand.remove(at: hIdx)
+                            tableActionsCount += 1
                             changed = true
                             break outerSingle
                         }
@@ -13838,6 +13856,7 @@ struct RmkEvaluator {
                                         highlightedIds.insert(h1.id)
                                         highlightedIds.insert(h2.id)
                                         remHand.removeAll { $0.id == h1.id || $0.id == h2.id }
+                                        tableActionsCount += 1
                                         changed = true
                                         break outerSplit
                                     }
@@ -13987,6 +14006,10 @@ final class RummikubEngine: NSObject, ObservableObject {
     @Published var drawingAnimatedTile: RmkTile? = nil
     @Published var isDrawingAnimation: Bool = false
     @Published var drawnTargetSlotIndex: Int = 0
+    @Published var opponentDrawingSeatIndex: Int? = nil
+    @Published var opponentPlayingSeatIndex: Int? = nil
+    @Published var opponentPlayingTile: RmkTile? = nil
+    @Published var opponentPlayingTargetMeldId: String? = nil
 
     var hasUncommittedTableChanges: Bool {
         guard isEditingTable else { return false }
@@ -14237,6 +14260,7 @@ final class RummikubEngine: NSObject, ObservableObject {
         for (i, t) in row0.enumerated() where i < finalCols { nextSlots[i] = t }
         for (i, t) in row1.enumerated() where i < finalCols { nextSlots[finalCols + i] = t }
         rackSlots = nextSlots
+        selectedTileIds.removeAll()
         liftedSlotIndex = nil
 
         if !melds.isEmpty {
@@ -14760,7 +14784,7 @@ final class RummikubEngine: NSObject, ObservableObject {
         statusBanner = "🖐 已选中桌面牌 [\(picked.isJoker ? "百搭" : "\(picked.color.labelZh)\(picked.number)")]：可拖到其他牌组/空位重组，或点另一组移入，再点一次单独拆出！"
     }
 
-    func moveTableTile(fromMeldId: String, tileId: String, toMeldId: String?) {
+    func moveTableTile(fromMeldId: String, tileId: String, toMeldId: String?, preferLeading: Bool = false, insertAtMeldIndex: Int? = nil) {
         guard currentTurnSeat == mySeatIndex, phase == .playing else { return }
         let checkMelds = isEditingTable ? workingMelds : tableMelds
         guard let checkMIdx = checkMelds.firstIndex(where: { $0.id == fromMeldId }),
@@ -14778,27 +14802,20 @@ final class RummikubEngine: NSObject, ObservableObject {
             return
         }
 
-        // If the source meld only has 1 tile and is dropped on open table space (toMeldId == nil),
-        // check if there is another incomplete (<3 tiles) staging meld on the table to merge with!
+        // If the source meld only has 1 tile and is dragged to open space (toMeldId == nil),
+        // move that 1-tile meld to the desired table position instead of snapping back or auto-merging into unrelated melds!
         if toMeldId == nil && workingMelds[srcMIdx].tiles.count == 1 {
-            if let otherStageIdx = workingMelds.lastIndex(where: { m in m.id != fromMeldId && RmkEvaluator.evaluateMeld(m.tiles) == nil && (seats[mySeatIndex].hasBrokenIce || !snapshotMelds.contains(where: { s in s.id == m.id })) }) {
-                let movingTile = workingMelds[srcMIdx].tiles[0]
-                let otherId = workingMelds[otherStageIdx].id
-                workingMelds.remove(at: srcMIdx)
-                if let dstIdx = workingMelds.firstIndex(where: { $0.id == otherId }) {
-                    let comb = RmkEvaluator.sortMeldForDisplay(workingMelds[dstIdx].tiles + [movingTile])
-                    workingMelds[dstIdx].tiles = comb
-                    lastTurnHighlightedTileIds.insert(movingTile.id)
-                    selectedTableTileSource = nil
-                    statusBanner = "✅ 已将两张桌面散牌合并成新牌组！"
-                    syncEditingStateWithSnapshot()
-                    return
-                }
+            let singleMeld = workingMelds.remove(at: srcMIdx)
+            if let insIdx = insertAtMeldIndex {
+                let clamped = max(0, min(workingMelds.count, insIdx))
+                workingMelds.insert(singleMeld, at: clamped)
             } else {
-                selectedTableTileSource = (meldId: fromMeldId, tileId: tileId)
-                statusBanner = "🧩 该牌已独立在桌面，可继续拖其他桌面牌或手牌与它合并！"
-                return
+                workingMelds.append(singleMeld)
             }
+            selectedTableTileSource = (meldId: singleMeld.id, tileId: tileId)
+            statusBanner = "🧩 已移动桌面单牌位置（将牌直接拖到目标牌组上即可合并成组）"
+            syncEditingStateWithSnapshot()
+            return
         }
 
         let origTiles = workingMelds[srcMIdx].tiles
@@ -14809,7 +14826,10 @@ final class RummikubEngine: NSObject, ObservableObject {
         if srcTIdx > 0 && srcTIdx < origTiles.count - 1 {
             let leftSlice = Array(origTiles[0..<srcTIdx])
             let rightSlice = Array(origTiles[(srcTIdx + 1)...])
-            if leftSlice.count >= 3 || rightSlice.count >= 3 {
+            if leftSlice.count >= 2 && rightSlice.count >= 2 {
+                workingMelds[srcMIdx].tiles = leftSlice
+                workingMelds.insert(RmkMeld(id: UUID().uuidString, tiles: rightSlice), at: srcMIdx + 1)
+            } else if leftSlice.count >= 3 || rightSlice.count >= 3 {
                 workingMelds[srcMIdx].tiles = leftSlice
                 workingMelds.insert(RmkMeld(id: UUID().uuidString, tiles: rightSlice), at: srcMIdx + 1)
             } else {
@@ -14825,21 +14845,23 @@ final class RummikubEngine: NSObject, ObservableObject {
         lastTurnHighlightedTileIds.insert(movingTile.id)
 
         if let targetId = toMeldId, let dstIdx = workingMelds.firstIndex(where: { $0.id == targetId }) {
-            let comb = RmkEvaluator.sortMeldForDisplay(workingMelds[dstIdx].tiles + [movingTile])
+            let comb = RmkEvaluator.sortMeldForDisplay(workingMelds[dstIdx].tiles + [movingTile], preferLeadingJoker: preferLeading)
             workingMelds[dstIdx].tiles = comb
-            statusBanner = "✅ 已将桌面牌并入目标牌组！"
-        } else if let stageIdx = workingMelds.lastIndex(where: { m in m.id != fromMeldId && m.tiles.count < 3 && RmkEvaluator.evaluateMeld(m.tiles) == nil && (seats[mySeatIndex].hasBrokenIce || !snapshotMelds.contains(where: { s in s.id == m.id })) }) {
-            // Automatically combine into the active incomplete staging group on the table!
-            let comb = RmkEvaluator.sortMeldForDisplay(workingMelds[stageIdx].tiles + [movingTile])
-            workingMelds[stageIdx].tiles = comb
-            statusBanner = RmkEvaluator.evaluateMeld(comb) != nil
-                ? "✅ 已在桌面组合成有效新牌组！"
-                : "🧩 已并入桌面待组新牌组（还差 \(max(1, 3 - comb.count)) 张即可成组）！"
+            selectedTableTileSource = nil
+            let isValid = RmkEvaluator.evaluateMeld(comb) != nil
+            statusBanner = isValid
+                ? "✅ 已将桌面牌并入目标牌组！"
+                : "🧩 已并入目标牌组（当前 \(comb.count) 张，继续拖入匹配牌即可成组）"
         } else {
             let newMeld = RmkMeld(id: UUID().uuidString, tiles: [movingTile])
-            workingMelds.append(newMeld)
+            if let insIdx = insertAtMeldIndex {
+                let clamped = max(0, min(workingMelds.count, insIdx))
+                workingMelds.insert(newMeld, at: clamped)
+            } else {
+                workingMelds.append(newMeld)
+            }
             selectedTableTileSource = (meldId: newMeld.id, tileId: movingTile.id)
-            statusBanner = "🧩 已从牌组拆出单牌到桌面！继续拖其他桌面牌或手牌即可与它组成新牌组"
+            statusBanner = "🧩 已从牌组拆出单牌到桌面！直接拖其他牌到这张牌上即可合并成新牌组"
         }
         syncEditingStateWithSnapshot()
     }
@@ -14906,7 +14928,7 @@ final class RummikubEngine: NSObject, ObservableObject {
     }
 
     /// Drag-to-table play: supports dragging a single tile or multiple selected tiles onto the table at ANY time (before or after icebreak)!
-    func dropRackTilesToTable(primaryTileId: String, targetMeldId: String? = nil) {
+    func dropRackTilesToTable(primaryTileId: String, targetMeldId: String? = nil, preferLeading: Bool = false, insertAtMeldIndex: Int? = nil) {
         guard currentTurnSeat == mySeatIndex, phase == .playing else {
             statusBanner = "⏳ 当前不是您的回合，无法拖上桌面出牌"
             return
@@ -14930,7 +14952,7 @@ final class RummikubEngine: NSObject, ObservableObject {
             if seats[mySeatIndex].hasBrokenIce || !isFromSnapshot {
                 workingHand.removeAll { targetIds.contains($0.id) }
                 for i in 0..<rackSlots.count { if let t = rackSlots[i], targetIds.contains(t.id) { rackSlots[i] = nil } }
-                let combined = RmkEvaluator.sortMeldForDisplay(workingMelds[mIdx].tiles + picked)
+                let combined = RmkEvaluator.sortMeldForDisplay(workingMelds[mIdx].tiles + picked, preferLeadingJoker: preferLeading)
                 workingMelds[mIdx].tiles = combined
                 selectedTileIds.removeAll()
                 selectedTableTileSource = nil
@@ -14944,24 +14966,27 @@ final class RummikubEngine: NSObject, ObservableObject {
             }
         }
 
-        // 2. If a table tile was explicitly selected and no targetMeldId was hit, combine with that selected table tile!
-        if selectedTableTileSource != nil {
-            if combineSelectedRackTilesWithTableTile() { return }
-        }
-
-        // 3. If the picked tiles themselves already form a valid 3+ tile meld, place as a new valid meld on the table:
+        // 2. If the picked tiles themselves already form a valid 3+ tile meld, place as a new valid meld on the table:
         if RmkEvaluator.evaluateMeld(picked) != nil {
             placeSelectedAsNewMeld()
             syncEditingStateWithSnapshot()
             return
         }
 
-        // 4. If there is an incomplete staging meld (<3 tiles or not yet valid) on the table that we are building this turn,
-        // automatically merge the dragged tile(s) into that staging meld!
-        if let stageIdx = workingMelds.lastIndex(where: { m in RmkEvaluator.evaluateMeld(m.tiles) == nil && (seats[mySeatIndex].hasBrokenIce || !snapshotMelds.contains(where: { s in s.id == m.id })) }) {
+        // 3. Only auto-merge into an incomplete staging meld if the combined tiles actually form a valid meld OR share compatible color/number!
+        if let stageIdx = workingMelds.lastIndex(where: { m in
+            guard RmkEvaluator.evaluateMeld(m.tiles) == nil && (seats[mySeatIndex].hasBrokenIce || !snapshotMelds.contains(where: { s in s.id == m.id })) else { return false }
+            let cand = m.tiles + picked
+            if RmkEvaluator.evaluateMeld(cand) != nil { return true }
+            let norms = cand.filter { !$0.isJoker }
+            if norms.count <= 1 { return true }
+            let sameNum = norms.allSatisfy { $0.number == norms[0].number } && Set(norms.map { $0.color }).count == norms.count && cand.count <= 4
+            let sameCol = norms.allSatisfy { $0.color == norms[0].color } && ((norms.map { $0.number }.max()! - norms.map { $0.number }.min()!) <= 3)
+            return sameNum || sameCol
+        }) {
             workingHand.removeAll { targetIds.contains($0.id) }
             for i in 0..<rackSlots.count { if let t = rackSlots[i], targetIds.contains(t.id) { rackSlots[i] = nil } }
-            let combined = RmkEvaluator.sortMeldForDisplay(workingMelds[stageIdx].tiles + picked)
+            let combined = RmkEvaluator.sortMeldForDisplay(workingMelds[stageIdx].tiles + picked, preferLeadingJoker: preferLeading)
             workingMelds[stageIdx].tiles = combined
             selectedTileIds.removeAll()
             selectedTableTileSource = nil
@@ -14975,12 +15000,17 @@ final class RummikubEngine: NSObject, ObservableObject {
             return
         }
 
-        // 5. Place single tile or 2 tiles on the table as a new staging group so the player can drag more tiles onto it!
-        let ordered = RmkEvaluator.sortMeldForDisplay(picked)
+        // 4. Place single tile or 2 tiles on the table as an independent staging group at the desired position!
+        let ordered = RmkEvaluator.sortMeldForDisplay(picked, preferLeadingJoker: preferLeading)
         workingHand.removeAll { targetIds.contains($0.id) }
         for i in 0..<rackSlots.count { if let t = rackSlots[i], targetIds.contains(t.id) { rackSlots[i] = nil } }
         let newMeld = RmkMeld(id: UUID().uuidString, tiles: ordered)
-        workingMelds.append(newMeld)
+        if let insIdx = insertAtMeldIndex {
+            let clamped = max(0, min(workingMelds.count, insIdx))
+            workingMelds.insert(newMeld, at: clamped)
+        } else {
+            workingMelds.append(newMeld)
+        }
         selectedTileIds.removeAll()
         liftedSlotIndex = nil
         statusBanner = "🧩 已拖上桌面暂放（可继续从牌架或桌面拖牌与它组合成 ≥3 张牌组）"
@@ -14990,6 +15020,21 @@ final class RummikubEngine: NSObject, ObservableObject {
     /// Long-press cascade lift: pressing a tile immediately lifts its matching Run/Group INCLUDING any Joker wildcards!
     func startLongPressCascadeSelect(fromSlotIndex slotIdx: Int) {
         guard slotIdx >= 0, slotIdx < rackSlots.count, let anchor = rackSlots[slotIdx] else { return }
+        let cols = max(10, rackCols)
+        let rowStart = (slotIdx / cols) * cols
+        let rowEnd = min(rackSlots.count, rowStart + cols)
+        var leftIdx = slotIdx
+        while leftIdx > rowStart && rackSlots[leftIdx - 1] != nil { leftIdx -= 1 }
+        var rightIdx = slotIdx
+        while rightIdx + 1 < rowEnd && rackSlots[rightIdx + 1] != nil { rightIdx += 1 }
+        let contiguousCluster = (leftIdx...rightIdx).compactMap { rackSlots[$0] }
+        if contiguousCluster.count >= 3 && RmkEvaluator.evaluateMeld(contiguousCluster) != nil {
+            selectedTileIds = Set(contiguousCluster.map { $0.id })
+            liftedSlotIndex = slotIdx
+            statusBanner = "✨ 已自动抬起 \(contiguousCluster.count) 张组合牌，直接向上拖到桌面即可整组出牌！"
+            return
+        }
+
         let active = currentCanonicalHand()
         let jokers = active.filter { $0.isJoker && $0.id != anchor.id }
         var seq: [RmkTile] = [anchor]
@@ -15217,6 +15262,10 @@ final class RummikubEngine: NSObject, ObservableObject {
 
     private func scheduleAIIfNeeded() {
         aiWorkItem?.cancel()
+        opponentDrawingSeatIndex = nil
+        opponentPlayingSeatIndex = nil
+        opponentPlayingTile = nil
+        opponentPlayingTargetMeldId = nil
         guard !(isOnlineConnected || !connectedPeerNames.isEmpty) || isRoomAuthority else { return }
         guard phase == .playing, currentTurnSeat < seats.count, seats[currentTurnSeat].isAI else { return }
         let seatIdx = currentTurnSeat
@@ -15227,14 +15276,85 @@ final class RummikubEngine: NSObject, ObservableObject {
                 tableMelds: self.tableMelds,
                 hasBrokenIce: self.seats[seatIdx].hasBrokenIce
             ) {
-                self.lastTurnHighlightedTileIds = aiMove.highlightedIds
-                self.executeCommitTurn(seatIdx: seatIdx, newMelds: aiMove.newMelds, playedHandIds: aiMove.playedIds)
+                self.performAIStepByStepPlay(seatIdx: seatIdx, finalMelds: aiMove.newMelds, playedIds: aiMove.playedIds, highlightedIds: aiMove.highlightedIds)
                 return
             }
-            self.executeDrawAndAdvance(seatIdx: seatIdx, reason: "从共用牌堆摸1张牌")
+            // Opponent Draw Animation: fly a tile back from `+` draw button to this AI's avatar on the left!
+            self.opponentDrawingSeatIndex = seatIdx
+            self.statusBanner = "🃏 [\(self.seats[seatIdx].name)] 正在从摸牌区摸取 1 张牌..."
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.46) { [weak self] in
+                guard let self = self, self.phase == .playing, self.currentTurnSeat == seatIdx else { return }
+                self.opponentDrawingSeatIndex = nil
+                self.executeDrawAndAdvance(seatIdx: seatIdx, reason: "从共用牌堆摸1张牌")
+            }
         }
         aiWorkItem = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.85, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.35, execute: work)
+    }
+
+    /// Plays AI's tiles step-by-step like a real human player in the official Rummikub video!
+    private func performAIStepByStepPlay(seatIdx: Int, finalMelds: [RmkMeld], playedIds: [String], highlightedIds: Set<String>) {
+        let handMap = Dictionary(uniqueKeysWithValues: seats[seatIdx].hand.map { ($0.id, $0) })
+        let orderedPlayedTiles: [RmkTile] = playedIds.compactMap { handMap[$0] }
+        guard !orderedPlayedTiles.isEmpty else {
+            executeCommitTurn(seatIdx: seatIdx, newMelds: finalMelds, playedHandIds: playedIds)
+            return
+        }
+
+        // Build intermediate snapshots so each played tile appears on the table one by one as it flies from the AI's avatar!
+        let totalSteps = orderedPlayedTiles.count
+        let remainingSetAll = Set(playedIds)
+
+        func runStep(_ stepIdx: Int) {
+            guard self.phase == .playing, self.currentTurnSeat == seatIdx else {
+                self.opponentPlayingSeatIndex = nil
+                self.opponentPlayingTile = nil
+                self.opponentPlayingTargetMeldId = nil
+                return
+            }
+            if stepIdx >= totalSteps {
+                self.opponentPlayingSeatIndex = nil
+                self.opponentPlayingTile = nil
+                self.opponentPlayingTargetMeldId = nil
+                self.lastTurnHighlightedTileIds = highlightedIds
+                self.executeCommitTurn(seatIdx: seatIdx, newMelds: finalMelds, playedHandIds: playedIds)
+                return
+            }
+
+            let tileToPlay = orderedPlayedTiles[stepIdx]
+            let targetMeldId = finalMelds.first(where: { $0.tiles.contains(where: { $0.id == tileToPlay.id }) })?.id
+            self.opponentPlayingSeatIndex = seatIdx
+            self.opponentPlayingTile = tileToPlay
+            self.opponentPlayingTargetMeldId = targetMeldId
+            self.statusBanner = "🤖 [\(self.seats[seatIdx].name)] 正在出牌 [\(tileToPlay.isJoker ? "百搭" : "\(tileToPlay.color.labelZh)\(tileToPlay.number)")] (\(stepIdx + 1)/\(totalSteps))..."
+
+            // After 0.36s flight from AI avatar to table, land this tile on the table and decrement AI's hand count by 1!
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.36) { [weak self] in
+                guard let self = self, self.phase == .playing, self.currentTurnSeat == seatIdx else { return }
+                self.opponentPlayingTile = nil
+                self.seats[seatIdx].hand.removeAll { $0.id == tileToPlay.id }
+                self.lastTurnHighlightedTileIds.insert(tileToPlay.id)
+
+                let revealedIds = Set(orderedPlayedTiles.prefix(stepIdx + 1).map { $0.id })
+                let hiddenFutureIds = remainingSetAll.subtracting(revealedIds)
+                var partialMelds: [RmkMeld] = []
+                for m in finalMelds {
+                    let visTiles = m.tiles.filter { !hiddenFutureIds.contains($0.id) }
+                    if !visTiles.isEmpty {
+                        partialMelds.append(RmkMeld(id: m.id, tiles: visTiles))
+                    }
+                }
+                self.tableMelds = partialMelds
+                self.broadcastFullState()
+
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.24) { [weak self] in
+                    self?.opponentPlayingSeatIndex = nil
+                    runStep(stepIdx + 1)
+                }
+            }
+        }
+
+        runStep(0)
     }
 }
 
