@@ -350,10 +350,10 @@ object MapAndRouteEngine {
                         val rawDur = rObj.optDouble("duration", 0.0)
                         val distKm = (dist / 1000.0).coerceAtLeast(0.05)
                         val dur = when (travelMode) {
-                            NavigationTravelMode.DRIVING -> (rawDur * 1.32 + distKm * 32.0).coerceAtLeast((distKm / 40.0) * 3600.0 + distKm * 32.0)
-                            NavigationTravelMode.EBIKE -> (distKm / 15.5) * 3600.0 + distKm * 22.0
-                            NavigationTravelMode.WALKING -> (distKm / 3.8) * 3600.0 + distKm * 18.0
-                            NavigationTravelMode.TRANSIT -> (distKm / 20.0) * 3600.0 + 600.0
+                            NavigationTravelMode.DRIVING -> if (rawDur > 0.0) rawDur else (distKm / 42.0) * 3600.0
+                            NavigationTravelMode.EBIKE -> (distKm / 16.5) * 3600.0 + distKm * 15.0
+                            NavigationTravelMode.WALKING -> if (rawDur > 0.0) rawDur else (distKm / 4.5) * 3600.0
+                            NavigationTravelMode.TRANSIT -> (distKm / 22.0) * 3600.0 + 360.0
                         }
                         val geom = rObj.getJSONObject("geometry")
                         val coordsArr = geom.getJSONArray("coordinates")
@@ -393,13 +393,26 @@ object MapAndRouteEngine {
                             else -> "备选方案 ${rIdx + 1}"
                         }
                         val segs = if (travelMode == NavigationTravelMode.TRANSIT && pts.size >= 6) {
-                            val bIdx = (pts.size * 0.14).toInt().coerceIn(1, pts.size - 3)
-                            val aIdx = (pts.size * 0.86).toInt().coerceIn(bIdx + 1, pts.size - 2)
-                            listOf(
-                                RouteSegment(pts.subList(0, bIdx + 1), "WALK"),
-                                RouteSegment(pts.subList(bIdx, aIdx + 1), "TRANSIT"),
-                                RouteSegment(pts.subList(aIdx, pts.size), "WALK")
-                            )
+                            val boardStation = resolveNearestStationSync(startWgs)
+                            val alightStation = resolveNearestStationSync(destWgs)
+                            if (boardStation != null && alightStation != null && CoordinateConverter.distanceMeters(boardStation, alightStation) > 300.0) {
+                                val w1Pts = fetchOsrmFootPolyline(startWgs, boardStation) ?: listOf(startWgs, boardStation)
+                                val trPts = fetchOsrmPolyline(boardStation, alightStation, "driving") ?: listOf(boardStation, alightStation)
+                                val w2Pts = fetchOsrmFootPolyline(alightStation, destWgs) ?: listOf(alightStation, destWgs)
+                                listOf(
+                                    RouteSegment(w1Pts, "WALK"),
+                                    RouteSegment(trPts, "TRANSIT"),
+                                    RouteSegment(w2Pts, "WALK")
+                                )
+                            } else {
+                                val bIdx = (pts.size * 0.14).toInt().coerceIn(1, pts.size - 3)
+                                val aIdx = (pts.size * 0.86).toInt().coerceIn(bIdx + 1, pts.size - 2)
+                                listOf(
+                                    RouteSegment(pts.subList(0, bIdx + 1), "WALK"),
+                                    RouteSegment(pts.subList(bIdx, aIdx + 1), "TRANSIT"),
+                                    RouteSegment(pts.subList(aIdx, pts.size), "WALK")
+                                )
+                            }
                         } else {
                             emptyList()
                         }
@@ -494,5 +507,72 @@ object MapAndRouteEngine {
         }
         val distStr = if (distMeters >= 1000) String.format("%.1f公里", distMeters / 1000.0) else "${distMeters.toInt()}米"
         return if (roadName.isNotBlank()) "前方${distStr}${action} 进入 $roadName" else "前方${distStr}${action}"
+    }
+
+    private fun resolveNearestStationSync(near: LatLng): LatLng? {
+        try {
+            val latDelta = 0.045
+            val lonDelta = 0.045
+            val urlStr = "https://nominatim.openstreetmap.org/search?q=subway+station+bus+stop&format=json&limit=3&viewbox=${near.longitude - lonDelta},${near.latitude + latDelta},${near.longitude + lonDelta},${near.latitude - latDelta}&bounded=1"
+            val conn = (URL(urlStr).openConnection() as HttpURLConnection).apply {
+                connectTimeout = 2500
+                readTimeout = 2500
+                setRequestProperty("User-Agent", "HTT-NaviCompanion-Android/1.6.3")
+            }
+            if (conn.responseCode == 200) {
+                val body = BufferedReader(InputStreamReader(conn.inputStream)).use { it.readText() }
+                val arr = org.json.JSONArray(body)
+                var best: LatLng? = null
+                var bestDist = Double.MAX_VALUE
+                for (i in 0 until arr.length()) {
+                    val o = arr.getJSONObject(i)
+                    val cand = LatLng(o.getDouble("lat"), o.getDouble("lon"))
+                    val d = CoordinateConverter.distanceMeters(near, cand)
+                    if (d < bestDist && d <= 8000.0) {
+                        bestDist = d
+                        best = cand
+                    }
+                }
+                conn.disconnect()
+                if (best != null) return best
+            }
+            conn.disconnect()
+        } catch (_: Exception) {}
+        val localBest = domesticLandmarksDatabase
+            .map { it.coordinate to CoordinateConverter.distanceMeters(near, it.coordinate) }
+            .filter { it.second <= 5000.0 }
+            .minByOrNull { it.second }
+        return localBest?.first
+    }
+
+    private fun fetchOsrmFootPolyline(from: LatLng, to: LatLng): List<LatLng>? = fetchOsrmPolyline(from, to, "foot")
+
+    private fun fetchOsrmPolyline(from: LatLng, to: LatLng, profile: String): List<LatLng>? {
+        return try {
+            val urlStr = "https://router.project-osrm.org/route/v1/$profile/${from.longitude},${from.latitude};${to.longitude},${to.latitude}?overview=full&geometries=geojson"
+            val conn = (URL(urlStr).openConnection() as HttpURLConnection).apply {
+                connectTimeout = 2500
+                readTimeout = 2500
+                setRequestProperty("User-Agent", "HTT-NaviCompanion-Android/1.6.3")
+            }
+            if (conn.responseCode == 200) {
+                val body = BufferedReader(InputStreamReader(conn.inputStream)).use { it.readText() }
+                val routes = JSONObject(body).optJSONArray("routes")
+                if (routes != null && routes.length() > 0) {
+                    val coords = routes.getJSONObject(0).getJSONObject("geometry").getJSONArray("coordinates")
+                    val pts = ArrayList<LatLng>(coords.length())
+                    for (i in 0 until coords.length()) {
+                        val pt = coords.getJSONArray(i)
+                        pts.add(LatLng(pt.getDouble(1), pt.getDouble(0)))
+                    }
+                    conn.disconnect()
+                    return pts
+                }
+            }
+            conn.disconnect()
+            null
+        } catch (_: Exception) {
+            null
+        }
     }
 }

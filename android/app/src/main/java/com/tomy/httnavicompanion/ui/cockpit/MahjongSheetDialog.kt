@@ -1069,7 +1069,7 @@ fun KOnMahjongSheetDialog(onDismiss: () -> Unit, embeddedInGameRoom: Boolean = f
                                                 horseTiles.forEach { ht ->
                                                     val isHit = hitHorseIds.contains(ht.id)
                                                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                                        MjTileCard(ht, 20.dp, 28.dp, isSelected = isHit, isHighlight = isHit)
+                                                        MjTileCard(ht, 20.dp, 28.dp, isSelected = false, isHighlight = isHit)
                                                         if (isHit) {
                                                             Text(if (lang == AppLanguage.EN) "HIT" else if (lang == AppLanguage.ZH_HANT) "中馬" else "中马", color = Color.Yellow, fontSize = 7.sp, fontWeight = FontWeight.Black)
                                                         }
@@ -2044,7 +2044,7 @@ fun KOnRummikubContent() {
                                                     .clip(RoundedCornerShape(5.dp))
                                                     .background(if (liftedIdx != null && tileOpt == null) Color.Yellow.copy(alpha = 0.16f) else Color.Black.copy(alpha = 0.10f))
                                                     .border(1.dp, if (liftedIdx != null) Color.Yellow.copy(alpha = 0.55f) else Color.Black.copy(alpha = 0.20f), RoundedCornerShape(5.dp))
-                                                    .pointerInput(slotIdx, cols) {
+                                                    .pointerInput(slotIdx, cols, tileOpt?.id) {
                                                         detectDragGestures(
                                                             onDragStart = {
                                                                 if (rackSlots.getOrNull(slotIdx) != null) {
@@ -2121,6 +2121,18 @@ fun KOnRummikubContent() {
                                                             customW = (slotW - 2.dp).coerceAtLeast(24.dp),
                                                             customH = 41.dp
                                                         )
+                                                        if (dragSlotIdx == slotIdx && selIds.size > 1 && selIds.contains(tileOpt.id)) {
+                                                            Box(
+                                                                modifier = Modifier
+                                                                    .align(Alignment.TopEnd)
+                                                                    .offset(x = 4.dp, y = (-8).dp)
+                                                                    .clip(RoundedCornerShape(50))
+                                                                    .background(Color(0xFFFF9800))
+                                                                    .padding(horizontal = 4.dp, vertical = 1.dp)
+                                                            ) {
+                                                                Text("+${selIds.size - 1}", color = Color.White, fontSize = 8.sp, fontWeight = FontWeight.Black)
+                                                            }
+                                                        }
                                                     }
                                                 }
                                             }

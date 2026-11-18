@@ -300,12 +300,22 @@ object RmkEvaluator {
         // Step 1: Extract both 789 runs and 777 groups from hand
         val (rMelds, afterRuns) = organizeHandIntoGroups(remHand, true)
         val (gMelds, afterBoth) = organizeHandIntoGroups(afterRuns, false)
-        val chosenHandMelds = rMelds + gMelds
-        val totalHandPts = chosenHandMelds.sumOf { evaluateMeld(it) ?: 0 }
+        val allHandMelds = rMelds + gMelds
+        val totalHandPts = allHandMelds.sumOf { evaluateMeld(it) ?: 0 }
 
-        var canBreakIceNow = hasBrokenIce
-        if (!hasBrokenIce && totalHandPts >= 30) {
-            canBreakIceNow = true
+        var chosenHandMelds = allHandMelds
+        if (!hasBrokenIce) {
+            if (totalHandPts < 30) return null
+            // On icebreak turn, play only minimum melds needed to reach >= 30 pts (official Rummikub pacing)
+            val sortedByPts = allHandMelds.sortedByDescending { evaluateMeld(it) ?: 0 }
+            val minMelds = mutableListOf<List<RmkTile>>()
+            var accPts = 0
+            for (m in sortedByPts) {
+                minMelds.add(m)
+                accPts += evaluateMeld(m) ?: 0
+                if (accPts >= 30) break
+            }
+            chosenHandMelds = minMelds
         }
 
         if (hasBrokenIce || totalHandPts >= 30) {
@@ -317,11 +327,12 @@ object RmkEvaluator {
                     highlightedIds.add(t.id)
                 }
             }
-            remHand = afterBoth.toMutableList()
+            val playedSet = playedIds.toSet()
+            remHand = hand.filterNot { playedSet.contains(it.id) }.toMutableList()
         }
 
-        // Step 2: If broken ice, actively combine remaining hand tiles with existing table melds (1:1 like Rummikub video!)
-        if (canBreakIceNow) {
+        // Step 2: Only after already breaking ice on a prior turn can AI manipulate existing table melds
+        if (hasBrokenIce) {
             var changed = true
             while (changed) {
                 changed = false
@@ -1694,40 +1705,45 @@ class RummikubEngine(
     fun startLongPressCascadeSelect(slotIdx: Int) {
         val anchor = _rackSlots.value.getOrNull(slotIdx) ?: return
         val active = currentCanonicalHand()
+        val jokers = active.filter { it.isJoker && it.id != anchor.id }
         var seq: List<RmkTile> = listOf(anchor)
         if (!anchor.isJoker) {
             val runTiles = mutableListOf(anchor)
             var nextN = anchor.number + 1
             while (nextN <= 13) {
-                val nxt = active.firstOrNull { it.color == anchor.color && it.number == nextN }
+                val nxt = active.firstOrNull { !it.isJoker && it.color == anchor.color && it.number == nextN }
                 if (nxt != null) { runTiles.add(nxt); nextN++ } else break
             }
             var prevN = anchor.number - 1
             while (prevN >= 1) {
-                val prv = active.firstOrNull { it.color == anchor.color && it.number == prevN }
+                val prv = active.firstOrNull { !it.isJoker && it.color == anchor.color && it.number == prevN }
                 if (prv != null) { runTiles.add(0, prv); prevN-- } else break
             }
-            if (runTiles.size >= 2) {
-                seq = listOf(anchor) + runTiles.filter { it.id != anchor.id }.sortedBy { it.number }
+            val grp = mutableListOf(anchor)
+            val seen = hashSetOf(anchor.color)
+            for (t in active) {
+                if (!t.isJoker && t.number == anchor.number && seen.add(t.color)) grp.add(t)
+            }
+            if (runTiles.size >= 3 || (runTiles.size == 2 && jokers.isNotEmpty()) || (runTiles.size >= 2 && runTiles.size >= grp.size)) {
+                val base = runTiles.sortedBy { it.number }.toMutableList()
+                if (base.size == 2 && jokers.isNotEmpty()) base.add(jokers.first())
+                seq = base
+            } else if (grp.size >= 2) {
+                if (grp.size == 2 && jokers.isNotEmpty()) grp.add(jokers.first())
+                seq = grp
+            }
+        } else {
+            val best = RmkEvaluator.findBestMeld(active)
+            if (best != null && best.any { it.id == anchor.id }) {
+                seq = best
             } else {
-                val grp = mutableListOf(anchor)
-                val seen = hashSetOf(anchor.color)
-                for (t in active) {
-                    if (!t.isJoker && t.number == anchor.number && seen.add(t.color)) grp.add(t)
-                }
-                if (grp.size >= 2) seq = grp
+                val nearby = active.filter { !it.isJoker && it.id != anchor.id }.take(2)
+                if (nearby.size == 2) seq = nearby + anchor
             }
         }
-        _selectedTileIds.value = emptySet()
+        _selectedTileIds.value = seq.map { it.id }.toSet()
         _liftedSlotIndex.value = slotIdx
-        seq.forEachIndexed { idx, t ->
-            mainHandler.postDelayed({
-                _selectedTileIds.value = _selectedTileIds.value + t.id
-                if (idx == seq.lastIndex) {
-                    _statusBanner.value = "✨ 已长按连选 ${seq.size} 张牌，向上拖入桌面即可直接出牌！"
-                }
-            }, idx * 140L)
-        }
+        _statusBanner.value = "✨ 已长按连选 ${seq.size} 张牌（含百搭），向上拖入桌面或点【出到桌面】即可出牌！"
     }
 
     fun smartHint() {
@@ -1905,7 +1921,7 @@ class RummikubEngine(
                 }
             }
             aiRunnable = r
-            mainHandler.postDelayed(r, 1500L)
+            mainHandler.postDelayed(r, 1850L)
         }
     }
 }

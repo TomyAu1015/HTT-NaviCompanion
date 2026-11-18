@@ -13,6 +13,10 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.unit.IntOffset
+import kotlin.math.roundToInt
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -910,16 +914,66 @@ fun DestinationSearchSheetDialog(onDismiss: () -> Unit) {
                     modifier = Modifier.weight(1f),
                     verticalArrangement = Arrangement.spacedBy(7.dp)
                 ) {
-                    items(displayList) { item ->
+                    items(displayList, key = { "${it.category}_${it.name}_${it.coordinate.latitude}" }) { item ->
+                        val isRecent = item.category.contains("最近")
+                        var swipeOffsetX by remember(item.name) { mutableStateOf(0f) }
+                        val deleteRevealPx = 150f
+
+                        Box(modifier = Modifier.fillMaxWidth()) {
+                            if (isRecent) {
+                                Box(
+                                    modifier = Modifier
+                                        .matchParentSize()
+                                        .padding(vertical = 2.dp),
+                                    contentAlignment = Alignment.CenterEnd
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .width(64.dp)
+                                            .fillMaxHeight()
+                                            .clip(RoundedCornerShape(12.dp))
+                                            .background(Color(0xFFD32F2F))
+                                            .clickable {
+                                                manager.deleteRecentDestination(item.name, item.coordinate)
+                                            },
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                            Icon(Icons.Default.Delete, contentDescription = "删除", tint = Color.White, modifier = Modifier.size(18.dp))
+                                            Text("删除", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                        }
+                                    }
+                                }
+                            }
                         Card(
                             colors = CardDefaults.cardColors(containerColor = SheetCardBg),
                             shape = RoundedCornerShape(12.dp),
                             modifier = Modifier
                                 .fillMaxWidth()
+                                .offset { IntOffset(if (isRecent) swipeOffsetX.roundToInt() else 0, 0) }
+                                .then(
+                                    if (isRecent) {
+                                        Modifier.pointerInput(item.name) {
+                                            detectHorizontalDragGestures(
+                                                onDragEnd = {
+                                                    swipeOffsetX = if (swipeOffsetX < -deleteRevealPx * 0.4f) -deleteRevealPx else 0f
+                                                },
+                                                onHorizontalDrag = { change, dragAmount ->
+                                                    change.consume()
+                                                    swipeOffsetX = (swipeOffsetX + dragAmount).coerceIn(-deleteRevealPx - 20f, 0f)
+                                                }
+                                            )
+                                        }
+                                    } else Modifier
+                                )
                                 .border(1.dp, SheetGold.copy(alpha = 0.35f), RoundedCornerShape(12.dp))
                                 .clickable {
-                                    manager.startRouteToPlace(item.name, item.coordinate)
-                                    onDismiss()
+                                    if (isRecent && swipeOffsetX < -20f) {
+                                        swipeOffsetX = 0f
+                                    } else {
+                                        manager.startRouteToPlace(item.name, item.coordinate)
+                                        onDismiss()
+                                    }
                                 }
                         ) {
                             Row(
@@ -961,6 +1015,7 @@ fun DestinationSearchSheetDialog(onDismiss: () -> Unit) {
                                     Text("去这里", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                                 }
                             }
+                        }
                         }
                     }
                 }

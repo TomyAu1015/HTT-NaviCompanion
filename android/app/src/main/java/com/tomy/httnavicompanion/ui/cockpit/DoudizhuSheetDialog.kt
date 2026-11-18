@@ -1377,7 +1377,7 @@ private fun OpponentSeatBox(
     val stackCount = minOf(6, maxOf(1, (seat.hand.size + 2) / 3))
     Column(
         modifier = Modifier
-            .width(126.dp)
+            .width(98.dp)
             .clip(RoundedCornerShape(12.dp))
             .background(Color.Black.copy(alpha = 0.52f))
             .border(if (isTurn) 2.dp else 1.dp, if (isTurn) Color(0xFF00E676) else Color.White.copy(alpha = 0.22f), RoundedCornerShape(12.dp))
@@ -1395,7 +1395,7 @@ private fun OpponentSeatBox(
                         bitmap = spriteBmp.asImageBitmap(),
                         contentDescription = null,
                         filterQuality = FilterQuality.None,
-                        modifier = Modifier.size(40.dp, 46.dp)
+                        modifier = Modifier.size(32.dp, 36.dp)
                     )
                 }
                 if (phase != DoudizhuGamePhase.BIDDING) {
@@ -1419,7 +1419,7 @@ private fun OpponentSeatBox(
             horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             if (seat.hand.isNotEmpty()) {
-                Box(modifier = Modifier.width((20 + (stackCount - 1) * 6).dp).height(29.dp)) {
+                Box(modifier = Modifier.width((16 + (stackCount - 1) * 5).dp).height(23.dp)) {
                     for (idx in 0 until stackCount) {
                         if (backBmp != null) {
                             Image(
@@ -1427,7 +1427,7 @@ private fun OpponentSeatBox(
                                 contentDescription = null,
                                 contentScale = ContentScale.Crop,
                                 modifier = Modifier
-                                    .offset(x = (idx * 6).dp)
+                                    .offset(x = (idx * 5).dp)
                                     .size(20.dp, 29.dp)
                                     .clip(RoundedCornerShape(3.dp))
                                     .border(0.9.dp, DdzGold, RoundedCornerShape(3.dp))

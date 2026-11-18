@@ -523,6 +523,29 @@ class AudioPlayerManager(
         _recentDestinations.value = validList
     }
 
+    fun deleteRecentDestination(name: String, coord: LatLng) {
+        val current = _recentDestinations.value.filterNot {
+            it.name.equals(name, ignoreCase = true) &&
+                CoordinateConverter.distanceMeters(it.coordinate, coord) <= 50.0
+        }
+        _recentDestinations.value = current
+        val oldRaw = recentPrefs.getString("items_json", null) ?: return
+        try {
+            val arr = org.json.JSONArray(oldRaw)
+            val kept = org.json.JSONArray()
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                val oName = o.optString("name", "").trim()
+                val oLat = o.optDouble("lat", 0.0)
+                val oLon = o.optDouble("lon", 0.0)
+                val same = oName.equals(name.trim(), ignoreCase = true) &&
+                    CoordinateConverter.distanceMeters(LatLng(oLat, oLon), coord) <= 50.0
+                if (!same) kept.put(o)
+            }
+            recentPrefs.edit().putString("items_json", kept.toString()).apply()
+        } catch (_: Exception) {}
+    }
+
     fun recordRecentDestination(name: String, address: String, coord: LatLng) {
         val cleanName = name.trim()
         if (cleanName.isEmpty() || cleanName == "目的地") return
