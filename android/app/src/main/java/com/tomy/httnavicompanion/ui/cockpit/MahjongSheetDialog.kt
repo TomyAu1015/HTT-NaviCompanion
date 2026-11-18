@@ -1711,11 +1711,12 @@ fun KOnRummikubContent() {
             for (meld in dispMelds) {
                 if (meld.id == excludeMeldId) continue
                 val rect = meldBoundsMap[meld.id] ?: continue
+                // Tight hit-box so open-space drops near a meld are never hijacked
                 val expanded = Rect(
-                    left = rect.left - 34f,
-                    top = rect.top - 16f,
-                    right = rect.right + 34f,
-                    bottom = rect.bottom + 16f
+                    left = rect.left - 5f,
+                    top = rect.top - 4f,
+                    right = rect.right + 5f,
+                    bottom = rect.bottom + 4f
                 )
                 if (!expanded.contains(pt)) continue
                 val dx = pt.x - rect.center.x
@@ -1724,14 +1725,16 @@ fun KOnRummikubContent() {
                 if (rect.contains(pt)) score *= 0.45f
                 if (draggingTiles.isNotEmpty()) {
                     val cand = meld.tiles + draggingTiles
-                    if (RmkEvaluator.evaluateMeld(cand) != null) {
+                    val splitTest = RmkEvaluator.autoSplitMeldTiles(cand)
+                    if (RmkEvaluator.evaluateMeld(cand) != null ||
+                        (splitTest.size >= 2 && splitTest.all { RmkEvaluator.evaluateMeld(it) != null })
+                    ) {
                         score *= 0.35f
                     } else {
                         val norms = cand.filter { !it.isJoker }
                         val sameNum = norms.all { it.number == (norms.firstOrNull()?.number ?: 0) } &&
                             norms.map { it.color }.distinct().size == norms.size
-                        val sameCol = norms.all { it.color == norms.firstOrNull()?.color } &&
-                            norms.map { it.number }.distinct().size == norms.size
+                        val sameCol = norms.all { it.color == norms.firstOrNull()?.color }
                         if (!sameNum && !sameCol) score *= 2.4f
                     }
                 }
@@ -1742,19 +1745,41 @@ fun KOnRummikubContent() {
                 }
             }
             if (bestId != null) return Triple(bestId, bestPreferLeading, null)
-            var insertIdx = dispMelds.size
-            for ((idx, meld) in dispMelds.withIndex()) {
-                val rect = meldBoundsMap[meld.id] ?: continue
-                if (pt.y < rect.top - 8f) {
-                    insertIdx = idx
-                    break
-                }
-                if (pt.y <= rect.bottom + 8f && pt.x < rect.center.x) {
-                    insertIdx = idx
-                    break
+
+            // Open-space drop: find the exact row & horizontal slot closest to pt so the tile stays where dropped
+            data class IndexedRect(val idx: Int, val rect: Rect)
+            val indexedRects = dispMelds.mapIndexedNotNull { idx, meld ->
+                meldBoundsMap[meld.id]?.let { IndexedRect(idx, it) }
+            }
+            if (indexedRects.isEmpty()) return Triple(null, false, 0)
+
+            val rowGroups = mutableListOf<MutableList<IndexedRect>>()
+            for (item in indexedRects) {
+                val lastGroup = rowGroups.lastOrNull()
+                if (lastGroup != null && kotlin.math.abs(item.rect.center.y - lastGroup[0].rect.center.y) < 28f) {
+                    lastGroup.add(item)
+                } else {
+                    rowGroups.add(mutableListOf(item))
                 }
             }
-            return Triple(null, false, insertIdx)
+            val firstRowTop = rowGroups.first().first().rect.top
+            val lastRowBottom = rowGroups.last().first().rect.bottom
+            if (pt.y < firstRowTop - 16f) return Triple(null, false, 0)
+            if (pt.y > lastRowBottom + 24f) return Triple(null, false, dispMelds.size)
+
+            val bestRow = rowGroups.minByOrNull { row ->
+                val avgY = row.map { it.rect.center.y }.average().toFloat()
+                kotlin.math.abs(pt.y - avgY)
+            } ?: rowGroups.last()
+
+            val sortedRow = bestRow.sortedBy { it.rect.center.x }
+            for (item in sortedRow) {
+                if (pt.x < item.rect.center.x) {
+                    return Triple(null, false, item.idx)
+                }
+            }
+            val afterIdx = (sortedRow.last().idx + 1).coerceAtMost(dispMelds.size)
+            return Triple(null, false, afterIdx)
         }
 
         // Order seats so opponents are at top-left and local player (me) is anchored at bottom-left next to the rack (1:1 like video!)
@@ -2041,13 +2066,17 @@ fun KOnRummikubContent() {
                                                                     },
                                                                     onDragEnd = {
                                                                         val dropPt = Offset(tileRootPos.x + dragTableOffX, tileRootPos.y + dragTableOffY)
-                                                                        if (rackAreaBounds?.contains(dropPt) == true) {
-                                                                            rmk.returnTableTileToRackIfFromThisTurn(meld.id, t.id)
+                                                                        val rb = rackAreaBounds
+                                                                        if (rb != null && (rb.inflate(24f).contains(dropPt) || dropPt.y >= rb.top - 18f)) {
+                                                                            val relX = (dropPt.x - rb.left).coerceIn(0f, rb.width.coerceAtLeast(1f))
+                                                                            val dstCol = ((relX / rb.width.coerceAtLeast(1f)) * cols).toInt().coerceIn(0, cols - 1)
+                                                                            val dstRow = if (dropPt.y >= rb.center.y) 1 else 0
+                                                                            rmk.returnTableTileToRackIfFromThisTurn(meld.id, t.id, preferredRackSlot = dstRow * cols + dstCol)
                                                                         } else {
                                                                             val (targetMeld, preferLead, insIdx) = findMagneticMeldHit(dropPt, excludeMeldId = meld.id, draggingTiles = listOf(t))
                                                                             if (targetMeld != null) {
                                                                                 rmk.moveTableTile(meld.id, t.id, targetMeld, preferLeading = preferLead)
-                                                                            } else if (tableAreaBounds?.inflate(32f)?.contains(dropPt) == true) {
+                                                                            } else if (tableAreaBounds?.inflate(36f)?.contains(dropPt) == true) {
                                                                                 rmk.moveTableTile(meld.id, t.id, null, preferLeading = false, insertAtMeldIndex = insIdx)
                                                                             }
                                                                         }
@@ -2069,7 +2098,7 @@ fun KOnRummikubContent() {
                                                             if (!isDragTbl) {
                                                                 RmkTileCard(
                                                                     tile = t,
-                                                                    selected = isPickedTable,
+                                                                    selected = false,
                                                                     highlighted = isHigh,
                                                                     compact = chosenW < 34f,
                                                                     customW = tileWDp,
