@@ -14670,7 +14670,7 @@ final class RummikubEngine: NSObject, ObservableObject {
         // If the source meld only has 1 tile and is dropped on open table space (toMeldId == nil),
         // check if there is another incomplete (<3 tiles) staging meld on the table to merge with!
         if toMeldId == nil && workingMelds[srcMIdx].tiles.count == 1 {
-            if let otherStageIdx = workingMelds.lastIndex(where: { $0.id != fromMeldId && RmkEvaluator.evaluateMeld($0.tiles) == nil && (seats[mySeatIndex].hasBrokenIce || !snapshotMelds.contains(where: { s in s.id == $0.id })) }) {
+            if let otherStageIdx = workingMelds.lastIndex(where: { m in m.id != fromMeldId && RmkEvaluator.evaluateMeld(m.tiles) == nil && (seats[mySeatIndex].hasBrokenIce || !snapshotMelds.contains(where: { s in s.id == m.id })) }) {
                 let movingTile = workingMelds[srcMIdx].tiles[0]
                 let otherId = workingMelds[otherStageIdx].id
                 workingMelds.remove(at: srcMIdx)
@@ -14717,7 +14717,7 @@ final class RummikubEngine: NSObject, ObservableObject {
             let comb = RmkEvaluator.sortMeldForDisplay(workingMelds[dstIdx].tiles + [movingTile])
             workingMelds[dstIdx].tiles = comb
             statusBanner = "✅ 已将桌面牌并入目标牌组！"
-        } else if let stageIdx = workingMelds.lastIndex(where: { $0.id != fromMeldId && $0.tiles.count < 3 && RmkEvaluator.evaluateMeld($0.tiles) == nil && (seats[mySeatIndex].hasBrokenIce || !snapshotMelds.contains(where: { s in s.id == $0.id })) }) {
+        } else if let stageIdx = workingMelds.lastIndex(where: { m in m.id != fromMeldId && m.tiles.count < 3 && RmkEvaluator.evaluateMeld(m.tiles) == nil && (seats[mySeatIndex].hasBrokenIce || !snapshotMelds.contains(where: { s in s.id == m.id })) }) {
             // Automatically combine into the active incomplete staging group on the table!
             let comb = RmkEvaluator.sortMeldForDisplay(workingMelds[stageIdx].tiles + [movingTile])
             workingMelds[stageIdx].tiles = comb
@@ -14847,7 +14847,7 @@ final class RummikubEngine: NSObject, ObservableObject {
 
         // 4. If there is an incomplete staging meld (<3 tiles or not yet valid) on the table that we are building this turn,
         // automatically merge the dragged tile(s) into that staging meld!
-        if let stageIdx = workingMelds.lastIndex(where: { RmkEvaluator.evaluateMeld($0.tiles) == nil && (seats[mySeatIndex].hasBrokenIce || !snapshotMelds.contains(where: { s in s.id == $0.id })) }) {
+        if let stageIdx = workingMelds.lastIndex(where: { m in RmkEvaluator.evaluateMeld(m.tiles) == nil && (seats[mySeatIndex].hasBrokenIce || !snapshotMelds.contains(where: { s in s.id == m.id })) }) {
             workingHand.removeAll { targetIds.contains($0.id) }
             for i in 0..<rackSlots.count { if let t = rackSlots[i], targetIds.contains(t.id) { rackSlots[i] = nil } }
             let combined = RmkEvaluator.sortMeldForDisplay(workingMelds[stageIdx].tiles + picked)
