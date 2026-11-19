@@ -9799,11 +9799,11 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         if let range = cleaned.range(of: "http", options: .caseInsensitive) {
             cleaned = String(cleaned[..<range.lowerBound])
         }
-        let noiseTokens = ["【", "】", "「", "」", "位置：", "位置:", "地址：", "地址:", "分享位置：", "分享位置:", "导航到：", "导航到:", "我在", "我在"", "点击查看地图", "高德地图", "腾讯地图", "百度地图"]
+        let noiseTokens = ["【", "】", "「", "」", "位置：", "位置:", "地址：", "地址:", "分享位置：", "分享位置:", "导航到：", "导航到:", "我在", "我在\"", "点击查看地图", "高德地图", "腾讯地图", "百度地图"]
         for tok in noiseTokens {
             cleaned = cleaned.replacingOccurrences(of: tok, with: " ")
         }
-        cleaned = cleaned.replacingOccurrences(of: """, with: " ")
+        cleaned = cleaned.replacingOccurrences(of: "\"", with: " ")
         let lines = cleaned.components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
         let finalQuery = (lines.first ?? cleaned).trimmingCharacters(in: .whitespacesAndNewlines)
         if !finalQuery.isEmpty {
