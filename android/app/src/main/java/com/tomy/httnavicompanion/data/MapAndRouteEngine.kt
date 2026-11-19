@@ -272,6 +272,40 @@ object MapAndRouteEngine {
             } catch (_: Exception) {}
         }
 
+        // 5. OpenStreetMap Nominatim Fallback (reliable for Chinese scenic spots & towns like 仰阿莎温泉小镇)
+        if (combined.size < 3) {
+            try {
+                val encoded = URLEncoder.encode(trimmed, "UTF-8")
+                val urlStr = "https://nominatim.openstreetmap.org/search?q=$encoded&format=json&limit=8&accept-language=zh-CN"
+                val conn = (URL(urlStr).openConnection() as HttpURLConnection).apply {
+                    connectTimeout = 4000
+                    readTimeout = 4000
+                    setRequestProperty("User-Agent", "HTT-NaviCompanion-Android/1.6.3")
+                }
+                if (conn.responseCode == 200) {
+                    val body = BufferedReader(InputStreamReader(conn.inputStream)).use { it.readText() }
+                    val arr = org.json.JSONArray(body)
+                    for (i in 0 until arr.length()) {
+                        val obj = arr.getJSONObject(i)
+                        val lat = obj.optString("lat").toDoubleOrNull() ?: continue
+                        val lon = obj.optString("lon").toDoubleOrNull() ?: continue
+                        val display = obj.optString("display_name", trimmed)
+                        val shortName = obj.optString("name", "").ifBlank { display.substringBefore(",").ifBlank { trimmed } }
+                        addUnique(
+                            PlaceSearchItem(
+                                name = shortName,
+                                address = display,
+                                distanceKm = 0.0,
+                                coordinate = LatLng(lat, lon),
+                                category = "地理检索"
+                            )
+                        )
+                    }
+                }
+                conn.disconnect()
+            } catch (_: Exception) {}
+        }
+
         return combined.sortedBy { it.distanceKm }
     }
 
@@ -407,10 +441,15 @@ object MapAndRouteEngine {
                             } else {
                                 val bIdx = (pts.size * 0.14).toInt().coerceIn(1, pts.size - 3)
                                 val aIdx = (pts.size * 0.86).toInt().coerceIn(bIdx + 1, pts.size - 2)
+                                val fbBoard = pts[bIdx]
+                                val fbAlight = pts[aIdx]
+                                // Always compute real pedestrian OSRM foot polylines for first/last walking legs (never elevated highway driving points!)
+                                val w1Pts = fetchOsrmFootPolyline(startWgs, fbBoard) ?: listOf(startWgs, fbBoard)
+                                val w2Pts = fetchOsrmFootPolyline(fbAlight, destWgs) ?: listOf(fbAlight, destWgs)
                                 listOf(
-                                    RouteSegment(pts.subList(0, bIdx + 1), "WALK"),
+                                    RouteSegment(w1Pts, "WALK"),
                                     RouteSegment(pts.subList(bIdx, aIdx + 1), "TRANSIT"),
-                                    RouteSegment(pts.subList(aIdx, pts.size), "WALK")
+                                    RouteSegment(w2Pts, "WALK")
                                 )
                             }
                         } else {

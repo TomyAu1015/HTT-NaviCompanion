@@ -1,6 +1,8 @@
 package com.tomy.httnavicompanion.ui.cockpit
 
 import android.app.Activity
+import androidx.activity.compose.BackHandler
+import androidx.compose.ui.zIndex
 import android.content.Context
 import android.content.ContextWrapper
 import android.content.pm.ActivityInfo
@@ -428,36 +430,51 @@ fun KOnGameRoomSheetDialog(onDismiss: () -> Unit) {
         }
     }
 
-    Dialog(
-        onDismissRequest = {
+    // True 100% edge-to-edge full-screen overlay (replaces Dialog so main cockpit NEVER peeks out on any Android aspect ratio!)
+    val hostView = LocalView.current
+    DisposableEffect(inLobbyNow) {
+        val win = activity?.window
+        if (win != null) {
+            WindowCompat.setDecorFitsSystemWindows(win, false)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                val lp = win.attributes
+                lp.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+                win.attributes = lp
+            }
+            val ctrl = WindowInsetsControllerCompat(win, hostView)
+            if (!inLobbyNow) {
+                ctrl.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                ctrl.hide(WindowInsetsCompat.Type.systemBars())
+            } else {
+                ctrl.show(WindowInsetsCompat.Type.systemBars())
+            }
+        }
+        onDispose {
+            val w = activity?.window
+            if (w != null) {
+                WindowInsetsControllerCompat(w, hostView).show(WindowInsetsCompat.Type.systemBars())
+            }
+        }
+    }
+
+    BackHandler {
+        if (!inLobbyNow) {
+            if (selectedGame == 0) ddzEngine.leaveRoomAndResetLobby()
+            else if (selectedGame == 1) mjEngine.leaveRoomAndResetLobby()
+            else rmkEngine.leaveRoomAndResetLobby()
+        } else {
             ddzEngine.leaveRoomAndResetLobby()
             mjEngine.leaveRoomAndResetLobby()
             rmkEngine.leaveRoomAndResetLobby()
             onDismiss()
-        },
-        properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)
-    ) {
-        // Force true edge-to-edge MATCH_PARENT + immersive landscape bars so NO Android screen ratio clips bottom cards/rack!
-        val dialogView = LocalView.current
-        SideEffect {
-            val win = (dialogView.parent as? DialogWindowProvider)?.window
-            if (win != null) {
-                win.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
-                WindowCompat.setDecorFitsSystemWindows(win, false)
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                    val lp = win.attributes
-                    lp.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
-                    win.attributes = lp
-                }
-                val ctrl = WindowInsetsControllerCompat(win, dialogView)
-                if (!inLobbyNow) {
-                    ctrl.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-                    ctrl.hide(WindowInsetsCompat.Type.systemBars())
-                } else {
-                    ctrl.show(WindowInsetsCompat.Type.systemBars())
-                }
-            }
         }
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .zIndex(100f)
+    ) {
         Surface(
             modifier = Modifier.fillMaxSize(),
             color = if (selectedGame == 0) Color(0xFF104B2C) else if (selectedGame == 2 && !inLobbyNow) Color(0xFF0E3266) else MjBgGreen

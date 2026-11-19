@@ -720,74 +720,77 @@ fun KOnDoudizhuSheetDialog(onDismiss: () -> Unit, embeddedInGameRoom: Boolean = 
                                 app = app
                             )
 
-                            // Wide Center Stage: Non-overlapping 3-seat 1-round played cards (上家 | 我方 | 下家)
-                            Column(
+                            // Wide Center Stage: Single-Row 3-Zone Horizontal Arena (上家 | 我方 | 下家) matching iOS 1:1 — zero vertical clipping!
+                            val mySeatNow = seats.getOrNull(mySeatIdx)
+                            Row(
                                 modifier = Modifier
                                     .weight(1f)
                                     .fillMaxHeight()
-                                    .padding(horizontal = 6.dp)
-                                    .clip(RoundedCornerShape(12.dp))
-                                    .background(Color.Black.copy(alpha = 0.22f))
-                                    .border(1.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(12.dp))
-                                    .padding(6.dp),
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.SpaceBetween
+                                    .padding(horizontal = 4.dp)
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(Color.Black.copy(alpha = 0.20f))
+                                    .border(1.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(10.dp))
+                                    .padding(horizontal = 6.dp, vertical = 3.dp),
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.Top
-                                ) {
-                                    // Left Opponent Played Cards (上家)
-                                    Column(modifier = Modifier.weight(1f), horizontalAlignment = Alignment.Start, verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                                        AnimatedContent(
-                                            targetState = leftSeat.lastPlayed.map { it.id } to leftSeat.lastActionText,
-                                            transitionSpec = {
-                                                (scaleIn(initialScale = 0.72f, animationSpec = spring(dampingRatio = 0.7f, stiffness = 420f)) + fadeIn(tween(180)) + slideInVertically { it / 4 }) togetherWith fadeOut(tween(120))
-                                            },
-                                            label = "ddz_left_play"
-                                        ) { _ ->
-                                            if (leftSeat.lastPlayed.isNotEmpty()) {
-                                                FittedTablePlayedCardsView(cards = leftSeat.lastPlayed, app = app, compact = allowCounter && showCardCounter)
-                                            } else {
-                                                ActionBadge(HTTGameRoomLocalizer.localize("⬅ 上家", lang), HTTGameRoomLocalizer.localize(leftSeat.lastActionText.ifBlank { "等待中" }, lang))
-                                            }
+                                // Left Opponent Played Cards (上家)
+                                Box(modifier = Modifier.weight(1f).fillMaxHeight(), contentAlignment = Alignment.CenterStart) {
+                                    AnimatedContent(
+                                        targetState = leftSeat.lastPlayed.map { it.id } to leftSeat.lastActionText,
+                                        transitionSpec = {
+                                            (scaleIn(initialScale = 0.76f, animationSpec = spring(dampingRatio = 0.72f, stiffness = 420f)) + fadeIn(tween(160))) togetherWith fadeOut(tween(110))
+                                        },
+                                        label = "ddz_left_play"
+                                    ) { _ ->
+                                        if (leftSeat.lastPlayed.isNotEmpty()) {
+                                            FittedTablePlayedCardsView(cards = leftSeat.lastPlayed, app = app, compact = true)
+                                        } else {
+                                            ActionBadge(HTTGameRoomLocalizer.localize("⬅ 上家", lang), HTTGameRoomLocalizer.localize(leftSeat.lastActionText.ifBlank { "等待" }, lang))
                                         }
                                     }
-                                    Spacer(Modifier.width(6.dp))
-                                    // Right Opponent Played Cards (下家)
-                                    Column(modifier = Modifier.weight(1f), horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                                        AnimatedContent(
-                                            targetState = rightSeat.lastPlayed.map { it.id } to rightSeat.lastActionText,
-                                            transitionSpec = {
-                                                (scaleIn(initialScale = 0.72f, animationSpec = spring(dampingRatio = 0.7f, stiffness = 420f)) + fadeIn(tween(180)) + slideInVertically { it / 4 }) togetherWith fadeOut(tween(120))
-                                            },
-                                            label = "ddz_right_play"
-                                        ) { _ ->
-                                            if (rightSeat.lastPlayed.isNotEmpty()) {
-                                                FittedTablePlayedCardsView(cards = rightSeat.lastPlayed, app = app, compact = allowCounter && showCardCounter)
-                                            } else {
-                                                ActionBadge(HTTGameRoomLocalizer.localize("下家 ➡", lang), HTTGameRoomLocalizer.localize(rightSeat.lastActionText.ifBlank { "等待中" }, lang))
+                                }
+
+                                // My Own Played Cards / Status (Center)
+                                Box(modifier = Modifier.weight(1.15f).fillMaxHeight(), contentAlignment = Alignment.Center) {
+                                    AnimatedContent(
+                                        targetState = (mySeatNow?.lastPlayed?.map { it.id } ?: emptyList()) to (mySeatNow?.lastActionText ?: ""),
+                                        transitionSpec = {
+                                            (scaleIn(initialScale = 0.76f, animationSpec = spring(dampingRatio = 0.72f, stiffness = 420f)) + fadeIn(tween(160))) togetherWith fadeOut(tween(110))
+                                        },
+                                        label = "ddz_my_play"
+                                    ) { _ ->
+                                        if (mySeatNow != null && mySeatNow.lastPlayed.isNotEmpty()) {
+                                            FittedTablePlayedCardsView(cards = mySeatNow.lastPlayed, app = app, compact = true)
+                                        } else if (phase == DoudizhuGamePhase.BIDDING) {
+                                            Text("📢 叫地主阶段", color = Color.White.copy(alpha = 0.72f), fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                        } else if (mySeatNow != null && mySeatNow.lastActionText.isNotEmpty()) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .clip(RoundedCornerShape(8.dp))
+                                                    .background(Color.Black.copy(alpha = 0.45f))
+                                                    .padding(horizontal = 8.dp, vertical = 3.dp)
+                                            ) {
+                                                Text(HTTGameRoomLocalizer.localize("我方: ${mySeatNow.lastActionText}", lang), color = DdzGold, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                                             }
                                         }
                                     }
                                 }
 
-                                // My Own Played Cards / Status
-                                val mySeatNow = seats.getOrNull(mySeatIdx)
-                                AnimatedContent(
-                                    targetState = (mySeatNow?.lastPlayed?.map { it.id } ?: emptyList()) to (mySeatNow?.lastActionText ?: ""),
-                                    transitionSpec = {
-                                        (scaleIn(initialScale = 0.72f, animationSpec = spring(dampingRatio = 0.7f, stiffness = 420f)) + fadeIn(tween(180)) + slideInVertically { it / 3 }) togetherWith fadeOut(tween(120))
-                                    },
-                                    label = "ddz_my_play"
-                                ) { _ ->
-                                    if (mySeatNow != null && mySeatNow.lastPlayed.isNotEmpty()) {
-                                        FittedTablePlayedCardsView(cards = mySeatNow.lastPlayed, app = app, compact = allowCounter && showCardCounter)
-                                    } else if (phase == DoudizhuGamePhase.BIDDING) {
-                                        Text("📢 叫地主阶段 · 请选择叫分", color = Color.White.copy(alpha = 0.65f), fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                                    } else if (mySeatNow != null && mySeatNow.lastActionText.isNotEmpty()) {
-                                        Text(HTTGameRoomLocalizer.localize("我方: ${mySeatNow.lastActionText}", lang), color = DdzGold, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                // Right Opponent Played Cards (下家)
+                                Box(modifier = Modifier.weight(1f).fillMaxHeight(), contentAlignment = Alignment.CenterEnd) {
+                                    AnimatedContent(
+                                        targetState = rightSeat.lastPlayed.map { it.id } to rightSeat.lastActionText,
+                                        transitionSpec = {
+                                            (scaleIn(initialScale = 0.76f, animationSpec = spring(dampingRatio = 0.72f, stiffness = 420f)) + fadeIn(tween(160))) togetherWith fadeOut(tween(110))
+                                        },
+                                        label = "ddz_right_play"
+                                    ) { _ ->
+                                        if (rightSeat.lastPlayed.isNotEmpty()) {
+                                            FittedTablePlayedCardsView(cards = rightSeat.lastPlayed, app = app, compact = true)
+                                        } else {
+                                            ActionBadge(HTTGameRoomLocalizer.localize("下家 ➡", lang), HTTGameRoomLocalizer.localize(rightSeat.lastActionText.ifBlank { "等待" }, lang))
+                                        }
                                     }
                                 }
                             }

@@ -652,6 +652,10 @@ class AudioPlayerManager(
 
     private var lastGpsFixMillis: Long = 0L
     private var lastGpsAccuracyMeters: Float = 999f
+    private var lastRealLocTimeMs: Long = 0L
+    private var smoothedSpeedKmh: Double = 0.0
+    private var consecutiveLowSpeedFixes: Int = 0
+    private var lastValidSpeedMs: Long = 0L
 
     fun setMapTracking(enabled: Boolean) {
         _mapTrackingUser.value = enabled
@@ -669,6 +673,7 @@ class AudioPlayerManager(
         val newCoord = LatLng(lat, lon)
         if (!_isDemoSimulating.value) {
             var movedMeters = 0.0
+            val dtSec = if (lastRealLocTimeMs > 0L) ((nowMs - lastRealLocTimeMs) / 1000.0).coerceAtLeast(0.05) else 1.0
             lastRealLoc?.let { prev ->
                 val moved = CoordinateConverter.distanceMeters(prev, newCoord)
                 movedMeters = moved
@@ -677,11 +682,39 @@ class AudioPlayerManager(
                 }
             }
             lastRealLoc = newCoord
+            lastRealLocTimeMs = nowMs
             _userCoordinate.value = newCoord
-            val kmh = if (speedMps >= 0.8f && movedMeters >= 2.5) (speedMps * 3.6f).toInt().coerceAtLeast(0) else 0
+
+            // Smooth Doppler GPS speed with EMA & anti-zero-jump hysteresis
+            val sampleKmh: Double? = when {
+                accuracyMeters in 0.1f..50f && speedMps >= 0.01f -> (speedMps * 3.6).coerceIn(0.0, 260.0)
+                accuracyMeters in 0.1f..25f && dtSec >= 0.8 && movedMeters >= 2.0 && movedMeters <= 80.0 * dtSec ->
+                    ((movedMeters / dtSec) * 3.6).coerceIn(0.0, 260.0)
+                accuracyMeters in 0.1f..50f && speedMps == 0f -> 0.0
+                else -> null
+            }
+            if (sampleKmh != null) {
+                if (sampleKmh < 1.8) {
+                    consecutiveLowSpeedFixes += 1
+                    if (consecutiveLowSpeedFixes >= 2 || smoothedSpeedKmh < 4.0) {
+                        smoothedSpeedKmh = 0.0
+                    }
+                } else {
+                    consecutiveLowSpeedFixes = 0
+                    smoothedSpeedKmh = if (smoothedSpeedKmh < 1.0 || kotlin.math.abs(sampleKmh - smoothedSpeedKmh) > 18.0) {
+                        sampleKmh
+                    } else {
+                        smoothedSpeedKmh * 0.62 + sampleKmh * 0.38
+                    }
+                    lastValidSpeedMs = nowMs
+                }
+            } else if (nowMs - lastValidSpeedMs > 3500L) {
+                smoothedSpeedKmh = 0.0
+            }
+            val kmh = kotlin.math.round(smoothedSpeedKmh).toInt().coerceAtLeast(0)
             _currentSpeedKmh.value = kmh
             if (kmh > _maxSpeedKmh.value) _maxSpeedKmh.value = kmh
-            if (bearingDeg > 0f) _headingDegrees.value = bearingDeg.toDouble()
+            if (bearingDeg > 0f && kmh >= 3) _headingDegrees.value = bearingDeg.toDouble()
             _isGPSSignalPoor.value = false
             updateAndroidNavigationProgress(newCoord)
         }
@@ -825,6 +858,8 @@ class AudioPlayerManager(
         _destinationCoord.value = destCoord
         _hasActiveNavigation.value = true
         _showMapMode.value = true
+        _isMapEnlarged.value = true
+        _mapTrackingUser.value = true
         cockpitPrefs.edit().putBoolean("show_map_mode", true).apply()
         _currentStepInstruction.value = "正在规划前往 $destName 的路线..."
 

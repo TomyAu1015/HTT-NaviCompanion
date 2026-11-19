@@ -870,11 +870,31 @@ fun DestinationSearchSheetDialog(onDismiss: () -> Unit) {
                         .border(1.dp, Color(0xFF64B5F6).copy(alpha = 0.5f), RoundedCornerShape(8.dp))
                         .clickable {
                             val cb = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                            val clipText = cb.primaryClip?.getItemAt(0)?.text?.toString()?.trim() ?: ""
-                            if (clipText.isNotEmpty()) {
-                                queryText = clipText
-                                manager.performOnlineSearch(clipText)
-                                Toast.makeText(context, "已粘贴剪贴板地址: $clipText", Toast.LENGTH_SHORT).show()
+                            val rawClip = cb.primaryClip?.getItemAt(0)?.text?.toString()?.trim() ?: ""
+                            if (rawClip.isNotEmpty()) {
+                                // Check for embedded WeChat / Tencent / Amap coordinates first (e.g. coord:22.54,114.05 or dlat=..&dlon=..)
+                                val coordMatch = Regex("(?:coord[:=]|tocoord=|latlng:)\\s*(-?\\d+\\.\\d+)\\s*,\\s*(-?\\d+\\.\\d+)", RegexOption.IGNORE_CASE).find(rawClip)
+                                if (coordMatch != null) {
+                                    val la = coordMatch.groupValues[1].toDoubleOrNull()
+                                    val lo = coordMatch.groupValues[2].toDoubleOrNull()
+                                    if (la != null && lo != null) {
+                                        val titleMatch = Regex("(?:title[:=]|dname=|name=|poiname=)([^;&\\s]+)", RegexOption.IGNORE_CASE).find(rawClip)
+                                        val title = titleMatch?.groupValues?.getOrNull(1)?.let { runCatching { java.net.URLDecoder.decode(it, "UTF-8") }.getOrDefault(it) } ?: "微信分享目的地"
+                                        val wgs = com.tomy.httnavicompanion.data.CoordinateConverter.gcj02ToWGS84(com.tomy.httnavicompanion.data.LatLng(la, lo))
+                                        manager.startRouteToPlace(title, wgs)
+                                        onDismiss()
+                                        Toast.makeText(context, "已识别微信坐标，开始导航: $title", Toast.LENGTH_SHORT).show()
+                                        return@clickable
+                                    }
+                                }
+                                var cleaned = rawClip.substringBefore("http").substringBefore("HTTP")
+                                listOf("【", "】", "「", "」", "位置：", "位置:", "地址：", "地址:", "分享位置：", "导航到：", "我在", "高德地图", "腾讯地图", "百度地图").forEach {
+                                    cleaned = cleaned.replace(it, " ")
+                                }
+                                cleaned = cleaned.lines().map { it.trim() }.firstOrNull { it.isNotEmpty() } ?: cleaned.trim()
+                                queryText = cleaned
+                                manager.performOnlineSearch(cleaned)
+                                Toast.makeText(context, "已识别剪贴板地址: $cleaned", Toast.LENGTH_SHORT).show()
                             } else {
                                 Toast.makeText(context, "剪贴板为空，请先复制地址或地点名称", Toast.LENGTH_SHORT).show()
                             }

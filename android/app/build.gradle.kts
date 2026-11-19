@@ -21,9 +21,23 @@ android {
         }
     }
 
+    signingConfigs {
+        create("release") {
+            val ksFile = file(System.getenv("KEYSTORE_PATH") ?: "${rootDir}/htt_release.jks")
+            storeFile = ksFile
+            storePassword = System.getenv("KEYSTORE_PASSWORD") ?: "htt_kon_release_2026"
+            keyAlias = System.getenv("KEY_ALIAS") ?: "htt_release_key"
+            keyPassword = System.getenv("KEY_PASSWORD") ?: "htt_kon_release_2026"
+            enableV1Signing = true
+            enableV2Signing = true
+            enableV3Signing = true
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("release")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -31,6 +45,10 @@ android {
         }
         debug {
             applicationIdSuffix = ".debug"
+            val ksFile = file(System.getenv("KEYSTORE_PATH") ?: "${rootDir}/htt_release.jks")
+            if (ksFile.exists()) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
 

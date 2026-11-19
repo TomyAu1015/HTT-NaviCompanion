@@ -109,6 +109,10 @@ fun OsmMapView(
     val walkPoly2Holder = remember { arrayOfNulls<Polyline>(1) }
     val lastAnimatedCoord = remember { arrayOfNulls<LatLng>(1) }
     val lastArrowBmp = remember { arrayOfNulls<Bitmap>(1) }
+    val lastCameraAnimMs = remember { longArrayOf(0L) }
+    val lastRouteKey = remember { arrayOfNulls<Any>(1) }
+    val lastTransitKey = remember { arrayOfNulls<Any>(1) }
+    val lastUseAmap = remember { booleanArrayOf(useAmapTiles) }
 
     AndroidView(
         modifier = modifier,
@@ -227,64 +231,89 @@ fun OsmMapView(
                 }
             }
 
-            // 3. Update Route Polylines (with Combined Walking + Transit segments!)
-            if (transitSegments.size >= 3) {
-                val w1Pts = transitSegments[0].points.map { pt -> val c = if (useAmapTiles) CoordinateConverter.wgs84ToGCJ02(pt) else pt; GeoPoint(c.latitude, c.longitude) }
-                val trPts = transitSegments[1].points.map { pt -> val c = if (useAmapTiles) CoordinateConverter.wgs84ToGCJ02(pt) else pt; GeoPoint(c.latitude, c.longitude) }
-                val w2Pts = transitSegments[2].points.map { pt -> val c = if (useAmapTiles) CoordinateConverter.wgs84ToGCJ02(pt) else pt; GeoPoint(c.latitude, c.longitude) }
-                outerPolyHolder[0]?.outlinePaint?.color = AndroidColor.rgb(0, 150, 136)
-                innerPolyHolder[0]?.outlinePaint?.color = AndroidColor.rgb(0, 230, 118)
-                outerPolyHolder[0]?.setPoints(trPts)
-                innerPolyHolder[0]?.setPoints(trPts)
-                walkPoly1Holder[0]?.setPoints(w1Pts)
-                walkPoly2Holder[0]?.setPoints(w2Pts)
-            } else {
-                outerPolyHolder[0]?.outlinePaint?.color = AndroidColor.rgb(18, 92, 168)
-                innerPolyHolder[0]?.outlinePaint?.color = AndroidColor.rgb(0, 229, 255)
-                val dispRoute = routePoints.map { pt ->
-                    val c = if (useAmapTiles) CoordinateConverter.wgs84ToGCJ02(pt) else pt
-                    GeoPoint(c.latitude, c.longitude)
+            var needsRedraw = false
+
+            // 3. Update Route Polylines ONLY when route/transitSegments/tileCoordSystem actually changed (eliminates GC stutter!)
+            if (lastRouteKey[0] !== routePoints || lastTransitKey[0] !== transitSegments || lastUseAmap[0] != useAmapTiles) {
+                lastRouteKey[0] = routePoints
+                lastTransitKey[0] = transitSegments
+                lastUseAmap[0] = useAmapTiles
+                needsRedraw = true
+                if (transitSegments.size >= 3) {
+                    val w1Pts = transitSegments[0].points.map { pt -> val c = if (useAmapTiles) CoordinateConverter.wgs84ToGCJ02(pt) else pt; GeoPoint(c.latitude, c.longitude) }
+                    val trPts = transitSegments[1].points.map { pt -> val c = if (useAmapTiles) CoordinateConverter.wgs84ToGCJ02(pt) else pt; GeoPoint(c.latitude, c.longitude) }
+                    val w2Pts = transitSegments[2].points.map { pt -> val c = if (useAmapTiles) CoordinateConverter.wgs84ToGCJ02(pt) else pt; GeoPoint(c.latitude, c.longitude) }
+                    outerPolyHolder[0]?.outlinePaint?.color = AndroidColor.rgb(0, 150, 136)
+                    innerPolyHolder[0]?.outlinePaint?.color = AndroidColor.rgb(0, 230, 118)
+                    outerPolyHolder[0]?.setPoints(trPts)
+                    innerPolyHolder[0]?.setPoints(trPts)
+                    walkPoly1Holder[0]?.setPoints(w1Pts)
+                    walkPoly2Holder[0]?.setPoints(w2Pts)
+                } else {
+                    outerPolyHolder[0]?.outlinePaint?.color = AndroidColor.rgb(18, 92, 168)
+                    innerPolyHolder[0]?.outlinePaint?.color = AndroidColor.rgb(0, 229, 255)
+                    val dispRoute = routePoints.map { pt ->
+                        val c = if (useAmapTiles) CoordinateConverter.wgs84ToGCJ02(pt) else pt
+                        GeoPoint(c.latitude, c.longitude)
+                    }
+                    outerPolyHolder[0]?.setPoints(dispRoute)
+                    innerPolyHolder[0]?.setPoints(dispRoute)
+                    walkPoly1Holder[0]?.setPoints(emptyList())
+                    walkPoly2Holder[0]?.setPoints(emptyList())
                 }
-                outerPolyHolder[0]?.setPoints(dispRoute)
-                innerPolyHolder[0]?.setPoints(dispRoute)
-                walkPoly1Holder[0]?.setPoints(emptyList())
-                walkPoly2Holder[0]?.setPoints(emptyList())
             }
 
             // 4. Update Destination Marker
             val dMarker = destMarkerHolder[0]
             if (destCoord != null && dMarker != null) {
                 val dc = if (useAmapTiles) CoordinateConverter.wgs84ToGCJ02(destCoord!!) else destCoord!!
-                dMarker.position = GeoPoint(dc.latitude, dc.longitude)
-                dMarker.setVisible(true)
-            } else {
-                dMarker?.setVisible(false)
+                val newPos = GeoPoint(dc.latitude, dc.longitude)
+                if (!dMarker.isVisible || dMarker.position != newPos) {
+                    dMarker.position = newPos
+                    dMarker.setVisible(true)
+                    needsRedraw = true
+                }
+            } else if (dMarker?.isVisible == true) {
+                dMarker.setVisible(false)
+                needsRedraw = true
             }
 
             // 5. Update Tapped POI Marker
             val tMarker = tappedMarkerHolder[0]
             if (tappedCoord != null && tMarker != null) {
                 val tc = if (useAmapTiles) CoordinateConverter.wgs84ToGCJ02(tappedCoord!!) else tappedCoord!!
-                tMarker.position = GeoPoint(tc.latitude, tc.longitude)
-                tMarker.setVisible(true)
-            } else {
-                tMarker?.setVisible(false)
+                val newPos = GeoPoint(tc.latitude, tc.longitude)
+                if (!tMarker.isVisible || tMarker.position != newPos) {
+                    tMarker.position = newPos
+                    tMarker.setVisible(true)
+                    needsRedraw = true
+                }
+            } else if (tMarker?.isVisible == true) {
+                tMarker.setVisible(false)
+                needsRedraw = true
             }
 
-            // 6. Smooth Camera follow (only animate when coordinate actually moved >= 2m to stop 240ms jitter!)
+            // 6. Throttled Smooth Camera follow (min 550ms cadence & >= 2.5m delta prevents canceling in-flight animations!)
+            val nowMs = System.currentTimeMillis()
             if (trackingUser) {
                 val prev = lastAnimatedCoord[0]
-                if (prev == null || CoordinateConverter.distanceMeters(prev, dispUser) >= 2.0) {
+                val moved = prev == null || CoordinateConverter.distanceMeters(prev, dispUser) >= 2.5
+                if (moved && (prev == null || nowMs - lastCameraAnimMs[0] >= 550L)) {
                     lastAnimatedCoord[0] = dispUser
-                    mapView.controller.animateTo(userGeo)
+                    lastCameraAnimMs[0] = nowMs
+                    mapView.controller.animateTo(userGeo, null, 480L)
+                    needsRedraw = true
                 }
             }
             val targetOrient = if (camMode == NavigationCameraMode.HEADING_UP) -heading.toFloat() else 0f
-            if (kotlin.math.abs(mapView.mapOrientation - targetOrient) >= 1.5f) {
+            if (kotlin.math.abs(mapView.mapOrientation - targetOrient) >= 3.0f) {
                 mapView.mapOrientation = targetOrient
+                needsRedraw = true
             }
 
-            mapView.invalidate()
+            if (needsRedraw) {
+                mapView.invalidate()
+            }
         }
     )
 
