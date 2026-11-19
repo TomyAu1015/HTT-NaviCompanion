@@ -439,7 +439,6 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
             cparams.n_ubatch = 256
             cparams.n_seq_max = 1
             cparams.offload_kqv = false
-            cparams.op_offload = false
             cparams.no_perf = true
             let thr = Int32(max(2, min(4, ProcessInfo.processInfo.activeProcessorCount - 2)))
             cparams.n_threads = thr
@@ -890,7 +889,7 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
 
             let maxPromptTokens = max(128, self.activeCtxLen - 96)
             let totalPromptTokens = min(Int(nTokens), maxPromptTokens)
-            llama_kv_cache_clear(ctx)
+            llama_kv_self_clear(ctx)
             var offset = 0
             var decodeOk = true
             while offset < totalPromptTokens {
