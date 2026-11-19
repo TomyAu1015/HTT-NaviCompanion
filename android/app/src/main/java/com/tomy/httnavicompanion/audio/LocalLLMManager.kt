@@ -131,10 +131,34 @@ class LocalLLMManager(
     private val _lastGameSummary = MutableStateFlow(prefs.getString("last_game_summary", "") ?: "")
     val lastGameSummary: StateFlow<String> = _lastGameSummary
 
+    private fun todayKey(): String = java.text.SimpleDateFormat("yyyy-MM-dd", Locale.US).format(java.util.Date())
+
+    fun todaySummaryText(): String {
+        val day = todayKey()
+        val parts = mutableListOf<String>()
+        listOf("斗地主" to "ddz", "广东红中麻将" to "mj", "拉密数字牌" to "rmk").forEach { (label, code) ->
+            val w = prefs.getInt("st_${day}_${code}_w", 0)
+            val l = prefs.getInt("st_${day}_${code}_l", 0)
+            if (w + l > 0) parts.add("$label ${w}胜${l}负")
+        }
+        return if (parts.isEmpty()) "今日暂无已结算牌局" else parts.joinToString("，")
+    }
+
     fun recordGameOutcome(gameName: String, didWin: Boolean, detail: String) {
-        val summary = "$gameName（${if (didWin) "你赢了！" else "惜败"} · $detail）"
+        val hm = java.text.SimpleDateFormat("HH:mm", Locale.CHINA).format(java.util.Date())
+        val summary = "[$hm] $gameName（${if (didWin) "你赢了！" else "惜败"} · $detail）"
         _lastGameSummary.value = summary
-        prefs.edit().putString("last_game_summary", summary).apply()
+        val day = todayKey()
+        val code = when {
+            gameName.contains("斗地主") -> "ddz"
+            gameName.contains("麻将") -> "mj"
+            else -> "rmk"
+        }
+        val k = "st_${day}_${code}_${if (didWin) "w" else "l"}"
+        prefs.edit()
+            .putString("last_game_summary", summary)
+            .putInt(k, prefs.getInt(k, 0) + 1)
+            .apply()
     }
 
     var onRequestOpenGameRoom: (() -> Unit)? = null
@@ -499,7 +523,7 @@ class LocalLLMManager(
             }
         }
 
-        if (lower.contains("找一下") || lower.contains("附近") || lower.contains("导航去") || lower.contains("去哪吃")) {
+        if (lower.contains("找一下") || lower.contains("找一个") || lower.contains("找个") || lower.contains("帮我找") || lower.contains("最近") || lower.contains("附近") || lower.contains("导航去") || lower.contains("去哪吃") || lower.contains("好吃")) {
             var keyword = userText
             listOf("梓喵，", "梓喵", "唯，", "唯", "帮我", "找一下", "搜索", "导航去", "评分高的", "附近的", "附近").forEach {
                 keyword = keyword.replace(it, "")
@@ -511,16 +535,17 @@ class LocalLLMManager(
         }
 
         if (lower.contains("复盘") || lower.contains("吐槽") || lower.contains("牌局")) {
-            val gs = _lastGameSummary.value
-            val recapText = when {
-                gs.isNotEmpty() && gs.contains("你赢了") ->
-                    "【田井中律】哇！刚才这把「$gs」你也太猛了吧，本部长甘拜下风！\n【秋山澪】刚才节奏把握得太稳了，赢得漂漂亮亮，律你可得好好向车友学学呢！"
-                gs.isNotEmpty() ->
-                    "【田井中律】刚才这把「$gs」差一点点就翻盘了，再来一局肯定赢回来！\n【秋山澪】别灰心，喝口红茶调整一下手感，下一把一定能胡大牌的。"
+            val todaySum = todaySummaryText()
+            val gs = _lastGameSummary.value.ifEmpty { "暂无最近一局记录" }
+            val comment = when {
+                _lastGameSummary.value.contains("你赢了") ->
+                    "【田井中律】哇！最后一局赢得太帅啦，本部长甘拜下风！\n【秋山澪】节奏非常稳，律你可得好好向车友学学呢！"
+                _lastGameSummary.value.isNotEmpty() ->
+                    "【田井中律】最后那局就差一点点翻盘，再来一把肯定赢回来！\n【秋山澪】喝口红茶放松一下，下局一定手气爆棚。"
                 else ->
-                    "【田井中律】还没看到刚打完的新战绩呢，快去放学后棋牌室开一局，打完我来给你激情复盘！\n【秋山澪】赢了的话我请大家喝红茶哦。"
+                    "【田井中律】今天还没开张呢，快去棋牌室搓一把，打完我给你激情复盘！\n【秋山澪】赢了的话我请大家喝红茶哦。"
             }
-            return Triple(recapText, "元气", if (gs.isEmpty()) "五人同台 · 茶会小剧场" else "真实战绩：$gs")
+            return Triple("📊 今日棋牌汇总：$todaySum\n🏁 最近一局：$gs\n$comment", "元气", "今日汇总：$todaySum")
         }
 
         if (lower.contains("多久") || lower.contains("路况") || lower.contains("时速") || lower.contains("到了吗") || lower.contains("汇报")) {

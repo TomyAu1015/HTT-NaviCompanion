@@ -11164,6 +11164,9 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
             }
             let roleTitle = landlordWon ? "🎩 地主获胜！" : "🌾 农民联手获胜！"
             statusBanner = "🎉 牌局结束：[\(seats[actor].name)] 出完手牌，\(roleTitle) (倍数 x\(multiplier))"
+            let mySideWon = (mySeatIndex < seats.count) ? (seats[mySeatIndex].isLandlord == landlordWon) : (actor == mySeatIndex)
+            let myDelta = (mySeatIndex < seats.count && seats[mySeatIndex].isLandlord) ? (delta * 2) : delta
+            KOnLocalLLMManager.shared.recordGameOutcome(gameName: "放课后斗地主", didWin: mySideWon, detail: "\(roleTitle) 倍数 x\(multiplier)，\(mySideWon ? "+" : "-")\(myDelta)分")
             broadcastFullState()
             return
         }
@@ -15731,6 +15734,7 @@ final class RummikubEngine: NSObject, ObservableObject {
         seats[bestIdx].score += totalGain
         RmkSoundFX.shared.playRoundWin()
         statusBanner = "🏆 牌堆已摸空！[\(seats[bestIdx].name)] 剩余手牌最少 (\(bestCount)张) 获胜！(赢得 +\(totalGain) 分)"
+        KOnLocalLLMManager.shared.recordGameOutcome(gameName: "拉密数字牌", didWin: bestIdx == mySeatIndex, detail: "摸空比手牌最少(\(bestCount)张)，+\(totalGain)分")
         broadcastFullState()
     }
 
@@ -15748,6 +15752,7 @@ final class RummikubEngine: NSObject, ObservableObject {
         seats[winner].score += totalGain
         RmkSoundFX.shared.playRoundWin()
         statusBanner = "🏆 [\(seats[winner].name)] 清空牌架获胜！(赢得 +\(totalGain) 分)"
+        KOnLocalLLMManager.shared.recordGameOutcome(gameName: "拉密数字牌", didWin: winner == mySeatIndex, detail: "清空牌架获胜，+\(totalGain)分")
         broadcastFullState()
     }
 

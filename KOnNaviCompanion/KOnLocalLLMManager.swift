@@ -171,13 +171,50 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
         seedGreetingIfNeeded()
     }
 
+    private func todayDateKey() -> String {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd"
+        return f.string(from: Date())
+    }
+
+    private func loadTodayStats() -> [String: Int] {
+        let k = "htt_daily_stats_" + todayDateKey()
+        return (UserDefaults.standard.dictionary(forKey: k) as? [String: Int]) ?? [:]
+    }
+
+    private func saveTodayStats(_ dict: [String: Int]) {
+        let k = "htt_daily_stats_" + todayDateKey()
+        UserDefaults.standard.set(dict, forKey: k)
+    }
+
+    func todaySummaryText() -> String {
+        let st = loadTodayStats()
+        var parts: [String] = []
+        let games = [("斗地主", "ddz"), ("广东红中麻将", "mj"), ("拉密数字牌", "rmk")]
+        for (label, code) in games {
+            let w = st["\(code)_w"] ?? 0
+            let l = st["\(code)_l"] ?? 0
+            if w + l > 0 {
+                parts.append("\(label) \(w)胜\(l)负")
+            }
+        }
+        return parts.isEmpty ? "今日暂无已结算牌局" : parts.joined(separator: "，")
+    }
+
     // Called by Mahjong / Doudizhu / Rummikub engines when a round finishes
     func recordGameOutcome(gameName: String, didWin: Bool, detail: String) {
         let outcome = didWin ? "你赢了！" : "惜败"
-        let summary = "\(gameName)（\(outcome) · \(detail)）"
+        let tf = DateFormatter()
+        tf.dateFormat = "HH:mm"
+        let summary = "[\(tf.string(from: Date()))] \(gameName)（\(outcome) · \(detail)）"
         DispatchQueue.main.async {
             self.lastGameSummary = summary
             UserDefaults.standard.set(summary, forKey: self.lastGameKey)
+            var st = self.loadTodayStats()
+            let code = gameName.contains("斗地主") ? "ddz" : (gameName.contains("麻将") ? "mj" : "rmk")
+            let key = didWin ? "\(code)_w" : "\(code)_l"
+            st[key] = (st[key] ?? 0) + 1
+            self.saveTodayStats(st)
         }
     }
 
@@ -496,17 +533,43 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
             return
         }
 
+        // 1.5 Direct Real-Time Tool: Active Navigation & Traffic Status Report ("路况汇报", "当前路况") — MUST come BEFORE "到XX要多久"!
+        if lower.contains("路况") || lower.contains("汇报") || lower.contains("当前路线") || lower.contains("时速") {
+            let speed = Int(mgr.currentSpeedKmh.rounded())
+            let musicPart = music.isPlaying ? "，车里正放着《\(music.currentSong?.title ?? "轻音歌曲")》" : ""
+            if mgr.hasActiveNavigation {
+                let remKm = String(format: "%.1f", mgr.remainingRouteDistanceKm)
+                let remMin = mgr.remainingRouteMinutes
+                emitStreamedReply(
+                    speaker: persona.displayName(.zhHans),
+                    charId: max(1, persona.charId),
+                    emotion: speed >= 80 ? "慌张" : "开心",
+                    text: "正在前往「\(mgr.destinationName)」，还剩 \(remKm) 公里，预计约 \(remMin) 分钟到达。当前车速 \(speed) km/h\(musicPart)。",
+                    actionHint: "实时导航：\(mgr.destinationName) · 剩 \(remKm) km · \(remMin) 分钟"
+                )
+            } else {
+                emitStreamedReply(
+                    speaker: persona.displayName(.zhHans),
+                    charId: max(1, persona.charId),
+                    emotion: "开心",
+                    text: "当前未开启导航（自由巡航模式），实时车速 \(speed) km/h\(musicPart)。如果想查去某个地方要多久，可以直接问我「到XX要多久」哦！",
+                    actionHint: "自由巡航 · \(speed) km/h"
+                )
+            }
+            return
+        }
+
         // 2. Direct Real-Time Tool: Specific Destination ETA ("到丹竹头地铁站要多久", "去香港石硖尾要多久")
         if (lower.contains("到") || lower.contains("去")) && (lower.contains("多久") || lower.contains("多远") || lower.contains("几公里") || lower.contains("几分钟")) {
             let destQuery = extractDestinationFromETAQuery(text)
-            if !destQuery.isEmpty {
+            if !destQuery.isEmpty && !destQuery.contains("汇报") && !destQuery.contains("路况") {
                 queryRealDestinationETA(destQuery: destQuery, persona: persona, manager: mgr)
                 return
             }
         }
 
         // 3. Direct Real-Time Tool: Nearby POI Search Sorted Strictly By Distance (3km -> 8km!)
-        if lower.contains("附近") || lower.contains("找一下") || lower.contains("导航去") || lower.contains("有什么好吃") {
+        if lower.contains("附近") || lower.contains("最近") || lower.contains("找一下") || lower.contains("找一个") || lower.contains("找个") || lower.contains("帮我找") || lower.contains("导航去") || lower.contains("有什么好吃") || lower.contains("好吃的") {
             let keyword = extractNearbyKeyword(from: text)
             searchNearestPOIAndNavigate(keyword: keyword, persona: persona, manager: mgr)
             return
@@ -550,24 +613,26 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
             return
         }
 
-        // 5. Real Post-Match Recap (uses REAL lastGameSummary — never repeats a stale hardcoded Rummikub line!)
-        if lower.contains("复盘") || lower.contains("吐槽") || lower.contains("牌局") {
+        // 5. Real Post-Match Recap: Today's 3-game summary (斗地主 + 麻将 + 拉密牌) + Last Game Result!
+        if lower.contains("复盘") || lower.contains("吐槽") || lower.contains("牌局") || lower.contains("战绩") {
             let speakerName = isAllFive ? "田井中律 & 秋山澪" : persona.displayName(.zhHans)
+            let todaySum = todaySummaryText()
+            let lastLine = lastGameSummary.isEmpty ? "暂无最近一局记录" : lastGameSummary
+            let headerHint = "今日汇总：\(todaySum)"
             if activeModelLoaded && hasNativeLlamaEngine {
-                let recapPrompt = lastGameSummary.isEmpty
-                    ? "刚刚我们还没结束新的一局，用轻音部田井中律和秋山澪一唱一和的口吻简短聊两句鼓励车友去棋牌室开一局。"
-                    : "刚刚真实结束的牌局战绩是：【\(lastGameSummary)】。请根据这个真实胜负结果，用田井中律和秋山澪一唱一和的口吻简短点评复盘（2到3句话，如果车友赢了就热烈夸奖车友、澪顺便吐槽律）。"
-                runRealLlamaInference(userPrompt: recapPrompt, persona: persona, speakerOverride: speakerName, actionHint: lastGameSummary.isEmpty ? "五人同台 · 茶会小剧场" : "真实战绩复盘：\(lastGameSummary)")
+                let recapPrompt = "今日放学后棋牌室战绩汇总：【\(todaySum)】；最近一局战绩：【\(lastLine)】。请先简明报出今日汇总和最后一局战绩，再用田井中律和秋山澪一唱一和的口吻点评两句（如果车友赢了就夸奖车友）。"
+                runRealLlamaInference(userPrompt: recapPrompt, persona: persona, speakerOverride: speakerName, actionHint: headerHint)
             } else {
-                let textRecap: String
+                let comment: String
                 if !lastGameSummary.isEmpty && lastGameSummary.contains("你赢了") {
-                    textRecap = "【田井中律】哇！刚才这把「\(lastGameSummary)」你也太猛了吧，本部长甘拜下风！\n【秋山澪】刚才节奏把握得太稳了，赢得漂漂亮亮，律你可得好好向车友学学呢！"
+                    comment = "【田井中律】哇！最后一局赢得太帅啦，本部长甘拜下风！\n【秋山澪】节奏非常稳，律你可得好好向车友学学呢！"
                 } else if !lastGameSummary.isEmpty {
-                    textRecap = "【田井中律】刚才这把「\(lastGameSummary)」差一点点就翻盘了，再来一局肯定赢回来！\n【秋山澪】别灰心，喝口红茶调整一下手感，下一把一定能胡大牌的。"
+                    comment = "【田井中律】最后那局就差一点点翻盘，再来一把肯定赢回来！\n【秋山澪】喝口红茶放松一下，下局一定手气爆棚。"
                 } else {
-                    textRecap = "【田井中律】还没看到刚打完的新战绩呢，快去放学后棋牌室开一局，打完我来给你激情复盘！\n【秋山澪】赢了的话我请大家喝红茶哦。"
+                    comment = "【田井中律】今天还没开张呢，快去棋牌室搓一把，打完我给你激情复盘！\n【秋山澪】赢了的话我请大家喝红茶哦。"
                 }
-                emitStreamedReply(speaker: speakerName, charId: max(1, persona.charId), emotion: "元气", text: textRecap, actionHint: lastGameSummary.isEmpty ? "五人同台 · 茶会小剧场" : "真实战绩：\(lastGameSummary)")
+                let fullRecap = "📊 今日棋牌汇总：\(todaySum)\n🏁 最近一局：\(lastLine)\n\(comment)"
+                emitStreamedReply(speaker: speakerName, charId: max(1, persona.charId), emotion: "元气", text: fullRecap, actionHint: headerHint)
             }
             return
         }
@@ -585,7 +650,11 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
                     : "当前处于自由巡航模式"
                 fallback = "现在是 \(currentTimeString())，当前车速 \(speed) km/h，\(routePart)。"
             } else {
-                fallback = "当前还未加载本地大模型文件，请点击上方「本地模型与记忆」挂载已下载的 Qwen2.5 模型，这样我就能自由回答你的各种问题啦！"
+                if activeModelLoaded && !hasNativeLlamaEngine {
+                    fallback = "已检测到本地模型（\(activeModelFileName)），但当前 IPA 尚未链接原生 llama.cpp 引擎。请用最新更新包里的 .github/workflows/build-ipa.yml 重新构建安装即可启用真本地推理！"
+                } else {
+                    fallback = "当前还未加载本地大模型文件，请点击上方「本地模型与记忆」挂载已下载的 Qwen2.5 模型，这样我就能自由回答你的各种问题啦！"
+                }
             }
             emitStreamedReply(speaker: persona.displayName(.zhHans), charId: max(1, persona.charId), emotion: "开心", text: fallback, actionHint: nil)
         }
@@ -729,7 +798,7 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
     // MARK: - Real Nearby Search (Strictly 3km -> 8km Radius & Sorted by Distance!)
     private func extractNearbyKeyword(from text: String) -> String {
         var kw = text
-        for noise in ["梓喵，", "梓喵", "唯，", "唯", "帮我", "找一下", "找找", "搜索", "导航去", "评分高的", "附近的", "附近", "有什么好吃的", "有什么好吃", "好吃的", "想吃", "去哪吃"] {
+        for noise in ["梓喵，", "梓喵", "唯，", "唯", "帮我找", "帮我", "找一下", "找一个", "找个", "找找", "搜索", "导航去", "评分高的", "最近的", "最近", "附近的", "附近", "一个", "有什么好吃的", "有什么好吃", "好吃的", "想吃", "去哪吃"] {
             kw = kw.replacingOccurrences(of: noise, with: "")
         }
         kw = kw.trimmingCharacters(in: .whitespacesAndNewlines)

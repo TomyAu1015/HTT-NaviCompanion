@@ -2069,6 +2069,14 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
             _seats.value = settled
             _statusBanner.value = "🎉 本局结束！[${winner.name}] (${if (winner.isLandlord) "🎩 地主" else "🌾 农民"}) 获胜！(倍数 x${_multiplier.value})"
             audioMgr.triggerBirthdaySpecialVoice()
+            runCatching {
+                val mySeat = settled.getOrNull(_mySeatIndex.value)
+                val myWon = mySeat != null && mySeat.isLandlord == winner.isLandlord
+                val myDelta = if (mySeat?.isLandlord == true) winPts * 2 else winPts
+                com.tomy.httnavicompanion.HTTNaviApp.instance.localLLMManager.recordGameOutcome(
+                    "放课后斗地主", myWon, "倍数 x${_multiplier.value}，${if (myWon) "+" else "-"}${myDelta}分"
+                )
+            }
             broadcastFullStateSync()
             return
         }

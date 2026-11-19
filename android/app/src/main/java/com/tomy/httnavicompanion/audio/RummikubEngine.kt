@@ -2278,6 +2278,7 @@ class RummikubEngine(
         _seats.value = list
         RmkSoundFX.playRoundWin()
         _statusBanner.value = "🏆 牌堆已摸空！[${list[bestIdx].name}] 剩余手牌最少 (${bestCount}张) 获胜！(赢得 +$gain 分)"
+        runCatching { com.tomy.httnavicompanion.HTTNaviApp.instance.localLLMManager.recordGameOutcome("拉密数字牌", bestIdx == _mySeatIndex.value, "摸空比手牌最少(${bestCount}张)，+${gain}分") }
         broadcastFullState()
     }
 
@@ -2296,6 +2297,7 @@ class RummikubEngine(
         list[winner] = list[winner].copy(score = list[winner].score + gain)
         _seats.value = list
         _statusBanner.value = "🏆 [${list[winner].name}] 清空牌架获胜！(赢得 +$gain 分)"
+        runCatching { com.tomy.httnavicompanion.HTTNaviApp.instance.localLLMManager.recordGameOutcome("拉密数字牌", winner == _mySeatIndex.value, "清空牌架获胜，+${gain}分") }
         broadcastFullState()
     }
 
