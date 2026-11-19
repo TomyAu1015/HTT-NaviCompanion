@@ -12,6 +12,7 @@
 #include <sys/stat.h>
 #include <thread>
 #include <vector>
+#include <ctime>
 
 // ============================================================================
 // HTT-NaviCompanion Switch Pure-Local AI Engine (Zero Cloud / Zero API)
@@ -57,6 +58,11 @@ public:
     std::string currentSpeaker = "平泽唯";
     std::string currentEmotion = "开心";
     std::vector<std::string> memories;
+    std::string lastGameSummary = "";
+
+    void recordGameOutcome(const std::string& game, bool didWin, const std::string& detail) {
+        lastGameSummary = game + (didWin ? "（你赢了！· " : "（惜败 · ") + detail + "）";
+    }
 
     std::atomic<bool> isGenerating{false};
     std::atomic<bool> stopWorker{false};
@@ -237,13 +243,26 @@ private:
         static const char* kNames[6] = {"放课后茶会", "平泽唯", "秋山澪", "田井中律", "琴吹紬", "中野梓"};
         int cid = (charId >= 1 && charId <= 5) ? charId : 1;
         outSpeaker = kNames[cid];
-        std::string tail = modelLoaded ? " [SD本地GGUF]" : "";
+        std::string tail = "";
         std::string memHint = memories.empty() ? "" : ("（我还记着你说过：" + memories[0] + "~）");
 
+        if (prompt.find("几点") != std::string::npos || prompt.find("时间") != std::string::npos) {
+            std::time_t now = std::time(nullptr);
+            std::tm* lt = std::localtime(&now);
+            char buf[64] = {0};
+            if (lt) std::snprintf(buf, sizeof(buf), "%04d年%d月%d日 %02d:%02d", lt->tm_year + 1900, lt->tm_mon + 1, lt->tm_mday, lt->tm_hour, lt->tm_min);
+            outEmotion = "开心";
+            return std::string("现在是 ") + buf + " 哦！玩牌也要注意休息呀~";
+        }
         if (prompt.find("复盘") != std::string::npos || prompt.find("吐槽") != std::string::npos) {
             outSpeaker = "田井中律 & 秋山澪";
             outEmotion = "元气";
-            return "【律】哈哈哈刚才那把本部长差点就清台啦！Switch 掌机搓牌手感太爽了！\n【澪】喂、律！你明明把百搭牌留手里差点放炮好不好…还是车友稳多了！" + tail;
+            if (!lastGameSummary.empty() && lastGameSummary.find("你赢了") != std::string::npos) {
+                return "【律】哇！刚才这把「" + lastGameSummary + "」你也太猛了吧，本部长甘拜下风！\n【澪】刚才节奏太稳了，赢得漂漂亮亮，律你好好学学吧！";
+            } else if (!lastGameSummary.empty()) {
+                return "【律】刚才这把「" + lastGameSummary + "」差一点点就翻盘了，再来一把肯定赢！\n【澪】别灰心，喝口红茶调整手感，下把一定能赢！";
+            }
+            return "【律】还没看到刚打完的新战绩呢，快去放学后棋牌室开一局，打完我给你激情复盘！\n【澪】赢了的话我请大家喝红茶哦。";
         }
         if (prompt.find("赢") != std::string::npos || prompt.find("夸") != std::string::npos) {
             outEmotion = "元气";

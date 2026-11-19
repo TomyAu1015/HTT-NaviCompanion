@@ -12952,7 +12952,8 @@ class KOnMahjongManager: NSObject, ObservableObject, MCSessionDelegate, MCNearby
     // MARK: - Player Actions
     func canDeclareSelfHu(seatIdx: Int? = nil) -> Bool {
         let idx = seatIdx ?? mySeatIndex
-        guard phase == .playing, currentTurnSeat == idx, idx < seats.count else { return false }
+        // 广东红中麻将：只能摸牌自摸胡，碰牌后 drawnTileId == nil 禁止直接胡牌，必须先打出一张牌！
+        guard phase == .playing, currentTurnSeat == idx, idx < seats.count, drawnTileId != nil else { return false }
         return MahjongEvaluator.canWin(hand: seats[idx].hand, meldsCount: seats[idx].melds.count)
     }
 
@@ -13122,6 +13123,7 @@ class KOnMahjongManager: NSObject, ObservableObject, MCSessionDelegate, MCNearby
             seats[seatIdx].lastActionText = "碰 \(claim.tile.fullName)"
             triggerClaimEvent(seatIdx: seatIdx, actionLabel: "碰", tile: claim.tile)
             pendingClaim = nil
+            drawnTileId = nil
             phase = .playing
             currentTurnSeat = seatIdx
             turnRemainingSeconds = turnTimeLimit > 0 ? turnTimeLimit : 20
@@ -13219,6 +13221,7 @@ class KOnMahjongManager: NSObject, ObservableObject, MCSessionDelegate, MCNearby
         seats[winner].lastActionText = "🎉 自摸胡!"
         statusBanner = "🎉 恭喜 [\(seats[winner].name)] \(winReason)！"
         AudioPlayerManager.shared.triggerBirthdaySpecialVoice()
+        KOnLocalLLMManager.shared.recordGameOutcome(gameName: "广东红中麻将", didWin: winner == mySeatIndex, detail: "\(winReason)，+\(pts * 3)分")
         broadcastFullState()
     }
 

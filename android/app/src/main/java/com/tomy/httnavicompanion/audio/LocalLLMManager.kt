@@ -128,6 +128,15 @@ class LocalLLMManager(
     private val _memories = MutableStateFlow<List<String>>(emptyList())
     val memories: StateFlow<List<String>> = _memories
 
+    private val _lastGameSummary = MutableStateFlow(prefs.getString("last_game_summary", "") ?: "")
+    val lastGameSummary: StateFlow<String> = _lastGameSummary
+
+    fun recordGameOutcome(gameName: String, didWin: Boolean, detail: String) {
+        val summary = "$gameName（${if (didWin) "你赢了！" else "惜败"} · $detail）"
+        _lastGameSummary.value = summary
+        prefs.edit().putString("last_game_summary", summary).apply()
+    }
+
     var onRequestOpenGameRoom: (() -> Unit)? = null
     var onRequestOpenSearch: ((String) -> Unit)? = null
 
@@ -441,7 +450,7 @@ class LocalLLMManager(
 
     private fun speakOfflineTTS(text: String) {
         if (!_enableVoiceBroadcast.value || !ttsReady) return
-        val clean = text.replace(Regex("\\[[^\\]]+]"), "").trim()
+        val clean = text.replace(Regex("\\[[^\\]]+]"), "").replace(Regex("【[^】]+】"), "").replace("（本地 GGUF 已加速）", "").trim()
         if (clean.isEmpty()) return
         mainHandler.postDelayed({
             try {
@@ -460,7 +469,11 @@ class LocalLLMManager(
         val remKm = String.format("%.1f", audioManager.remainingRouteDistanceKm.value)
         val remMin = audioManager.remainingRouteMinutes.value
         val trackTitle = musicManager.currentTrack.value.title
-        val modelTag = if (_activeModelLoaded.value) "（本地 GGUF 已加速）" else ""
+        val modelTag = ""
+        val nowStr = java.text.SimpleDateFormat("yyyy年M月d日 EEEE HH:mm", Locale.CHINA).format(java.util.Date())
+        if (lower.contains("几点") || (lower.contains("时间") && (lower.contains("现在") || lower.contains("当前"))) || lower.contains("几号") || lower.contains("星期几")) {
+            return Triple("现在是 $nowStr 哦！路上注意安排好时间，别太赶啦~", "开心", "实时系统时钟")
+        }
 
         if (lower.contains("斗地主") || lower.contains("麻将") || lower.contains("拉密") || lower.contains("棋牌室")) {
             mainHandler.postDelayed({ onRequestOpenGameRoom?.invoke() }, 550L)
@@ -498,11 +511,16 @@ class LocalLLMManager(
         }
 
         if (lower.contains("复盘") || lower.contains("吐槽") || lower.contains("牌局")) {
-            return Triple(
-                "【田井中律】哈哈哈刚才那局我差点就一波清台了，本部长果然是棋牌室最强王者！\n【秋山澪】喂、律！你刚才明明把百搭牌留在手里差点放炮好不好…车友都比你稳多了！",
-                "元气",
-                "五人同台 · 茶会小剧场"
-            )
+            val gs = _lastGameSummary.value
+            val recapText = when {
+                gs.isNotEmpty() && gs.contains("你赢了") ->
+                    "【田井中律】哇！刚才这把「$gs」你也太猛了吧，本部长甘拜下风！\n【秋山澪】刚才节奏把握得太稳了，赢得漂漂亮亮，律你可得好好向车友学学呢！"
+                gs.isNotEmpty() ->
+                    "【田井中律】刚才这把「$gs」差一点点就翻盘了，再来一局肯定赢回来！\n【秋山澪】别灰心，喝口红茶调整一下手感，下一把一定能胡大牌的。"
+                else ->
+                    "【田井中律】还没看到刚打完的新战绩呢，快去放学后棋牌室开一局，打完我来给你激情复盘！\n【秋山澪】赢了的话我请大家喝红茶哦。"
+            }
+            return Triple(recapText, "元气", if (gs.isEmpty()) "五人同台 · 茶会小剧场" else "真实战绩：$gs")
         }
 
         if (lower.contains("多久") || lower.contains("路况") || lower.contains("时速") || lower.contains("到了吗") || lower.contains("汇报")) {

@@ -1120,6 +1120,7 @@ static void startNewMahjongRound() {
 
 static void executeMjWin(int winner, int loser, const std::string& reason) {
     gMjPhase = "roundOver";
+    gSwitchAI.recordGameOutcome("广东红中麻将", winnerSeat == gMjMySeat, reason);
     gMjWinnerSeat = winner;
     gMjHasClaim = false;
     int laiziCnt = 0;
@@ -1252,6 +1253,7 @@ static void executeMjDiscard(int seatIdx, const std::string& tileId) {
             triggerMjClaimBanner(s, "碰牌", discarded);
             gMjTurnSeat = s;
             gMjPhase = "playing";
+            gMjCanSelfHuTurn = false;
             gMjTurnStartTick = SDL_GetTicks();
             gMjAiNextTick = SDL_GetTicks() + 1850;
             gStatusBanner = "[" + cleanPeerLabel(gMjSeats[s].name) + "] 碰了 [" + discarded.fullName() + "]！";
@@ -3522,7 +3524,7 @@ static void updateAiTurns() {
     if (gScreen == MODE_MJ_TABLE && now >= gMjAiNextTick) {
         if (gMjPhase == "playing" && gMjSeats[gMjTurnSeat].isAI) {
             auto& ai = gMjSeats[gMjTurnSeat];
-            if (MjEvaluator::canHu(ai.hand, (int)ai.melds.size())) {
+            if (gMjCanSelfHuTurn && MjEvaluator::canHu(ai.hand, (int)ai.melds.size())) {
                 executeMjWin(gMjTurnSeat, -1, "自摸胡牌");
                 return;
             }
@@ -4240,7 +4242,7 @@ int main(int argc, char* argv[]) {
                     }
                 }
                 if (kDown & HidNpadButton_X) {
-                    if (MjEvaluator::canHu(myHand, (int)gMjSeats[gMjMySeat].melds.size())) {
+                    if (gMjCanSelfHuTurn && MjEvaluator::canHu(myHand, (int)gMjSeats[gMjMySeat].melds.size())) {
                         if (gIsOnlineRoom && !gIsRoomAuthority) {
                             std::string pkt = "{\"kind\":\"selfAction\",\"roomCode\":\"MJ_" + MiniJson::esc(gRoomCode) +
                                               "\",\"senderPeerName\":\"" + MiniJson::esc(gMyPeerName) +

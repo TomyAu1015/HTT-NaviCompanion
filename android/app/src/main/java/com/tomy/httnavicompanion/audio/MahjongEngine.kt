@@ -1245,7 +1245,8 @@ class MahjongEngine(private val context: Context, private val audioMgr: AudioPla
     }
 
     fun canDeclareSelfHu(seatIdx: Int = _mySeatIndex.value): Boolean {
-        if (_phase.value != MahjongGamePhase.PLAYING || _currentTurnSeat.value != seatIdx) return false
+        // 广东红中麻将：只能摸牌自摸胡，碰牌后 _drawnTileId == null 禁止直接胡牌，必须先打出一张牌！
+        if (_phase.value != MahjongGamePhase.PLAYING || _currentTurnSeat.value != seatIdx || _drawnTileId.value == null) return false
         val s = _seats.value.getOrNull(seatIdx) ?: return false
         return MahjongEvaluator.canWin(s.hand, s.melds.size)
     }
@@ -1506,6 +1507,13 @@ class MahjongEngine(private val context: Context, private val audioMgr: AudioPla
         _phase.value = MahjongGamePhase.ROUND_OVER
         _statusBanner.value = "🎉 恭喜 [${settled[winner].name}] ${_winReason.value}！"
         audioMgr.triggerBirthdaySpecialVoice()
+        runCatching {
+            com.tomy.httnavicompanion.HTTNaviApp.instance.localLLMManager.recordGameOutcome(
+                "广东红中麻将",
+                winner == _mySeatIndex.value,
+                "${_winReason.value}，+${pts * 3}分"
+            )
+        }
         broadcastFullStateSync()
     }
 
