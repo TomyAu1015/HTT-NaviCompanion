@@ -1074,9 +1074,7 @@ fun KOnMahjongSheetDialog(onDismiss: () -> Unit, embeddedInGameRoom: Boolean = f
                                                             Text(if (lang == AppLanguage.EN) "HIT" else if (lang == AppLanguage.ZH_HANT) "中馬" else "中马", color = Color.Yellow, fontSize = 7.sp, fontWeight = FontWeight.Black)
                                                         }
                                                     }
-                                                    }
                                                 }
-                                            }
                                             }
                                         }
                                     } else {
@@ -1230,8 +1228,9 @@ fun KOnMahjongSheetDialog(onDismiss: () -> Unit, embeddedInGameRoom: Boolean = f
                         // Melds + Hand Tiles side-by-side on bottom row so tiles are 100% visible and NEVER overlap!
                         BoxWithConstraints(modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp)) {
                             val totalW = maxWidth
-                            val meldCountUnits = me.melds.sumOf { if (it.kind == MahjongMeldKind.PONG) 3 else 4 }
-                            val meldsReservedW = if (me.melds.isEmpty()) 0.dp else (meldCountUnits.dp * 23f + me.melds.size.dp * 8f + 10.dp)
+                            var meldCountUnits = 0
+                            me.melds.forEach { meldCountUnits += if (it.kind == MahjongMeldKind.PONG) 3 else 4 }
+                            val meldsReservedW = if (me.melds.isEmpty()) 0.dp else (meldCountUnits * 23 + me.melds.size * 8 + 10).dp
                             val availHandW = (totalW - meldsReservedW).coerceAtLeast(180.dp)
                             val handCount = me.hand.size.coerceAtLeast(13)
                             val tileW = ((availHandW - 22.dp) / handCount.toFloat()).coerceIn(22.dp, 36.dp)
@@ -2126,7 +2125,9 @@ fun KOnRummikubContent() {
                                                             }
                                                         }
                                                     }
+                                                    }
                                                 }
+                                            }
                                             }
                                         }
                                     }
