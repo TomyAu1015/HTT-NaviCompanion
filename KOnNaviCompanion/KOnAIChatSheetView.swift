@@ -69,7 +69,12 @@ struct KOnAIChatSheetView: View {
                 }
             }
             if !llm.activeModelFileName.isEmpty && !llm.activeModelLoaded {
-                llm.loadModelIntoMemory(fileName: llm.activeModelFileName)
+                let targetFile = llm.activeModelFileName
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                    if !llm.activeModelLoaded && llm.activeModelFileName == targetFile {
+                        llm.loadModelIntoMemory(fileName: targetFile)
+                    }
+                }
             }
         }
         .onDisappear {

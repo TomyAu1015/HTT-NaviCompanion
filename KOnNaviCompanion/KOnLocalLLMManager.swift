@@ -269,8 +269,8 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
             statusMessage = "低内存保护已拦截：当前设备内存 \(String(format: "%.1f", devicePhysicalRamGB))GB，建议改用 0.5B 轻量版"
             return
         }
-        statusMessage = "正在加载本地大模型到 Metal GPU..."
-        let ctxLen: UInt32 = (lowMemoryGuardEnabled || devicePhysicalRamGB < 5.5) ? 1024 : 2048
+        statusMessage = "正在安全挂载本地大模型..."
+        let ctxLen: UInt32 = (lowMemoryGuardEnabled || devicePhysicalRamGB < 5.5) ? 512 : 1024
 
         llmQueue.async { [weak self] in
             guard let self = self else { return }
@@ -282,17 +282,19 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
                 KOnLocalLLMManager.backendInitialized = true
             }
             var mparams = llama_model_default_params()
-            mparams.n_gpu_layers = 99
+            // Use ARM64 NEON + Accelerate CPU with mmap (0 GPU layers) to avoid Metal shader abort & iOS Jetsam OOM crashes!
+            mparams.n_gpu_layers = 0
+            mparams.use_mmap = true
             guard let model = llama_model_load_from_file(url.path, mparams) else {
                 DispatchQueue.main.async {
                     self.activeModelLoaded = false
-                    self.statusMessage = "Metal 模型加载失败（内存不足或文件损坏）"
+                    self.statusMessage = "模型加载失败（内存不足或文件损坏，建议改用 0.5B 轻量版）"
                 }
                 return
             }
             var cparams = llama_context_default_params()
             cparams.n_ctx = ctxLen
-            cparams.n_batch = 256
+            cparams.n_batch = 128
             let thr = Int32(max(2, min(4, ProcessInfo.processInfo.activeProcessorCount - 2)))
             cparams.n_threads = thr
             cparams.n_threads_batch = thr
@@ -321,7 +323,7 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
                 self.activeModelInfo = info
                 self.activeModelLoaded = true
                 UserDefaults.standard.set(fileName, forKey: self.activeModelKey)
-                let engineTag = self.hasNativeLlamaEngine ? "llama.cpp Metal GPU 推理已就绪" : "GGUF 已挂载"
+                let engineTag = self.hasNativeLlamaEngine ? "llama.cpp 本地引擎已就绪" : "GGUF 已挂载"
                 self.statusMessage = "\(engineTag)：\(fileName) (v\(info.version), \(info.tensorCount) tensors)"
             }
         }
