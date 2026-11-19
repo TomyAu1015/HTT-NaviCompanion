@@ -1,6 +1,7 @@
 import Foundation
 import Darwin
 import SwiftUI
+import UIKit
 import AVFoundation
 import MapKit
 import CoreLocation
@@ -72,6 +73,46 @@ enum KOnAITTSAccent: String, CaseIterable, Identifiable {
     }
 }
 
+
+// Dedicated 4MB-stack serial worker thread for llama.cpp C++ engine (prevents iOS GCD 512KB stack overflow)
+private final class LlamaWorkerThread {
+    private let condition = NSCondition()
+    private var queue: [() -> Void] = []
+    private var thread: Thread?
+
+    init() {
+        let t = Thread { [weak self] in
+            self?.runLoop()
+        }
+        t.name = "com.htt.localllm.worker"
+        t.stackSize = 4 * 1024 * 1024
+        t.qualityOfService = .userInitiated
+        self.thread = t
+        t.start()
+    }
+
+    func async(_ block: @escaping () -> Void) {
+        condition.lock()
+        queue.append(block)
+        condition.signal()
+        condition.unlock()
+    }
+
+    private func runLoop() {
+        while true {
+            condition.lock()
+            while queue.isEmpty {
+                condition.wait()
+            }
+            let job = queue.removeFirst()
+            condition.unlock()
+            autoreleasepool {
+                job()
+            }
+        }
+    }
+}
+
 // MARK: - K-ON! Real Local LLM Manager (llama.cpp Metal GPU + Co-Pilot Tools + Real Match History)
 final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDelegate {
     static let shared = KOnLocalLLMManager()
@@ -86,6 +127,16 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
             approxMB: 940,
             minRamGB: 5.5,
             downloadURL: "https://hf-mirror.com/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_0.gguf"
+        ),
+        LocalGGUFModelSpec(
+            id: "qwen25_15b_q3",
+            displayName: "Qwen2.5-1.5B-Instruct (省内存 1.5B)",
+            subtitle: "Q3_K_M 量化 · 兼顾 1.5B 智商与 3D 导航/音乐同开余量",
+            fileName: "qwen2.5-1.5b-instruct-q3_k_m.gguf",
+            sizeLabel: "约 824 MB",
+            approxMB: 824,
+            minRamGB: 5.0,
+            downloadURL: "https://hf-mirror.com/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q3_k_m.gguf"
         ),
         LocalGGUFModelSpec(
             id: "qwen25_05b_q4",
@@ -124,7 +175,9 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
     private var activeDownloadTask: URLSessionDownloadTask?
     private var activeDownloadTargetFileName: String?
     private var streamTimer: Timer?
-    private let llmQueue = DispatchQueue(label: "com.htt.localllm.inference", qos: .userInitiated)
+    private let llmQueue = LlamaWorkerThread()
+    private var activeCtxLen: Int = 512
+    private var idleUnloadWorkItem: DispatchWorkItem? = nil
     private var cancelGenerationFlag: Bool = false
 
     #if canImport(llama)
@@ -170,6 +223,21 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
         lastGameSummary = UserDefaults.standard.string(forKey: lastGameKey) ?? ""
         refreshInstalledModels()
         seedGreetingIfNeeded()
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleSystemMemoryWarning),
+            name: UIApplication.didReceiveMemoryWarningNotification,
+            object: nil
+        )
+    }
+
+    @objc private func handleSystemMemoryWarning() {
+        guard activeModelLoaded else { return }
+        cancelGenerationFlag = true
+        unloadModelFromMemory(silent: true)
+        DispatchQueue.main.async {
+            self.statusMessage = "收到系统内存预警，已自动释放本地模型以保护 3D 导航与音乐播放"
+        }
     }
 
     private func todayDateKey() -> String {
@@ -221,17 +289,49 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
 
     // MARK: - Model Files Management (Download / Import / Inspect / Native llama.cpp Load & Unload)
     private let loadingGuardKey = "htt_ai_loading_guard_v1"
+    private let loadingStageKey = "htt_ai_loading_stage_v1"
 
     func checkPreviousCrashGuard() {
         if UserDefaults.standard.bool(forKey: loadingGuardKey) {
+            let stage = UserDefaults.standard.string(forKey: loadingStageKey) ?? "unknown"
             UserDefaults.standard.set(false, forKey: loadingGuardKey)
+            UserDefaults.standard.removeObject(forKey: loadingStageKey)
             activeModelLoaded = false
-            statusMessage = "检测到上次挂载大模型因内存/引擎异常中断，已自动保护。建议改用 Qwen2.5-0.5B 轻量版或先切回舞台模式再挂载。"
+            statusMessage = "检测到上次挂载在阶段 [\(stage)] 异常中断，已自动保护。当前可用内存约 \(availableAppMemoryMB())MB。"
         }
+    }
+
+    var liveAvailableMemoryMB: Int {
+        availableAppMemoryMB()
     }
 
     private func availableAppMemoryMB() -> Int {
         return Int(os_proc_available_memory() / (1024 * 1024))
+    }
+
+    func cancelIdleUnload() {
+        idleUnloadWorkItem?.cancel()
+        idleUnloadWorkItem = nil
+    }
+
+    func scheduleIdleUnloadIfNeeded() {
+        cancelIdleUnload()
+        guard activeModelLoaded else { return }
+        if !lowMemoryGuardEnabled {
+            // Keep resident when user disables low-memory guard (memory warning listener still protects 3D map & music)
+            return
+        }
+        let freeMB = availableAppMemoryMB()
+        if freeMB > 0 && freeMB < 700 {
+            unloadModelFromMemory(silent: true)
+            return
+        }
+        let item = DispatchWorkItem { [weak self] in
+            guard let self = self, self.activeModelLoaded, !self.isGenerating else { return }
+            self.unloadModelFromMemory(silent: true)
+        }
+        idleUnloadWorkItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 90.0, execute: item)
     }
 
     func refreshInstalledModels() {
@@ -289,9 +389,11 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
             statusMessage = "当前可用内存约 \(freeMB)MB，不足以安全载入 \(Int(info.fileSizeMB))MB 模型（建议先切回舞台模式释放地图内存，或改用 352MB 的 Qwen2.5-0.5B 轻量版）"
             return
         }
+        cancelIdleUnload()
         statusMessage = "正在安全挂载本地大模型（剩余可用内存约 \(freeMB)MB）..."
         UserDefaults.standard.set(true, forKey: loadingGuardKey)
-        let ctxLen: UInt32 = (lowMemoryGuardEnabled || devicePhysicalRamGB < 5.5) ? 512 : 1024
+        UserDefaults.standard.set("1:backend_init", forKey: loadingStageKey)
+        let ctxLen: UInt32 = (lowMemoryGuardEnabled || freeMB < 1800) ? 512 : 1024
 
         llmQueue.async { [weak self] in
             guard let self = self else { return }
@@ -302,35 +404,44 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
                 llama_backend_init()
                 KOnLocalLLMManager.backendInitialized = true
             }
+            UserDefaults.standard.set("2:load_model", forKey: self.loadingStageKey)
             var mparams = llama_model_default_params()
-            // Strict CPU NEON + mmap mode (n_gpu_layers = 0, use_mlock = false, offload_kqv = false) prevents Metal abort & Jetsam OOM!
+            // Strict CPU NEON + mmap mode keeps 100% of Metal GPU free for 3D MapKit navigation and prevents Jetsam OOM
             mparams.n_gpu_layers = 0
             mparams.use_mmap = true
             mparams.use_mlock = false
             guard let model = llama_model_load_from_file(url.path, mparams) else {
                 UserDefaults.standard.set(false, forKey: self.loadingGuardKey)
+                UserDefaults.standard.removeObject(forKey: self.loadingStageKey)
                 DispatchQueue.main.async {
                     self.activeModelLoaded = false
-                    self.statusMessage = "模型加载失败（内存不足或文件损坏，建议改用 0.5B 轻量版）"
+                    self.statusMessage = "模型加载失败（文件可能损坏或内存不足，建议重新下载或改用 0.5B）"
                 }
                 return
             }
+            UserDefaults.standard.set("3:init_context", forKey: self.loadingStageKey)
             var cparams = llama_context_default_params()
             cparams.n_ctx = ctxLen
-            cparams.n_batch = 128
+            // CRITICAL: n_ubatch MUST be <= n_batch! Default n_ubatch is 512; setting n_batch < 512 without n_ubatch triggers GGML_ASSERT SIGABRT!
+            cparams.n_batch = 256
+            cparams.n_ubatch = 256
+            cparams.n_seq_max = 1
             cparams.offload_kqv = false
+            cparams.no_perf = true
             let thr = Int32(max(2, min(4, ProcessInfo.processInfo.activeProcessorCount - 2)))
             cparams.n_threads = thr
             cparams.n_threads_batch = thr
             guard let ctx = llama_init_from_model(model, cparams) else {
                 llama_model_free(model)
                 UserDefaults.standard.set(false, forKey: self.loadingGuardKey)
+                UserDefaults.standard.removeObject(forKey: self.loadingStageKey)
                 DispatchQueue.main.async {
                     self.activeModelLoaded = false
-                    self.statusMessage = "无法初始化上下文（建议开启低内存保护或换 0.5B）"
+                    self.statusMessage = "无法初始化推理上下文（建议开启低内存保护或换 0.5B）"
                 }
                 return
             }
+            UserDefaults.standard.set("4:init_sampler", forKey: self.loadingStageKey)
             let sparams = llama_sampler_chain_default_params()
             let smpl = llama_sampler_chain_init(sparams)
             llama_sampler_chain_add(smpl, llama_sampler_init_top_k(40))
@@ -341,9 +452,11 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
             self.llamaModel = model
             self.llamaCtx = ctx
             self.llamaSampler = smpl
+            self.activeCtxLen = Int(ctxLen)
             #endif
 
             UserDefaults.standard.set(false, forKey: self.loadingGuardKey)
+            UserDefaults.standard.removeObject(forKey: self.loadingStageKey)
             DispatchQueue.main.async {
                 self.activeModelFileName = fileName
                 self.activeModelInfo = info
@@ -535,6 +648,7 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
         messages.append(KOnAIChatMessage(isUser: true, speakerName: "轻音车友", speakerCharId: 0, emotionTag: "", text: text))
         trimContextIfNeeded()
 
+        cancelIdleUnload()
         isGenerating = true
         cancelGenerationFlag = false
         let mgr = AudioPlayerManager.shared
@@ -761,21 +875,28 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
                 return
             }
 
+            let maxPromptTokens = max(128, self.activeCtxLen - 96)
+            let totalPromptTokens = min(Int(nTokens), maxPromptTokens)
             llama_kv_cache_clear(ctx)
             var offset = 0
-            while offset < Int(nTokens) {
-                let step = min(200, Int(nTokens) - offset)
+            var decodeOk = true
+            while offset < totalPromptTokens {
+                let step = min(128, totalPromptTokens - offset)
                 var slice = Array(tokens[offset..<(offset + step)])
                 let rc = slice.withUnsafeMutableBufferPointer { buf -> Int32 in
                     let batch = llama_batch_get_one(buf.baseAddress, Int32(step))
                     return llama_decode(ctx, batch)
                 }
-                if rc != 0 { break }
+                if rc != 0 {
+                    decodeOk = false
+                    break
+                }
                 offset += step
             }
 
             var utf8Pending: [UInt8] = []
-            for _ in 0..<180 {
+            let maxGenTokens = min(160, max(32, self.activeCtxLen - totalPromptTokens - 4))
+            for _ in 0..<(decodeOk ? maxGenTokens : 0) {
                 if self.cancelGenerationFlag { break }
                 let newTok = llama_sampler_sample(smpl, ctx, -1)
                 if llama_vocab_is_eog(vocab, newTok) { break }

@@ -69,11 +69,12 @@ struct KOnAIChatSheetView: View {
                 }
             }
             // Do NOT auto-load 1GB GGUF inside .onAppear so opening AI sheet is 100% instant and crash-free!
+            llm.cancelIdleUnload()
             llm.checkPreviousCrashGuard()
         }
         .onDisappear {
-            // Release mapped model buffer on close to protect navigation & game room RAM
-            llm.unloadModelFromMemory(silent: true)
+            // Smart delayed unload (90s) when low-memory guard is on; keep resident otherwise for 3D map + music + AI
+            llm.scheduleIdleUnloadIfNeeded()
         }
         .fileImporter(
             isPresented: $showFileImporter,
@@ -262,7 +263,7 @@ struct KOnAIChatSheetView: View {
                 // Status & Memory Guard Card
                 VStack(alignment: .leading, spacing: 6) {
                     HStack {
-                        Text("📱 设备内存：\(String(format: "%.1f", llm.devicePhysicalRamGB)) GB")
+                        Text("📱 设备 \(String(format: "%.1f", llm.devicePhysicalRamGB))GB · 可用约 \(llm.liveAvailableMemoryMB)MB")
                             .font(.system(size: 13, weight: .bold))
                             .foregroundColor(httGold)
                         Spacer()
@@ -273,7 +274,7 @@ struct KOnAIChatSheetView: View {
                     Text(llm.statusMessage)
                         .font(.system(size: 12))
                         .foregroundColor(httCream)
-                    Toggle("低内存保护（退出自动释放模型内存）", isOn: $llm.lowMemoryGuardEnabled)
+                    Toggle("低内存保护（退出茶会 90 秒后自动释放模型）", isOn: $llm.lowMemoryGuardEnabled)
                         .font(.system(size: 12))
                         .foregroundColor(.white)
                         .tint(httCrimson)
