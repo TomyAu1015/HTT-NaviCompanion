@@ -407,7 +407,7 @@ class LocalLLMManager(
 
         _currentEmotionTag.value = emotion
         if (_enableVoiceBroadcast.value) {
-            audioManager.triggerCharacterTap(persona.charId)
+            audioManager.triggerCharacterTap(persona)
         }
 
         val msgId = UUID.randomUUID().toString()
