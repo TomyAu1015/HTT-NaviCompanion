@@ -155,6 +155,7 @@ static int gRmkRoomPlayerCount = 4; // 2, 3, or 4 players selectable!
 static std::vector<RmkSeat> gRmkSeats(4);
 static std::vector<RmkTile> gRmkPool;
 static int gRmkPoolCount = 0;
+static int gRmkEmptyPoolPasses = 0;
 static std::vector<RmkMeld> gRmkTableMelds;
 static int gRmkMySeat = 0;
 static int gRmkTurnSeat = 0;
@@ -1809,6 +1810,7 @@ static void startNewRmkRound() {
         gRmkSeats[i].hasBrokenIce = false;
     }
     gRmkPoolCount = (int)gRmkPool.size();
+    gRmkEmptyPoolPasses = 0;
     gRmkTableMelds.clear();
     gRmkHighlightedIds.clear();
     gRmkSelectedTableMeldIdx = -1;
@@ -1836,6 +1838,38 @@ static void startNewRmkRound() {
     broadcastRmkState();
 }
 
+static void finishRmkRoundByFewestTiles() {
+    int pCnt = std::max(2, (int)gRmkSeats.size());
+    int bestIdx = 0;
+    int bestCount = 999999;
+    int bestPts = 999999;
+    for (int i = 0; i < pCnt; ++i) {
+        int cnt = (int)gRmkSeats[i].hand.size();
+        int pts = 0;
+        for (const auto& t : gRmkSeats[i].hand) pts += t.isJoker() ? 30 : t.number;
+        if (cnt < bestCount || (cnt == bestCount && pts < bestPts)) {
+            bestCount = cnt;
+            bestPts = pts;
+            bestIdx = i;
+        }
+    }
+    gRmkPhase = "roundOver";
+    gRmkWinnerSeat = bestIdx;
+    int gain = 0;
+    for (int i = 0; i < pCnt; ++i) {
+        if (i == bestIdx) continue;
+        int pen = 0;
+        for (const auto& t : gRmkSeats[i].hand) pen += t.isJoker() ? 30 : t.number;
+        int diff = std::max(0, pen - bestPts);
+        gRmkSeats[i].score -= diff;
+        gain += diff;
+    }
+    gRmkSeats[bestIdx].score += gain;
+    RmkSoundFX::playWin();
+    gStatusBanner = "牌堆已摸空！[" + cleanPeerLabel(gRmkSeats[bestIdx].name) + "] 剩余手牌最少 (" + std::to_string(bestCount) + "张) 获胜！(+" + std::to_string(gain) + "分) 按[A]下一局";
+    broadcastRmkState();
+}
+
 static void executeRmkDraw(int seatIdx, const std::string& reason) {
     gRmkDealStartTick = 0;
     int pCnt = std::max(2, (int)gRmkSeats.size());
@@ -1844,12 +1878,20 @@ static void executeRmkDraw(int seatIdx, const std::string& reason) {
         gRmkPool.erase(gRmkPool.begin());
         if (gRmkSeats[seatIdx].isAI) sortRmkHand(gRmkSeats[seatIdx].hand);
         gRmkPoolCount = (int)gRmkPool.size();
+        gRmkEmptyPoolPasses = 0;
+    } else {
+        gRmkEmptyPoolPasses++;
+        if (gRmkEmptyPoolPasses >= pCnt) {
+            finishRmkRoundByFewestTiles();
+            return;
+        }
     }
     gRmkTurnSeat = (seatIdx + 1) % pCnt;
     gRmkTurnStartTick = SDL_GetTicks();
     gRmkAiNextTick = SDL_GetTicks() + 1500;
     resetRmkWorkspace();
-    gStatusBanner = "[" + cleanPeerLabel(gRmkSeats[seatIdx].name) + "] " + reason + " · 轮到 [" + cleanPeerLabel(gRmkSeats[gRmkTurnSeat].name) + "]";
+    std::string passText = gRmkPool.empty() ? ("牌堆已空跳过 (" + std::to_string(gRmkEmptyPoolPasses) + "/" + std::to_string(pCnt) + ")") : reason;
+    gStatusBanner = "[" + cleanPeerLabel(gRmkSeats[seatIdx].name) + "] " + passText + " · 轮到 [" + cleanPeerLabel(gRmkSeats[gRmkTurnSeat].name) + "]";
     broadcastRmkState();
 }
 
@@ -1887,6 +1929,7 @@ static void executeRmkCommit(int seatIdx, const std::vector<RmkMeld>& newMelds, 
             }
         }
     }
+    gRmkEmptyPoolPasses = 0;
     gRmkTableMelds = normalizedMelds;
     RmkSoundFX::playCommit();
     if (seatIdx == gRmkMySeat || gRmkHighlightedIds.empty()) {

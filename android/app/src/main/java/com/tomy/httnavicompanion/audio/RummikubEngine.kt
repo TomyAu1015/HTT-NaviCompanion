@@ -446,9 +446,46 @@ object RmkEvaluator {
             val maxTableActions = if (remHand.size <= 3) 4 else if (chosenHandMelds.isEmpty()) 2 else 1
             while (changed && tableActionsThisTurn < maxTableActions) {
                 changed = false
-                // 2A. Append/prepend any single hand tile onto an existing table run or 3-tile group
+                // 2A-Joker. Combine hand Joker + 1 hand tile + 1 spare table tile before ever appending Joker to a valid meld!
+                val jIdx = remHand.indexOfFirst { it.isJoker }
+                if (jIdx >= 0 && remHand.size >= 2) {
+                    val jTile = remHand[jIdx]
+                    outerJokerCombo@ for (hIdx in remHand.indices) {
+                        if (hIdx == jIdx) continue
+                        val ht = remHand[hIdx]
+                        if (ht.isJoker) continue
+                        for (mIdx in nextMelds.indices) {
+                            val mTiles = nextMelds[mIdx].tiles
+                            if (mTiles.size < 4) continue
+                            for (cIdx in mTiles.indices) {
+                                val spareTile = mTiles[cIdx]
+                                val remainTable = mTiles.toMutableList().apply { removeAt(cIdx) }
+                                if (evaluateMeld(remainTable) == null) continue
+                                val newTriad = listOf(jTile, ht, spareTile)
+                                if (evaluateMeld(newTriad) != null) {
+                                    nextMelds[mIdx] = nextMelds[mIdx].copy(tiles = sortMeldForDisplay(remainTable))
+                                    nextMelds.add(RmkMeld(UUID.randomUUID().toString(), sortMeldForDisplay(newTriad)))
+                                    playedIds.add(jTile.id)
+                                    playedIds.add(ht.id)
+                                    highlightedIds.add(jTile.id)
+                                    highlightedIds.add(ht.id)
+                                    highlightedIds.add(spareTile.id)
+                                    remHand.removeAll { it.id == jTile.id || it.id == ht.id }
+                                    tableActionsThisTurn += 1
+                                    changed = true
+                                    break@outerJokerCombo
+                                }
+                            }
+                        }
+                    }
+                    if (changed) continue
+                }
+
+                // 2A. Append/prepend any single NON-JOKER hand tile onto an existing table meld
+                // (Only allow appending a Joker if it is AI's final winning tile!)
                 outerSingle@ for (hIdx in remHand.indices) {
                     val ht = remHand[hIdx]
+                    if (ht.isJoker && remHand.size > 1) continue
                     for (mIdx in nextMelds.indices) {
                         val cand = nextMelds[mIdx].tiles + ht
                         if (evaluateMeld(cand) != null) {
@@ -535,6 +572,14 @@ object RmkSoundFX {
                     }
                     offset += count
                 }
+                val minBuf = AudioTrack.getMinBufferSize(
+                    sampleRate,
+                    AudioFormat.CHANNEL_OUT_MONO,
+                    AudioFormat.ENCODING_PCM_16BIT
+                ).coerceAtLeast(2048)
+                val finalPcm = if (pcm.size * 2 < minBuf) {
+                    ShortArray((minBuf + 1) / 2).also { System.arraycopy(pcm, 0, it, 0, pcm.size) }
+                } else pcm
                 val track = AudioTrack.Builder()
                     .setAudioAttributes(
                         AudioAttributes.Builder()
@@ -549,10 +594,10 @@ object RmkSoundFX {
                             .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
                             .build()
                     )
-                    .setBufferSizeInBytes(pcm.size * 2)
+                    .setBufferSizeInBytes(finalPcm.size * 2)
                     .setTransferMode(AudioTrack.MODE_STATIC)
                     .build()
-                track.write(pcm, 0, pcm.size)
+                track.write(finalPcm, 0, finalPcm.size)
                 track.play()
                 Thread.sleep((totalSamples * 1000L / sampleRate) + 80L)
                 track.release()
@@ -774,6 +819,7 @@ class RummikubEngine(
     private var snapshotHand: List<RmkTile> = emptyList()
     private var snapshotRackSlots: List<RmkTile?> = emptyList()
     private val pool = ArrayList<RmkTile>()
+    private var consecutiveEmptyPoolPasses = 0
     private var myPeerName: String = ""
     private var orderedRoomPeers = mutableListOf<Triple<String, Int, String>>()
     private var webSocket: WebSocket? = null
@@ -1460,6 +1506,7 @@ class RummikubEngine(
         rebuildLobbySeats()
         val pCnt = _seats.value.size.coerceIn(2, 4)
         pool.clear()
+        consecutiveEmptyPoolPasses = 0
         pool.addAll(build106Deck())
         val list = _seats.value.toMutableList()
         for (i in 0 until pCnt) {
@@ -2141,6 +2188,7 @@ class RummikubEngine(
     }
 
     private fun executeCommitTurn(seatIdx: Int, newMelds: List<RmkMeld>, playedIds: Set<String>) {
+        consecutiveEmptyPoolPasses = 0
         val pCnt = _seats.value.size.coerceAtLeast(2)
         _tableMelds.value = newMelds
         if (seatIdx == _mySeatIndex.value || _lastTurnHighlightedTileIds.value.isEmpty()) {
@@ -2177,19 +2225,60 @@ class RummikubEngine(
         }
         val pCnt = _seats.value.size.coerceAtLeast(2)
         val list = _seats.value.toMutableList()
+        if (seatIdx !in list.indices) return
         if (pool.isNotEmpty()) {
             val t = pool.removeAt(0)
             list[seatIdx] = list[seatIdx].copy(hand = list[seatIdx].hand + t)
             _seats.value = list
             _poolCount.value = pool.size
+            consecutiveEmptyPoolPasses = 0
+        } else {
+            consecutiveEmptyPoolPasses += 1
+            if (consecutiveEmptyPoolPasses >= pCnt) {
+                finishRoundByFewestTiles()
+                return
+            }
         }
         _isEditingTable.value = false
         _currentTurnSeat.value = (seatIdx + 1) % pCnt
         resetWorkspaceForNewTurn()
         _turnRemainingSeconds.value = 60
-        _statusBanner.value = "[${list[seatIdx].name}] $reason · 轮到 [${list[_currentTurnSeat.value].name}]"
+        val passText = if (pool.isEmpty()) "牌堆已空跳过 ($consecutiveEmptyPoolPasses/$pCnt)" else reason
+        _statusBanner.value = "[${list[seatIdx].name}] $passText · 轮到 [${list[_currentTurnSeat.value].name}]"
         broadcastFullState()
         scheduleAiTurnIfNeeded()
+    }
+
+    private fun finishRoundByFewestTiles() {
+        val pCnt = _seats.value.size.coerceAtLeast(2)
+        var bestIdx = 0
+        var bestCount = Int.MAX_VALUE
+        var bestPts = Int.MAX_VALUE
+        val list = _seats.value.toMutableList()
+        for (i in 0 until pCnt) {
+            val cnt = list[i].hand.size
+            val pts = list[i].hand.sumOf { if (it.isJoker) 30 else it.number }
+            if (cnt < bestCount || (cnt == bestCount && pts < bestPts)) {
+                bestCount = cnt
+                bestPts = pts
+                bestIdx = i
+            }
+        }
+        _phase.value = RmkGamePhase.ROUND_OVER
+        timerRunnable?.let { mainHandler.removeCallbacks(it) }
+        var gain = 0
+        for (i in 0 until pCnt) {
+            if (i == bestIdx) continue
+            val pen = list[i].hand.sumOf { if (it.isJoker) 30 else it.number }
+            val diff = (pen - bestPts).coerceAtLeast(0)
+            list[i] = list[i].copy(score = list[i].score - diff)
+            gain += diff
+        }
+        list[bestIdx] = list[bestIdx].copy(score = list[bestIdx].score + gain)
+        _seats.value = list
+        RmkSoundFX.playRoundWin()
+        _statusBanner.value = "🏆 牌堆已摸空！[${list[bestIdx].name}] 剩余手牌最少 (${bestCount}张) 获胜！(赢得 +$gain 分)"
+        broadcastFullState()
     }
 
     private fun finishRound(winner: Int) {
@@ -2284,7 +2373,7 @@ class RummikubEngine(
                     _tableMelds.value = partialMelds
                     _lastTurnHighlightedTileIds.value = revealedIds.toSet()
                     val sList = _seats.value.toMutableList()
-                    sList[seatIdx] = sList[seatIdx].copy(hand = initialHand.filterNot { revealedIds.contains(it.id) })
+                    if (seatIdx in sList.indices) sList[seatIdx] = sList[seatIdx].copy(hand = initialHand.filterNot { revealedIds.contains(it.id) })
                     _seats.value = sList
                 }, 360L)
             }, idx * stepIntervalMs)
@@ -2297,7 +2386,7 @@ class RummikubEngine(
             _opponentPlayingSeatIndex.value = null
             _opponentPlayingTargetMeldId.value = null
             val sList = _seats.value.toMutableList()
-            sList[seatIdx] = sList[seatIdx].copy(hand = initialHand)
+            if (seatIdx in sList.indices) sList[seatIdx] = sList[seatIdx].copy(hand = initialHand)
             _seats.value = sList
             _lastTurnHighlightedTileIds.value = aiMove.highlightedIds
             executeCommitTurn(seatIdx, aiMove.newMelds, aiMove.playedIds)

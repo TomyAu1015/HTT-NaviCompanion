@@ -2261,7 +2261,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         if cleanExplicit == nil && stDist <= 165 {
             self.currentTapResolvedByPOI = true
             self.isReverseGeocoding = false
-            let stTitle = "\(nearSt.name)地铁站 (\(nearSt.exit))"
+            let stTitle = "\(Self.formatStationExit(nearSt.name, nearSt.exit))"
             self.tappedMapTitle = stTitle
             self.populatePOIDetails(name: stTitle, coord: coord, address: "\(nearSt.line) · 距离约\(stDist)米", phone: nil, rawCategory: "MKPOICategoryPublicTransport")
             return
@@ -2392,6 +2392,18 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     
 
     // MARK: - Native In-App Transit & Subway Shortest-Path Engine (真·高德拓扑最短换乘引擎，绝不绕远路！)
+    static func formatStationExit(_ name: String, _ exit: String) -> String {
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedExit = exit.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedExit.isEmpty {
+            return trimmedName.hasSuffix("站") ? trimmedName : "\(trimmedName)地铁站"
+        }
+        if trimmedName.hasSuffix("站") {
+            return "\(trimmedName)\(trimmedExit)"
+        }
+        return "\(trimmedName)地铁站\(trimmedExit)"
+    }
+
     private static let szStationsDatabase: [StationCoord] = [
         // Line 1 (Luobao Line: Luohu -> Airport East)
         StationCoord(name: "罗湖", exit: "A2口", lat: 22.531, lon: 114.116, line: "1号线"),
@@ -2578,9 +2590,9 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                 TransitStepItem(
                     kind: .walk,
                     lineName: "步行前往港鐵站",
-                    directionDesc: "前往 \(startHK.name) (\(startHK.exit))",
+                    directionDesc: "前往 \(Self.formatStationExit(startHK.name, startHK.exit))",
                     fromStation: "我的位置",
-                    toStation: "\(startHK.name) (\(startHK.exit))",
+                    toStation: "\(Self.formatStationExit(startHK.name, startHK.exit))",
                     passStations: [],
                     durationMins: w1Min,
                     walkMeters: w1,
@@ -2594,7 +2606,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                     kind: .subway,
                     lineName: "港鐵 \(startHK.line.components(separatedBy: "/")[0])",
                     directionDesc: "往 \(endHK.name) / 金鐘方向",
-                    fromStation: "\(startHK.name) (\(startHK.exit))",
+                    fromStation: "\(Self.formatStationExit(startHK.name, startHK.exit))",
                     toStation: endHK.name,
                     passStations: ["九龍塘", "旺角東", "紅磡", "會展"].filter { $0 != startHK.name && $0 != endHK.name },
                     durationMins: mtrMins,
@@ -2609,7 +2621,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                     kind: .walk,
                     lineName: "步行到達",
                     directionDesc: "前往 \(destClean)",
-                    fromStation: "\(endHK.name) (\(endHK.exit))",
+                    fromStation: "\(Self.formatStationExit(endHK.name, endHK.exit))",
                     toStation: destClean,
                     passStations: [],
                     durationMins: w2Min,
@@ -2629,7 +2641,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                 transferCount: 0,
                 walkMeters: w1 + w2,
                 priceYuan: "HK$12.5",
-                startExitDesc: "\(startHK.name) (\(startHK.exit)) 入閘",
+                startExitDesc: "\(Self.formatStationExit(startHK.name, startHK.exit)) 入閘",
                 warningNotice: "🚇 支持八達通、AlipayHK、微信及銀聯拍卡入閘",
                 realtimeArrivalText: "港鐵列車即將到站  📡 2分鐘 🚃🚃🚃",
                 steps: hkPlan1Steps
@@ -2867,9 +2879,9 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                 plan1Steps.append(TransitStepItem(
                     kind: .walk,
                     lineName: "步行前往港鐵站",
-                    directionDesc: "前往 \(startHK.name) (\(startHK.exit))",
+                    directionDesc: "前往 \(Self.formatStationExit(startHK.name, startHK.exit))",
                     fromStation: "我的位置",
-                    toStation: "\(startHK.name) (\(startHK.exit))",
+                    toStation: "\(Self.formatStationExit(startHK.name, startHK.exit))",
                     passStations: [],
                     durationMins: wMins,
                     walkMeters: wM,
@@ -2920,7 +2932,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                     lineName: "步行進站",
                     directionDesc: "前往 \(startSt.name)",
                     fromStation: "我的位置",
-                    toStation: "\(startSt.name) (\(startSt.exit))",
+                    toStation: "\(Self.formatStationExit(startSt.name, startSt.exit))",
                     passStations: [],
                     durationMins: 6,
                     walkMeters: 420,
@@ -3040,7 +3052,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                 kind: .walk,
                 lineName: "步行到達",
                 directionDesc: "前往 \(destClean)",
-                fromStation: "\(endHK.name) (\(endHK.exit))",
+                fromStation: "\(Self.formatStationExit(endHK.name, endHK.exit))",
                 toStation: destClean,
                 passStations: [],
                 durationMins: 2,
@@ -3198,7 +3210,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                 kind: .walk,
                 lineName: "步行到達",
                 directionDesc: "前往 \(destClean)",
-                fromStation: "\(endHK.name) (\(endHK.exit))",
+                fromStation: "\(Self.formatStationExit(endHK.name, endHK.exit))",
                 toStation: destClean,
                 passStations: [],
                 durationMins: 2,
@@ -3278,7 +3290,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                     kind: .walk,
                     lineName: "步行到達",
                     directionDesc: "前往 \(destClean)",
-                    fromStation: "\(endHK.name) (\(endHK.exit))",
+                    fromStation: "\(Self.formatStationExit(endHK.name, endHK.exit))",
                     toStation: destClean,
                     passStations: [],
                     durationMins: 3,
@@ -4066,9 +4078,9 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                     TransitStepItem(
                         kind: .walk,
                         lineName: "步行进站",
-                        directionDesc: "前往 \(startSt.name) (\(startSt.exit))",
+                        directionDesc: "前往 \(Self.formatStationExit(startSt.name, startSt.exit))",
                         fromStation: "我的位置",
-                        toStation: "\(startSt.name) (\(startSt.exit))",
+                        toStation: "\(Self.formatStationExit(startSt.name, startSt.exit))",
                         passStations: [],
                         durationMins: w1Min,
                         walkMeters: w1,
@@ -4082,7 +4094,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                         kind: .subway,
                         lineName: "地铁1号线 (罗宝线)",
                         directionDesc: "往 罗湖 方向",
-                        fromStation: "\(startSt.name) (\(startSt.exit))",
+                        fromStation: "\(Self.formatStationExit(startSt.name, startSt.exit))",
                         toStation: "罗湖 (A2口)",
                         passStations: startSt.name == "老街" ? ["国贸", "罗湖"] : ["罗湖"],
                         durationMins: startSt.name == "老街" ? 4 : 2,
@@ -4117,7 +4129,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                     transferCount: 0,
                     walkMeters: w1 + 180,
                     priceYuan: "2",
-                    startExitDesc: "\(startSt.name) (\(startSt.exit)) 进站",
+                    startExitDesc: "\(Self.formatStationExit(startSt.name, startSt.exit)) 进站",
                     warningNotice: "🚇 地铁1号线直达罗湖站A2口，地下人行连廊直通口岸联检大厅",
                     realtimeArrivalText: "地铁1号线 (罗湖方向)  📡 2分钟·1个站",
                     steps: localMetroSteps
@@ -4220,7 +4232,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                 self.selectedTransitPlanIndex = 0
                 self.remainingRouteMinutes = localPlan1.totalMinutes
                 self.remainingRouteDistanceKm = Double(directMeters) / 1000.0
-                self.currentStepInstruction = "步行 \(w1)米 前往 \(startSt.name) (\(startSt.exit)) 乘坐地铁1号线(罗湖方向)"
+                self.currentStepInstruction = "步行 \(w1)米 前往 \(Self.formatStationExit(startSt.name, startSt.exit)) 乘坐地铁1号线(罗湖方向)"
                 self.distanceToNextStepMeters = Double(w1)
                 return
             } else if isFromShawan {
@@ -4804,9 +4816,9 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                 TransitStepItem(
                     kind: .walk,
                     lineName: "步行进站",
-                    directionDesc: "前往 \(startMetro.name) (\(startMetro.exit))",
+                    directionDesc: "前往 \(Self.formatStationExit(startMetro.name, startMetro.exit))",
                     fromStation: "我的位置",
-                    toStation: "\(startMetro.name) (\(startMetro.exit))",
+                    toStation: "\(Self.formatStationExit(startMetro.name, startMetro.exit))",
                     passStations: [],
                     durationMins: w1Min,
                     walkMeters: w1,
@@ -4820,7 +4832,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                     kind: .subway,
                     lineName: "地鐵1號綫 (羅寶線)",
                     directionDesc: "往 機場東方向",
-                    fromStation: "\(startMetro.name) (\(startMetro.exit))",
+                    fromStation: "\(Self.formatStationExit(startMetro.name, startMetro.exit))",
                     toStation: "會展中心 (A1口)",
                     passStations: ["老街", "大劇院", "科學館", "華強路", "崗廈"],
                     durationMins: 13,
@@ -4855,7 +4867,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                 transferCount: 0,
                 walkMeters: w1 + 317,
                 priceYuan: "3",
-                startExitDesc: "\(startMetro.name) (\(startMetro.exit)) 進站",
+                startExitDesc: "\(Self.formatStationExit(startMetro.name, startMetro.exit)) 進站",
                 warningNotice: "🚇 地鐵1號綫(羅寶線)同綫直達，僅需 6 站(13分鐘)，無需換乘繞路！",
                 realtimeArrivalText: "地鐵1號綫(羅寶線)(機場東方向)  📡 即將入站 🚃🚃🚃",
                 steps: bcPlan1Steps
@@ -5052,7 +5064,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             self.selectedTransitPlanIndex = 0
             self.remainingRouteMinutes = bcPlan1.totalMinutes
             self.remainingRouteDistanceKm = 6.2
-            self.currentStepInstruction = "步行 \(w1)米 前往 \(startMetro.name) (\(startMetro.exit)) 乘坐地鐵1號綫(機場東方向)"
+            self.currentStepInstruction = "步行 \(w1)米 前往 \(Self.formatStationExit(startMetro.name, startMetro.exit)) 乘坐地鐵1號綫(機場東方向)"
             self.distanceToNextStepMeters = Double(w1)
             return
         }
@@ -5300,9 +5312,9 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                 TransitStepItem(
                     kind: .walk,
                     lineName: "步行进站",
-                    directionDesc: "前往 \(startSt.name) (\(startSt.exit))",
+                    directionDesc: "前往 \(Self.formatStationExit(startSt.name, startSt.exit))",
                     fromStation: "我的位置",
-                    toStation: "\(startSt.name) (\(startSt.exit))",
+                    toStation: "\(Self.formatStationExit(startSt.name, startSt.exit))",
                     passStations: [],
                     durationMins: walkStartMin,
                     walkMeters: walkStartDist,
@@ -5316,8 +5328,8 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                     kind: .subway,
                     lineName: "地鐵1號綫 (羅寶線)",
                     directionDesc: "往 \(directionStr)",
-                    fromStation: "\(startSt.name) (\(startSt.exit))",
-                    toStation: "\(endSt.name) (\(endSt.exit))",
+                    fromStation: "\(Self.formatStationExit(startSt.name, startSt.exit))",
+                    toStation: "\(Self.formatStationExit(endSt.name, endSt.exit))",
                     passStations: intermediateStops,
                     durationMins: rideMins,
                     walkMeters: 0,
@@ -5331,14 +5343,14 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                     kind: .walk,
                     lineName: "步行到达",
                     directionDesc: "前往 \(destClean)",
-                    fromStation: "\(endSt.name) (\(endSt.exit))",
+                    fromStation: "\(Self.formatStationExit(endSt.name, endSt.exit))",
                     toStation: destClean,
                     passStations: [],
                     durationMins: walkEndMin,
                     walkMeters: walkEndDist,
                     doorSideDesc: "🔥 消耗 \(walkEndCal)卡路里",
                     acNotice: "",
-                    exitDesc: (endSt.name == destClean || destClean.contains(endSt.name)) ? "出站即达 \(destClean)" : "从 \(endSt.name)(\(endSt.exit)) 出站，步行前往 \(destClean)",
+                    exitDesc: (endSt.name == destClean || destClean.contains(endSt.name)) ? "出站即达 \(destClean)" : "从 \(Self.formatStationExit(endSt.name, endSt.exit)) 出站，步行前往 \(destClean)",
                     colorHex: "#888888",
                     intervalDesc: "步行 \(walkEndDist) 米 (\(walkEndMin)分钟) · 🔥 消耗 \(walkEndCal)卡路里"
                 )
@@ -5351,7 +5363,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                 transferCount: 0,
                 walkMeters: walkStartDist + walkEndDist,
                 priceYuan: price,
-                startExitDesc: "\(startSt.name) (\(startSt.exit)) 进站",
+                startExitDesc: "\(Self.formatStationExit(startSt.name, startSt.exit)) 进站",
                 warningNotice: "🚇 地铁1号线(罗宝线)同线直达，仅需 \(stopCount) 站，无需换乘绕路！",
                 realtimeArrivalText: "地铁1号线(罗宝线)(\(directionStr))  📡 即将入站 🚃🚃🚃",
                 steps: directMetroSteps
@@ -5421,7 +5433,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         self.applyTransitFiltersAndSort()
         self.selectedTransitPlanIndex = 0
             self.remainingRouteMinutes = plan1.totalMinutes
-            self.currentStepInstruction = "步行 \(walkStartDist)米 前往 \(startSt.name) (\(startSt.exit)) 乘坐1号线(直达)"
+            self.currentStepInstruction = "步行 \(walkStartDist)米 前往 \(Self.formatStationExit(startSt.name, startSt.exit)) 乘坐1号线(直达)"
             self.distanceToNextStepMeters = Double(walkStartDist)
             return
         }
@@ -5456,9 +5468,9 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                 TransitStepItem(
                     kind: .walk,
                     lineName: "步行进站",
-                    directionDesc: "前往 \(startSt.name) (\(startSt.exit))",
+                    directionDesc: "前往 \(Self.formatStationExit(startSt.name, startSt.exit))",
                     fromStation: "我的位置",
-                    toStation: "\(startSt.name) (\(startSt.exit))",
+                    toStation: "\(Self.formatStationExit(startSt.name, startSt.exit))",
                     passStations: [],
                     durationMins: walkStartMin,
                     walkMeters: walkStartDist,
@@ -5472,7 +5484,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                     kind: .subway,
                     lineName: "地铁3号线 (龙岗线)",
                     directionDesc: directionStr,
-                    fromStation: "\(startSt.name) (\(startSt.exit))",
+                    fromStation: "\(Self.formatStationExit(startSt.name, startSt.exit))",
                     toStation: endSt.name,
                     passStations: intermediateStops,
                     durationMins: rideMins,
@@ -5487,14 +5499,14 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                     kind: .walk,
                     lineName: "步行到达",
                     directionDesc: "前往 \(destClean)",
-                    fromStation: "\(endSt.name) (\(endSt.exit))",
+                    fromStation: "\(Self.formatStationExit(endSt.name, endSt.exit))",
                     toStation: destClean,
                     passStations: [],
                     durationMins: walkEndMin,
                     walkMeters: walkEndDist,
                     doorSideDesc: "🔥 消耗 \(walkEndCal)卡路里",
                     acNotice: "",
-                    exitDesc: (endSt.name == destClean || destClean.contains(endSt.name)) ? "出站即达 \(destClean)" : "从 \(endSt.name)(\(endSt.exit)) 出站，步行前往 \(destClean)",
+                    exitDesc: (endSt.name == destClean || destClean.contains(endSt.name)) ? "出站即达 \(destClean)" : "从 \(Self.formatStationExit(endSt.name, endSt.exit)) 出站，步行前往 \(destClean)",
                     colorHex: "#888888",
                     intervalDesc: "步行 \(walkEndDist) 米 (\(walkEndMin)分钟) · 🔥 消耗 \(walkEndCal)卡路里"
                 )
@@ -5507,7 +5519,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                 transferCount: 0,
                 walkMeters: walkStartDist + walkEndDist,
                 priceYuan: price,
-                startExitDesc: "\(startSt.name) (\(startSt.exit)) 进站",
+                startExitDesc: "\(Self.formatStationExit(startSt.name, startSt.exit)) 进站",
                 warningNotice: "🚇 地铁3号线同线直达，仅需 \(stopCount) 站，无需换乘绕路！",
                 realtimeArrivalText: "地铁3号线(龙岗线)(\(directionStr))  📡 3分钟 🚃🚃🚃",
                 steps: directMetroSteps
@@ -5610,7 +5622,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                 lineName: "步行进站",
                 directionDesc: "前往地铁站",
                 fromStation: "我的位置",
-                toStation: "\(startSt.name) (\(startSt.exit))",
+                toStation: "\(Self.formatStationExit(startSt.name, startSt.exit))",
                 passStations: [],
                 durationMins: walkStartMin,
                 walkMeters: walkStartDist,
@@ -5624,7 +5636,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                 kind: .subway,
                 lineName: "地铁3号线 (龙岗线)",
                 directionDesc: "福保方向",
-                fromStation: "\(startSt.name) (\(startSt.exit))",
+                fromStation: "\(Self.formatStationExit(startSt.name, startSt.exit))",
                 toStation: "布吉",
                 passStations: line3Stops,
                 durationMins: line3Mins,
@@ -5699,7 +5711,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                 kind: .walk,
                 lineName: "步行到达",
                 directionDesc: "前往 \(destClean)",
-                fromStation: "\(endSt.name) (\(endSt.exit))",
+                fromStation: "\(Self.formatStationExit(endSt.name, endSt.exit))",
                 toStation: destClean,
                 passStations: [],
                 durationMins: walkEndMin,
@@ -5724,7 +5736,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             transferCount: 2,
             walkMeters: p1TotalWalk,
             priceYuan: "7",
-            startExitDesc: "\(startSt.name) (\(startSt.exit)) 进站",
+            startExitDesc: "\(Self.formatStationExit(startSt.name, startSt.exit)) 进站",
             warningNotice: "🚇 14号线东部快线大站快车，比普通线节省 18 分钟",
             realtimeArrivalText: "地铁3号线(龙岗线)(福保方向)  📡 4分钟 🚃🚃🚃",
             steps: plan1Steps
@@ -5794,7 +5806,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         self.applyTransitFiltersAndSort()
         self.selectedTransitPlanIndex = 0
         self.remainingRouteMinutes = plan1.totalMinutes
-        self.currentStepInstruction = "步行 \(walkStartDist)米 前往 \(startSt.name) (\(startSt.exit))"
+        self.currentStepInstruction = "步行 \(walkStartDist)米 前往 \(Self.formatStationExit(startSt.name, startSt.exit))"
         self.distanceToNextStepMeters = Double(walkStartDist)
     }
 
@@ -5831,7 +5843,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             coords.append(sCoord)
             let sPin = MKPointAnnotation()
             sPin.coordinate = sCoord
-            sPin.title = "\(startHK.name) (\(startHK.exit)) - \(startHK.line)"
+            sPin.title = "\(Self.formatStationExit(startHK.name, startHK.exit)) - \(startHK.line)"
             sPin.subtitle = "SUBWAY_STOP_PIN"
             pins.append(sPin)
             
@@ -5842,7 +5854,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             coords.append(eCoord)
             let ePin = MKPointAnnotation()
             ePin.coordinate = eCoord
-            ePin.title = "\(endHK.name) (\(endHK.exit))"
+            ePin.title = "\(Self.formatStationExit(endHK.name, endHK.exit))"
             ePin.subtitle = "SUBWAY_STOP_PIN"
             pins.append(ePin)
             
@@ -5860,7 +5872,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             coords.append(sCoord)
             let sPin = MKPointAnnotation()
             sPin.coordinate = sCoord
-            sPin.title = "\(startHK.name) (\(startHK.exit)) - 港鐵東鐵綫"
+            sPin.title = "\(Self.formatStationExit(startHK.name, startHK.exit)) - 港鐵東鐵綫"
             sPin.subtitle = "SUBWAY_STOP_PIN"
             pins.append(sPin)
             
@@ -6063,7 +6075,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                 coords.append(sCoord)
                 let sPin = MKPointAnnotation()
                 sPin.coordinate = sCoord
-                sPin.title = "\(startMetro.name) (\(startMetro.exit)) - 地铁1号线"
+                sPin.title = "\(Self.formatStationExit(startMetro.name, startMetro.exit)) - 地铁1号线"
                 sPin.subtitle = "SUBWAY_STOP_PIN"
                 pins.append(sPin)
                 
@@ -6148,26 +6160,28 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
 
     func resolveTransitStationCoordinate(stationName: String, near: CLLocationCoordinate2D, completion: @escaping (CLLocationCoordinate2D?) -> Void) {
         let cleaned = cleanStationLookupName(stationName)
-        if !cleaned.isEmpty {
+        let dbFallbackCoord: CLLocationCoordinate2D? = {
+            guard !cleaned.isEmpty else { return nil }
             for s in AudioPlayerManager.szStationsDatabase {
                 let sClean = cleanStationLookupName(s.name)
                 if sClean == cleaned || sClean.contains(cleaned) || cleaned.contains(sClean) {
-                    completion(CLLocationCoordinate2D(latitude: s.lat, longitude: s.lon))
-                    return
+                    return CLLocationCoordinate2D(latitude: s.lat, longitude: s.lon)
                 }
             }
             for s in AudioPlayerManager.hkStationsDatabase {
                 let sClean = cleanStationLookupName(s.name.components(separatedBy: " ")[0])
                 if sClean == cleaned || sClean.contains(cleaned) || cleaned.contains(sClean) {
-                    completion(CLLocationCoordinate2D(latitude: s.lat, longitude: s.lon))
-                    return
+                    return CLLocationCoordinate2D(latitude: s.lat, longitude: s.lon)
                 }
             }
-        }
+            return nil
+        }()
 
-        if !stationName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        // Query Apple Maps MKLocalSearch first so entrance coordinates (e.g. 丹竹头地铁站A口) match Apple Maps 1:1!
+        let trimmedQuery = stationName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedQuery.isEmpty {
             let req = MKLocalSearch.Request()
-            req.naturalLanguageQuery = stationName
+            req.naturalLanguageQuery = trimmedQuery
             req.region = MKCoordinateRegion(center: near, latitudinalMeters: 9000, longitudinalMeters: 9000)
             MKLocalSearch(request: req).start { [weak self] resp, _ in
                 DispatchQueue.main.async {
@@ -6184,6 +6198,10 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                                 return
                             }
                         }
+                    }
+                    if let fb = dbFallbackCoord {
+                        completion(fb)
+                        return
                     }
                     guard let self = self else { completion(nil); return }
                     if CoordinateConverter.isInHongKong(near) {
@@ -6230,7 +6248,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
 
         MKDirections(request: roadReq).calculate { [weak self] resp, _ in
             DispatchQueue.main.async {
-                guard let self = self else { return }
+                guard let self = self, self.transitPhase != .walkingToStation else { return }
                 if let roadRoute = resp?.routes.first {
                     self.activeRoute = roadRoute
                     self.customTransitPolyline = nil
@@ -6409,11 +6427,17 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         
         // Find first transit boarding step
         if let firstTransit = plan.steps.first(where: { $0.kind != .walk }) {
+            self.activeDirectionsRequest?.cancel()
+            self.customTransitPolyline = nil
+            self.transitSegmentPolylines = []
+            self.candidateRoutes = []
+            self.activeRoute = nil
             self.transitActiveLineName = firstTransit.lineName
             self.transitBoardingStationName = firstTransit.fromStation
             self.transitAlightStationName = firstTransit.toStation
             self.transitPassStationsList = firstTransit.passStations
             self.transitCurrentStationIndex = 0
+            self.destinationName = firstTransit.fromStation
             
             self.transitPhase = .walkingToStation
             self.resolveTransitStationCoordinate(stationName: firstTransit.fromStation, near: self.userCoordinate) { [weak self] resolved in
@@ -13817,6 +13841,34 @@ struct RmkEvaluator {
                     }
                 }
             }
+            if paired == nil && !preferRuns {
+                let byNum = Dictionary(grouping: remaining.filter { !$0.isJoker }, by: { $0.number })
+                for num in (1...13).reversed() {
+                    var uniq: [RmkTile] = []
+                    var seen = Set<RmkColor>()
+                    for t in (byNum[num] ?? []) where !seen.contains(t.color) {
+                        seen.insert(t.color); uniq.append(t)
+                    }
+                    if uniq.count == 2 {
+                        paired = [uniq[0], uniq[1], joker]
+                        break
+                    }
+                }
+            }
+            if paired == nil {
+                let byCol = Dictionary(grouping: remaining.filter { !$0.isJoker }, by: { $0.color })
+                outerRunFallback: for col in [RmkColor.red, .blue, .yellow, .black] {
+                    let s = (byCol[col] ?? []).sorted { $0.number < $1.number }
+                    if s.count >= 2 {
+                        for i in 0..<(s.count - 1) {
+                            if s[i+1].number - s[i].number >= 1 && s[i+1].number - s[i].number <= 2 {
+                                paired = [s[i], s[i+1], joker]
+                                break outerRunFallback
+                            }
+                        }
+                    }
+                }
+            }
             if paired == nil {
                 let byNum = Dictionary(grouping: remaining.filter { !$0.isJoker }, by: { $0.number })
                 for num in (1...13).reversed() {
@@ -13921,9 +13973,45 @@ struct RmkEvaluator {
             var changed = true
             while changed && tableActionsCount < maxTableActions {
                 changed = false
-                // 2A. Try appending/prepending any single hand tile onto any existing table run or 3-tile group
+                // 2A-Joker. Combine hand Joker + 1 hand tile + 1 spare table tile (never waste Joker on 5-6-7!)
+                if let jIdx = remHand.firstIndex(where: { $0.isJoker }), remHand.count >= 2 {
+                    let jTile = remHand[jIdx]
+                    outerJokerCombo: for hIdx in 0..<remHand.count where hIdx != jIdx {
+                        let ht = remHand[hIdx]
+                        guard !ht.isJoker else { continue }
+                        for mIdx in 0..<nextMelds.count {
+                            let mTiles = nextMelds[mIdx].tiles
+                            guard mTiles.count >= 4 else { continue }
+                            for cIdx in 0..<mTiles.count {
+                                let spareTile = mTiles[cIdx]
+                                var remainTable = mTiles
+                                remainTable.remove(at: cIdx)
+                                guard evaluateMeld(remainTable) != nil else { continue }
+                                let newTriad = [jTile, ht, spareTile]
+                                if evaluateMeld(newTriad) != nil {
+                                    nextMelds[mIdx].tiles = sortMeldForDisplay(remainTable)
+                                    nextMelds.append(RmkMeld(id: UUID().uuidString, tiles: sortMeldForDisplay(newTriad)))
+                                    playedIds.append(jTile.id)
+                                    playedIds.append(ht.id)
+                                    highlightedIds.insert(jTile.id)
+                                    highlightedIds.insert(ht.id)
+                                    highlightedIds.insert(spareTile.id)
+                                    remHand.removeAll { $0.id == jTile.id || $0.id == ht.id }
+                                    tableActionsCount += 1
+                                    changed = true
+                                    break outerJokerCombo
+                                }
+                            }
+                        }
+                    }
+                    if changed { continue }
+                }
+
+                // 2A. Try appending/prepending any single NON-JOKER hand tile onto an existing table meld
+                // (Only allow appending a Joker if it is AI's final winning tile!)
                 outerSingle: for hIdx in 0..<remHand.count {
                     let ht = remHand[hIdx]
+                    if ht.isJoker && remHand.count > 1 { continue }
                     for mIdx in 0..<nextMelds.count {
                         let cand = nextMelds[mIdx].tiles + [ht]
                         if evaluateMeld(cand) != nil {
@@ -14271,6 +14359,7 @@ final class RummikubEngine: NSObject, ObservableObject {
 
     private let serviceType = "kon-rmk"
     private var pool: [RmkTile] = []
+    private var consecutiveEmptyPoolPasses: Int = 0
     private var myPeerName: String = ""
     private var myPeerID: MCPeerID = MCPeerID(displayName: "HTT-Rmk")
     private var mcSession: MCSession?
@@ -14793,6 +14882,7 @@ final class RummikubEngine: NSObject, ObservableObject {
         rebuildLobbySeats()
         let pCnt = max(2, min(4, seats.count))
         pool = RummikubEngine.build106Deck()
+        consecutiveEmptyPoolPasses = 0
         for i in 0..<pCnt {
             let dealt = Array(pool.prefix(14))
             pool.removeFirst(14)
@@ -15448,6 +15538,7 @@ final class RummikubEngine: NSObject, ObservableObject {
     }
 
     private func executeCommitTurn(seatIdx: Int, newMelds: [RmkMeld], playedHandIds: [String]) {
+        consecutiveEmptyPoolPasses = 0
         let pCnt = max(2, seats.count)
         tableMelds = newMelds
         if seatIdx == mySeatIndex || lastTurnHighlightedTileIds.isEmpty {
@@ -15477,14 +15568,52 @@ final class RummikubEngine: NSObject, ObservableObject {
             let t = pool.removeFirst()
             seats[seatIdx].hand.append(t)
             poolCount = pool.count
+            consecutiveEmptyPoolPasses = 0
+        } else {
+            consecutiveEmptyPoolPasses += 1
+            if consecutiveEmptyPoolPasses >= pCnt {
+                finishRoundByFewestTiles()
+                return
+            }
         }
         isEditingTable = false
         currentTurnSeat = (seatIdx + 1) % pCnt
         resetWorkspaceForNewTurn(preserveRackLayout: true)
         turnRemainingSeconds = 60
-        statusBanner = "[\(seats[seatIdx].name)] \(reason) · 轮到 [\(seats[currentTurnSeat].name)]"
+        let passText = pool.isEmpty ? "牌堆已空跳过 (\(consecutiveEmptyPoolPasses)/\(pCnt))" : reason
+        statusBanner = "[\(seats[seatIdx].name)] \(passText) · 轮到 [\(seats[currentTurnSeat].name)]"
         broadcastFullState()
         scheduleAIIfNeeded()
+    }
+
+    private func finishRoundByFewestTiles() {
+        let pCnt = max(2, seats.count)
+        var bestIdx = 0
+        var bestCount = Int.max
+        var bestPts = Int.max
+        for i in 0..<pCnt {
+            let cnt = seats[i].hand.count
+            let pts = seats[i].hand.reduce(0) { $0 + ($1.isJoker ? 30 : $1.number) }
+            if cnt < bestCount || (cnt == bestCount && pts < bestPts) {
+                bestCount = cnt
+                bestPts = pts
+                bestIdx = i
+            }
+        }
+        phase = .roundOver
+        winnerSeat = bestIdx
+        turnTimer?.invalidate()
+        var totalGain = 0
+        for i in 0..<pCnt where i != bestIdx {
+            let pen = seats[i].hand.reduce(0) { $0 + ($1.isJoker ? 30 : $1.number) }
+            let diff = max(0, pen - bestPts)
+            seats[i].score -= diff
+            totalGain += diff
+        }
+        seats[bestIdx].score += totalGain
+        RmkSoundFX.shared.playRoundWin()
+        statusBanner = "🏆 牌堆已摸空！[\(seats[bestIdx].name)] 剩余手牌最少 (\(bestCount)张) 获胜！(赢得 +\(totalGain) 分)"
+        broadcastFullState()
     }
 
     private func finishRound(winner: Int) {

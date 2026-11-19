@@ -829,8 +829,9 @@ fun KOnDoudizhuSheetDialog(onDismiss: () -> Unit, embeddedInGameRoom: Boolean = 
                                         modifier = Modifier.size(22.dp)
                                     )
                                 }
+                                val roleTag = if (phase == DoudizhuGamePhase.BIDDING) "" else if (mySeat.isLandlord) " 🎩地主" else " 🌾农民"
                                 Text(
-                                    "${mySeat.name} ${if (mySeat.isLandlord) "🎩" else "🌾"} · 余${mySeat.hand.size} · ${mySeat.score}分",
+                                    "${mySeat.name}$roleTag · 余${mySeat.hand.size} · ${mySeat.score}分",
                                     color = Color.White,
                                     fontSize = 10.sp,
                                     fontWeight = FontWeight.Black,
@@ -1024,41 +1025,13 @@ private fun AdaptivePlayerHandView(
         contentAlignment = Alignment.Center
     ) {
         val usableWidth = (maxWidth - 4.dp).coerceAtLeast(240.dp)
-        val isPortraitTwoRows = maxWidth < 520.dp && hand.size > 10
-
-        if (isPortraitTwoRows) {
-            val topCount = (hand.size + 1) / 2
-            val topCards = hand.subList(0, topCount)
-            val bottomCards = hand.subList(topCount, hand.size)
-            Column(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy((-20).dp)
-            ) {
-                FittedHandCardRow(
-                    cards = topCards,
-                    selectedIds = selectedIds,
-                    usableWidth = usableWidth,
-                    app = app,
-                    onToggle = onToggle
-                )
-                FittedHandCardRow(
-                    cards = bottomCards,
-                    selectedIds = selectedIds,
-                    usableWidth = usableWidth,
-                    app = app,
-                    onToggle = onToggle
-                )
-            }
-        } else {
-            FittedHandCardRow(
-                cards = hand,
-                selectedIds = selectedIds,
-                usableWidth = usableWidth,
-                app = app,
-                onToggle = onToggle
-            )
-        }
+        FittedHandCardRow(
+            cards = hand,
+            selectedIds = selectedIds,
+            usableWidth = usableWidth,
+            app = app,
+            onToggle = onToggle
+        )
     }
 }
 
@@ -1070,13 +1043,13 @@ private fun FittedHandCardRow(
     app: HTTNaviApp,
     onToggle: (String) -> Unit
 ) {
-    val cardW = 54.dp
-    val cardH = 76.dp
     val count = cards.size
     if (count == 0) return
+    val cardW = if (count > 14) ((usableWidth / (count * 0.52f + 0.48f)).coerceIn(34.dp, 50.dp)) else 52.dp
+    val cardH = cardW * 1.42f
 
     val rawStep = if (count > 1) (usableWidth - cardW) / (count - 1) else 0.dp
-    val step = if (count > 1) rawStep.coerceIn(19.dp, 36.dp) else 0.dp
+    val step = if (count > 1) rawStep.coerceIn(17.dp, 34.dp) else 0.dp
     val totalRowWidth = if (count > 1) cardW + step * (count - 1) else cardW
 
     Box(
@@ -1377,7 +1350,7 @@ private fun OpponentSeatBox(
     val stackCount = minOf(6, maxOf(1, (seat.hand.size + 2) / 3))
     Column(
         modifier = Modifier
-            .width(98.dp)
+            .width(114.dp)
             .clip(RoundedCornerShape(12.dp))
             .background(Color.Black.copy(alpha = 0.52f))
             .border(if (isTurn) 2.dp else 1.dp, if (isTurn) Color(0xFF00E676) else Color.White.copy(alpha = 0.22f), RoundedCornerShape(12.dp))
@@ -1455,9 +1428,11 @@ private fun OpponentSeatBox(
                 Text(
                     "余${seat.hand.size}张",
                     color = if (seat.hand.size <= 2) Color.White else DdzGold,
-                    fontSize = 11.sp,
+                    fontSize = 10.sp,
                     fontFamily = FontFamily.Monospace,
-                    fontWeight = FontWeight.Black
+                    fontWeight = FontWeight.Black,
+                    maxLines = 1,
+                    softWrap = false
                 )
             }
         }

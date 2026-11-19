@@ -1117,9 +1117,47 @@ namespace RmkEvaluator {
             int maxTableActions = (remHand.size() <= 3) ? 4 : (chosenHandMelds.empty() ? 2 : 1);
             while (changed && tableActions < maxTableActions) {
                 changed = false;
-                // 1. Try appending/prepending any single hand tile onto an existing table run or 3-tile group
+                // 1-Joker. Combine hand Joker + 1 hand tile + 1 spare table tile before appending Joker!
+                int jIdx = -1;
+                for (size_t i = 0; i < remHand.size(); ++i) if (remHand[i].isJoker()) { jIdx = (int)i; break; }
+                if (jIdx >= 0 && remHand.size() >= 2) {
+                    RmkTile jTile = remHand[jIdx];
+                    for (size_t hIdx = 0; hIdx < remHand.size() && !changed; ++hIdx) {
+                        if ((int)hIdx == jIdx || remHand[hIdx].isJoker()) continue;
+                        RmkTile ht = remHand[hIdx];
+                        for (size_t mIdx = 0; mIdx < outNewMelds.size() && !changed; ++mIdx) {
+                            const auto& mTiles = outNewMelds[mIdx].tiles;
+                            if (mTiles.size() < 4) continue;
+                            for (size_t cIdx = 0; cIdx < mTiles.size() && !changed; ++cIdx) {
+                                RmkTile spareTile = mTiles[cIdx];
+                                auto remainTable = mTiles;
+                                remainTable.erase(remainTable.begin() + cIdx);
+                                if (evaluateMeld(remainTable) < 0) continue;
+                                std::vector<RmkTile> newTriad = {jTile, ht, spareTile};
+                                if (evaluateMeld(newTriad) >= 0) {
+                                    outNewMelds[mIdx].tiles = sortMeldForDisplay(remainTable);
+                                    outNewMelds.push_back({"m_" + std::to_string(seedTick) + "_" + std::to_string(mSeq++), sortMeldForDisplay(newTriad)});
+                                    outPlayedIds.insert(jTile.id);
+                                    outPlayedIds.insert(ht.id);
+                                    outHighlightedIds.insert(jTile.id);
+                                    outHighlightedIds.insert(ht.id);
+                                    outHighlightedIds.insert(spareTile.id);
+                                    remHand.erase(std::remove_if(remHand.begin(), remHand.end(), [&](const RmkTile& t) {
+                                        return t.id == jTile.id || t.id == ht.id;
+                                    }), remHand.end());
+                                    tableActions++;
+                                    changed = true;
+                                }
+                            }
+                        }
+                    }
+                    if (changed) continue;
+                }
+
+                // 1. Try appending/prepending any single NON-JOKER hand tile onto an existing table meld
                 for (size_t hIdx = 0; hIdx < remHand.size() && !changed; ++hIdx) {
                     const auto& ht = remHand[hIdx];
+                    if (ht.isJoker() && remHand.size() > 1) continue;
                     for (size_t mIdx = 0; mIdx < outNewMelds.size(); ++mIdx) {
                         auto cand = outNewMelds[mIdx].tiles;
                         cand.push_back(ht);

@@ -6081,7 +6081,7 @@ struct InAppTransitPlanSheetView: View {
                             
                             if stepIdx == 0 {
                                 Button(action: {
-                                    manager.selectTransitPlan(at: planIndex)
+                                    manager.selectedTransitPlanIndex = planIndex
                                     dismiss()
                                     manager.startTransitWalkingNavigation()
                                 }) {
