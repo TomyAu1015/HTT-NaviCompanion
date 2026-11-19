@@ -68,14 +68,8 @@ struct KOnAIChatSheetView: View {
                     onOpenGameRoom()
                 }
             }
-            if !llm.activeModelFileName.isEmpty && !llm.activeModelLoaded {
-                let targetFile = llm.activeModelFileName
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-                    if !llm.activeModelLoaded && llm.activeModelFileName == targetFile {
-                        llm.loadModelIntoMemory(fileName: targetFile)
-                    }
-                }
-            }
+            // Do NOT auto-load 1GB GGUF inside .onAppear so opening AI sheet is 100% instant and crash-free!
+            llm.checkPreviousCrashGuard()
         }
         .onDisappear {
             // Release mapped model buffer on close to protect navigation & game room RAM

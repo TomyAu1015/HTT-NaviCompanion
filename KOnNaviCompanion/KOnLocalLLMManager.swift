@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import SwiftUI
 import AVFoundation
 import MapKit
@@ -219,6 +220,20 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
     }
 
     // MARK: - Model Files Management (Download / Import / Inspect / Native llama.cpp Load & Unload)
+    private let loadingGuardKey = "htt_ai_loading_guard_v1"
+
+    func checkPreviousCrashGuard() {
+        if UserDefaults.standard.bool(forKey: loadingGuardKey) {
+            UserDefaults.standard.set(false, forKey: loadingGuardKey)
+            activeModelLoaded = false
+            statusMessage = "检测到上次挂载大模型因内存/引擎异常中断，已自动保护。建议改用 Qwen2.5-0.5B 轻量版或先切回舞台模式再挂载。"
+        }
+    }
+
+    private func availableAppMemoryMB() -> Int {
+        return Int(os_proc_available_memory() / (1024 * 1024))
+    }
+
     func refreshInstalledModels() {
         let fm = FileManager.default
         let files = (try? fm.contentsOfDirectory(atPath: modelsDirectoryURL.path)) ?? []
@@ -269,7 +284,13 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
             statusMessage = "低内存保护已拦截：当前设备内存 \(String(format: "%.1f", devicePhysicalRamGB))GB，建议改用 0.5B 轻量版"
             return
         }
-        statusMessage = "正在安全挂载本地大模型..."
+        let freeMB = availableAppMemoryMB()
+        if freeMB > 0 && Int(info.fileSizeMB) + 220 > freeMB {
+            statusMessage = "当前可用内存约 \(freeMB)MB，不足以安全载入 \(Int(info.fileSizeMB))MB 模型（建议先切回舞台模式释放地图内存，或改用 352MB 的 Qwen2.5-0.5B 轻量版）"
+            return
+        }
+        statusMessage = "正在安全挂载本地大模型（剩余可用内存约 \(freeMB)MB）..."
+        UserDefaults.standard.set(true, forKey: loadingGuardKey)
         let ctxLen: UInt32 = (lowMemoryGuardEnabled || devicePhysicalRamGB < 5.5) ? 512 : 1024
 
         llmQueue.async { [weak self] in
@@ -282,10 +303,12 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
                 KOnLocalLLMManager.backendInitialized = true
             }
             var mparams = llama_model_default_params()
-            // Use ARM64 NEON + Accelerate CPU with mmap (0 GPU layers) to avoid Metal shader abort & iOS Jetsam OOM crashes!
+            // Strict CPU NEON + mmap mode (n_gpu_layers = 0, use_mlock = false, offload_kqv = false) prevents Metal abort & Jetsam OOM!
             mparams.n_gpu_layers = 0
             mparams.use_mmap = true
+            mparams.use_mlock = false
             guard let model = llama_model_load_from_file(url.path, mparams) else {
+                UserDefaults.standard.set(false, forKey: self.loadingGuardKey)
                 DispatchQueue.main.async {
                     self.activeModelLoaded = false
                     self.statusMessage = "模型加载失败（内存不足或文件损坏，建议改用 0.5B 轻量版）"
@@ -295,11 +318,13 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
             var cparams = llama_context_default_params()
             cparams.n_ctx = ctxLen
             cparams.n_batch = 128
+            cparams.offload_kqv = false
             let thr = Int32(max(2, min(4, ProcessInfo.processInfo.activeProcessorCount - 2)))
             cparams.n_threads = thr
             cparams.n_threads_batch = thr
             guard let ctx = llama_init_from_model(model, cparams) else {
                 llama_model_free(model)
+                UserDefaults.standard.set(false, forKey: self.loadingGuardKey)
                 DispatchQueue.main.async {
                     self.activeModelLoaded = false
                     self.statusMessage = "无法初始化上下文（建议开启低内存保护或换 0.5B）"
@@ -318,6 +343,7 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
             self.llamaSampler = smpl
             #endif
 
+            UserDefaults.standard.set(false, forKey: self.loadingGuardKey)
             DispatchQueue.main.async {
                 self.activeModelFileName = fileName
                 self.activeModelInfo = info
