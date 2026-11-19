@@ -573,15 +573,23 @@ struct HTTSmoothMapView: UIViewRepresentable {
             let usrLoc = CLLocation(latitude: targetCoord.latitude, longitude: targetCoord.longitude)
             let distDelta = camLoc.distance(from: usrLoc)
             
-            if distDelta > 3.0 || hDiff > 2.5 {
+            let nowTime = CACurrentMediaTime()
+            if (distDelta > 2.2 || hDiff > 3.5) && (nowTime - context.coordinator.lastCameraFollowTime >= 0.45) {
+                context.coordinator.lastCameraFollowTime = nowTime
                 let camera = MKMapCamera(
                     lookingAtCenter: targetCoord,
                     fromDistance: manager.userZoomDistance,
                     pitch: camPitch,
                     heading: camHeading
                 )
-                // Use animated: false for small heading updates so MapKit NEVER freezes or locks up!
-                mapView.setCamera(camera, animated: false)
+                // Smooth linear animation with allowUserInteraction + beginFromCurrentState eliminates stutter & never blocks pan/zoom!
+                UIView.animate(
+                    withDuration: 0.42,
+                    delay: 0,
+                    options: [.curveLinear, .allowUserInteraction, .beginFromCurrentState]
+                ) {
+                    mapView.camera = camera
+                }
             }
         }
     }

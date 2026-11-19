@@ -6307,11 +6307,18 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                         w1Req.source = MKMapItem(placemark: MKPlacemark(coordinate: originCoord))
                         w1Req.destination = MKMapItem(placemark: MKPlacemark(coordinate: boardCoord))
                         w1Req.transportType = .walking
+                        w1Req.requestsAlternateRoutes = true
                         segGroup.enter()
-                        MKDirections(request: w1Req).calculate { r1, _ in
-                            if let p1 = r1?.routes.first?.polyline {
-                                p1.title = "TRANSIT_WALK_BLUE"
-                                walk1Poly = p1
+                        MKDirections(request: w1Req).calculate { [weak self] r1, _ in
+                            if let routes = r1?.routes, !routes.isEmpty {
+                                let bestWalk = routes.min { a, b in
+                                    let aOver = (self?.routeContainsOverpassOrHighway(a) ?? false) ? 1 : 0
+                                    let bOver = (self?.routeContainsOverpassOrHighway(b) ?? false) ? 1 : 0
+                                    if aOver != bOver { return aOver < bOver }
+                                    return a.distance < b.distance
+                                } ?? routes[0]
+                                bestWalk.polyline.title = "TRANSIT_WALK_BLUE"
+                                walk1Poly = bestWalk.polyline
                             }
                             segGroup.leave()
                         }
@@ -6333,16 +6340,24 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                         w2Req.source = MKMapItem(placemark: MKPlacemark(coordinate: alightCoord))
                         w2Req.destination = MKMapItem(placemark: MKPlacemark(coordinate: to))
                         w2Req.transportType = .walking
+                        w2Req.requestsAlternateRoutes = true
                         segGroup.enter()
-                        MKDirections(request: w2Req).calculate { r2, _ in
-                            if let p2 = r2?.routes.first?.polyline {
-                                p2.title = "TRANSIT_WALK_BLUE"
-                                walk2Poly = p2
+                        MKDirections(request: w2Req).calculate { [weak self] r2, _ in
+                            if let routes = r2?.routes, !routes.isEmpty {
+                                let bestWalk = routes.min { a, b in
+                                    let aOver = (self?.routeContainsOverpassOrHighway(a) ?? false) ? 1 : 0
+                                    let bOver = (self?.routeContainsOverpassOrHighway(b) ?? false) ? 1 : 0
+                                    if aOver != bOver { return aOver < bOver }
+                                    return a.distance < b.distance
+                                } ?? routes[0]
+                                bestWalk.polyline.title = "TRANSIT_WALK_BLUE"
+                                walk2Poly = bestWalk.polyline
                             }
                             segGroup.leave()
                         }
 
                         segGroup.notify(queue: .main) {
+                            guard self.transitPhase != .walkingToStation else { return }
                             self.transitSegmentPolylines = [walk1Poly, transitPoly, walk2Poly]
                         }
                     }
@@ -6392,17 +6407,22 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         self.transitPhase = .walkingToDestination
         
         let walkReq = MKDirections.Request()
-        let src = isDemoSimulating
-            ? MKMapItem(placemark: MKPlacemark(coordinate: userCoordinate))
-            : MKMapItem.forCurrentLocation()
-        walkReq.source = src
+        walkReq.source = MKMapItem(placemark: MKPlacemark(coordinate: userCoordinate))
         walkReq.destination = MKMapItem(placemark: MKPlacemark(coordinate: destCoord))
         walkReq.transportType = .walking
+        walkReq.requestsAlternateRoutes = true
         
         MKDirections(request: walkReq).calculate { [weak self] resp, _ in
             DispatchQueue.main.async {
                 guard let self = self else { return }
-                if let r = resp?.routes.first {
+                if let routes = resp?.routes, !routes.isEmpty {
+                    let r = routes.min { a, b in
+                        let aOver = self.routeContainsOverpassOrHighway(a) ? 1 : 0
+                        let bOver = self.routeContainsOverpassOrHighway(b) ? 1 : 0
+                        if aOver != bOver { return aOver < bOver }
+                        return a.distance < b.distance
+                    } ?? routes[0]
+                    r.polyline.title = "WALKING_BLUE" 
                     self.activeRoute = r
                     self.currentStepIndex = 0
                     self.remainingRouteDistanceKm = r.distance / 1000.0
@@ -6446,17 +6466,25 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                 self.transitBoardingStationCoord = boardCoord
 
                 let walkReq = MKDirections.Request()
-                let src = self.isDemoSimulating
-                    ? MKMapItem(placemark: MKPlacemark(coordinate: self.userCoordinate))
-                    : MKMapItem.forCurrentLocation()
-                walkReq.source = src
+                // Use aligned userCoordinate + requestsAlternateRoutes + surface pedestrian filter (1:1 with normal walking mode, NEVER elevated highways!)
+                walkReq.source = MKMapItem(placemark: MKPlacemark(coordinate: self.userCoordinate))
                 walkReq.destination = MKMapItem(placemark: MKPlacemark(coordinate: boardCoord))
                 walkReq.transportType = .walking
+                walkReq.requestsAlternateRoutes = true
 
                 MKDirections(request: walkReq).calculate { [weak self] resp, _ in
                     DispatchQueue.main.async {
                         guard let self = self else { return }
-                        if let r = resp?.routes.first {
+                        if let routes = resp?.routes, !routes.isEmpty {
+                            let r = routes.min { a, b in
+                                let aOver = self.routeContainsOverpassOrHighway(a) ? 1 : 0
+                                let bOver = self.routeContainsOverpassOrHighway(b) ? 1 : 0
+                                if aOver != bOver { return aOver < bOver }
+                                return a.distance < b.distance
+                            } ?? routes[0]
+                            r.polyline.title = "WALKING_BLUE"
+                            self.transitSegmentPolylines = []
+                            self.customTransitPolyline = nil
                             self.activeRoute = r
                             self.currentStepIndex = 0
                             self.remainingRouteDistanceKm = r.distance / 1000.0
@@ -9027,6 +9055,10 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         }
     }
     
+    private var smoothedSpeedKmh: Double = 0.0
+    private var consecutiveLowSpeedFixes: Int = 0
+    private var lastValidSpeedTimestamp: Date = .distantPast
+
     // MARK: - CLLocationManagerDelegate
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         guard let loc = locations.last else { return }
@@ -9066,20 +9098,49 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             }
             
             var movedDelta: Double = 0.0
-            if let prev = self.lastLocation, prev.horizontalAccuracy >= 0 && prev.horizontalAccuracy <= 50 {
-                let delta = loc.distance(from: prev)
-                movedDelta = delta
-                if self.hasActiveNavigation && delta > 1.5 && delta < 500 {
-                    self.tripDistanceKm += delta / 1000.0
+            var dtSec: Double = 1.0
+            if let prev = self.lastLocation {
+                dtSec = max(0.05, loc.timestamp.timeIntervalSince(prev.timestamp))
+                if prev.horizontalAccuracy >= 0 && prev.horizontalAccuracy <= 50 {
+                    let delta = loc.distance(from: prev)
+                    movedDelta = delta
+                    if self.hasActiveNavigation && delta > 1.5 && delta < 500 {
+                        self.tripDistanceKm += delta / 1000.0
+                    }
                 }
             }
             self.lastLocation = loc
             
-            // Filter out indoor Wi-Fi/cell coordinate jump speed spikes when stationary
-            let isReliableMovingFix = (loc.horizontalAccuracy > 0 && loc.horizontalAccuracy <= 30.0 && loc.speed >= 0.8 && movedDelta >= 2.5)
-            let rawSpeed = isReliableMovingFix ? max(0.0, loc.speed * 3.6) : 0.0
+            // Smooth Doppler GPS speed with EMA & anti-zero-jump hysteresis (no false 0 drops on sub-second callbacks!)
             if !self.isDemoSimulating {
-                self.currentSpeedKmh = rawSpeed
+                let now = Date()
+                var sampleKmh: Double? = nil
+                if loc.horizontalAccuracy > 0 && loc.horizontalAccuracy <= 50.0 {
+                    if loc.speed >= 0.0 {
+                        sampleKmh = min(260.0, max(0.0, loc.speed * 3.6))
+                    } else if dtSec >= 0.8 && loc.horizontalAccuracy <= 25.0 && movedDelta >= 2.0 && movedDelta <= 80.0 * dtSec {
+                        sampleKmh = min(260.0, (movedDelta / dtSec) * 3.6)
+                    }
+                }
+                if let sKmh = sampleKmh {
+                    if sKmh < 1.8 {
+                        self.consecutiveLowSpeedFixes += 1
+                        if self.consecutiveLowSpeedFixes >= 2 || self.smoothedSpeedKmh < 4.0 {
+                            self.smoothedSpeedKmh = 0.0
+                        }
+                    } else {
+                        self.consecutiveLowSpeedFixes = 0
+                        if self.smoothedSpeedKmh < 1.0 || abs(sKmh - self.smoothedSpeedKmh) > 18.0 {
+                            self.smoothedSpeedKmh = sKmh
+                        } else {
+                            self.smoothedSpeedKmh = self.smoothedSpeedKmh * 0.62 + sKmh * 0.38
+                        }
+                        self.lastValidSpeedTimestamp = now
+                    }
+                } else if now.timeIntervalSince(self.lastValidSpeedTimestamp) > 3.5 {
+                    self.smoothedSpeedKmh = 0.0
+                }
+                self.currentSpeedKmh = self.smoothedSpeedKmh
             }
             
             // TRANSIT NAVIGATION AUTO-SWITCH ENGINE (GaoDe 1:1 Lifecycle!)
@@ -9581,8 +9642,36 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                 parsedLon = lo
             }
         }
+        // 2.5 Check Tencent/WeChat web marker param: marker=coord:22.54,114.05;title:XXX;addr:YYY
+        if let markerParam = params["marker"] {
+            for seg in markerParam.components(separatedBy: ";") {
+                let s = seg.trimmingCharacters(in: .whitespacesAndNewlines)
+                if s.lowercased().hasPrefix("coord:") {
+                    let cParts = s.dropFirst(6).components(separatedBy: ",")
+                    if cParts.count >= 2, let la = Double(cParts[0].trimmingCharacters(in: .whitespaces)), let lo = Double(cParts[1].trimmingCharacters(in: .whitespaces)) {
+                        parsedLat = la
+                        parsedLon = lo
+                    }
+                } else if s.lowercased().hasPrefix("title:") && parsedName == nil {
+                    parsedName = String(s.dropFirst(6))
+                } else if s.lowercased().hasPrefix("addr:") && parsedName == nil {
+                    parsedName = String(s.dropFirst(5))
+                }
+            }
+        }
+        // 2.6 Check Amap web position param: position=lon,lat,name
+        if parsedLat == nil, let posParam = params["position"] {
+            let pParts = posParam.components(separatedBy: ",")
+            if pParts.count >= 2, let lo = Double(pParts[0].trimmingCharacters(in: .whitespaces)), let la = Double(pParts[1].trimmingCharacters(in: .whitespaces)) {
+                parsedLat = la
+                parsedLon = lo
+                if pParts.count >= 3 && parsedName == nil {
+                    parsedName = pParts[2]
+                }
+            }
+        }
         if parsedName == nil {
-            parsedName = ["dname", "poiname", "name", "title", "dest", "keyword", "q", " saddr", "daddr"].compactMap { params[$0] }.first
+            parsedName = ["dname", "poiname", "name", "title", "dest", "keyword", "q", "daddr", "toname", "to", "address", "addr", "word"].compactMap { params[$0] }.first
         }
         
         // 3. Check Baidu Map (baidumap://map/direction?destination=latlng:22.54,114.05|name:xxx or destination=22.54,114.05)
@@ -9630,8 +9719,9 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             var finalCoord = CLLocationCoordinate2D(latitude: la, longitude: lo)
             if scheme == "baidumap" && !coordType.contains("gcj") && !coordType.contains("wgs") {
                 finalCoord = CoordinateConverter.bd09ToGCJ02(lat: la, lon: lo)
-            } else if coordType.contains("wgs") {
-                // Native Apple MapKit handles WGS coordinate directly
+            } else if coordType.contains("wgs") || scheme == "geo" {
+                // Align WGS-84 to GCJ-02 in Mainland China (no-op Overseas/HK/Macau) so Apple MapKit pin matches road!
+                finalCoord = CoordinateConverter.wgs84ToGCJ02(finalCoord)
             }
             let finalTitle = (parsedName?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false) ? parsedName! : "外部App导入目的地"
             
@@ -9650,7 +9740,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         }
     }
     
-    func searchAndNavigateDirectly(query: String) {
+    func searchAndNavigateDirectly(query: String, allowRetry: Bool = true) {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         
@@ -9667,6 +9757,18 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                     self.isMapEnlarged = true
                     self.isNavigatingFocused = false
                     self.startRouteGuidance(to: first)
+                } else if allowRetry {
+                    // Retry with last clean line/segment if WeChat share included extra prefix text
+                    let parts = trimmed.components(separatedBy: CharacterSet(charactersIn: "\n,，|· ")).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { $0.count >= 2 }
+                    if let fallback = parts.last, fallback != trimmed {
+                        self.searchAndNavigateDirectly(query: fallback, allowRetry: false)
+                        return
+                    }
+                    let msg = self.language == .en ? "Place not found: \(trimmed)" : "未找到地点「\(trimmed)」，请尝试在搜索框输入更短的关键词"
+                    self.playVoice(id: self.activeBaseId() + 18, customQuote: msg, clearQueue: true)
+                } else {
+                    let msg = self.language == .en ? "Place not found: \(trimmed)" : "未找到地点「\(trimmed)」，请尝试在搜索框输入更短的关键词"
+                    self.playVoice(id: self.activeBaseId() + 18, customQuote: msg, clearQueue: true)
                 }
             }
         }
@@ -9678,19 +9780,32 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             playVoice(id: activeBaseId() + 18, customQuote: msg, clearQueue: true)
             return
         }
-        // Check if clipboard contains a URL scheme or http map link
-        if let url = URL(string: raw), url.scheme != nil, (raw.contains("://") || raw.lowercased().hasPrefix("geo:")) {
-            handleIncomingNavigationURL(url)
-            return
+        // 1. Check if clipboard contains an embedded map URL scheme or web map link with coordinates/name
+        let urlPattern = "(https?://[^\\s\\u4e00-\\u9fa5]+|(?:iosamap|amapuri|baidumap|qqmap|geo):[^\\s]+)"
+        if let regex = try? NSRegularExpression(pattern: urlPattern, options: .caseInsensitive),
+           let match = regex.firstMatch(in: raw, range: NSRange(raw.startIndex..., in: raw)),
+           let r = Range(match.range, in: raw) {
+            let urlStr = String(raw[r])
+            if let url = URL(string: urlStr) {
+                let lower = urlStr.lowercased()
+                if lower.contains("coord") || lower.contains("dlat=") || lower.contains("lat=") || lower.contains("marker=") || lower.contains("position=") || lower.contains("destination=") || lower.hasPrefix("geo:") {
+                    handleIncomingNavigationURL(url)
+                    return
+                }
+            }
         }
-        // Otherwise extract clean address text (strip common share noise)
+        // 2. Otherwise strip WeChat / Meituan / Dianping / Amap share noise and search cleanly
         var cleaned = raw
-            .replacingOccurrences(of: "【", with: " ")
-            .replacingOccurrences(of: "】", with: " ")
-        if let range = cleaned.range(of: "http") {
+        if let range = cleaned.range(of: "http", options: .caseInsensitive) {
             cleaned = String(cleaned[..<range.lowerBound])
         }
-        let finalQuery = cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
+        let noiseTokens = ["【", "】", "「", "」", "位置：", "位置:", "地址：", "地址:", "分享位置：", "分享位置:", "导航到：", "导航到:", "我在", "我在"", "点击查看地图", "高德地图", "腾讯地图", "百度地图"]
+        for tok in noiseTokens {
+            cleaned = cleaned.replacingOccurrences(of: tok, with: " ")
+        }
+        cleaned = cleaned.replacingOccurrences(of: """, with: " ")
+        let lines = cleaned.components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+        let finalQuery = (lines.first ?? cleaned).trimmingCharacters(in: .whitespacesAndNewlines)
         if !finalQuery.isEmpty {
             searchAndNavigateDirectly(query: finalQuery)
         }
