@@ -607,6 +607,7 @@ struct HTTSmoothMapView: UIViewRepresentable {
         var lastZoomTrigger: Int = 0
         var lastOverviewFitTrigger: Int = 0
         var lastSelectionRenderTrigger: Int = 0
+        var lastCameraFollowTime: CFTimeInterval = 0
         
         let vehicleAnnotation = VehicleAvatarAnnotation()
         

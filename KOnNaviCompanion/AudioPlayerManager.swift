@@ -9195,11 +9195,11 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                     }
                 }
             }
-            if rawSpeed > self.maxSpeedKmh {
-                self.maxSpeedKmh = rawSpeed
+            if self.currentSpeedKmh > self.maxSpeedKmh {
+                self.maxSpeedKmh = self.currentSpeedKmh
             }
             
-            if self.hasActiveNavigation && self.travelMode.supportsSpeedLimit && self.speedLimitKmh > 0 && rawSpeed > self.speedLimitKmh {
+            if self.hasActiveNavigation && self.travelMode.supportsSpeedLimit && self.speedLimitKmh > 0 && self.currentSpeedKmh > self.speedLimitKmh {
                 self.isOverspeeding = true
                 if Date().timeIntervalSince(self.lastOverspeedAlertTime) > 25.0 {
                     self.lastOverspeedAlertTime = Date()
