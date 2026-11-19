@@ -113,6 +113,8 @@ fun OsmMapView(
     val lastRouteKey = remember { arrayOfNulls<Any>(1) }
     val lastTransitKey = remember { arrayOfNulls<Any>(1) }
     val lastUseAmap = remember { booleanArrayOf(useAmapTiles) }
+    val lastDestMarkerKey = remember { arrayOfNulls<LatLng>(1) }
+    val lastTappedMarkerKey = remember { arrayOfNulls<LatLng>(1) }
 
     AndroidView(
         modifier = modifier,
@@ -265,31 +267,29 @@ fun OsmMapView(
 
             // 4. Update Destination Marker
             val dMarker = destMarkerHolder[0]
-            if (destCoord != null && dMarker != null) {
-                val dc = if (useAmapTiles) CoordinateConverter.wgs84ToGCJ02(destCoord!!) else destCoord!!
-                val newPos = GeoPoint(dc.latitude, dc.longitude)
-                if (!dMarker.isVisible || dMarker.position != newPos) {
-                    dMarker.position = newPos
+            if (destCoord != lastDestMarkerKey[0]) {
+                lastDestMarkerKey[0] = destCoord
+                if (destCoord != null && dMarker != null) {
+                    val dc = if (useAmapTiles) CoordinateConverter.wgs84ToGCJ02(destCoord!!) else destCoord!!
+                    dMarker.position = GeoPoint(dc.latitude, dc.longitude)
                     dMarker.setVisible(true)
-                    needsRedraw = true
+                } else {
+                    dMarker?.setVisible(false)
                 }
-            } else if (dMarker?.isVisible == true) {
-                dMarker.setVisible(false)
                 needsRedraw = true
             }
 
             // 5. Update Tapped POI Marker
             val tMarker = tappedMarkerHolder[0]
-            if (tappedCoord != null && tMarker != null) {
-                val tc = if (useAmapTiles) CoordinateConverter.wgs84ToGCJ02(tappedCoord!!) else tappedCoord!!
-                val newPos = GeoPoint(tc.latitude, tc.longitude)
-                if (!tMarker.isVisible || tMarker.position != newPos) {
-                    tMarker.position = newPos
+            if (tappedCoord != lastTappedMarkerKey[0]) {
+                lastTappedMarkerKey[0] = tappedCoord
+                if (tappedCoord != null && tMarker != null) {
+                    val tc = if (useAmapTiles) CoordinateConverter.wgs84ToGCJ02(tappedCoord!!) else tappedCoord!!
+                    tMarker.position = GeoPoint(tc.latitude, tc.longitude)
                     tMarker.setVisible(true)
-                    needsRedraw = true
+                } else {
+                    tMarker?.setVisible(false)
                 }
-            } else if (tMarker?.isVisible == true) {
-                tMarker.setVisible(false)
                 needsRedraw = true
             }
 
