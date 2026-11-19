@@ -406,11 +406,23 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
             }
             UserDefaults.standard.set("2:load_model", forKey: self.loadingStageKey)
             var mparams = llama_model_default_params()
-            // Strict CPU NEON + mmap mode keeps 100% of Metal GPU free for 3D MapKit navigation and prevents Jetsam OOM
+            // Strict CPU NEON + mmap mode keeps 100% of Metal GPU free for 3D MapKit navigation and prevents Metal shader/metallib aborts!
             mparams.n_gpu_layers = 0
             mparams.use_mmap = true
             mparams.use_mlock = false
-            guard let model = llama_model_load_from_file(url.path, mparams) else {
+
+            var loadedModel: OpaquePointer? = nil
+            if let cpuDev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU) {
+                var cpuDevs: [ggml_backend_dev_t?] = [cpuDev, nil]
+                loadedModel = cpuDevs.withUnsafeMutableBufferPointer { buf in
+                    mparams.devices = buf.baseAddress
+                    return llama_model_load_from_file(url.path, mparams)
+                }
+            } else {
+                loadedModel = llama_model_load_from_file(url.path, mparams)
+            }
+
+            guard let model = loadedModel else {
                 UserDefaults.standard.set(false, forKey: self.loadingGuardKey)
                 UserDefaults.standard.removeObject(forKey: self.loadingStageKey)
                 DispatchQueue.main.async {
@@ -422,11 +434,12 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
             UserDefaults.standard.set("3:init_context", forKey: self.loadingStageKey)
             var cparams = llama_context_default_params()
             cparams.n_ctx = ctxLen
-            // CRITICAL: n_ubatch MUST be <= n_batch! Default n_ubatch is 512; setting n_batch < 512 without n_ubatch triggers GGML_ASSERT SIGABRT!
+            // CRITICAL: n_ubatch <= n_batch AND op_offload = false so llama_init_from_model never touches Metal or aborts!
             cparams.n_batch = 256
             cparams.n_ubatch = 256
             cparams.n_seq_max = 1
             cparams.offload_kqv = false
+            cparams.op_offload = false
             cparams.no_perf = true
             let thr = Int32(max(2, min(4, ProcessInfo.processInfo.activeProcessorCount - 2)))
             cparams.n_threads = thr
