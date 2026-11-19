@@ -13,6 +13,7 @@
 #include <random>
 
 #include "ws_client.hpp"
+#include "local_llm.hpp"
 #include "game_logic.hpp"
 
 // ============================================================================
@@ -46,7 +47,8 @@ enum AppScreenMode {
     MODE_LOBBY = 0,
     MODE_DDZ_TABLE = 1,
     MODE_MJ_TABLE = 2,
-    MODE_RMK_TABLE = 3
+    MODE_RMK_TABLE = 3,
+    MODE_AI_THEATER = 4
 };
 
 static SDL_Window*   gWindow = nullptr;
@@ -58,6 +60,8 @@ static TTF_Font*     gFontHuge = nullptr;
 
 static std::map<std::string, SDL_Texture*> gTexCache;
 static SwitchWsClient gWs;
+static SwitchLocalAI gSwitchAI;
+static int gAiTopicIdx = 0;
 
 static AppScreenMode gScreen = MODE_LOBBY;
 static int gSelectedGame = 0; // 0 = 放课后斗地主(3P), 1 = 广东红中麻将(4P), 2 = 拉密数字牌(2-4P)
@@ -2030,7 +2034,34 @@ static void processIncomingNetworkMessages() {
             if (!gRoomPeers.empty() && gRoomPeers.front().name == gMyPeerName) {
                 gIsRoomAuthority = true;
             }
-            if (gScreen == MODE_LOBBY) {
+            if (gScreen == MODE_AI_THEATER) {
+            if ((kDown & HidNpadButton_Minus) || (kDown & HidNpadButton_B)) {
+                gSwitchAI.releaseOnExit();
+                gScreen = MODE_LOBBY;
+            } else if (kDown & HidNpadButton_Up) {
+                gAiTopicIdx = (gAiTopicIdx + 4) % 6;
+            } else if (kDown & HidNpadButton_Down) {
+                gAiTopicIdx = (gAiTopicIdx + 2) % 6;
+            } else if (kDown & HidNpadButton_Left) {
+                gAiTopicIdx = (gAiTopicIdx + 5) % 6;
+            } else if (kDown & HidNpadButton_Right) {
+                gAiTopicIdx = (gAiTopicIdx + 1) % 6;
+            } else if (kDown & HidNpadButton_A) {
+                gSwitchAI.startGeneration(gMyCharId, kSwitchAITopics[gAiTopicIdx].prompt);
+            } else if (kDown & HidNpadButton_Y) {
+                openSwitchAIKeyboard();
+            } else if (kDown & HidNpadButton_L) {
+                gMyCharId = (gMyCharId <= 1) ? 5 : (gMyCharId - 1);
+            } else if (kDown & HidNpadButton_R) {
+                gMyCharId = (gMyCharId >= 5) ? 1 : (gMyCharId + 1);
+            } else if (kDown & HidNpadButton_X) {
+                gSwitchAI.loadOnEnter();
+            }
+        } else if (gScreen == MODE_LOBBY) {
+            if (kDown & HidNpadButton_ZL) {
+                gScreen = MODE_AI_THEATER;
+                gSwitchAI.loadOnEnter();
+            }
                 rebuildLobbySeats();
                 gStatusBanner = "玩家 [" + cleanSender + "] 已离开房间";
             } else if (gScreen == MODE_DDZ_TABLE) {
@@ -2489,9 +2520,116 @@ static void renderTopBar() {
     drawText(gFontLarge, "放课后茶会 · 放课后棋牌室", SCREEN_W / 2, 10, COL_WHITE, true);
 
     if (gScreen == MODE_LOBBY) {
+        drawRoundedRectFill(SCREEN_W - 282, 9, 134, 32, 16, {82, 42, 148, 245});
+        drawRoundedRectOutline(SCREEN_W - 282, 9, 134, 32, 16, COL_GOLD, 1);
+        drawText(gFontSmall, "[ZL] AI茶会", SCREEN_W - 215, 15, COL_WHITE, true);
+
         drawRoundedRectFill(SCREEN_W - 138, 9, 122, 32, 16, {12, 42, 26, 240});
         drawRoundedRectOutline(SCREEN_W - 138, 9, 122, 32, 16, COL_GOLD, 1);
         drawText(gFontSmall, "[+] 退出软件", SCREEN_W - 77, 15, COL_GOLD, true);
+    }
+}
+
+
+static void openSwitchAIKeyboard() {
+    SwkbdConfig kbd;
+    Result rc = swkbdCreate(&kbd, 0);
+    if (R_SUCCEEDED(rc)) {
+        swkbdConfigMakePresetDefault(&kbd);
+        swkbdConfigSetHeaderText(&kbd, "放课后茶会 · 本地 AI 对话 (纯离线)");
+        swkbdConfigSetSubText(&kbd, "输入你想和轻音部聊的话");
+        swkbdConfigSetStringLenMax(&kbd, 60);
+        char outBuf[256] = {0};
+        if (R_SUCCEEDED(swkbdShow(&kbd, outBuf, sizeof(outBuf)))) {
+            std::string q(outBuf);
+            if (!q.empty()) {
+                gSwitchAI.startGeneration(gMyCharId, q);
+            }
+        }
+        swkbdClose(&kbd);
+    }
+}
+
+static void renderAITheaterScreen() {
+    // 1. Top Status & RAM / SD GGUF Strip
+    drawRoundedRectFill(36, 58, 1208, 42, 10, {16, 20, 36, 238});
+    drawRoundedRectOutline(36, 58, 1208, 42, 10, COL_GOLD, 1);
+    std::string ramBadge = gSwitchAI.isTitleFullRam ? "[Title完整内存]" : "[Applet省电模式]";
+    drawText(gFontSmall, ramBadge + "  " + gSwitchAI.statusLine, 54, 70, COL_GOLD);
+    drawText(gFontSmall, "本地记忆: " + std::to_string(gSwitchAI.memories.size()) + " 条", 1224, 70, COL_CREAM, false, true);
+
+    // 2. Left Panel: K-ON! Character AVG Portrait & Emotion Badge
+    drawRoundedRectFill(36, 112, 380, 350, 14, {14, 18, 32, 235});
+    drawRoundedRectOutline(36, 112, 380, 350, 14, COL_GOLD, 2);
+    int cid = (gMyCharId >= 1 && gMyCharId <= 5) ? gMyCharId : 1;
+    drawImage("romfs:/cards/char_" + std::to_string(cid) + ".png", 106, 126, 240, 240);
+
+    std::string spk, emo, reply;
+    {
+        std::lock_guard<std::mutex> lk(gSwitchAI.textMutex);
+        spk = gSwitchAI.currentSpeaker;
+        emo = gSwitchAI.currentEmotion;
+        reply = gSwitchAI.displayedReply;
+    }
+    drawRoundedRectFill(60, 376, 332, 36, 10, COL_CRIMSON);
+    drawText(gFontMed, spk + "  [" + emo + "]", 226, 383, COL_WHITE, true);
+    drawText(gFontSmall, "[L/R] 切换轻音角色   [X] 重扫SD卡模型", 226, 426, COL_GOLD, true);
+
+    // 3. Right Panel: Gamepad Quick-Topic Wheel (手柄快捷话题轮盘)
+    drawRoundedRectFill(432, 112, 812, 350, 14, {14, 18, 32, 235});
+    drawRoundedRectOutline(432, 112, 812, 350, 14, COL_GOLD, 1);
+    drawText(gFontMed, "手柄快捷话题轮盘  (十字键选择 · [A] 发送 · [Y] 键盘自由输入)", 454, 124, COL_GOLD);
+
+    for (int i = 0; i < 6; ++i) {
+        int col = i % 2;
+        int row = i / 2;
+        int bx = 452 + col * 392;
+        int by = 166 + row * 82;
+        bool sel = (gAiTopicIdx == i);
+        drawRoundedRectFill(bx, by, 378, 68, 12, sel ? SDL_Color{156, 32, 48, 245} : SDL_Color{28, 34, 54, 235});
+        drawRoundedRectOutline(bx, by, 378, 68, 12, sel ? COL_GOLD : COL_GOLD_DIM, sel ? 2 : 1);
+        drawText(gFontMed, kSwitchAITopics[i].label, bx + 18, by + 21, COL_WHITE);
+    }
+
+    drawRoundedRectFill(452, 414, 378, 36, 10, {48, 92, 168, 240});
+    drawText(gFontSmall, "[Y] 呼出 Switch 键盘自由输入", 641, 422, COL_WHITE, true);
+    drawRoundedRectFill(844, 414, 378, 36, 10, {42, 118, 72, 240});
+    drawText(gFontSmall, "[-] / [B] 返回大厅并立即释放模型内存", 1033, 422, COL_WHITE, true);
+
+    // 4. Bottom AVG Visual Novel Dialogue Box (流式逐字输出)
+    drawRoundedRectFill(36, 474, 1208, 218, 16, {10, 14, 26, 246});
+    drawRoundedRectOutline(36, 474, 1208, 218, 16, COL_GOLD, 2);
+    drawRoundedRectFill(56, 486, 260, 32, 8, COL_CRIMSON);
+    drawText(gFontMed, spk, 186, 491, COL_WHITE, true);
+    if (gSwitchAI.isGenerating.load()) {
+        drawText(gFontSmall, "● 本地思考流式输出中...", 336, 494, COL_CYAN_GLOW);
+    }
+
+    // Wrap dialogue text cleanly into up to 3 lines
+    int lineY = 532;
+    size_t pos = 0;
+    int lineCount = 0;
+    while (pos < reply.size() && lineCount < 4) {
+        size_t nl = reply.find('\n', pos);
+        size_t end = (nl != std::string::npos) ? nl : reply.size();
+        std::string seg = reply.substr(pos, end - pos);
+        // UTF-8 safe wrap every ~96 bytes (~32 CJK chars)
+        size_t sPos = 0;
+        while (sPos < seg.size() && lineCount < 4) {
+            size_t take = 0;
+            while (sPos + take < seg.size() && take < 96) {
+                unsigned char c = static_cast<unsigned char>(seg[sPos + take]);
+                size_t chLen = ((c & 0xE0) == 0xC0) ? 2 : (((c & 0xF0) == 0xE0) ? 3 : (((c & 0xF8) == 0xF0) ? 4 : 1));
+                if (sPos + take + chLen > seg.size()) break;
+                take += chLen;
+            }
+            if (take == 0) break;
+            drawText(gFontMed, seg.substr(sPos, take), 60, lineY, COL_CREAM);
+            lineY += 36;
+            lineCount++;
+            sPos += take;
+        }
+        pos = (nl != std::string::npos) ? (nl + 1) : reply.size();
     }
 }
 
@@ -3640,6 +3778,32 @@ int main(int argc, char* argv[]) {
             kDown |= HidNpadButton_Minus;
             tapped = false;
         }
+        if (tapped && gScreen == MODE_LOBBY && pointInRect(tx, ty, SCREEN_W - 282, 9, 134, 32)) {
+            gScreen = MODE_AI_THEATER;
+            gSwitchAI.loadOnEnter();
+            tapped = false;
+        }
+        if (tapped && gScreen == MODE_AI_THEATER) {
+            if (pointInRect(tx, ty, 16, 9, 142, 32) || pointInRect(tx, ty, 844, 414, 378, 36)) {
+                gSwitchAI.releaseOnExit();
+                gScreen = MODE_LOBBY;
+                tapped = false;
+            } else if (pointInRect(tx, ty, 452, 414, 378, 36)) {
+                openSwitchAIKeyboard();
+                tapped = false;
+            } else {
+                for (int i = 0; i < 6; ++i) {
+                    int bx = 452 + (i % 2) * 392;
+                    int by = 166 + (i / 2) * 82;
+                    if (pointInRect(tx, ty, bx, by, 378, 68)) {
+                        gAiTopicIdx = i;
+                        gSwitchAI.startGeneration(gMyCharId, kSwitchAITopics[i].prompt);
+                        tapped = false;
+                        break;
+                    }
+                }
+            }
+        }
         if (tapped && gScreen == MODE_LOBBY && pointInRect(tx, ty, SCREEN_W - 138, 9, 122, 32)) {
             running = false;
             tapped = false;
@@ -3873,7 +4037,8 @@ int main(int argc, char* argv[]) {
                                            "\",\"senderPeerName\":\"" + MiniJson::esc(gMyPeerName) +
                                            "\",\"senderCharId\":" + std::to_string(gMyCharId) + "}";
                     gWs.sendText(leavePkt);
-                    gWs.disconnect();
+                    gSwitchAI.releaseOnExit();
+    gWs.disconnect();
                     gIsOnlineRoom = false;
                     gRoomPeers.clear();
                     rebuildLobbySeats();
@@ -4227,6 +4392,7 @@ int main(int argc, char* argv[]) {
         else if (gScreen == MODE_DDZ_TABLE) renderDoudizhuTable();
         else if (gScreen == MODE_MJ_TABLE) renderMahjongTable();
         else if (gScreen == MODE_RMK_TABLE) renderRummikubTable();
+        else if (gScreen == MODE_AI_THEATER) renderAITheaterScreen();
 
         SDL_RenderPresent(gRenderer);
     }
