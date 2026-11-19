@@ -24,13 +24,34 @@ android {
     signingConfigs {
         create("release") {
             val ksFile = file(System.getenv("KEYSTORE_PATH") ?: "${rootDir}/htt_release.jks")
+            val ksPass = System.getenv("KEYSTORE_PASSWORD") ?: "htt_kon_release_2026"
+            val kAlias = System.getenv("KEY_ALIAS") ?: "htt_release_key"
+            val kPass = System.getenv("KEY_PASSWORD") ?: "htt_kon_release_2026"
+            if (!ksFile.exists()) {
+                ksFile.parentFile?.mkdirs()
+                val proc = ProcessBuilder(
+                    "keytool", "-genkeypair", "-v",
+                    "-keystore", ksFile.absolutePath,
+                    "-storepass", ksPass,
+                    "-keypass", kPass,
+                    "-alias", kAlias,
+                    "-keyalg", "RSA",
+                    "-keysize", "2048",
+                    "-validity", "10000",
+                    "-dname", "CN=HTT-NaviCompanion, OU=HoKagoTeaTime, O=HTT, L=Shenzhen, S=Guangdong, C=CN"
+                ).redirectErrorStream(true).start()
+                proc.inputStream.bufferedReader().readText()
+                proc.waitFor()
+            }
             storeFile = ksFile
-            storePassword = System.getenv("KEYSTORE_PASSWORD") ?: "htt_kon_release_2026"
-            keyAlias = System.getenv("KEY_ALIAS") ?: "htt_release_key"
-            keyPassword = System.getenv("KEY_PASSWORD") ?: "htt_kon_release_2026"
+            storePassword = ksPass
+            keyAlias = kAlias
+            keyPassword = kPass
+            // Force v1 (META-INF) + v2 + v3 signing for Mainland China OPPO / OnePlus ColorOS 14-16 compatibility!
             enableV1Signing = true
             enableV2Signing = true
             enableV3Signing = true
+            enableV4Signing = false
         }
     }
 
@@ -45,10 +66,7 @@ android {
         }
         debug {
             applicationIdSuffix = ".debug"
-            val ksFile = file(System.getenv("KEYSTORE_PATH") ?: "${rootDir}/htt_release.jks")
-            if (ksFile.exists()) {
-                signingConfig = signingConfigs.getByName("release")
-            }
+            signingConfig = signingConfigs.getByName("release")
         }
     }
 
