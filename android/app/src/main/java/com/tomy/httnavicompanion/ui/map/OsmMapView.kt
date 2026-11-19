@@ -44,6 +44,23 @@ private object AmapTileSource : OnlineTileSourceBase(
     }
 }
 
+private object GoogleMapsTileSource : OnlineTileSourceBase(
+    "GoogleMapsGlobal", 1, 20, 256, ".png",
+    arrayOf(
+        "https://mt0.google.com/vt/lyrs=m&hl=zh-CN",
+        "https://mt1.google.com/vt/lyrs=m&hl=zh-CN",
+        "https://mt2.google.com/vt/lyrs=m&hl=zh-CN",
+        "https://mt3.google.com/vt/lyrs=m&hl=zh-CN"
+    )
+) {
+    override fun getTileURLString(pMapTileIndex: Long): String {
+        val z = MapTileIndex.getZoom(pMapTileIndex)
+        val x = MapTileIndex.getX(pMapTileIndex)
+        val y = MapTileIndex.getY(pMapTileIndex)
+        return "$baseUrl&x=$x&y=$y&z=$z"
+    }
+}
+
 private val CartoDarkTileSource = XYTileSource(
     "CartoDark", 1, 19, 256, ".png",
     arrayOf("https://basemaps.cartocdn.com/dark_all/")
@@ -193,7 +210,7 @@ fun OsmMapView(
             val desiredSource = when {
                 mapTileMode == MapTileSourceMode.CARTODB_DARK -> CartoDarkTileSource
                 useAmapTiles -> AmapTileSource
-                else -> TileSourceFactory.MAPNIK
+                else -> GoogleMapsTileSource
             }
             if (mapView.tileProvider.tileSource.name() != desiredSource.name()) {
                 mapView.setTileSource(desiredSource)

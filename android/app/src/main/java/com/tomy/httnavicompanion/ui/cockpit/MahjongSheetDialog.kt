@@ -4,7 +4,15 @@ import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
 import android.content.pm.ActivityInfo
+import android.os.Build
+import android.view.ViewGroup
+import android.view.WindowManager
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.window.DialogWindowProvider
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.Image
 import androidx.compose.ui.graphics.graphicsLayer
@@ -429,11 +437,37 @@ fun KOnGameRoomSheetDialog(onDismiss: () -> Unit) {
         },
         properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)
     ) {
+        // Force true edge-to-edge MATCH_PARENT + immersive landscape bars so NO Android screen ratio clips bottom cards/rack!
+        val dialogView = LocalView.current
+        SideEffect {
+            val win = (dialogView.parent as? DialogWindowProvider)?.window
+            if (win != null) {
+                win.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+                WindowCompat.setDecorFitsSystemWindows(win, false)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    val lp = win.attributes
+                    lp.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+                    win.attributes = lp
+                }
+                val ctrl = WindowInsetsControllerCompat(win, dialogView)
+                if (!inLobbyNow) {
+                    ctrl.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                    ctrl.hide(WindowInsetsCompat.Type.systemBars())
+                } else {
+                    ctrl.show(WindowInsetsCompat.Type.systemBars())
+                }
+            }
+        }
         Surface(
             modifier = Modifier.fillMaxSize(),
-            color = if (selectedGame == 0) Color(0xFF104B2C) else MjBgGreen
+            color = if (selectedGame == 0) Color(0xFF104B2C) else if (selectedGame == 2 && !inLobbyNow) Color(0xFF0E3266) else MjBgGreen
         ) {
-            Column(modifier = Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
+            val containerMod = if (!inLobbyNow) {
+                Modifier.fillMaxSize().displayCutoutPadding()
+            } else {
+                Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()
+            }
+            Column(modifier = containerMod) {
                 // Unified Header (Hidden when inside Rummikub playing room so Rummikub table is 1:1 full-screen like the video!)
                 if (!(selectedGame == 2 && !inLobbyNow)) {
                 Row(
@@ -534,7 +568,7 @@ fun KOnGameRoomSheetDialog(onDismiss: () -> Unit) {
                             contentAlignment = Alignment.Center
                         ) {
                             Text(
-                                tr("🃏 斗地主 (3人)", "🃏 鬥地主 (3人)", "🃏 Doudizhu (3P)"),
+                                tr("🃏 斗地主(3人)", "🃏 鬥地主(3人)", "🃏 Doudizhu"),
                                 color = Color.White,
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.Black,
@@ -562,7 +596,7 @@ fun KOnGameRoomSheetDialog(onDismiss: () -> Unit) {
                             contentAlignment = Alignment.Center
                         ) {
                             Text(
-                                tr("🀄 红中麻将 (4人)", "🀄 紅中麻雀 (4人)", "🀄 Mahjong (4P)"),
+                                tr("🀄 红中麻将(4人)", "🀄 紅中麻雀(4人)", "🀄 Mahjong"),
                                 color = Color.White,
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.Black,
@@ -590,7 +624,7 @@ fun KOnGameRoomSheetDialog(onDismiss: () -> Unit) {
                             contentAlignment = Alignment.Center
                         ) {
                             Text(
-                                tr("🔢 拉密数字牌 (2-4人)", "🔢 拉密數字牌 (2-4人)", "🔢 Rummikub (2-4P)"),
+                                tr("🔢 拉密牌 (2-4人)", "🔢 拉密牌 (2-4人)", "🔢 Rummikub"),
                                 color = Color.White,
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.Black,
@@ -1795,11 +1829,15 @@ fun KOnRummikubContent() {
             if (me != null) opps + me else opps
         }
 
-        Box(
+        BoxWithConstraints(
             modifier = Modifier
                 .fillMaxSize()
                 .background(Color(0xFF0E3266))
         ) {
+            val screenH = maxHeight
+            val adaptiveRackH = (screenH * 0.30f).coerceIn(82.dp, 108.dp)
+            val adaptiveSlotH = ((adaptiveRackH - 16.dp) / 2f).coerceIn(33.dp, 46.dp)
+            val adaptiveTileH = (adaptiveSlotH - 2.dp).coerceAtLeast(31.dp)
             // Subtle K-ON! HTT Watermark in Center of Table
             Column(
                 modifier = Modifier.align(Alignment.Center).offset(y = (-42).dp),
@@ -2136,11 +2174,11 @@ fun KOnRummikubContent() {
                         }
                     }
 
-                    // Bottom Fixed 2-Row × 10-Column Wooden Rack (1:1 like Video!)
+                    // Bottom Adaptive 2-Row × 10-Column Wooden Rack (1:1 like iOS, never clipped on any Android ratio!)
                     BoxWithConstraints(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(104.dp)
+                            .height(adaptiveRackH)
                             .onGloballyPositioned { if (it.isAttached) rackAreaBounds = it.boundsInRoot() }
                             .clip(RoundedCornerShape(10.dp))
                             .background(Color(0xFFB57C44))
@@ -2170,7 +2208,7 @@ fun KOnRummikubContent() {
 
                                             Box(
                                                 modifier = Modifier
-                                                    .size(width = slotW, height = 43.dp)
+                                                    .size(width = slotW, height = adaptiveSlotH)
                                                     .clip(RoundedCornerShape(5.dp))
                                                     .background(if (liftedIdx != null && tileOpt == null) Color.Yellow.copy(alpha = 0.16f) else Color.Black.copy(alpha = 0.10f))
                                                     .border(1.dp, if (liftedIdx != null) Color.Yellow.copy(alpha = 0.55f) else Color.Black.copy(alpha = 0.20f), RoundedCornerShape(5.dp))
@@ -2256,7 +2294,7 @@ fun KOnRummikubContent() {
                                                             highlighted = highlightedIds.contains(tileOpt.id),
                                                             compact = true,
                                                             customW = (slotW - 2.dp).coerceAtLeast(24.dp),
-                                                            customH = 41.dp
+                                                            customH = adaptiveTileH
                                                         )
                                                         if (dragSlotIdx == slotIdx && selIds.size > 1 && selIds.contains(tileOpt.id)) {
                                                             Box(

@@ -1045,24 +1045,24 @@ private fun FittedHandCardRow(
 ) {
     val count = cards.size
     if (count == 0) return
-    val cardW = if (count > 14) ((usableWidth / (count * 0.52f + 0.48f)).coerceIn(34.dp, 50.dp)) else 52.dp
-    val cardH = cardW * 1.42f
+    val cardW = if (count > 14) ((usableWidth / (count * 0.54f + 0.46f)).coerceIn(32.dp, 46.dp)) else 48.dp
+    val cardH = (cardW * 1.38f).coerceIn(48.dp, 68.dp)
 
     val rawStep = if (count > 1) (usableWidth - cardW) / (count - 1) else 0.dp
-    val step = if (count > 1) rawStep.coerceIn(17.dp, 34.dp) else 0.dp
+    val step = if (count > 1) rawStep.coerceIn(16.dp, 32.dp) else 0.dp
     val totalRowWidth = if (count > 1) cardW + step * (count - 1) else cardW
 
     Box(
         modifier = Modifier
             .width(totalRowWidth)
-            .height(cardH + 14.dp),
+            .height(cardH + 10.dp),
         contentAlignment = Alignment.TopStart
     ) {
         cards.forEachIndexed { idx, card ->
             val isSel = selectedIds.contains(card.id)
             Box(
                 modifier = Modifier
-                    .offset(x = step * idx, y = if (isSel) 0.dp else 14.dp)
+                    .offset(x = step * idx, y = if (isSel) 0.dp else 10.dp)
                     .zIndex(idx.toFloat())
             ) {
                 HandPokerCardView(

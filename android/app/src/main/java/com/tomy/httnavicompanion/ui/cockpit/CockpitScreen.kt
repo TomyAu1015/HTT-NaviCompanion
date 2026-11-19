@@ -180,33 +180,35 @@ fun CockpitScreen(
                 }
             }
         } else {
-            // Portrait Single-Column Cockpit matching iOS ContentView.swift
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .verticalScroll(rememberScrollState())
-                    .padding(horizontal = 10.dp, vertical = 6.dp),
-                verticalArrangement = Arrangement.spacedBy(7.dp)
-            ) {
-                TopBezelBar(
-                    manager = manager,
-                    musicMgr = musicMgr,
-                    onOpenMusic = { showMusicDialog = true },
-                    onOpenAlbum = {
-                        albumInitialTab = 0
-                        showAlbumDialog = true
-                    },
-                    onOpenSoundboard = { showSoundboardDialog = true },
-                    onStartFloatingPet = onStartFloatingPet,
-                    onOpenGameRoom = { showGameRoomDialog = true },
-                    onOpenVehicle = { showVehicleDialog = true }
-                )
-                SpeedometerCockpit(manager = manager, isCompact = false)
-                MainStageOrMapSection(
-                    manager = manager,
-                    stageHeight = 250.dp,
-                    onOpenSearch = { showSearchDialog = true }
-                )
+            // Portrait Single-Column Cockpit matching iOS ContentView.swift (adaptive height for all Android screen ratios)
+            BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+                val adaptiveStageH = (maxHeight * 0.255f).coerceIn(178.dp, 232.dp)
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .verticalScroll(rememberScrollState())
+                        .padding(horizontal = 9.dp, vertical = 4.dp),
+                    verticalArrangement = Arrangement.spacedBy(5.dp)
+                ) {
+                    TopBezelBar(
+                        manager = manager,
+                        musicMgr = musicMgr,
+                        onOpenMusic = { showMusicDialog = true },
+                        onOpenAlbum = {
+                            albumInitialTab = 0
+                            showAlbumDialog = true
+                        },
+                        onOpenSoundboard = { showSoundboardDialog = true },
+                        onStartFloatingPet = onStartFloatingPet,
+                        onOpenGameRoom = { showGameRoomDialog = true },
+                        onOpenVehicle = { showVehicleDialog = true }
+                    )
+                    SpeedometerCockpit(manager = manager, isCompact = false)
+                    MainStageOrMapSection(
+                        manager = manager,
+                        stageHeight = adaptiveStageH,
+                        onOpenSearch = { showSearchDialog = true }
+                    )
                 CharacterSelectorStrip(manager = manager)
                 UtilityControlGrid(
                     manager = manager,
@@ -232,6 +234,7 @@ fun CockpitScreen(
                         showAlbumDialog = true
                     }
                 )
+                }
             }
         }
 
@@ -1184,7 +1187,7 @@ fun InteractiveMapBoxView(
             .background(Color(0xFF141D2B))
             .border(2.dp, HTTGold, RoundedCornerShape(16.dp))
     ) {
-        // Real Interactive Map (osmdroid: Amap China + OSM Global)
+        // Real Interactive Map (osmdroid: Mainland China Amap + HK/Macau/Global Google Maps)
         OsmMapView(
             manager = manager,
             modifier = Modifier.fillMaxSize()

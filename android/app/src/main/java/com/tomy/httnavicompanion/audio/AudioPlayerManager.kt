@@ -231,9 +231,9 @@ enum class NavigationCameraMode {
 }
 
 enum class MapTileSourceMode(val label: String) {
-    AUTO("智能切换 (国内高德/海外OSM)"),
-    AMAP_CHINA("高德矢量地图 (GCJ-02)"),
-    OSM_GLOBAL("OpenStreetMap (WGS-84)"),
+    AUTO("智能切换 (中国大陆高德 / 港澳海外Google)"),
+    AMAP_CHINA("高德矢量地图 (中国大陆 GCJ-02)"),
+    OSM_GLOBAL("Google 地图 (港澳台及海外 WGS-84)"),
     CARTODB_DARK("暗夜车载地图 (Dark)")
 }
 

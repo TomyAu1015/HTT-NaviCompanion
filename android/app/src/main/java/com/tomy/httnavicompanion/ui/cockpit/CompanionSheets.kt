@@ -154,27 +154,33 @@ fun MusicLibrarySheetDialog(onDismiss: () -> Unit) {
                     Column(modifier = Modifier.padding(12.dp)) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Column(modifier = Modifier.weight(1f)) {
+                            Box(
+                                modifier = Modifier
+                                    .size(44.dp)
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(SheetCrimson)
+                                    .border(1.5.dp, SheetGold, RoundedCornerShape(10.dp)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(Icons.Default.MusicNote, contentDescription = null, tint = SheetGold, modifier = Modifier.size(24.dp))
+                            }
+                            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                                 Text(currentTrack.title, color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Black, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                    Text("${currentTrack.artist} · ${currentTrack.album}", color = SheetGold, fontSize = 11.sp, maxLines = 1)
+                                    Text("${currentTrack.artist} · ${currentTrack.album}", color = SheetGold, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
                                     Text(
                                         if (currentTrack.isAvailable) "● 已就绪" else "○ 待导入",
                                         color = if (currentTrack.isAvailable) Color(0xFF4CAF50) else Color(0xFFFF9800),
                                         fontSize = 10.sp,
-                                        fontWeight = FontWeight.Bold
+                                        fontWeight = FontWeight.Bold,
+                                        maxLines = 1,
+                                        softWrap = false
                                     )
                                 }
                             }
-                            Text(
-                                String.format("%02d:%02d / %02d:%02d", currentTime / 60, currentTime % 60, duration / 60, duration % 60),
-                                color = SheetCream,
-                                fontSize = 11.sp,
-                                fontFamily = FontFamily.Monospace
-                            )
                         }
 
                         val progressFraction = if (duration > 0) (currentTime.toFloat() / duration.toFloat()).coerceIn(0f, 1f) else 0f
@@ -184,42 +190,68 @@ fun MusicLibrarySheetDialog(onDismiss: () -> Unit) {
                             colors = SliderDefaults.colors(
                                 thumbColor = SheetGold,
                                 activeTrackColor = SheetCrimson,
-                                inactiveTrackColor = Color.White.copy(alpha = 0.2f)
+                                inactiveTrackColor = Color.White.copy(alpha = 0.22f)
                             ),
-                            modifier = Modifier.height(26.dp)
+                            modifier = Modifier.fillMaxWidth().height(26.dp)
                         )
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 2.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(String.format("%02d:%02d", currentTime / 60, currentTime % 60), color = SheetCream.copy(alpha = 0.85f), fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+                            Text(String.format("%02d:%02d", duration / 60, duration % 60), color = SheetCream.copy(alpha = 0.85f), fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+                        }
 
+                        Spacer(Modifier.height(4.dp))
                         Row(
                             modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceEvenly,
+                            horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            TextButton(onClick = { musicMgr.cyclePlayMode() }) {
-                                Text(playMode.label, color = SheetGold, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                            }
-                            IconButton(onClick = { musicMgr.prevTrack() }) {
-                                Icon(Icons.Default.SkipPrevious, contentDescription = null, tint = Color.White, modifier = Modifier.size(28.dp))
-                            }
-                            Button(
-                                onClick = { musicMgr.togglePlayPause() },
-                                colors = ButtonDefaults.buttonColors(containerColor = SheetCrimson),
-                                shape = CircleShape
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(Color.White.copy(alpha = 0.08f))
+                                    .clickable { musicMgr.cyclePlayMode() }
+                                    .padding(horizontal = 8.dp, vertical = 6.dp)
                             ) {
-                                Icon(
-                                    if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                                    contentDescription = null,
-                                    tint = Color.White
-                                )
+                                Text(playMode.label, color = SheetGold, fontSize = 11.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
                             }
-                            IconButton(onClick = { musicMgr.nextTrack() }) {
-                                Icon(Icons.Default.SkipNext, contentDescription = null, tint = Color.White, modifier = Modifier.size(28.dp))
-                            }
-                            TextButton(
-                                onClick = {
-                                    importMusicLauncher.launch(arrayOf("audio/*", "video/mp4", "application/octet-stream", "*/*"))
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                IconButton(onClick = { musicMgr.prevTrack() }, modifier = Modifier.size(36.dp)) {
+                                    Icon(Icons.Default.SkipPrevious, contentDescription = null, tint = Color.White, modifier = Modifier.size(26.dp))
                                 }
+                                Box(
+                                    modifier = Modifier
+                                        .size(44.dp)
+                                        .clip(CircleShape)
+                                        .background(SheetCrimson)
+                                        .border(1.5.dp, SheetGold, CircleShape)
+                                        .clickable { musicMgr.togglePlayPause() },
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                                        contentDescription = null,
+                                        tint = Color.White,
+                                        modifier = Modifier.size(24.dp)
+                                    )
+                                }
+                                IconButton(onClick = { musicMgr.nextTrack() }, modifier = Modifier.size(36.dp)) {
+                                    Icon(Icons.Default.SkipNext, contentDescription = null, tint = Color.White, modifier = Modifier.size(26.dp))
+                                }
+                            }
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(SheetGold.copy(alpha = 0.16f))
+                                    .border(1.dp, SheetGold.copy(alpha = 0.6f), RoundedCornerShape(8.dp))
+                                    .clickable {
+                                        importMusicLauncher.launch(arrayOf("audio/*", "video/mp4", "application/octet-stream", "*/*"))
+                                    }
+                                    .padding(horizontal = 8.dp, vertical = 6.dp)
                             ) {
-                                Text("+ 导入", color = SheetGold, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                Text("+ 导入", color = SheetGold, fontSize = 11.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
                             }
                         }
                     }
