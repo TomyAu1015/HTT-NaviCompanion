@@ -19,6 +19,8 @@
 		1010 /* AppIcon60x60@3x.png in Resources */ = {isa = PBXBuildFile; fileRef = 2011 /* AppIcon60x60@3x.png */; };
 		1011 /* AppIcon.png in Resources */ = {isa = PBXBuildFile; fileRef = 2012 /* AppIcon.png */; };
 		1012 /* KOnMusicManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2013 /* KOnMusicManager.swift */; };
+		1013 /* KOnLocalLLMManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2014 /* KOnLocalLLMManager.swift */; };
+		1014 /* KOnAIChatSheetView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2015 /* KOnAIChatSheetView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -33,6 +35,8 @@
 		2008 /* CarPlaySceneDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CarPlaySceneDelegate.swift; sourceTree = "<group>"; };
 		2012 /* AppIcon.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = AppIcon.png; sourceTree = "<group>"; };
 		2013 /* KOnMusicManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KOnMusicManager.swift; sourceTree = "<group>"; };
+		2014 /* KOnLocalLLMManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KOnLocalLLMManager.swift; sourceTree = "<group>"; };
+		2015 /* KOnAIChatSheetView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KOnAIChatSheetView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -63,6 +67,8 @@
 				2004 /* KeyConfig.swift */,
 				2008 /* CarPlaySceneDelegate.swift */,
 				2013 /* KOnMusicManager.swift */,
+				2014 /* KOnLocalLLMManager.swift */,
+				2015 /* KOnAIChatSheetView.swift */,
 				2005 /* voice_assets.dat */,
 				2007 /* mascot_assets.dat */,
 				2009 /* Assets.xcassets */,
@@ -162,6 +168,8 @@
 				1004 /* KeyConfig.swift in Sources */,
 				1007 /* CarPlaySceneDelegate.swift in Sources */,
 				1012 /* KOnMusicManager.swift in Sources */,
+				1013 /* KOnLocalLLMManager.swift in Sources */,
+				1014 /* KOnAIChatSheetView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

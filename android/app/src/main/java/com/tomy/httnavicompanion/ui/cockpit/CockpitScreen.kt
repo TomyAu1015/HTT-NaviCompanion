@@ -80,6 +80,7 @@ fun CockpitScreen(
     var showSearchDialog by remember { mutableStateOf(false) }
     var showSoundboardDialog by remember { mutableStateOf(false) }
     var showGameRoomDialog by remember { mutableStateOf(false) }
+    var showAIChatDialog by remember { mutableStateOf(false) }
     var showVehicleDialog by remember { mutableStateOf(false) }
 
     Box(
@@ -124,6 +125,7 @@ fun CockpitScreen(
                     },
                     onOpenSoundboard = { showSoundboardDialog = true },
                     onStartFloatingPet = onStartFloatingPet,
+                    onOpenAIChat = { showAIChatDialog = true },
                     onOpenGameRoom = { showGameRoomDialog = true },
                     onOpenVehicle = { showVehicleDialog = true }
                 )
@@ -200,6 +202,7 @@ fun CockpitScreen(
                         },
                         onOpenSoundboard = { showSoundboardDialog = true },
                         onStartFloatingPet = onStartFloatingPet,
+                        onOpenAIChat = { showAIChatDialog = true },
                         onOpenGameRoom = { showGameRoomDialog = true },
                         onOpenVehicle = { showVehicleDialog = true }
                     )
@@ -246,7 +249,7 @@ fun CockpitScreen(
         val remKm by manager.remainingRouteDistanceKm.collectAsState()
         val remMin by manager.remainingRouteMinutes.collectAsState()
         val destName by manager.destinationName.collectAsState()
-        val anySheetOpen = showMusicDialog || showAlbumDialog || showSearchDialog || showSoundboardDialog || showGameRoomDialog || showVehicleDialog
+        val anySheetOpen = showMusicDialog || showAlbumDialog || showSearchDialog || showSoundboardDialog || showGameRoomDialog || showVehicleDialog || showAIChatDialog
         if (hasNav && (!isMapEnlarged || !showMapMode || anySheetOpen)) {
             Row(
                 modifier = Modifier
@@ -259,7 +262,7 @@ fun CockpitScreen(
                     .border(1.5.dp, HTTGold, RoundedCornerShape(14.dp))
                     .clickable {
                         showMusicDialog = false; showAlbumDialog = false; showSearchDialog = false
-                        showSoundboardDialog = false; showGameRoomDialog = false; showVehicleDialog = false
+                        showSoundboardDialog = false; showGameRoomDialog = false; showVehicleDialog = false; showAIChatDialog = false
                         if (!showMapMode) manager.toggleMapMode()
                         manager.setMapEnlarged(true)
                     }
@@ -286,7 +289,7 @@ fun CockpitScreen(
                         .background(Color(0xFF1565C0))
                         .clickable {
                             showMusicDialog = false; showAlbumDialog = false; showSearchDialog = false
-                            showSoundboardDialog = false; showGameRoomDialog = false; showVehicleDialog = false
+                            showSoundboardDialog = false; showGameRoomDialog = false; showVehicleDialog = false; showAIChatDialog = false
                             if (!showMapMode) manager.toggleMapMode()
                             manager.setMapEnlarged(true)
                         }
@@ -322,6 +325,13 @@ fun CockpitScreen(
         if (showSoundboardDialog) {
             SoundboardSheetDialog(onDismiss = { showSoundboardDialog = false })
         }
+        if (showAIChatDialog) {
+            LocalAIChatSheetDialog(
+                onDismiss = { showAIChatDialog = false },
+                onOpenGameRoom = { showGameRoomDialog = true },
+                onOpenSearch = { showSearchDialog = true }
+            )
+        }
         if (showGameRoomDialog) {
             KOnGameRoomSheetDialog(onDismiss = { showGameRoomDialog = false })
         }
@@ -339,6 +349,7 @@ fun TopBezelBar(
     onOpenAlbum: () -> Unit,
     onOpenSoundboard: () -> Unit,
     onStartFloatingPet: () -> Unit,
+    onOpenAIChat: () -> Unit,
     onOpenGameRoom: () -> Unit,
     onOpenVehicle: () -> Unit
 ) {
@@ -422,6 +433,31 @@ fun TopBezelBar(
         ) {
             Icon(Icons.Default.PictureInPictureAlt, contentDescription = null, tint = Color(0xFF00E5FF), modifier = Modifier.size(13.dp))
             Text("悬浮宠", color = Color(0xFF00E5FF), fontSize = 11.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+        }
+
+        // 4.4 K-ON! Local AI Tea Time Co-Pilot (AI茶会)
+        Row(
+            modifier = Modifier
+                .clip(RoundedCornerShape(8.dp))
+                .background(Color(0xFF5E35B1))
+                .border(1.dp, HTTGold, RoundedCornerShape(8.dp))
+                .clickable { onOpenAIChat() }
+                .padding(horizontal = 8.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(3.dp)
+        ) {
+            Text("✨", fontSize = 11.sp)
+            Text(
+                when (lang) {
+                    AppLanguage.ZH_HANS -> "AI茶会"
+                    AppLanguage.ZH_HANT -> "AI茶會"
+                    AppLanguage.EN -> "AI Tea"
+                },
+                color = Color.White,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1
+            )
         }
 
         // 4.5 K-ON! Ho-kago Game Room (放课后棋牌室：斗地主 + 广东红中麻将)

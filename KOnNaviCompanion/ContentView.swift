@@ -1130,6 +1130,7 @@ struct ContentView: View {
     @ObservedObject private var musicManager = KOnMusicManager.shared
     @State private var activeModalSheet: ActiveModalSheet? = nil
     @State private var showGameRoomFullScreen: Bool = false
+    @State private var showAIChatSheet: Bool = false
     @State private var showSoundboardSheet: Bool = false
     @State private var showSearchSheet: Bool = false
     @State private var showAboutSheet: Bool = false
@@ -1464,6 +1465,9 @@ struct ContentView: View {
         }
         .fullScreenCover(isPresented: $showGameRoomFullScreen) {
             KOnGameRoomSheetView(manager: manager)
+        }
+        .sheet(isPresented: $showAIChatSheet) {
+            KOnAIChatSheetView(manager: manager, onOpenGameRoom: { showGameRoomFullScreen = true })
         }
     }
     
@@ -2875,6 +2879,25 @@ struct ContentView: View {
                 .foregroundColor(musicManager.isPlaying ? .white : httGold)
                 .cornerRadius(8)
                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold.opacity(0.7), lineWidth: 1))
+            }
+            
+            Button(action: {
+                showAIChatSheet = true
+            }) {
+                HStack(spacing: 3) {
+                    Image(systemName: "sparkles")
+                        .font(.system(size: 10, weight: .bold))
+                    Text(tr("AI茶会", "AI茶會", "AI Tea"))
+                        .font(.system(size: 11, weight: .heavy))
+                        .lineLimit(1).fixedSize(horizontal: true, vertical: false)
+                        .minimumScaleFactor(0.8)
+                }
+                .padding(.horizontal, 7)
+                .padding(.vertical, 6)
+                .background(LinearGradient(colors: [Color(red: 0.36, green: 0.22, blue: 0.72), Color(red: 0.78, green: 0.18, blue: 0.28)], startPoint: .topLeading, endPoint: .bottomTrailing))
+                .foregroundColor(.white)
+                .cornerRadius(8)
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold, lineWidth: 1.2))
             }
             
             Button(action: {

@@ -2034,34 +2034,7 @@ static void processIncomingNetworkMessages() {
             if (!gRoomPeers.empty() && gRoomPeers.front().name == gMyPeerName) {
                 gIsRoomAuthority = true;
             }
-            if (gScreen == MODE_AI_THEATER) {
-            if ((kDown & HidNpadButton_Minus) || (kDown & HidNpadButton_B)) {
-                gSwitchAI.releaseOnExit();
-                gScreen = MODE_LOBBY;
-            } else if (kDown & HidNpadButton_Up) {
-                gAiTopicIdx = (gAiTopicIdx + 4) % 6;
-            } else if (kDown & HidNpadButton_Down) {
-                gAiTopicIdx = (gAiTopicIdx + 2) % 6;
-            } else if (kDown & HidNpadButton_Left) {
-                gAiTopicIdx = (gAiTopicIdx + 5) % 6;
-            } else if (kDown & HidNpadButton_Right) {
-                gAiTopicIdx = (gAiTopicIdx + 1) % 6;
-            } else if (kDown & HidNpadButton_A) {
-                gSwitchAI.startGeneration(gMyCharId, kSwitchAITopics[gAiTopicIdx].prompt);
-            } else if (kDown & HidNpadButton_Y) {
-                openSwitchAIKeyboard();
-            } else if (kDown & HidNpadButton_L) {
-                gMyCharId = (gMyCharId <= 1) ? 5 : (gMyCharId - 1);
-            } else if (kDown & HidNpadButton_R) {
-                gMyCharId = (gMyCharId >= 5) ? 1 : (gMyCharId + 1);
-            } else if (kDown & HidNpadButton_X) {
-                gSwitchAI.loadOnEnter();
-            }
-        } else if (gScreen == MODE_LOBBY) {
-            if (kDown & HidNpadButton_ZL) {
-                gScreen = MODE_AI_THEATER;
-                gSwitchAI.loadOnEnter();
-            }
+            if (gScreen == MODE_LOBBY) {
                 rebuildLobbySeats();
                 gStatusBanner = "玩家 [" + cleanSender + "] 已离开房间";
             } else if (gScreen == MODE_DDZ_TABLE) {
@@ -3973,7 +3946,34 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        if (gScreen == MODE_LOBBY) {
+        if (gScreen == MODE_AI_THEATER) {
+            if ((kDown & HidNpadButton_Minus) || (kDown & HidNpadButton_B)) {
+                gSwitchAI.releaseOnExit();
+                gScreen = MODE_LOBBY;
+            } else if (kDown & HidNpadButton_Up) {
+                gAiTopicIdx = (gAiTopicIdx + 4) % 6;
+            } else if (kDown & HidNpadButton_Down) {
+                gAiTopicIdx = (gAiTopicIdx + 2) % 6;
+            } else if (kDown & HidNpadButton_Left) {
+                gAiTopicIdx = (gAiTopicIdx + 5) % 6;
+            } else if (kDown & HidNpadButton_Right) {
+                gAiTopicIdx = (gAiTopicIdx + 1) % 6;
+            } else if (kDown & HidNpadButton_A) {
+                gSwitchAI.startGeneration(gMyCharId, kSwitchAITopics[gAiTopicIdx].prompt);
+            } else if (kDown & HidNpadButton_Y) {
+                openSwitchAIKeyboard();
+            } else if (kDown & HidNpadButton_L) {
+                gMyCharId = (gMyCharId <= 1) ? 5 : (gMyCharId - 1);
+            } else if (kDown & HidNpadButton_R) {
+                gMyCharId = (gMyCharId >= 5) ? 1 : (gMyCharId + 1);
+            } else if (kDown & HidNpadButton_X) {
+                gSwitchAI.loadOnEnter();
+            }
+        } else if (gScreen == MODE_LOBBY) {
+            if (kDown & HidNpadButton_ZL) {
+                gScreen = MODE_AI_THEATER;
+                gSwitchAI.loadOnEnter();
+            }
             if (kDown & HidNpadButton_Plus) {
                 running = false;
             }
