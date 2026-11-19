@@ -12,6 +12,12 @@ struct KOnAIChatSheetView: View {
     @State private var selectedTab: Int = 0
     @State private var inputText: String = ""
     @State private var showFileImporter: Bool = false
+    @FocusState private var isInputFocused: Bool
+
+    private func dismissKeyboard() {
+        isInputFocused = false
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+    }
 
     private let httCrimson = Color(red: 0.78, green: 0.18, blue: 0.22)
     private let httGold = Color(red: 0.88, green: 0.72, blue: 0.38)
@@ -82,7 +88,7 @@ struct KOnAIChatSheetView: View {
     }
 
     private func tabButton(title: String, idx: Int) -> some View {
-        Button(action: { selectedTab = idx }) {
+        Button(action: { dismissKeyboard(); selectedTab = idx }) {
             Text(title)
                 .font(.system(size: 13, weight: .bold))
                 .frame(maxWidth: .infinity)
@@ -136,7 +142,7 @@ struct KOnAIChatSheetView: View {
                 .padding(.horizontal, 12)
             }
 
-            // Messages List
+            // Messages List (Tap empty space or drag to dismiss keyboard!)
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 10) {
@@ -147,7 +153,11 @@ struct KOnAIChatSheetView: View {
                     }
                     .padding(.horizontal, 12)
                     .padding(.vertical, 6)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
+                .contentShape(Rectangle())
+                .onTapGesture { dismissKeyboard() }
+                .simultaneousGesture(DragGesture(minimumDistance: 12).onChanged { _ in dismissKeyboard() })
                 .onChange(of: llm.messages.count) { _ in
                     if let last = llm.messages.last {
                         withAnimation { proxy.scrollTo(last.id, anchor: .bottom) }
@@ -158,7 +168,15 @@ struct KOnAIChatSheetView: View {
             // Input Bar
             HStack(spacing: 8) {
                 TextField("和轻音部聊点什么，或直接下达控车指令...", text: $inputText)
+                    .focused($isInputFocused)
                     .textFieldStyle(.plain)
+                    .submitLabel(.send)
+                    .onSubmit {
+                        let q = inputText
+                        inputText = ""
+                        dismissKeyboard()
+                        llm.sendUserMessage(q)
+                    }
                     .font(.system(size: 14))
                     .foregroundColor(.white)
                     .padding(.horizontal, 12)
@@ -170,6 +188,7 @@ struct KOnAIChatSheetView: View {
                 Button(action: {
                     let q = inputText
                     inputText = ""
+                    dismissKeyboard()
                     llm.sendUserMessage(q)
                 }) {
                     Image(systemName: llm.isGenerating ? "hourglass" : "paperplane.fill")
@@ -187,7 +206,7 @@ struct KOnAIChatSheetView: View {
     }
 
     private func quickChip(_ title: String, _ prompt: String) -> some View {
-        Button(action: { llm.sendUserMessage(prompt) }) {
+        Button(action: { dismissKeyboard(); llm.sendUserMessage(prompt) }) {
             Text(title)
                 .font(.system(size: 11, weight: .bold))
                 .padding(.horizontal, 10)

@@ -95,9 +95,11 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = 6001 /* Build configuration list for PBXNativeTarget "KOnNaviCompanion" */;
 			buildPhases = (
+				8501 /* Fetch llama.cpp Metal Framework */,
 				7001 /* Sources */,
 				3001 /* Frameworks */,
 				8001 /* Resources */,
+				8502 /* Embed llama.framework if dynamic */,
 			);
 			buildRules = (
 			);
@@ -156,6 +158,39 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		8501 /* Fetch llama.cpp Metal Framework */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+			);
+			name = "Fetch llama.cpp Metal Framework";
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -e\nLLAMA_DIR=\"${SRCROOT}/build-llama\"\nif [ ! -d \"${LLAMA_DIR}/llama.framework\" ]; then\n  mkdir -p \"${LLAMA_DIR}\"\n  curl -fL \"https://github.com/ggml-org/llama.cpp/releases/download/b5046/llama-b5046-xcframework.zip\" -o \"${LLAMA_DIR}/llama-xcframework.zip\"\n  unzip -q -o \"${LLAMA_DIR}/llama-xcframework.zip\" -d \"${LLAMA_DIR}/\"\n  LLAMA_FW=$(find \"${LLAMA_DIR}\" -type d -path \"*/ios-arm64/llama.framework\" | head -n 1)\n  cp -R \"${LLAMA_FW}\" \"${LLAMA_DIR}/llama.framework\"\nfi\nif [ ! -f \"${LLAMA_DIR}/llama.framework/Modules/module.modulemap\" ]; then\n  mkdir -p \"${LLAMA_DIR}/llama.framework/Modules\"\n  printf 'framework module llama {\n  umbrella header \"llama.h\"\n  export *\n  module * { export * }\n}\n' > \"${LLAMA_DIR}/llama.framework/Modules/module.modulemap\"\nfi\n";
+		};
+		8502 /* Embed llama.framework if dynamic */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+			);
+			name = "Embed llama.framework if dynamic";
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "LLAMA_FW=\"${SRCROOT}/build-llama/llama.framework\"\nif [ -f \"${LLAMA_FW}/llama\" ] && file \"${LLAMA_FW}/llama\" | grep -q \"dynamically linked\"; then\n  mkdir -p \"${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}\"\n  rm -rf \"${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}/llama.framework\"\n  cp -R \"${LLAMA_FW}\" \"${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}/\"\nfi\n";
+		};
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		7001 /* Sources */ = {
@@ -237,6 +272,28 @@
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = KOnNaviCompanion/Info.plist;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/build-llama",
+				);
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-F$(SRCROOT)/build-llama",
+					"-framework",
+					llama,
+					"-framework",
+					Metal,
+					"-framework",
+					MetalKit,
+					"-framework",
+					Accelerate,
+					"-lc++",
+				);
+				OTHER_SWIFT_FLAGS = (
+					"$(inherited)",
+					"-F",
+					"$(SRCROOT)/build-llama",
+				);
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -261,6 +318,28 @@
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = KOnNaviCompanion/Info.plist;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/build-llama",
+				);
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-F$(SRCROOT)/build-llama",
+					"-framework",
+					llama,
+					"-framework",
+					Metal,
+					"-framework",
+					MetalKit,
+					"-framework",
+					Accelerate,
+					"-lc++",
+				);
+				OTHER_SWIFT_FLAGS = (
+					"$(inherited)",
+					"-F",
+					"$(SRCROOT)/build-llama",
+				);
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",

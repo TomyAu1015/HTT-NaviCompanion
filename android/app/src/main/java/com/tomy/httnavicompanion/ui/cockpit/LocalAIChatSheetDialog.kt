@@ -5,6 +5,10 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -70,6 +74,9 @@ fun LocalAIChatSheetDialog(
     var selectedTab by remember { mutableIntStateOf(0) }
     var inputText by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val hideKb = { focusManager.clearFocus(); keyboardController?.hide() }
 
     val importLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
@@ -149,7 +156,7 @@ fun LocalAIChatSheetDialog(
                                 .clip(RoundedCornerShape(10.dp))
                                 .background(if (sel) AiCrimson else AiCardBg)
                                 .border(1.dp, if (sel) AiGold else Color.White.copy(alpha = 0.12f), RoundedCornerShape(10.dp))
-                                .clickable { selectedTab = idx }
+                                .clickable { hideKb(); selectedTab = idx }
                                 .padding(vertical = 8.dp),
                             contentAlignment = Alignment.Center
                         ) {
@@ -210,7 +217,7 @@ fun LocalAIChatSheetDialog(
                                     .clip(RoundedCornerShape(14.dp))
                                     .background(AiCardBg)
                                     .border(1.dp, AiGold.copy(alpha = 0.45f), RoundedCornerShape(14.dp))
-                                    .clickable(enabled = !isGenerating) { llm.sendUserMessage(prompt) }
+                                    .clickable(enabled = !isGenerating) { hideKb(); llm.sendUserMessage(prompt) }
                                     .padding(horizontal = 10.dp, vertical = 5.dp)
                             ) {
                                 Text(label, color = AiCream, fontSize = 11.sp, fontWeight = FontWeight.Bold)
@@ -223,7 +230,7 @@ fun LocalAIChatSheetDialog(
                     // Chat Messages
                     LazyColumn(
                         state = listState,
-                        modifier = Modifier.weight(1f).fillMaxWidth(),
+                        modifier = Modifier.weight(1f).fillMaxWidth().pointerInput(Unit) { detectTapGestures(onTap = { hideKb() }) },
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         items(messages, key = { it.id }) { msg ->
@@ -293,6 +300,7 @@ fun LocalAIChatSheetDialog(
                                 .clickable(enabled = !isGenerating && inputText.isNotBlank()) {
                                     val q = inputText
                                     inputText = ""
+                                    hideKb()
                                     llm.sendUserMessage(q)
                                 },
                             contentAlignment = Alignment.Center
