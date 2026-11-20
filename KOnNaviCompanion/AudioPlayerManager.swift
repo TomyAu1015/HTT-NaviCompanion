@@ -8049,6 +8049,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                 DispatchQueue.main.async {
                     guard let self = self else { return }
                     if let nsErr = err as NSError?, nsErr.code == MKError.Code.loadingThrottled.rawValue || nsErr.domain == NSURLErrorDomain && nsErr.code == NSURLErrorCancelled {
+                        self.isRecalculatingRoute = false
                         return
                     }
                     self.isRecalculatingRoute = false

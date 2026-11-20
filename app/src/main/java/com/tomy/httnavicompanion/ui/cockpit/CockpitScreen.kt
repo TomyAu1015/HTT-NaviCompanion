@@ -46,7 +46,7 @@ import com.tomy.httnavicompanion.audio.*
 private val HTTCrimson = Color(0xFFA61E2E)
 private val HTTGold = Color(0xFFE0B861)
 private val HTTCream = Color(0xFFFAF2E0)
-private val HTTDarkPanel = Color(0xFF1E1E24)
+private val HTTDarkPanel = Color(0xFF141720)
 
 private fun characterThemeColor(char: CharacterFilter): Color = when (char) {
     CharacterFilter.YUI -> Color(0xFFE65261)
@@ -80,6 +80,7 @@ fun CockpitScreen(
     var showSearchDialog by remember { mutableStateOf(false) }
     var showSoundboardDialog by remember { mutableStateOf(false) }
     var showGameRoomDialog by remember { mutableStateOf(false) }
+    var showAIChatDialog by remember { mutableStateOf(false) }
     var showVehicleDialog by remember { mutableStateOf(false) }
 
     Box(
@@ -110,6 +111,7 @@ fun CockpitScreen(
             Column(
                 modifier = Modifier
                     .fillMaxSize()
+                    .statusBarsPadding()
                     .verticalScroll(rememberScrollState())
                     .padding(horizontal = 10.dp, vertical = 6.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp)
@@ -124,6 +126,7 @@ fun CockpitScreen(
                     },
                     onOpenSoundboard = { showSoundboardDialog = true },
                     onStartFloatingPet = onStartFloatingPet,
+                    onOpenAIChat = { showAIChatDialog = true },
                     onOpenGameRoom = { showGameRoomDialog = true },
                     onOpenVehicle = { showVehicleDialog = true }
                 )
@@ -180,33 +183,37 @@ fun CockpitScreen(
                 }
             }
         } else {
-            // Portrait Single-Column Cockpit matching iOS ContentView.swift
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .verticalScroll(rememberScrollState())
-                    .padding(horizontal = 10.dp, vertical = 6.dp),
-                verticalArrangement = Arrangement.spacedBy(7.dp)
-            ) {
-                TopBezelBar(
-                    manager = manager,
-                    musicMgr = musicMgr,
-                    onOpenMusic = { showMusicDialog = true },
-                    onOpenAlbum = {
-                        albumInitialTab = 0
-                        showAlbumDialog = true
-                    },
-                    onOpenSoundboard = { showSoundboardDialog = true },
-                    onStartFloatingPet = onStartFloatingPet,
-                    onOpenGameRoom = { showGameRoomDialog = true },
-                    onOpenVehicle = { showVehicleDialog = true }
-                )
-                SpeedometerCockpit(manager = manager, isCompact = false)
-                MainStageOrMapSection(
-                    manager = manager,
-                    stageHeight = 250.dp,
-                    onOpenSearch = { showSearchDialog = true }
-                )
+            // Portrait Single-Column Cockpit matching iOS ContentView.swift (adaptive height for all Android screen ratios)
+            BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+                val adaptiveStageH = (maxHeight * 0.255f).coerceIn(178.dp, 232.dp)
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .statusBarsPadding()
+                        .verticalScroll(rememberScrollState())
+                        .padding(horizontal = 9.dp, vertical = 4.dp),
+                    verticalArrangement = Arrangement.spacedBy(5.dp)
+                ) {
+                    TopBezelBar(
+                        manager = manager,
+                        musicMgr = musicMgr,
+                        onOpenMusic = { showMusicDialog = true },
+                        onOpenAlbum = {
+                            albumInitialTab = 0
+                            showAlbumDialog = true
+                        },
+                        onOpenSoundboard = { showSoundboardDialog = true },
+                        onStartFloatingPet = onStartFloatingPet,
+                        onOpenAIChat = { showAIChatDialog = true },
+                        onOpenGameRoom = { showGameRoomDialog = true },
+                        onOpenVehicle = { showVehicleDialog = true }
+                    )
+                    SpeedometerCockpit(manager = manager, isCompact = false)
+                    MainStageOrMapSection(
+                        manager = manager,
+                        stageHeight = adaptiveStageH,
+                        onOpenSearch = { showSearchDialog = true }
+                    )
                 CharacterSelectorStrip(manager = manager)
                 UtilityControlGrid(
                     manager = manager,
@@ -232,6 +239,7 @@ fun CockpitScreen(
                         showAlbumDialog = true
                     }
                 )
+                }
             }
         }
 
@@ -251,6 +259,13 @@ fun CockpitScreen(
         if (showSoundboardDialog) {
             SoundboardSheetDialog(onDismiss = { showSoundboardDialog = false })
         }
+        if (showAIChatDialog) {
+            LocalAIChatSheetDialog(
+                onDismiss = { showAIChatDialog = false },
+                onOpenGameRoom = { showGameRoomDialog = true },
+                onOpenSearch = { showSearchDialog = true }
+            )
+        }
         if (showGameRoomDialog) {
             KOnGameRoomSheetDialog(onDismiss = { showGameRoomDialog = false })
         }
@@ -268,6 +283,7 @@ fun TopBezelBar(
     onOpenAlbum: () -> Unit,
     onOpenSoundboard: () -> Unit,
     onStartFloatingPet: () -> Unit,
+    onOpenAIChat: () -> Unit,
     onOpenGameRoom: () -> Unit,
     onOpenVehicle: () -> Unit
 ) {
@@ -289,7 +305,7 @@ fun TopBezelBar(
             modifier = Modifier
                 .clip(RoundedCornerShape(8.dp))
                 .background(HTTCrimson)
-                .border(1.5.dp, HTTGold, RoundedCornerShape(8.dp))
+                .border(1.dp, HTTGold.copy(alpha = 0.55f), RoundedCornerShape(8.dp))
                 .clickable { manager.toggleMapMode() }
                 .padding(horizontal = 8.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -351,6 +367,31 @@ fun TopBezelBar(
         ) {
             Icon(Icons.Default.PictureInPictureAlt, contentDescription = null, tint = Color(0xFF00E5FF), modifier = Modifier.size(13.dp))
             Text("悬浮宠", color = Color(0xFF00E5FF), fontSize = 11.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+        }
+
+        // 4.4 K-ON! Local AI Tea Time Co-Pilot (AI茶会)
+        Row(
+            modifier = Modifier
+                .clip(RoundedCornerShape(8.dp))
+                .background(Color(0xFF5E35B1))
+                .border(1.dp, HTTGold, RoundedCornerShape(8.dp))
+                .clickable { onOpenAIChat() }
+                .padding(horizontal = 8.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(3.dp)
+        ) {
+            Text("✨", fontSize = 11.sp)
+            Text(
+                when (lang) {
+                    AppLanguage.ZH_HANS -> "AI茶会"
+                    AppLanguage.ZH_HANT -> "AI茶會"
+                    AppLanguage.EN -> "AI Tea"
+                },
+                color = Color.White,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1
+            )
         }
 
         // 4.5 K-ON! Ho-kago Game Room (放课后棋牌室：斗地主 + 广东红中麻将)
@@ -1116,7 +1157,7 @@ fun InteractiveMapBoxView(
             .background(Color(0xFF141D2B))
             .border(2.dp, HTTGold, RoundedCornerShape(16.dp))
     ) {
-        // Real Interactive Map (osmdroid: Amap China + OSM Global)
+        // Real Interactive Map (osmdroid: Mainland China Amap + HK/Macau/Global Google Maps)
         OsmMapView(
             manager = manager,
             modifier = Modifier.fillMaxSize()
@@ -1256,7 +1297,6 @@ fun InteractiveMapBoxView(
             horizontalAlignment = Alignment.End,
             verticalArrangement = Arrangement.spacedBy(4.dp)
         ) {
-            TrafficLightCapsule(colorState = tlColor, countdown = tlCountdown)
             Box(
                 modifier = Modifier
                     .clip(RoundedCornerShape(6.dp))
@@ -1763,8 +1803,6 @@ fun EnlargedNavigationHUDView(
 ) {
     val stepInstruction by manager.currentStepInstruction.collectAsState()
     val distMeters by manager.distanceToNextStepMeters.collectAsState()
-    val tlColor by manager.trafficLightColor.collectAsState()
-    val tlCountdown by manager.trafficLightCountdown.collectAsState()
     val speed by manager.currentSpeedKmh.collectAsState()
     val speedLimit by manager.speedLimitKmh.collectAsState()
     val currentSprite by manager.currentSpriteFrame.collectAsState()
@@ -1779,225 +1817,321 @@ fun EnlargedNavigationHUDView(
     val tappedCoord by manager.tappedCoord.collectAsState()
     val tappedTitle by manager.tappedTitle.collectAsState()
     val tappedAddress by manager.tappedAddress.collectAsState()
+    val travelMode by manager.travelMode.collectAsState()
+    val isDemo by manager.isDemoSimulating.collectAsState()
+    val hasNav by manager.hasActiveNavigation.collectAsState()
+
+    val distLabel = if (distMeters >= 1000) String.format("%.1f公里", distMeters / 1000.0) else "${distMeters}米"
 
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(Color(0xFF0E1622))
     ) {
-        // Real Full-Screen Interactive Map (osmdroid)
+        // Real Full-Screen Interactive Map (Amap in China / Google Maps Overseas)
         OsmMapView(
             manager = manager,
             modifier = Modifier.fillMaxSize()
         )
 
-        // Left HUD Overlay Stack matching iOS enlargedNavigationHUDView
+        // Top Amap-style Navigation Stack (safe-area aware, never overlaps right controls!)
         Column(
             modifier = Modifier
-                .width(if (isLandscape) 330.dp else 350.dp)
-                .fillMaxHeight()
-                .padding(10.dp),
-            verticalArrangement = Arrangement.spacedBy(7.dp)
+                .then(if (isLandscape) Modifier.width(370.dp) else Modifier.fillMaxWidth())
+                .align(Alignment.TopStart)
+                .statusBarsPadding()
+                .padding(horizontal = 10.dp, vertical = 6.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            // 1. Turn-by-Turn Card
-            Card(
-                colors = CardDefaults.cardColors(containerColor = Color(0xFF131D31).copy(alpha = 0.92f)),
-                shape = RoundedCornerShape(14.dp),
-                modifier = Modifier.fillMaxWidth().border(1.5.dp, HTTGold, RoundedCornerShape(14.dp))
-            ) {
-                Row(
-                    modifier = Modifier.padding(10.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    val turnIcon = when {
-                        stepInstruction.contains("调头") || stepInstruction.contains("掉头") -> Icons.Default.UTurnLeft
-                        stepInstruction.contains("左") && !stepInstruction.contains("右") -> Icons.Default.TurnLeft
-                        stepInstruction.contains("右") && !stepInstruction.contains("左") -> Icons.Default.TurnRight
-                        else -> Icons.Default.ArrowUpward
-                    }
-                    Icon(turnIcon, contentDescription = null, tint = HTTGold, modifier = Modifier.size(30.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text("${distMeters}米", color = Color(0xFF00E676), fontSize = 18.sp, fontWeight = FontWeight.Black, fontFamily = FontFamily.Monospace)
-                            if (remKm > 0.05) {
-                                Text(
-                                    String.format("余 %.1fkm · %d分钟", remKm, remMins),
-                                    color = HTTGold,
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Bold
-                                )
-                            }
-                        }
-                        Text(stepInstruction, color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 2)
-                    }
-                }
-            }
-
-            // 2. Lane Guidance + Traffic Light Bar
-            Row(
+            // 1. Sleek Amap-style Turn-by-Turn Header Card
+            Surface(
+                color = Color(0xFF0F211C).copy(alpha = 0.94f),
+                shape = RoundedCornerShape(16.dp),
+                shadowElevation = 6.dp,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(Color.Black.copy(alpha = 0.82f))
-                    .border(1.dp, HTTGold.copy(alpha = 0.6f), RoundedCornerShape(12.dp))
-                    .padding(horizontal = 10.dp, vertical = 6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
+                    .border(1.dp, HTTGold.copy(alpha = 0.72f), RoundedCornerShape(16.dp))
             ) {
-                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    val activeLaneIdx = when {
-                        stepInstruction.contains("左") && !stepInstruction.contains("右") -> 0
-                        stepInstruction.contains("右") && !stepInstruction.contains("左") -> 2
-                        else -> 1
-                    }
-                    listOf(Icons.Default.TurnLeft, Icons.Default.ArrowUpward, Icons.Default.TurnRight).forEachIndexed { idx, ic ->
-                        val isRec = (idx == activeLaneIdx)
+                Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        val turnIcon = when {
+                            travelMode == NavigationTravelMode.TRANSIT -> Icons.Default.DirectionsTransit
+                            travelMode == NavigationTravelMode.WALKING -> Icons.Default.DirectionsWalk
+                            travelMode == NavigationTravelMode.EBIKE -> Icons.Default.DirectionsBike
+                            stepInstruction.contains("调头") || stepInstruction.contains("掉头") -> Icons.Default.UTurnLeft
+                            stepInstruction.contains("左") && !stepInstruction.contains("右") -> Icons.Default.TurnLeft
+                            stepInstruction.contains("右") && !stepInstruction.contains("左") -> Icons.Default.TurnRight
+                            else -> Icons.Default.ArrowUpward
+                        }
                         Box(
                             modifier = Modifier
-                                .size(26.dp)
-                                .clip(RoundedCornerShape(4.dp))
-                                .background(if (isRec) HTTCrimson.copy(alpha = 0.85f) else Color.White.copy(alpha = 0.08f))
-                                .border(1.dp, if (isRec) HTTGold else Color.White.copy(alpha = 0.2f), RoundedCornerShape(4.dp)),
+                                .size(44.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(Color(0xFF185A42))
+                                .border(1.dp, Color(0xFF4ADE80).copy(alpha = 0.45f), RoundedCornerShape(12.dp)),
                             contentAlignment = Alignment.Center
                         ) {
-                            Icon(ic, contentDescription = null, tint = if (isRec) Color.White else Color.Gray, modifier = Modifier.size(15.dp))
+                            Icon(turnIcon, contentDescription = null, tint = Color.White, modifier = Modifier.size(26.dp))
+                        }
+
+                        Column(modifier = Modifier.weight(1f)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.Bottom
+                            ) {
+                                Text(
+                                    distLabel,
+                                    color = Color(0xFF4ADE80),
+                                    fontSize = 20.sp,
+                                    fontWeight = FontWeight.Black,
+                                    fontFamily = FontFamily.Monospace
+                                )
+                                if (remKm > 0.05) {
+                                    Text(
+                                        String.format("余 %.1fkm · %d分", remKm, remMins),
+                                        color = HTTGold,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
+                            Text(
+                                stepInstruction,
+                                color = Color.White,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+
+                    // Compact Top Action Row: Back to Cockpit + End Nav + Travel Mode Quick Switcher
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(5.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        NavigationTravelMode.values().forEach { mode ->
+                            val sel = travelMode == mode
+                            val shortTitle = when (mode) {
+                                NavigationTravelMode.DRIVING -> "驾车"
+                                NavigationTravelMode.EBIKE -> "骑行"
+                                NavigationTravelMode.WALKING -> "步行"
+                                NavigationTravelMode.TRANSIT -> "公交"
+                            }
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(if (sel) HTTCrimson else Color.White.copy(alpha = 0.08f))
+                                    .border(1.dp, if (sel) HTTGold else Color.White.copy(alpha = 0.14f), RoundedCornerShape(8.dp))
+                                    .clickable { manager.setTravelMode(mode) }
+                                    .padding(vertical = 5.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(shortTitle, color = if (sel) Color.White else Color.LightGray, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
+
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(Color(0xFF282E3F))
+                                .border(1.dp, HTTGold.copy(alpha = 0.45f), RoundedCornerShape(8.dp))
+                                .clickable { manager.setMapEnlarged(false) }
+                                .padding(horizontal = 9.dp, vertical = 5.dp)
+                        ) {
+                            Text("收起", color = HTTGold, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                        }
+
+                        if (hasNav) {
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(Color(0xFF8B1A24))
+                                    .clickable { manager.stopNavigation() }
+                                    .padding(horizontal = 9.dp, vertical = 5.dp)
+                            ) {
+                                Text("结束", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                            }
                         }
                     }
                 }
-
-                TrafficLightCapsule(colorState = tlColor, countdown = tlCountdown)
-
-                Box(
-                    modifier = Modifier
-                        .size(28.dp)
-                        .clip(CircleShape)
-                        .background(Color.White)
-                        .border(2.5.dp, Color.Red, CircleShape),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text("$speedLimit", color = Color.Black, fontSize = 10.sp, fontWeight = FontWeight.Black)
-                }
             }
 
-            // 3. Candidate Routes Selector (when multiple routes available)
+            // 2. Candidate Routes Selector (when multiple routes available)
             if (candidateRoutes.size > 1) {
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     candidateRoutes.forEachIndexed { idx, r ->
                         val sel = idx == selectedRouteIdx
+                        val durMins = (r.durationSeconds / 60).toInt().coerceAtLeast(1)
                         Box(
                             modifier = Modifier
                                 .weight(1f)
-                                .clip(RoundedCornerShape(8.dp))
-                                .background(if (sel) HTTCrimson else Color.Black.copy(alpha = 0.78f))
-                                .border(1.dp, if (sel) HTTGold else Color.White.copy(alpha = 0.25f), RoundedCornerShape(8.dp))
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(if (sel) HTTCrimson.copy(alpha = 0.94f) else Color(0xFF141824).copy(alpha = 0.86f))
+                                .border(1.dp, if (sel) HTTGold else Color.White.copy(alpha = 0.2f), RoundedCornerShape(10.dp))
                                 .clickable { manager.selectRoute(idx) }
-                                .padding(horizontal = 6.dp, vertical = 4.dp),
+                                .padding(horizontal = 8.dp, vertical = 6.dp),
                             contentAlignment = Alignment.Center
                         ) {
                             Text(
-                                "${r.name} · ${(r.durationSeconds / 60).toInt()}分",
+                                "${r.name} · ${durMins}分",
                                 color = Color.White,
                                 fontSize = 10.sp,
                                 fontWeight = FontWeight.Bold,
-                                maxLines = 1
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
                     }
                 }
             }
 
-            // 4. Electronic Eye & Highway Service Area Strip
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
+            // 3. Mode-Specific Secondary Strip: Lane + Speed Camera (Driving) vs Transit Legs (Transit)
+            if (travelMode == NavigationTravelMode.DRIVING) {
                 Row(
                     modifier = Modifier
-                        .weight(1f)
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(Color.Black.copy(alpha = 0.78f))
-                        .border(1.dp, Color.Red.copy(alpha = 0.6f), RoundedCornerShape(10.dp))
-                        .padding(horizontal = 8.dp, vertical = 6.dp),
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(Color(0xFF101521).copy(alpha = 0.86f))
+                        .border(1.dp, HTTGold.copy(alpha = 0.45f), RoundedCornerShape(12.dp))
+                        .padding(horizontal = 10.dp, vertical = 6.dp),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                    horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Icon(Icons.Default.Videocam, contentDescription = null, tint = Color.Red, modifier = Modifier.size(15.dp))
-                    Column {
-                        Text("电子眼测速 ${speedLimit}km/h", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                        Text("距离 ${camDist}米", color = Color(0xFFFF8A80), fontSize = 9.sp)
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+                        val activeLaneIdx = when {
+                            stepInstruction.contains("左") && !stepInstruction.contains("右") -> 0
+                            stepInstruction.contains("右") && !stepInstruction.contains("左") -> 2
+                            else -> 1
+                        }
+                        listOf(Icons.Default.TurnLeft, Icons.Default.ArrowUpward, Icons.Default.TurnRight).forEachIndexed { idx, ic ->
+                            val isRec = (idx == activeLaneIdx)
+                            Box(
+                                modifier = Modifier
+                                    .size(24.dp)
+                                    .clip(RoundedCornerShape(5.dp))
+                                    .background(if (isRec) Color(0xFF16A34A) else Color.White.copy(alpha = 0.08f))
+                                    .border(1.dp, if (isRec) Color(0xFF4ADE80) else Color.White.copy(alpha = 0.16f), RoundedCornerShape(5.dp)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(ic, contentDescription = null, tint = if (isRec) Color.White else Color.Gray, modifier = Modifier.size(14.dp))
+                            }
+                        }
+                        Spacer(Modifier.width(6.dp))
+                        Icon(Icons.Default.Videocam, contentDescription = null, tint = Color(0xFFFF6B6B), modifier = Modifier.size(14.dp))
+                        Text("测速 ${camDist}m", color = Color(0xFFFFB4AB), fontSize = 10.sp, fontWeight = FontWeight.SemiBold)
+                        Spacer(Modifier.width(4.dp))
+                        Icon(Icons.Default.LocalGasStation, contentDescription = null, tint = Color(0xFF4ADE80), modifier = Modifier.size(14.dp))
+                        Text(String.format("%s %.1fkm", saName.take(5), saDist / 1000.0), color = Color(0xFF86EFAC), fontSize = 10.sp, maxLines = 1)
+                    }
+
+                    Box(
+                        modifier = Modifier
+                            .size(26.dp)
+                            .clip(CircleShape)
+                            .background(Color.White)
+                            .border(2.5.dp, Color(0xFFDC2626), CircleShape),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text("$speedLimit", color = Color.Black, fontSize = 9.sp, fontWeight = FontWeight.Black)
                     }
                 }
-                Row(
-                    modifier = Modifier
-                        .weight(1f)
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(Color.Black.copy(alpha = 0.78f))
-                        .border(1.dp, Color(0xFF00E676).copy(alpha = 0.6f), RoundedCornerShape(10.dp))
-                        .padding(horizontal = 8.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(5.dp)
-                ) {
-                    Icon(Icons.Default.LocalGasStation, contentDescription = null, tint = Color(0xFF00E676), modifier = Modifier.size(15.dp))
-                    Column {
-                        Text(saName, color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold, maxLines = 1)
-                        Text("距离 ${String.format("%.1f", saDist / 1000.0)} km", color = Color(0xFF00E676), fontSize = 9.sp)
+            } else if (travelMode == NavigationTravelMode.TRANSIT) {
+                val activeRoute = candidateRoutes.getOrNull(selectedRouteIdx)
+                if (activeRoute != null && activeRoute.steps.isNotEmpty()) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(Color(0xFF101828).copy(alpha = 0.88f))
+                            .border(1.dp, Color(0xFF38BDF8).copy(alpha = 0.55f), RoundedCornerShape(12.dp))
+                            .padding(horizontal = 10.dp, vertical = 7.dp),
+                        verticalArrangement = Arrangement.spacedBy(3.dp)
+                    ) {
+                        activeRoute.steps.take(3).forEachIndexed { idx, st ->
+                            Text(
+                                "${idx + 1}. ${st.instruction}",
+                                color = if (idx == 1) Color(0xFF7DD3FC) else Color.White,
+                                fontSize = 10.5.sp,
+                                fontWeight = if (idx == 1) FontWeight.Bold else FontWeight.Medium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
                     }
                 }
             }
+        }
 
-            Spacer(modifier = Modifier.weight(1f))
-
-            // 5. Bottom Floating Island: Speed + Mascot + Speech Bubble
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(14.dp))
-                    .background(Color.Black.copy(alpha = 0.85f))
-                    .border(1.5.dp, HTTGold, RoundedCornerShape(14.dp))
-                    .padding(10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+        // Right-Side Floating Circular Map Controls (aligned CenterEnd so they NEVER overlap the top banner!)
+        Column(
+            modifier = Modifier
+                .align(Alignment.CenterEnd)
+                .padding(end = 10.dp),
+            horizontalAlignment = Alignment.End,
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            SmallFloatingActionButton(
+                onClick = onOpenSearch,
+                containerColor = Color(0xFF141824).copy(alpha = 0.90f),
+                contentColor = HTTGold,
+                shape = CircleShape
             ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("$speed", color = Color(0xFF59FAA6), fontSize = 24.sp, fontWeight = FontWeight.Black, fontFamily = FontFamily.Monospace)
-                    Text("km/h", color = HTTCream, fontSize = 9.sp)
-                }
-                if (currentSprite != null) {
-                    Image(
-                        bitmap = currentSprite!!.asImageBitmap(),
-                        contentDescription = null,
-                        filterQuality = FilterQuality.None,
-                        modifier = Modifier
-                            .size(68.dp)
-                            .clickable { manager.triggerCharacterTap(null) }
-                    )
-                }
-                Text(
-                    bubbleText,
-                    color = HTTCream,
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Bold,
-                    maxLines = 2,
-                    modifier = Modifier.weight(1f)
-                )
+                Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(19.dp))
+            }
+            SmallFloatingActionButton(
+                onClick = { manager.triggerFastRecenter() },
+                containerColor = Color(0xFF141824).copy(alpha = 0.90f),
+                contentColor = HTTGold,
+                shape = CircleShape
+            ) {
+                Icon(Icons.Default.MyLocation, contentDescription = null, modifier = Modifier.size(19.dp))
+            }
+            SmallFloatingActionButton(
+                onClick = { manager.triggerZoom(1) },
+                containerColor = Color(0xFF141824).copy(alpha = 0.90f),
+                contentColor = Color.White,
+                shape = CircleShape
+            ) {
+                Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(19.dp))
+            }
+            SmallFloatingActionButton(
+                onClick = { manager.triggerZoom(-1) },
+                containerColor = Color(0xFF141824).copy(alpha = 0.90f),
+                contentColor = Color.White,
+                shape = CircleShape
+            ) {
+                Icon(Icons.Default.Remove, contentDescription = null, modifier = Modifier.size(19.dp))
+            }
+            SmallFloatingActionButton(
+                onClick = { manager.toggleDemoSimulation() },
+                containerColor = if (isDemo) HTTCrimson else Color(0xFF141824).copy(alpha = 0.90f),
+                contentColor = Color.White,
+                shape = CircleShape
+            ) {
+                Icon(if (isDemo) Icons.Default.Stop else Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(19.dp))
             }
         }
 
         // Tapped Map Point POI Detail Card
         if (tappedCoord != null) {
             Card(
-                colors = CardDefaults.cardColors(containerColor = Color.Black.copy(alpha = 0.90f)),
-                shape = RoundedCornerShape(14.dp),
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF141824).copy(alpha = 0.94f)),
+                shape = RoundedCornerShape(16.dp),
                 modifier = Modifier
-                    .width(260.dp)
+                    .width(265.dp)
                     .align(Alignment.BottomEnd)
-                    .padding(12.dp)
-                    .border(1.5.dp, HTTGold, RoundedCornerShape(14.dp))
+                    .navigationBarsPadding()
+                    .padding(end = 12.dp, bottom = 92.dp)
+                    .border(1.dp, HTTGold.copy(alpha = 0.7f), RoundedCornerShape(16.dp))
             ) {
                 Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Row(
@@ -2014,7 +2148,7 @@ fun EnlargedNavigationHUDView(
                     Button(
                         onClick = { manager.startRouteToPlace(tappedTitle, tappedCoord!!) },
                         colors = ButtonDefaults.buttonColors(containerColor = HTTCrimson),
-                        shape = RoundedCornerShape(8.dp),
+                        shape = RoundedCornerShape(10.dp),
                         modifier = Modifier.fillMaxWidth().height(34.dp),
                         contentPadding = PaddingValues(0.dp)
                     ) {
@@ -2024,60 +2158,43 @@ fun EnlargedNavigationHUDView(
             }
         }
 
-        // Top-Right Exit Full-Screen, Search, Recenter, Zoom Controls
-        Column(
+        // Bottom Floating Island: Speed + Mascot + Speech Bubble
+        Row(
             modifier = Modifier
-                .align(Alignment.TopEnd)
-                .padding(12.dp),
-            horizontalAlignment = Alignment.End,
-            verticalArrangement = Arrangement.spacedBy(6.dp)
+                .then(if (isLandscape) Modifier.width(370.dp) else Modifier.fillMaxWidth())
+                .align(Alignment.BottomStart)
+                .navigationBarsPadding()
+                .padding(horizontal = 10.dp, vertical = 10.dp)
+                .clip(RoundedCornerShape(16.dp))
+                .background(Color(0xFF101521).copy(alpha = 0.90f))
+                .border(1.dp, HTTGold.copy(alpha = 0.65f), RoundedCornerShape(16.dp))
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            Button(
-                onClick = { manager.setMapEnlarged(false) },
-                colors = ButtonDefaults.buttonColors(containerColor = HTTCrimson),
-                shape = RoundedCornerShape(10.dp)
-            ) {
-                Icon(Icons.Default.FullscreenExit, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
-                Spacer(Modifier.width(4.dp))
-                Text("返回驾驶舱", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text("$speed", color = Color(0xFF4ADE80), fontSize = 24.sp, fontWeight = FontWeight.Black, fontFamily = FontFamily.Monospace)
+                Text("km/h", color = HTTCream, fontSize = 9.sp)
             }
-
-            Button(
-                onClick = onOpenSearch,
-                colors = ButtonDefaults.buttonColors(containerColor = Color.Black.copy(alpha = 0.82f)),
-                shape = RoundedCornerShape(10.dp)
-            ) {
-                Icon(Icons.Default.Search, contentDescription = null, tint = HTTGold, modifier = Modifier.size(16.dp))
-                Spacer(Modifier.width(4.dp))
-                Text("切换目的地", color = HTTGold, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            if (currentSprite != null) {
+                Image(
+                    bitmap = currentSprite!!.asImageBitmap(),
+                    contentDescription = null,
+                    filterQuality = FilterQuality.None,
+                    modifier = Modifier
+                        .size(58.dp)
+                        .clickable { manager.triggerCharacterTap(null) }
+                )
             }
-
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                FloatingActionButton(
-                    onClick = { manager.triggerFastRecenter() },
-                    containerColor = Color.Black.copy(alpha = 0.82f),
-                    contentColor = HTTGold,
-                    modifier = Modifier.size(38.dp)
-                ) {
-                    Icon(Icons.Default.MyLocation, contentDescription = null, modifier = Modifier.size(18.dp))
-                }
-                FloatingActionButton(
-                    onClick = { manager.triggerZoom(1) },
-                    containerColor = Color.Black.copy(alpha = 0.82f),
-                    contentColor = Color.White,
-                    modifier = Modifier.size(38.dp)
-                ) {
-                    Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
-                }
-                FloatingActionButton(
-                    onClick = { manager.triggerZoom(-1) },
-                    containerColor = Color.Black.copy(alpha = 0.82f),
-                    contentColor = Color.White,
-                    modifier = Modifier.size(38.dp)
-                ) {
-                    Icon(Icons.Default.Remove, contentDescription = null, modifier = Modifier.size(18.dp))
-                }
-            }
+            Text(
+                bubbleText,
+                color = HTTCream,
+                fontSize = 11.5.sp,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f)
+            )
         }
     }
 }

@@ -9,7 +9,17 @@ import android.media.MediaPlayer
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.content.Intent
+import android.content.pm.PackageManager
 import android.util.Log
+import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
+import androidx.core.content.ContextCompat
+import com.tomy.httnavicompanion.MainActivity
+import com.tomy.httnavicompanion.R
 import com.tomy.httnavicompanion.HTTNaviApp
 import com.tomy.httnavicompanion.data.*
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -231,9 +241,9 @@ enum class NavigationCameraMode {
 }
 
 enum class MapTileSourceMode(val label: String) {
-    AUTO("智能切换 (国内高德/海外OSM)"),
-    AMAP_CHINA("高德矢量地图 (GCJ-02)"),
-    OSM_GLOBAL("OpenStreetMap (WGS-84)"),
+    AUTO("智能切换 (中国大陆高德 / 港澳海外Google)"),
+    AMAP_CHINA("高德矢量地图 (中国大陆 GCJ-02)"),
+    OSM_GLOBAL("Google 地图 (港澳台及海外 WGS-84)"),
     CARTODB_DARK("暗夜车载地图 (Dark)")
 }
 
@@ -277,17 +287,21 @@ class AudioPlayerManager(
     private val _language = MutableStateFlow(AppLanguage.ZH_HANS)
     val language: StateFlow<AppLanguage> = _language
 
-    private val _showMapMode = MutableStateFlow(false)
+    private val cockpitPrefs by lazy { context.getSharedPreferences("HTT_CockpitPrefs", Context.MODE_PRIVATE) }
+
+    private val _showMapMode = MutableStateFlow(cockpitPrefs.getBoolean("show_map_mode", false))
     val showMapMode: StateFlow<Boolean> = _showMapMode
 
-    private val _isMapEnlarged = MutableStateFlow(false)
+    private val _isMapEnlarged = MutableStateFlow(false) // Always launch on Main Cockpit Page!
     val isMapEnlarged: StateFlow<Boolean> = _isMapEnlarged
 
     private val _isHUDMirrored = MutableStateFlow(false)
     val isHUDMirrored: StateFlow<Boolean> = _isHUDMirrored
 
-    // Character & Mascot State
-    private val _selectedCharacter = MutableStateFlow(CharacterFilter.ALL)
+    // Character & Mascot State (Remember last selected Stage Mode!)
+    private val _selectedCharacter = MutableStateFlow(
+        CharacterFilter.entries.firstOrNull { it.charId == cockpitPrefs.getInt("stage_char_id", CharacterFilter.ALL.charId) } ?: CharacterFilter.ALL
+    )
     val selectedCharacter: StateFlow<CharacterFilter> = _selectedCharacter
 
     private val _activeAllMemberChar = MutableStateFlow(CharacterFilter.YUI)
@@ -436,6 +450,9 @@ class AudioPlayerManager(
     private val _activeRoutePoints = MutableStateFlow<List<LatLng>>(emptyList())
     val activeRoutePoints: StateFlow<List<LatLng>> = _activeRoutePoints
 
+    private val _transitSegments = MutableStateFlow<List<RouteSegment>>(emptyList())
+    val transitSegments: StateFlow<List<RouteSegment>> = _transitSegments
+
     private val _remainingRouteDistanceKm = MutableStateFlow(0.0)
     val remainingRouteDistanceKm: StateFlow<Double> = _remainingRouteDistanceKm
 
@@ -483,6 +500,101 @@ class AudioPlayerManager(
     private val _onlineSearchResults = MutableStateFlow<List<PlaceSearchItem>>(emptyList())
     val onlineSearchResults: StateFlow<List<PlaceSearchItem>> = _onlineSearchResults
 
+    private val _recentDestinations = MutableStateFlow<List<PlaceSearchItem>>(emptyList())
+    val recentDestinations: StateFlow<List<PlaceSearchItem>> = _recentDestinations
+    private val recentPrefs by lazy { context.getSharedPreferences("HTT_RecentDest", Context.MODE_PRIVATE) }
+
+    fun loadAndPruneRecentDestinations() {
+        val raw = recentPrefs.getString("items_json", null) ?: return
+        val now = System.currentTimeMillis()
+        val sevenDaysMs = 7L * 86400_000L
+        val validList = ArrayList<PlaceSearchItem>()
+        val validJson = org.json.JSONArray()
+        try {
+            val arr = org.json.JSONArray(raw)
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                val ts = o.optLong("ts", 0L)
+                if (now - ts <= sevenDaysMs) {
+                    val lat = o.optDouble("lat", 0.0)
+                    val lon = o.optDouble("lon", 0.0)
+                    val name = o.optString("name", "")
+                    val addr = o.optString("addr", "")
+                    if (name.isNotBlank()) {
+                        validList.add(PlaceSearchItem(name, addr, 0.0, LatLng(lat, lon), "🕒 最近导航"))
+                        validJson.put(o)
+                    }
+                }
+            }
+            if (validJson.length() != arr.length()) {
+                recentPrefs.edit().putString("items_json", validJson.toString()).apply()
+            }
+        } catch (_: Exception) {}
+        _recentDestinations.value = validList
+    }
+
+    fun deleteRecentDestination(name: String, coord: LatLng) {
+        val current = _recentDestinations.value.filterNot {
+            it.name.equals(name, ignoreCase = true) &&
+                CoordinateConverter.distanceMeters(it.coordinate, coord) <= 50.0
+        }
+        _recentDestinations.value = current
+        val oldRaw = recentPrefs.getString("items_json", null) ?: return
+        try {
+            val arr = org.json.JSONArray(oldRaw)
+            val kept = org.json.JSONArray()
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                val oName = o.optString("name", "").trim()
+                val oLat = o.optDouble("lat", 0.0)
+                val oLon = o.optDouble("lon", 0.0)
+                val same = oName.equals(name.trim(), ignoreCase = true) &&
+                    CoordinateConverter.distanceMeters(LatLng(oLat, oLon), coord) <= 50.0
+                if (!same) kept.put(o)
+            }
+            recentPrefs.edit().putString("items_json", kept.toString()).apply()
+        } catch (_: Exception) {}
+    }
+
+    fun recordRecentDestination(name: String, address: String, coord: LatLng) {
+        val cleanName = name.trim()
+        if (cleanName.isEmpty() || cleanName == "目的地") return
+        val now = System.currentTimeMillis()
+        val sevenDaysMs = 7L * 86400_000L
+        val oldRaw = recentPrefs.getString("items_json", null)
+        val kept = ArrayList<org.json.JSONObject>()
+        if (oldRaw != null) {
+            try {
+                val arr = org.json.JSONArray(oldRaw)
+                for (i in 0 until arr.length()) {
+                    val o = arr.getJSONObject(i)
+                    val ts = o.optLong("ts", 0L)
+                    if (now - ts > sevenDaysMs) continue
+                    val oldName = o.optString("name", "").trim()
+                    val oldLat = o.optDouble("lat", 0.0)
+                    val oldLon = o.optDouble("lon", 0.0)
+                    val sameName = oldName.equals(cleanName, ignoreCase = true)
+                    val dist = CoordinateConverter.distanceMeters(coord, LatLng(oldLat, oldLon))
+                    if (!sameName && dist > 150.0) {
+                        kept.add(o)
+                    }
+                }
+            } catch (_: Exception) {}
+        }
+        val newObj = org.json.JSONObject().apply {
+            put("name", cleanName)
+            put("addr", address.trim())
+            put("lat", coord.latitude)
+            put("lon", coord.longitude)
+            put("ts", now)
+        }
+        val outArr = org.json.JSONArray()
+        outArr.put(newObj)
+        for (i in 0 until minOf(19, kept.size)) outArr.put(kept[i])
+        recentPrefs.edit().putString("items_json", outArr.toString()).apply()
+        loadAndPruneRecentDestinations()
+    }
+
     private val _isSearchingPlaces = MutableStateFlow(false)
     val isSearchingPlaces: StateFlow<Boolean> = _isSearchingPlaces
 
@@ -498,7 +610,77 @@ class AudioPlayerManager(
     val rummikubEngine: RummikubEngine by lazy { RummikubEngine(context, this) }
 
     @Volatile var isAppInForeground: Boolean = true
-    val appVersion = "1.7.1"
+    private var lastBgNotifStep: String = ""
+    private var lastBgNotifAtMs: Long = 0L
+
+    fun onAppForegroundChanged(inForeground: Boolean) {
+        isAppInForeground = inForeground
+        if (inForeground) {
+            cancelBackgroundNavNotification()
+        } else if (_hasActiveNavigation.value) {
+            postOrUpdateBackgroundNavNotification(forceAlert = true)
+        }
+    }
+
+    private fun postOrUpdateBackgroundNavNotification(forceAlert: Boolean = false) {
+        if (isAppInForeground || !_hasActiveNavigation.value) return
+        val ctx = HTTNaviApp.instance
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (ContextCompat.checkSelfPermission(ctx, android.Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                return
+            }
+        }
+        val step = _currentStepInstruction.value.ifBlank { "沿当前路线继续前行" }
+        val now = System.currentTimeMillis()
+        if (!forceAlert && step == lastBgNotifStep && (now - lastBgNotifAtMs) < 8000L) return
+        lastBgNotifStep = step
+        lastBgNotifAtMs = now
+
+        val channelId = "htt_bg_nav_channel"
+        val nm = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val ch = NotificationChannel(channelId, "后台实时导航弹窗", NotificationManager.IMPORTANCE_HIGH).apply {
+                description = "App 退入后台时实时推送转向与距离提醒"
+                enableVibration(false)
+            }
+            nm.createNotificationChannel(ch)
+        }
+
+        val launchIntent = Intent(ctx, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val piFlags = PendingIntent.FLAG_UPDATE_CURRENT or (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0)
+        val pendingIntent = PendingIntent.getActivity(ctx, 20261, launchIntent, piFlags)
+
+        val remKm = String.format(java.util.Locale.US, "%.1f", _remainingRouteDistanceKm.value)
+        val remMin = maxOf(1, _remainingRouteMinutes.value)
+        val dest = _destinationName.value.ifBlank { "目的地" }
+        val bodyText = " · 距目的地  km · 约  分钟"
+
+        val notif = NotificationCompat.Builder(ctx, channelId)
+            .setSmallIcon(R.mipmap.ic_launcher)
+            .setContentTitle("🧭 正在导航前往 ")
+            .setContentText(bodyText)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(bodyText))
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_NAVIGATION)
+            .setOngoing(true)
+            .setOnlyAlertOnce(!forceAlert)
+            .setContentIntent(pendingIntent)
+            .build()
+
+        try {
+            NotificationManagerCompat.from(ctx).notify(20261, notif)
+        } catch (_: Throwable) {}
+    }
+
+    fun cancelBackgroundNavNotification() {
+        lastBgNotifStep = ""
+        try {
+            NotificationManagerCompat.from(HTTNaviApp.instance).cancel(20261)
+        } catch (_: Throwable) {}
+    }
+    val appVersion = "17/11/2026"
 
     fun appAuthorLabel(): String = when (_language.value) {
         AppLanguage.ZH_HANS -> "制作作者: 君殇"
@@ -538,6 +720,7 @@ class AudioPlayerManager(
         refreshThemeBackground()
         updateAllSpriteFrames()
         mainHandler.post {
+            loadAndPruneRecentDestinations()
             startSpriteAnimatorLoop()
             startMasterClockLoop()
         }
@@ -549,6 +732,10 @@ class AudioPlayerManager(
 
     private var lastGpsFixMillis: Long = 0L
     private var lastGpsAccuracyMeters: Float = 999f
+    private var lastRealLocTimeMs: Long = 0L
+    private var smoothedSpeedKmh: Double = 0.0
+    private var consecutiveLowSpeedFixes: Int = 0
+    private var lastValidSpeedMs: Long = 0L
 
     fun setMapTracking(enabled: Boolean) {
         _mapTrackingUser.value = enabled
@@ -566,6 +753,7 @@ class AudioPlayerManager(
         val newCoord = LatLng(lat, lon)
         if (!_isDemoSimulating.value) {
             var movedMeters = 0.0
+            val dtSec = if (lastRealLocTimeMs > 0L) ((nowMs - lastRealLocTimeMs) / 1000.0).coerceAtLeast(0.05) else 1.0
             lastRealLoc?.let { prev ->
                 val moved = CoordinateConverter.distanceMeters(prev, newCoord)
                 movedMeters = moved
@@ -574,11 +762,39 @@ class AudioPlayerManager(
                 }
             }
             lastRealLoc = newCoord
+            lastRealLocTimeMs = nowMs
             _userCoordinate.value = newCoord
-            val kmh = if (speedMps >= 0.8f && movedMeters >= 2.5) (speedMps * 3.6f).toInt().coerceAtLeast(0) else 0
+
+            // Smooth Doppler GPS speed with EMA & anti-zero-jump hysteresis
+            val sampleKmh: Double? = when {
+                accuracyMeters in 0.1f..50f && speedMps >= 0.01f -> (speedMps * 3.6).coerceIn(0.0, 260.0)
+                accuracyMeters in 0.1f..25f && dtSec >= 0.8 && movedMeters >= 2.0 && movedMeters <= 80.0 * dtSec ->
+                    ((movedMeters / dtSec) * 3.6).coerceIn(0.0, 260.0)
+                accuracyMeters in 0.1f..50f && speedMps == 0f -> 0.0
+                else -> null
+            }
+            if (sampleKmh != null) {
+                if (sampleKmh < 1.8) {
+                    consecutiveLowSpeedFixes += 1
+                    if (consecutiveLowSpeedFixes >= 2 || smoothedSpeedKmh < 4.0) {
+                        smoothedSpeedKmh = 0.0
+                    }
+                } else {
+                    consecutiveLowSpeedFixes = 0
+                    smoothedSpeedKmh = if (smoothedSpeedKmh < 1.0 || kotlin.math.abs(sampleKmh - smoothedSpeedKmh) > 18.0) {
+                        sampleKmh
+                    } else {
+                        smoothedSpeedKmh * 0.62 + sampleKmh * 0.38
+                    }
+                    lastValidSpeedMs = nowMs
+                }
+            } else if (nowMs - lastValidSpeedMs > 3500L) {
+                smoothedSpeedKmh = 0.0
+            }
+            val kmh = kotlin.math.round(smoothedSpeedKmh).toInt().coerceAtLeast(0)
             _currentSpeedKmh.value = kmh
             if (kmh > _maxSpeedKmh.value) _maxSpeedKmh.value = kmh
-            if (bearingDeg > 0f) _headingDegrees.value = bearingDeg.toDouble()
+            if (bearingDeg > 0f && kmh >= 3) _headingDegrees.value = bearingDeg.toDouble()
             _isGPSSignalPoor.value = false
             updateAndroidNavigationProgress(newCoord)
         }
@@ -615,9 +831,11 @@ class AudioPlayerManager(
             _currentStepInstruction.value = "🎉 已抵达目的地：${_destinationName.value}"
             _hasActiveNavigation.value = false
             _activeRoutePoints.value = emptyList()
+            _transitSegments.value = emptyList()
             _candidateRoutes.value = emptyList()
             _destinationCoord.value = null
             _isDemoSimulating.value = false
+            cancelBackgroundNavNotification()
             return
         }
 
@@ -651,6 +869,7 @@ class AudioPlayerManager(
             val distToManeuver = CoordinateConverter.distanceMeters(coord, step.maneuverLocation).toInt()
             _distanceToNextStepMeters.value = distToManeuver
             _currentStepInstruction.value = step.instruction
+            if (!isAppInForeground && _hasActiveNavigation.value) { postOrUpdateBackgroundNavNotification(forceAlert = false) }
             var futureDist = distToManeuver.toDouble()
             for (idx in (currentRouteStepIdx + 1) until steps.size) {
                 futureDist += steps[idx].distanceMeters
@@ -714,18 +933,30 @@ class AudioPlayerManager(
     }
 
     fun startRouteToPlace(destName: String, destCoord: LatLng) {
+        val recAddr = if (_tappedTitle.value == destName && _tappedAddress.value.isNotBlank()) _tappedAddress.value else String.format("%.4f, %.4f", destCoord.latitude, destCoord.longitude)
+        recordRecentDestination(destName, recAddr, destCoord)
         _tappedCoord.value = null
         _destinationName.value = destName
         _destinationCoord.value = destCoord
         _hasActiveNavigation.value = true
         _showMapMode.value = true
+        _isMapEnlarged.value = true
+        _mapTrackingUser.value = true
+        cockpitPrefs.edit().putBoolean("show_map_mode", true).apply()
         _currentStepInstruction.value = "正在规划前往 $destName 的路线..."
 
         val start = _userCoordinate.value
         val mode = _travelMode.value
 
         Thread {
-            val routes = MapAndRouteEngine.calculateRoute(start, destCoord, mode)
+            val avoids = _drivingAvoidOptions.value
+            val routes = MapAndRouteEngine.calculateRoute(
+                startWgs = start,
+                destWgs = destCoord,
+                travelMode = mode,
+                avoidHighways = avoids.contains(DrivingAvoidanceOption.AVOID_HIGHWAYS),
+                avoidTolls = avoids.contains(DrivingAvoidanceOption.AVOID_TOLLS)
+            )
             mainHandler.post {
                 _candidateRoutes.value = routes
                 selectRoute(0)
@@ -740,6 +971,7 @@ class AudioPlayerManager(
         _selectedRouteIndex.value = index
         val r = routes[index]
         _activeRoutePoints.value = r.points
+        _transitSegments.value = r.segments
         _remainingRouteDistanceKm.value = r.totalDistanceMeters / 1000.0
         _remainingRouteMinutes.value = (r.durationSeconds / 60.0).toInt().coerceAtLeast(1)
         offRouteStrikeCount = 0
@@ -748,6 +980,21 @@ class AudioPlayerManager(
         val activeStep = r.steps.getOrNull(currentRouteStepIdx) ?: r.steps.firstOrNull()
         _currentStepInstruction.value = activeStep?.instruction ?: "沿规划路线前往 ${_destinationName.value}"
         _distanceToNextStepMeters.value = activeStep?.distanceMeters?.toInt() ?: r.totalDistanceMeters.toInt()
+    }
+
+    fun stopNavigation() {
+        _hasActiveNavigation.value = false
+        _activeRoutePoints.value = emptyList()
+        _transitSegments.value = emptyList()
+        _candidateRoutes.value = emptyList()
+        _destinationCoord.value = null
+        _destinationName.value = "目的地"
+        _currentStepInstruction.value = "準備OK！出発進行～！"
+        _remainingRouteDistanceKm.value = 0.0
+        _remainingRouteMinutes.value = 0
+        _isDemoSimulating.value = false
+        _isMapEnlarged.value = false
+        cancelBackgroundNavNotification()
     }
 
     fun triggerFastRecenter() {
@@ -973,7 +1220,7 @@ class AudioPlayerManager(
     }
 
     fun setLanguage(lang: AppLanguage) { _language.value = lang }
-    fun toggleMapMode() { _showMapMode.value = !_showMapMode.value }
+    fun toggleMapMode() { val nv = !_showMapMode.value; _showMapMode.value = nv; cockpitPrefs.edit().putBoolean("show_map_mode", nv).apply() }
     fun setMapEnlarged(enlarged: Boolean) { _isMapEnlarged.value = enlarged }
     fun toggleHUDMirror() { _isHUDMirrored.value = !_isHUDMirrored.value }
 
@@ -1009,6 +1256,7 @@ class AudioPlayerManager(
 
     fun selectCharacter(char: CharacterFilter) {
         _selectedCharacter.value = char
+        cockpitPrefs.edit().putInt("stage_char_id", char.charId).apply()
         if (char == CharacterFilter.ALL) {
             _mascotAction.value = MascotActionState.TEA_CAKE
         }
@@ -1158,8 +1406,14 @@ class AudioPlayerManager(
             _destinationCoord.value = dest
             startRouteToPlace("模拟巡航路线", dest)
         }
-        _currentSpeedKmh.value = 52
-        if (_maxSpeedKmh.value < 52) _maxSpeedKmh.value = 52
+        val simSpeed = when (_travelMode.value) {
+            NavigationTravelMode.DRIVING -> 52
+            NavigationTravelMode.EBIKE -> 18
+            NavigationTravelMode.WALKING -> 5
+            NavigationTravelMode.TRANSIT -> 34
+        }
+        _currentSpeedKmh.value = simSpeed
+        if (_maxSpeedKmh.value < simSpeed) _maxSpeedKmh.value = simSpeed
         demoStepCounter = 0
     }
 
@@ -1172,38 +1426,38 @@ class AudioPlayerManager(
     }
 
     private fun advanceDemoSimulationStep() {
-        demoStepCounter = (demoStepCounter + 1) % 4
+        demoStepCounter += 1
         val b = activeBaseId()
         val pts = _activeRoutePoints.value
-        if (pts.size > 2) {
-            val idx = ((demoStepCounter + 1) * pts.size / 4).coerceIn(0, pts.lastIndex)
+        val mode = _travelMode.value
+        val simSpeed = when (mode) {
+            NavigationTravelMode.DRIVING -> Random.nextInt(44, 68)
+            NavigationTravelMode.EBIKE -> Random.nextInt(15, 22)
+            NavigationTravelMode.WALKING -> Random.nextInt(4, 6)
+            NavigationTravelMode.TRANSIT -> Random.nextInt(24, 46)
+        }
+        _currentSpeedKmh.value = simSpeed
+        if (simSpeed > _maxSpeedKmh.value) _maxSpeedKmh.value = simSpeed
+
+        if (pts.size >= 2) {
+            val totalSteps = 20
+            val frac = (demoStepCounter.coerceAtMost(totalSteps)).toDouble() / totalSteps.toDouble()
+            val idx = (frac * (pts.size - 1)).toInt().coerceIn(0, pts.lastIndex)
             val nextPt = pts[idx]
+            val stepMeters = CoordinateConverter.distanceMeters(_userCoordinate.value, nextPt)
             _headingDegrees.value = CoordinateConverter.bearingDegrees(_userCoordinate.value, nextPt)
             _userCoordinate.value = nextPt
-        }
-        _tripDistanceKm.value += 0.25
-        _currentSpeedKmh.value = Random.nextInt(42, 76)
-        if (_currentSpeedKmh.value > _maxSpeedKmh.value) _maxSpeedKmh.value = _currentSpeedKmh.value
-
-        when (demoStepCounter) {
-            1 -> {
-                _distanceToNextStepMeters.value = 120
-                _currentStepInstruction.value = "前方 120 米左转"
-                enqueueVoiceCombo(listOf(Pair(b + 14, "📍 およそ 100m先"), Pair(b + 29, "↩️ 左方向に行きまーす！")))
-            }
-            2 -> {
-                _distanceToNextStepMeters.value = 40
-                _currentStepInstruction.value = "即将进入主干道 (靠右)"
-                enqueueVoiceCombo(listOf(Pair(b + 15, "📍 まもなく"), Pair(b + 19, "🛣️ 入口だよ！合流に注意してね！")))
-            }
-            3 -> {
-                _distanceToNextStepMeters.value = 0
-                _currentStepInstruction.value = "已到达终点附近！"
+            _tripDistanceKm.value += (stepMeters / 1000.0).coerceAtLeast(0.05)
+            updateAndroidNavigationProgress(nextPt)
+            if (idx >= pts.lastIndex || !_hasActiveNavigation.value) {
                 enqueueVoiceCombo(listOf(Pair(b + 37, "🎉 目的地周辺に到着したよ！"), Pair(b + 38, "✨ お疲れ様♪")))
+                stopDemoSimulation()
+            } else if (demoStepCounter % 4 == 1) {
+                enqueueVoiceCombo(listOf(Pair(b + 13, "📍 およそ 300m先"), Pair(b + 18, "⬆️ そのまま道なりだよ！")))
             }
-            0 -> {
-                _distanceToNextStepMeters.value = 300
-                _currentStepInstruction.value = "前方 300 米直行"
+        } else {
+            _tripDistanceKm.value += 0.12
+            if (demoStepCounter % 4 == 0) {
                 playVoice(b + 12, "📍 およそ 300m先 直進だよ♪")
             }
         }

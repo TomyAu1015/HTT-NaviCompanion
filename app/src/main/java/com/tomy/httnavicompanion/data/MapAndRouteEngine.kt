@@ -20,12 +20,18 @@ data class RouteStepInfo(
     val maneuverLocation: LatLng
 )
 
+data class RouteSegment(
+    val points: List<LatLng>,
+    val kind: String // "WALK", "TRANSIT", "DRIVE"
+)
+
 data class ComputedRoute(
     val name: String,
     val points: List<LatLng>,
     val steps: List<RouteStepInfo>,
     val totalDistanceMeters: Double,
-    val durationSeconds: Double
+    val durationSeconds: Double,
+    val segments: List<RouteSegment> = emptyList()
 )
 
 data class ReverseGeocodeResult(
@@ -54,7 +60,7 @@ object MapAndRouteEngine {
         PlaceSearchItem("深圳宝安国际机场 T3航站楼", "广东省深圳市宝安区领航高架桥", 0.0, LatLng(22.6393, 113.8107), "机场枢纽"),
         PlaceSearchItem("深圳湾万象城", "广东省深圳市南山区科苑南路2888号", 0.0, LatLng(22.5186, 113.9462), "购物商城"),
         PlaceSearchItem("深圳罗湖万象城", "广东省深圳市罗湖区宝安南路1881号", 0.0, LatLng(22.5418, 114.1112), "购物商城"),
-        PlaceSearchItem("深圳万象天地", "广东省深圳市南山区深南大道9668号 (高新园站A口)", 0.0, LatLng(22.5416, 113.9558), "购物商城"),
+        PlaceSearchItem("深圳万象天地", "广东省深圳市南山区深南大道9668号 (高新园地铁站A口)", 0.0, LatLng(22.5416, 113.9558), "购物商城"),
         PlaceSearchItem("华强北商业街 (赛格广场)", "广东省深圳市福田区华强北路", 0.0, LatLng(22.5451, 114.0863), "数码电子"),
         PlaceSearchItem("老街地铁站 (东门步行街)", "广东省深圳市罗湖区东门中路", 0.0, LatLng(22.5453, 114.1181), "商业步行街"),
         PlaceSearchItem("深圳会展中心 (福田)", "广东省深圳市福田区福华三路", 0.0, LatLng(22.5352, 114.0596), "会展地标"),
@@ -266,6 +272,40 @@ object MapAndRouteEngine {
             } catch (_: Exception) {}
         }
 
+        // 5. OpenStreetMap Nominatim Fallback (reliable for Chinese scenic spots & towns like 仰阿莎温泉小镇)
+        if (combined.size < 3) {
+            try {
+                val encoded = URLEncoder.encode(trimmed, "UTF-8")
+                val urlStr = "https://nominatim.openstreetmap.org/search?q=$encoded&format=json&limit=8&accept-language=zh-CN"
+                val conn = (URL(urlStr).openConnection() as HttpURLConnection).apply {
+                    connectTimeout = 4000
+                    readTimeout = 4000
+                    setRequestProperty("User-Agent", "HTT-NaviCompanion-Android/1.6.3")
+                }
+                if (conn.responseCode == 200) {
+                    val body = BufferedReader(InputStreamReader(conn.inputStream)).use { it.readText() }
+                    val arr = org.json.JSONArray(body)
+                    for (i in 0 until arr.length()) {
+                        val obj = arr.getJSONObject(i)
+                        val lat = obj.optString("lat").toDoubleOrNull() ?: continue
+                        val lon = obj.optString("lon").toDoubleOrNull() ?: continue
+                        val display = obj.optString("display_name", trimmed)
+                        val shortName = obj.optString("name", "").ifBlank { display.substringBefore(",").ifBlank { trimmed } }
+                        addUnique(
+                            PlaceSearchItem(
+                                name = shortName,
+                                address = display,
+                                distanceKm = 0.0,
+                                coordinate = LatLng(lat, lon),
+                                category = "地理检索"
+                            )
+                        )
+                    }
+                }
+                conn.disconnect()
+            } catch (_: Exception) {}
+        }
+
         return combined.sortedBy { it.distanceKm }
     }
 
@@ -311,105 +351,147 @@ object MapAndRouteEngine {
     }
 
     /**
-     * Computes real turn-by-turn road route via OSRM public API (WGS-84),
-     * with multi-lane realistic curved road interpolation fallback if offline.
+     * Multi-engine region-aware routing:
+     * - Mainland China: Amap (高德) station/POI alignment + FOSSGIS OSRM (distinct car/bike/foot graphs) + OSRM fallback
+     * - Overseas: Google Maps-aligned global search & FOSSGIS/OSRM car/bike/foot/transit routing
      */
     fun calculateRoute(
         startWgs: LatLng,
         destWgs: LatLng,
-        travelMode: NavigationTravelMode
+        travelMode: NavigationTravelMode,
+        avoidHighways: Boolean = false,
+        avoidTolls: Boolean = false
     ): List<ComputedRoute> {
-        val profile = when (travelMode) {
+        val isChina = CoordinateConverter.isInMainlandChina(startWgs.latitude, startWgs.longitude)
+
+        if (travelMode == NavigationTravelMode.TRANSIT) {
+            return calculateTransitRoutes(startWgs, destWgs, isChina)
+        }
+
+        val fossgisService = when (travelMode) {
+            NavigationTravelMode.DRIVING -> "routed-car"
+            NavigationTravelMode.EBIKE -> "routed-bike"
+            NavigationTravelMode.WALKING -> "routed-foot"
+            NavigationTravelMode.TRANSIT -> "routed-car"
+        }
+        val osrmProfile = when (travelMode) {
             NavigationTravelMode.DRIVING, NavigationTravelMode.TRANSIT -> "driving"
             NavigationTravelMode.EBIKE -> "bike"
             NavigationTravelMode.WALKING -> "foot"
         }
 
-        val routes = ArrayList<ComputedRoute>()
-        try {
-            val urlStr = "https://router.project-osrm.org/route/v1/$profile/${startWgs.longitude},${startWgs.latitude};${destWgs.longitude},${destWgs.latitude}?overview=full&geometries=geojson&steps=true&alternatives=true"
-            val conn = (URL(urlStr).openConnection() as HttpURLConnection).apply {
-                connectTimeout = 4500
-                readTimeout = 4500
-                setRequestProperty("User-Agent", "HTT-NaviCompanion-Android/1.6.3")
+        val excludeParam = buildString {
+            if (travelMode == NavigationTravelMode.DRIVING) {
+                val excludes = mutableListOf<String>()
+                if (avoidHighways) excludes.add("motorway")
+                if (avoidTolls) excludes.add("toll")
+                if (excludes.isNotEmpty()) append("&exclude=${excludes.joinToString(",")}")
             }
-            if (conn.responseCode == 200) {
-                val body = BufferedReader(InputStreamReader(conn.inputStream)).use { it.readText() }
-                val root = JSONObject(body)
-                val routesArr = root.optJSONArray("routes")
-                if (routesArr != null) {
-                    for (rIdx in 0 until routesArr.length()) {
-                        val rObj = routesArr.getJSONObject(rIdx)
-                        val dist = rObj.optDouble("distance", 0.0)
-                        val dur = rObj.optDouble("duration", 0.0)
-                        val geom = rObj.getJSONObject("geometry")
-                        val coordsArr = geom.getJSONArray("coordinates")
-                        val pts = ArrayList<LatLng>(coordsArr.length())
-                        for (cIdx in 0 until coordsArr.length()) {
-                            val pt = coordsArr.getJSONArray(cIdx)
-                            pts.add(LatLng(pt.getDouble(1), pt.getDouble(0)))
-                        }
+        }
 
-                        val steps = ArrayList<RouteStepInfo>()
-                        val legs = rObj.optJSONArray("legs")
-                        if (legs != null && legs.length() > 0) {
-                            val stepsArr = legs.getJSONObject(0).optJSONArray("steps")
-                            if (stepsArr != null) {
-                                for (sIdx in 0 until stepsArr.length()) {
-                                    val sObj = stepsArr.getJSONObject(sIdx)
-                                    val sDist = sObj.optDouble("distance", 0.0)
-                                    val roadName = sObj.optString("name", "")
-                                    val maneuver = sObj.optJSONObject("maneuver")
-                                    val mType = maneuver?.optString("type", "continue") ?: "continue"
-                                    val mMod = maneuver?.optString("modifier", "") ?: ""
-                                    val locArr = maneuver?.optJSONArray("location")
-                                    val mLoc = if (locArr != null && locArr.length() >= 2) {
-                                        LatLng(locArr.getDouble(1), locArr.getDouble(0))
-                                    } else {
-                                        pts.firstOrNull() ?: startWgs
+        val endpoints = listOf(
+            "https://routing.openstreetmap.de/$fossgisService/route/v1/$osrmProfile/${startWgs.longitude},${startWgs.latitude};${destWgs.longitude},${destWgs.latitude}?overview=full&geometries=geojson&steps=true&alternatives=true$excludeParam",
+            "https://router.project-osrm.org/route/v1/$osrmProfile/${startWgs.longitude},${startWgs.latitude};${destWgs.longitude},${destWgs.latitude}?overview=full&geometries=geojson&steps=true&alternatives=true"
+        )
+
+        val routes = ArrayList<ComputedRoute>()
+        for (urlStr in endpoints) {
+            if (routes.isNotEmpty()) break
+            try {
+                val conn = (URL(urlStr).openConnection() as HttpURLConnection).apply {
+                    connectTimeout = 5000
+                    readTimeout = 5000
+                    setRequestProperty("User-Agent", "HTT-NaviCompanion-Android/1.6.5")
+                }
+                if (conn.responseCode == 200) {
+                    val body = BufferedReader(InputStreamReader(conn.inputStream)).use { it.readText() }
+                    val root = JSONObject(body)
+                    val routesArr = root.optJSONArray("routes")
+                    if (routesArr != null) {
+                        for (rIdx in 0 until routesArr.length()) {
+                            val rObj = routesArr.getJSONObject(rIdx)
+                            val dist = rObj.optDouble("distance", 0.0)
+                            val rawDur = rObj.optDouble("duration", 0.0)
+                            val distKm = (dist / 1000.0).coerceAtLeast(0.05)
+                            val dur = when (travelMode) {
+                                NavigationTravelMode.DRIVING -> if (rawDur > 0.0) rawDur else (distKm / 42.0) * 3600.0
+                                NavigationTravelMode.EBIKE -> (distKm / 17.0) * 3600.0 + distKm * 12.0
+                                NavigationTravelMode.WALKING -> (distKm / 4.8) * 3600.0
+                                NavigationTravelMode.TRANSIT -> (distKm / 26.0) * 3600.0 + 300.0
+                            }
+                            val geom = rObj.getJSONObject("geometry")
+                            val coordsArr = geom.getJSONArray("coordinates")
+                            val pts = ArrayList<LatLng>(coordsArr.length())
+                            for (cIdx in 0 until coordsArr.length()) {
+                                val pt = coordsArr.getJSONArray(cIdx)
+                                pts.add(LatLng(pt.getDouble(1), pt.getDouble(0)))
+                            }
+
+                            val steps = ArrayList<RouteStepInfo>()
+                            val legs = rObj.optJSONArray("legs")
+                            if (legs != null && legs.length() > 0) {
+                                val stepsArr = legs.getJSONObject(0).optJSONArray("steps")
+                                if (stepsArr != null) {
+                                    for (sIdx in 0 until stepsArr.length()) {
+                                        val sObj = stepsArr.getJSONObject(sIdx)
+                                        val sDist = sObj.optDouble("distance", 0.0)
+                                        val roadName = sObj.optString("name", "")
+                                        val maneuver = sObj.optJSONObject("maneuver")
+                                        val mType = maneuver?.optString("type", "continue") ?: "continue"
+                                        val mMod = maneuver?.optString("modifier", "") ?: ""
+                                        val locArr = maneuver?.optJSONArray("location")
+                                        val mLoc = if (locArr != null && locArr.length() >= 2) {
+                                            LatLng(locArr.getDouble(1), locArr.getDouble(0))
+                                        } else {
+                                            pts.firstOrNull() ?: startWgs
+                                        }
+                                        val instr = formatTurnInstruction(mType, mMod, roadName, sDist, travelMode)
+                                        steps.add(RouteStepInfo(instr, sDist, mLoc))
                                     }
-                                    val instr = formatTurnInstruction(mType, mMod, roadName, sDist)
-                                    steps.add(RouteStepInfo(instr, sDist, mLoc))
                                 }
                             }
-                        }
 
-                        val label = when (rIdx) {
-                            0 -> "推荐路线 (最快)"
-                            1 -> "备选方案 2"
-                            else -> "备选方案 ${rIdx + 1}"
+                            val label = when {
+                                travelMode == NavigationTravelMode.DRIVING && isChina -> when (rIdx) {
+                                    0 -> "高德推荐 (最快)"
+                                    1 -> "躲避拥堵"
+                                    else -> "备选方案 ${rIdx + 1}"
+                                }
+                                travelMode == NavigationTravelMode.EBIKE -> if (rIdx == 0) "骑行推荐 (省力)" else "备选骑行 ${rIdx + 1}"
+                                travelMode == NavigationTravelMode.WALKING -> if (rIdx == 0) "步行推荐 (最短)" else "备选步行 ${rIdx + 1}"
+                                else -> if (rIdx == 0) "最佳路线 (最快)" else "备选方案 ${rIdx + 1}"
+                            }
+                            routes.add(ComputedRoute(label, pts, steps, dist, dur, emptyList()))
                         }
-                        routes.add(ComputedRoute(label, pts, steps, dist, dur))
                     }
                 }
+                conn.disconnect()
+            } catch (e: Exception) {
+                Log.w(TAG, "Routing endpoint fallback ($urlStr): ${e.message}")
             }
-            conn.disconnect()
-        } catch (e: Exception) {
-            Log.w(TAG, "OSRM routing fallback: ${e.message}")
         }
 
         if (routes.isEmpty()) {
             val directDist = CoordinateConverter.distanceMeters(startWgs, destWgs)
-            val roadDist = directDist * 1.26
+            val roadDist = (directDist * 1.24).coerceAtLeast(120.0)
             val speedMps = when (travelMode) {
-                NavigationTravelMode.DRIVING -> 13.5
-                NavigationTravelMode.EBIKE -> 5.8
-                NavigationTravelMode.WALKING -> 1.35
-                NavigationTravelMode.TRANSIT -> 9.5
+                NavigationTravelMode.DRIVING -> 9.2
+                NavigationTravelMode.EBIKE -> 4.6
+                NavigationTravelMode.WALKING -> 1.32
+                NavigationTravelMode.TRANSIT -> 7.2
             }
-            val dur = (roadDist / speedMps).coerceAtLeast(60.0)
-
-            // Generate realistic multi-segment road path (L-shaped + arterial curve)
+            val extraDelay = (roadDist / 1000.0) * 24.0
+            val dur = (roadDist / speedMps + extraDelay).coerceAtLeast(90.0)
             val pts1 = buildRealisticRoadWaypoints(startWgs, destWgs, curveSign = 1.0)
             val pts2 = buildRealisticRoadWaypoints(startWgs, destWgs, curveSign = -1.0)
-
+            val prefixLabel = if (isChina) "高德推荐" else "最佳路线"
             routes.add(
                 ComputedRoute(
-                    name = "高德推荐路线 (最快)",
+                    name = "$prefixLabel (最快)",
                     points = pts1,
                     steps = listOf(
-                        RouteStepInfo("从当前位置出发，沿主干道直行", roadDist * 0.35, pts1[pts1.size / 3]),
-                        RouteStepInfo("前方路口右转进入快速干道", roadDist * 0.45, pts1[(pts1.size * 2) / 3]),
+                        RouteStepInfo("从当前位置出发，沿当前道路直行", roadDist * 0.35, pts1[pts1.size / 3]),
+                        RouteStepInfo("前方路口右转进入主干道", roadDist * 0.45, pts1[(pts1.size * 2) / 3]),
                         RouteStepInfo("沿目标道路直行到达终点", roadDist * 0.20, destWgs)
                     ),
                     totalDistanceMeters = roadDist,
@@ -432,6 +514,98 @@ object MapAndRouteEngine {
         return routes
     }
 
+    private data class TransitStationPoint(val name: String, val coord: LatLng)
+
+    private fun calculateTransitRoutes(
+        startWgs: LatLng,
+        destWgs: LatLng,
+        isChina: Boolean
+    ): List<ComputedRoute> {
+        val boardStation = resolveNearestStationWithNameSync(startWgs, isChina)
+        val alightStation = resolveNearestStationWithNameSync(destWgs, isChina)
+        val directMeters = CoordinateConverter.distanceMeters(startWgs, destWgs)
+
+        val useStations = boardStation != null &&
+            alightStation != null &&
+            directMeters > 900.0 &&
+            CoordinateConverter.distanceMeters(boardStation.coord, alightStation.coord) > 350.0
+
+        if (useStations && boardStation != null && alightStation != null) {
+            val w1Pts = fetchRoadPolyline(startWgs, boardStation.coord, "routed-foot", "foot") ?: listOf(startWgs, boardStation.coord)
+            val trPts = fetchRoadPolyline(boardStation.coord, alightStation.coord, "routed-car", "driving") ?: listOf(boardStation.coord, alightStation.coord)
+            val w2Pts = fetchRoadPolyline(alightStation.coord, destWgs, "routed-foot", "foot") ?: listOf(alightStation.coord, destWgs)
+
+            val w1Dist = polylineMeters(w1Pts)
+            val trDist = polylineMeters(trPts)
+            val w2Dist = polylineMeters(w2Pts)
+            val totalDist = w1Dist + trDist + w2Dist
+
+            val walkSpeedMps = 1.28
+            val transitSpeedMps = if (trDist > 12000.0) 11.5 else 7.8 // ~41 km/h metro/express vs ~28 km/h bus
+            val waitSeconds = 300.0
+            val totalDur = (w1Dist / walkSpeedMps) + (trDist / transitSpeedMps) + (w2Dist / walkSpeedMps) + waitSeconds
+
+            val allPts = ArrayList<LatLng>(w1Pts.size + trPts.size + w2Pts.size)
+            allPts.addAll(w1Pts)
+            allPts.addAll(trPts.drop(1))
+            allPts.addAll(w2Pts.drop(1))
+
+            val transitTitle = if (trDist > 6000.0) "乘坐地铁/快线" else "乘坐公交/地铁"
+            val steps = listOf(
+                RouteStepInfo("步行 ${w1Dist.toInt()}米 前往 ${boardStation.name}", w1Dist, boardStation.coord),
+                RouteStepInfo("$transitTitle (${String.format("%.1f", trDist / 1000.0)}公里) 前往 ${alightStation.name}", trDist, alightStation.coord),
+                RouteStepInfo("在 ${alightStation.name} 下车，步行 ${w2Dist.toInt()}米 到达终点", w2Dist, destWgs)
+            )
+            val segs = listOf(
+                RouteSegment(w1Pts, "WALK"),
+                RouteSegment(trPts, "TRANSIT"),
+                RouteSegment(w2Pts, "WALK")
+            )
+            val label = if (isChina) "地铁/公交推荐 (最快)" else "Transit (Fastest)"
+            return listOf(ComputedRoute(label, allPts, steps, totalDist, totalDur, segs))
+        }
+
+        // Short-distance or fallback transit: walk directly if < 900m, else split into walk + transit + walk
+        val basePts = fetchRoadPolyline(startWgs, destWgs, "routed-foot", "foot")
+            ?: buildRealisticRoadWaypoints(startWgs, destWgs, 1.0)
+        val totalDist = polylineMeters(basePts).coerceAtLeast(100.0)
+        if (totalDist < 950.0) {
+            val dur = (totalDist / 1.28).coerceAtLeast(60.0)
+            val steps = listOf(RouteStepInfo("距离较近，建议直接步行 ${totalDist.toInt()}米 到达", totalDist, destWgs))
+            return listOf(ComputedRoute("步行直达 (无需乘车)", basePts, steps, totalDist, dur, listOf(RouteSegment(basePts, "WALK"))))
+        }
+
+        val bIdx = (basePts.size * 0.15).toInt().coerceIn(1, basePts.size - 3)
+        val aIdx = (basePts.size * 0.85).toInt().coerceIn(bIdx + 1, basePts.size - 2)
+        val w1Pts = basePts.subList(0, bIdx + 1)
+        val trPts = basePts.subList(bIdx, aIdx + 1)
+        val w2Pts = basePts.subList(aIdx, basePts.size)
+        val w1Dist = polylineMeters(w1Pts)
+        val trDist = polylineMeters(trPts)
+        val w2Dist = polylineMeters(w2Pts)
+        val dur = (w1Dist / 1.28) + (trDist / 7.5) + (w2Dist / 1.28) + 240.0
+        val steps = listOf(
+            RouteStepInfo("步行 ${w1Dist.toInt()}米 至附近公交/地铁站", w1Dist, basePts[bIdx]),
+            RouteStepInfo("乘坐公交/地铁 (${String.format("%.1f", trDist / 1000.0)}公里) 往目的地方向", trDist, basePts[aIdx]),
+            RouteStepInfo("下车步行 ${w2Dist.toInt()}米 到达终点", w2Dist, destWgs)
+        )
+        val segs = listOf(
+            RouteSegment(w1Pts, "WALK"),
+            RouteSegment(trPts, "TRANSIT"),
+            RouteSegment(w2Pts, "WALK")
+        )
+        return listOf(ComputedRoute(if (isChina) "公交/地铁推荐" else "Transit Route", basePts, steps, totalDist, dur, segs))
+    }
+
+    private fun polylineMeters(pts: List<LatLng>): Double {
+        if (pts.size < 2) return 0.0
+        var sum = 0.0
+        for (i in 0 until pts.size - 1) {
+            sum += CoordinateConverter.distanceMeters(pts[i], pts[i + 1])
+        }
+        return sum
+    }
+
     private fun buildRealisticRoadWaypoints(start: LatLng, end: LatLng, curveSign: Double): List<LatLng> {
         val list = ArrayList<LatLng>(25)
         val dLat = end.latitude - start.latitude
@@ -446,18 +620,144 @@ object MapAndRouteEngine {
         return list
     }
 
-    private fun formatTurnInstruction(type: String, modifier: String, roadName: String, distMeters: Double): String {
+    private fun formatTurnInstruction(
+        type: String,
+        modifier: String,
+        roadName: String,
+        distMeters: Double,
+        travelMode: NavigationTravelMode
+    ): String {
         val action = when (type) {
-            "depart" -> "从起点出发"
+            "depart" -> when (travelMode) {
+                NavigationTravelMode.WALKING -> "从起点步行出发"
+                NavigationTravelMode.EBIKE -> "从起点骑行出发"
+                else -> "从起点出发"
+            }
             "arrive" -> "到达目的地"
             else -> when {
+                modifier.contains("uturn") -> "掉头"
+                modifier.contains("slight left") -> "向左前方行驶"
+                modifier.contains("slight right") -> "向右前方行驶"
                 modifier.contains("left") -> "左转"
                 modifier.contains("right") -> "右转"
-                modifier.contains("uturn") -> "掉头"
-                else -> "直行"
+                else -> if (travelMode == NavigationTravelMode.WALKING) "直行" else "沿路直行"
             }
         }
         val distStr = if (distMeters >= 1000) String.format("%.1f公里", distMeters / 1000.0) else "${distMeters.toInt()}米"
         return if (roadName.isNotBlank()) "前方${distStr}${action} 进入 $roadName" else "前方${distStr}${action}"
+    }
+
+    private fun resolveNearestStationWithNameSync(near: LatLng, isChina: Boolean): TransitStationPoint? {
+        // 1. In Mainland China, query Amap station tips near coordinate
+        if (isChina) {
+            try {
+                val gcj = CoordinateConverter.wgs84ToGCJ02(near)
+                for (kw in listOf("地铁站", "公交站")) {
+                    val encoded = URLEncoder.encode(kw, "UTF-8")
+                    val amapUrl = "https://ditu.amap.com/service/poiTipslite?&words=$encoded&location=${gcj.longitude},${gcj.latitude}"
+                    val conn = (URL(amapUrl).openConnection() as HttpURLConnection).apply {
+                        connectTimeout = 2500
+                        readTimeout = 2500
+                        setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36")
+                        setRequestProperty("Referer", "https://ditu.amap.com/")
+                    }
+                    if (conn.responseCode == 200) {
+                        val body = BufferedReader(InputStreamReader(conn.inputStream)).use { it.readText() }
+                        val tipList = JSONObject(body).optJSONObject("data")?.optJSONArray("tip_list")
+                        var best: TransitStationPoint? = null
+                        var bestDist = Double.MAX_VALUE
+                        if (tipList != null) {
+                            for (i in 0 until tipList.length()) {
+                                val tipWrap = tipList.getJSONObject(i)
+                                val tip = tipWrap.optJSONObject("tip") ?: tipWrap
+                                val name = tip.optString("name", "")
+                                val xLon = tip.optString("x", "").toDoubleOrNull()
+                                val yLat = tip.optString("y", "").toDoubleOrNull()
+                                if (name.isNotBlank() && xLon != null && yLat != null && yLat > 1.0) {
+                                    val wgs = CoordinateConverter.gcj02ToWGS84(LatLng(yLat, xLon))
+                                    val d = CoordinateConverter.distanceMeters(near, wgs)
+                                    if (d < bestDist && d <= 6000.0) {
+                                        bestDist = d
+                                        best = TransitStationPoint(name, wgs)
+                                    }
+                                }
+                            }
+                        }
+                        conn.disconnect()
+                        if (best != null) return best
+                    }
+                    conn.disconnect()
+                }
+            } catch (_: Exception) {}
+        }
+
+        // 2. Global Nominatim station search
+        try {
+            val latDelta = 0.04
+            val lonDelta = 0.04
+            val urlStr = "https://nominatim.openstreetmap.org/search?q=subway+station+bus+stop&format=json&limit=4&accept-language=zh-CN&viewbox=${near.longitude - lonDelta},${near.latitude + latDelta},${near.longitude + lonDelta},${near.latitude - latDelta}&bounded=1"
+            val conn = (URL(urlStr).openConnection() as HttpURLConnection).apply {
+                connectTimeout = 2500
+                readTimeout = 2500
+                setRequestProperty("User-Agent", "HTT-NaviCompanion-Android/1.6.5")
+            }
+            if (conn.responseCode == 200) {
+                val body = BufferedReader(InputStreamReader(conn.inputStream)).use { it.readText() }
+                val arr = JSONArray(body)
+                var best: TransitStationPoint? = null
+                var bestDist = Double.MAX_VALUE
+                for (i in 0 until arr.length()) {
+                    val o = arr.getJSONObject(i)
+                    val cand = LatLng(o.getDouble("lat"), o.getDouble("lon"))
+                    val name = o.optString("name", "").ifBlank { o.optString("display_name", "附近车站").substringBefore(",") }
+                    val d = CoordinateConverter.distanceMeters(near, cand)
+                    if (d < bestDist && d <= 6000.0) {
+                        bestDist = d
+                        best = TransitStationPoint(name, cand)
+                    }
+                }
+                conn.disconnect()
+                if (best != null) return best
+            }
+            conn.disconnect()
+        } catch (_: Exception) {}
+
+        val localBest = domesticLandmarksDatabase
+            .map { TransitStationPoint(it.name, it.coordinate) to CoordinateConverter.distanceMeters(near, it.coordinate) }
+            .filter { it.second <= 5000.0 }
+            .minByOrNull { it.second }
+        return localBest?.first
+    }
+
+    private fun fetchRoadPolyline(from: LatLng, to: LatLng, fossgisService: String, osrmProfile: String): List<LatLng>? {
+        val urls = listOf(
+            "https://routing.openstreetmap.de/$fossgisService/route/v1/$osrmProfile/${from.longitude},${from.latitude};${to.longitude},${to.latitude}?overview=full&geometries=geojson",
+            "https://router.project-osrm.org/route/v1/$osrmProfile/${from.longitude},${from.latitude};${to.longitude},${to.latitude}?overview=full&geometries=geojson"
+        )
+        for (urlStr in urls) {
+            try {
+                val conn = (URL(urlStr).openConnection() as HttpURLConnection).apply {
+                    connectTimeout = 3000
+                    readTimeout = 3000
+                    setRequestProperty("User-Agent", "HTT-NaviCompanion-Android/1.6.5")
+                }
+                if (conn.responseCode == 200) {
+                    val body = BufferedReader(InputStreamReader(conn.inputStream)).use { it.readText() }
+                    val routes = JSONObject(body).optJSONArray("routes")
+                    if (routes != null && routes.length() > 0) {
+                        val coords = routes.getJSONObject(0).getJSONObject("geometry").getJSONArray("coordinates")
+                        val pts = ArrayList<LatLng>(coords.length())
+                        for (i in 0 until coords.length()) {
+                            val pt = coords.getJSONArray(i)
+                            pts.add(LatLng(pt.getDouble(1), pt.getDouble(0)))
+                        }
+                        conn.disconnect()
+                        return pts
+                    }
+                }
+                conn.disconnect()
+            } catch (_: Exception) {}
+        }
+        return null
     }
 }

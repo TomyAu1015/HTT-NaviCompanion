@@ -51,6 +51,13 @@ struct KOnAIChatSheetView: View {
             .navigationTitle("放课后茶会 · AI 副驾")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("收起键盘") { dismissKeyboard() }
+                        .foregroundColor(httGold)
+                }
+            }
+            .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
                     Button(action: { llm.enableVoiceBroadcast.toggle() }) {
                         Image(systemName: llm.enableVoiceBroadcast ? "speaker.wave.2.fill" : "speaker.slash.fill")
@@ -177,9 +184,7 @@ struct KOnAIChatSheetView: View {
                     .padding(.vertical, 6)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .contentShape(Rectangle())
-                .onTapGesture { dismissKeyboard() }
-                .simultaneousGesture(DragGesture(minimumDistance: 12).onChanged { _ in dismissKeyboard() })
+                .simultaneousGesture(DragGesture(minimumDistance: 16).onChanged { _ in dismissKeyboard() })
                 .onChange(of: llm.messages.count) { _ in
                     if let last = llm.messages.last {
                         withAnimation { proxy.scrollTo(last.id, anchor: .bottom) }
@@ -354,17 +359,34 @@ struct KOnAIChatSheetView: View {
                         .foregroundColor(llm.isCloudActive ? Color.green : httCream)
 
                     if llm.cloudProvider != .local {
-                        TextField("填入 API Key", text: $apiKeyDraft)
-                            .textFieldStyle(.plain)
-                            .font(.system(size: 12))
-                            .foregroundColor(.white)
-                            .padding(8)
-                            .background(Color.black.opacity(0.35))
+                        HStack(spacing: 6) {
+                            TextField("填入 API Key", text: $apiKeyDraft)
+                                .textFieldStyle(.plain)
+                                .autocorrectionDisabled(true)
+                                .textInputAutocapitalization(.never)
+                                .font(.system(size: 12))
+                                .foregroundColor(.white)
+                                .padding(8)
+                                .background(Color.black.opacity(0.35))
+                                .cornerRadius(8)
+                                .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold.opacity(0.4), lineWidth: 1))
+                            Button("粘贴") {
+                                if let clip = UIPasteboard.general.string {
+                                    apiKeyDraft = clip.trimmingCharacters(in: .whitespacesAndNewlines)
+                                }
+                            }
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundColor(.black)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 8)
+                            .background(httGold)
                             .cornerRadius(8)
-                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold.opacity(0.4), lineWidth: 1))
+                        }
 
                         TextField("模型名 / 豆包接入点 ID (ep-...)", text: $modelNameDraft)
                             .textFieldStyle(.plain)
+                            .autocorrectionDisabled(true)
+                            .textInputAutocapitalization(.never)
                             .font(.system(size: 12))
                             .foregroundColor(.white)
                             .padding(8)
@@ -373,14 +395,30 @@ struct KOnAIChatSheetView: View {
                             .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.2), lineWidth: 1))
 
                         if llm.cloudProvider != .gemini {
-                            TextField("API Base URL", text: $baseUrlDraft)
-                                .textFieldStyle(.plain)
-                                .font(.system(size: 12))
+                            HStack(spacing: 6) {
+                                TextField("API Base URL", text: $baseUrlDraft)
+                                    .textFieldStyle(.plain)
+                                    .autocorrectionDisabled(true)
+                                    .textInputAutocapitalization(.never)
+                                    .keyboardType(.URL)
+                                    .font(.system(size: 12))
+                                    .foregroundColor(.white)
+                                    .padding(8)
+                                    .background(Color.black.opacity(0.35))
+                                    .cornerRadius(8)
+                                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.2), lineWidth: 1))
+                                Button("粘贴") {
+                                    if let clip = UIPasteboard.general.string {
+                                        baseUrlDraft = clip.trimmingCharacters(in: .whitespacesAndNewlines)
+                                    }
+                                }
+                                .font(.system(size: 11, weight: .bold))
                                 .foregroundColor(.white)
-                                .padding(8)
-                                .background(Color.black.opacity(0.35))
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 8)
+                                .background(Color.white.opacity(0.16))
                                 .cornerRadius(8)
-                                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.2), lineWidth: 1))
+                            }
                         }
 
                         HStack(spacing: 8) {
