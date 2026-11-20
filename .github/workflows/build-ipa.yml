@@ -1,14 +1,8 @@
-name: Build TrollStore IPA
+name: Build Universal IPA (TrollStore + Sideload + CarPlay + llama.cpp)
 
 on:
   push:
     branches: [ main, master ]
-    paths:
-      - 'KOnNaviCompanion/**'
-      - 'KOnNaviCompanion.xcodeproj/**'
-      - '.github/workflows/build-ipa.yml'
-      - 'generate_icons.py'
-      - 'download_drive_music.py'
   workflow_dispatch:
 
 jobs:
@@ -21,28 +15,128 @@ jobs:
       - name: Show Xcode Version
         run: xcodebuild -version
 
-      - name: Build iOS App
+      - name: Generate Mugi App Icons
         run: |
+          if [ -f "generate_icons.py" ]; then
+            python3 generate_icons.py
+          fi
+
+      - name: Download and Embed K-ON Music from Google Drive
+        run: |
+          if [ -f "download_drive_music.py" ]; then
+            python3 download_drive_music.py || true
+          fi
+
+      - name: Auto-Sync Root Source Uploads Safeguard
+        run: |
+          for f in AudioPlayerManager.swift ContentView.swift KOnMusicManager.swift KOnLocalLLMManager.swift KOnAIChatSheetView.swift; do
+            if [ -f "$f" ]; then
+              echo "Found root $f, syncing to KOnNaviCompanion/..."
+              cp -f "$f" "KOnNaviCompanion/"
+            fi
+          done
+          if [ -d "KOnNaviCompanion/KOnNaviCompanion" ]; then
+            echo "Detected nested KOnNaviCompanion/KOnNaviCompanion, syncing to main folder..."
+            cp -rf KOnNaviCompanion/KOnNaviCompanion/* KOnNaviCompanion/
+            rm -rf KOnNaviCompanion/KOnNaviCompanion
+          fi
+
+      - name: Download Official llama.cpp iOS Metal XCFramework (b5046)
+        run: |
+          rm -rf build-llama && mkdir -p build-llama
+          curl -fL "https://github.com/ggml-org/llama.cpp/releases/download/b5046/llama-b5046-xcframework.zip" -o build-llama/llama-xcframework.zip
+          unzip -q -o build-llama/llama-xcframework.zip -d build-llama/
+          LLAMA_FW=$(find build-llama -type d -path "*/ios-arm64/llama.framework" | head -n 1)
+          echo "Found llama.framework at: $LLAMA_FW"
+          cp -R "$LLAMA_FW" build-llama/llama.framework
+          if [ ! -f "build-llama/llama.framework/Modules/module.modulemap" ]; then
+            mkdir -p build-llama/llama.framework/Modules
+            printf 'framework module llama {\n  umbrella header "llama.h"\n  export *\n  module * { export * }\n}\n' > build-llama/llama.framework/Modules/module.modulemap
+          fi
+          ls -la build-llama/llama.framework build-llama/llama.framework/Modules
+
+      - name: Build iOS App (with Native llama.cpp Engine)
+        run: |
+          LLAMA_DIR="$(pwd)/build-llama"
           xcodebuild clean build \
             -project KOnNaviCompanion.xcodeproj \
             -target KOnNaviCompanion \
             -configuration Release \
             -sdk iphoneos \
             SYMROOT=build \
+            FRAMEWORK_SEARCH_PATHS="$LLAMA_DIR" \
+            OTHER_SWIFT_FLAGS="-F $LLAMA_DIR" \
+            OTHER_LDFLAGS="-F $LLAMA_DIR -framework llama -framework Metal -framework MetalKit -framework Accelerate -lc++" \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO
 
-      - name: Package IPA for TrollStore
+      - name: Compile Assets, Copy Resources & Ad-Hoc Sign Universal IPA
         run: |
+          mkdir -p build/Release-iphoneos/KOnNaviCompanion.app
+          # 1. Compile Assets.car explicitly using xcrun actool
+          if [ -d "KOnNaviCompanion/Assets.xcassets" ]; then
+            xcrun actool KOnNaviCompanion/Assets.xcassets \
+              --compile build/Release-iphoneos/KOnNaviCompanion.app \
+              --platform iphoneos \
+              --minimum-deployment-target 15.0 \
+              --app-icon AppIcon \
+              --output-partial-info-plist build/asset-info.plist || true
+          fi
+
+          # 2. Copy all root AppIcon and Icon PNG files directly into .app root
+          cp KOnNaviCompanion/AppIcon*.png build/Release-iphoneos/KOnNaviCompanion.app/ 2>/dev/null || true
+          cp KOnNaviCompanion/Icon*.png build/Release-iphoneos/KOnNaviCompanion.app/ 2>/dev/null || true
+          cp KOnNaviCompanion/qr_* build/Release-iphoneos/KOnNaviCompanion.app/ 2>/dev/null || true
+
+          # 2.5 Embed K-ON Music directory into App Bundle for 100% built-in playback
+          if [ -d "KOnNaviCompanion/Music" ]; then
+            mkdir -p build/Release-iphoneos/KOnNaviCompanion.app/Music
+            cp -r KOnNaviCompanion/Music/* build/Release-iphoneos/KOnNaviCompanion.app/Music/ 2>/dev/null || true
+            echo "Embedded music files:"
+            ls -lh build/Release-iphoneos/KOnNaviCompanion.app/Music | head -n 25 || true
+          fi
+
+          # 2.75 Copy any Metal shader/metallib/bundle from llama.framework into .app root if present
+          find build-llama -name "*.metallib" -o -name "*.metal" -o -name "*.bundle" | while read -r res; do
+            cp -R "$res" build/Release-iphoneos/KOnNaviCompanion.app/ 2>/dev/null || true
+          done
+
+          # 2.8 Embed llama.framework into .app/Frameworks if dynamic Mach-O
+          if [ -f "build-llama/llama.framework/llama" ] && file "build-llama/llama.framework/llama" | grep -q "dynamically linked"; then
+            mkdir -p build/Release-iphoneos/KOnNaviCompanion.app/Frameworks
+            cp -R build-llama/llama.framework build/Release-iphoneos/KOnNaviCompanion.app/Frameworks/
+            codesign --force --sign - --timestamp=none build/Release-iphoneos/KOnNaviCompanion.app/Frameworks/llama.framework || true
+          fi
+
+          # 3. Ad-Hoc sign with entitlements (DO NOT strip binary after codesign, so both TrollStore and Sideloaders get an intact signature!)
+          if [ -f "KOnNaviCompanion/Entitlements.plist" ]; then
+            codesign --force --sign - --entitlements KOnNaviCompanion/Entitlements.plist --timestamp=none build/Release-iphoneos/KOnNaviCompanion.app
+          else
+            codesign --force --sign - --timestamp=none build/Release-iphoneos/KOnNaviCompanion.app
+          fi
+          codesign -dvvv --entitlements - build/Release-iphoneos/KOnNaviCompanion.app || true
+
+      - name: Package Universal IPA (TrollStore & Sideload Compatible)
+        run: |
+          rm -rf Payload KOnNaviCompanion.ipa
           mkdir -p Payload
           cp -r build/Release-iphoneos/KOnNaviCompanion.app Payload/
-          zip -r -9 KOnNaviCompanion.ipa Payload
+
+          # Copy iTunesArtwork to IPA root (TrollStore direct fallback)
+          cp KOnNaviCompanion/iTunesArtwork . 2>/dev/null || true
+          cp KOnNaviCompanion/iTunesArtwork@2x . 2>/dev/null || true
+
+          ls -la Payload/KOnNaviCompanion.app/AppIcon* || true
+          ls -la Payload/KOnNaviCompanion.app/Assets.car || true
+
+          # Package single universal IPA (works for TrollStore AND Sideloadly/SideStore/AltStore/Personal Cert)
+          zip -r -9 KOnNaviCompanion.ipa Payload iTunesArtwork iTunesArtwork@2x
           ls -lh KOnNaviCompanion.ipa
 
-      - name: Upload TrollStore IPA Artifact
+      - name: Upload Universal IPA Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: KOnNaviCompanion-TrollStore
+          name: KOnNaviCompanion-Universal
           path: KOnNaviCompanion.ipa
           retention-days: 30
