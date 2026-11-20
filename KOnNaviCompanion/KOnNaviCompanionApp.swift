@@ -42,7 +42,8 @@ class PhoneSceneDelegate: UIResponder, UIWindowSceneDelegate {
     }
 }
 
-class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
+@main
+class AppDelegate: UIResponder, UIApplicationDelegate, UNUserNotificationCenterDelegate {
     static var orientationLock: UIInterfaceOrientationMask = .all
 
     func application(_ application: UIApplication, supportedInterfaceOrientationsFor window: UIWindow?) -> UIInterfaceOrientationMask {
@@ -106,20 +107,4 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
     }
 }
 
-@main
-struct KOnNaviCompanionApp: App {
-    @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
-    
-    init() {
-        AudioPlayerManager.shared.configureAudioSession()
-    }
-    
-    var body: some Scene {
-        WindowGroup {
-            ContentView()
-                .onOpenURL { url in
-                    AudioPlayerManager.shared.handleIncomingNavigationURL(url)
-                }
-        }
-    }
-}
+

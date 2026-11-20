@@ -146,6 +146,8 @@
 	</array>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>用于实时获取行车速度、行进方向并在超速时触发轻音少女语音预警</string>
+	<key>UISupportsCarPlay</key>
+	<true/>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>
