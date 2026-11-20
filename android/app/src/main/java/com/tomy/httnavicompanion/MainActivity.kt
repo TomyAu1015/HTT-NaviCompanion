@@ -66,6 +66,9 @@ class MainActivity : ComponentActivity() {
                     perms.add(android.Manifest.permission.BLUETOOTH_CONNECT)
                     perms.add(android.Manifest.permission.BLUETOOTH_ADVERTISE)
                 }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    perms.add(android.Manifest.permission.POST_NOTIFICATIONS)
+                }
                 requestLocationPermission.launch(perms.toTypedArray())
             } catch (t: Throwable) {
                 Log.w("MainActivity", "Permission launch warning", t)
@@ -140,14 +143,14 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    override fun onResume() {
-        super.onResume()
-        try { HTTNaviApp.instance.audioPlayerManager.isAppInForeground = true } catch (_: Throwable) {}
+    override fun onStart() {
+        super.onStart()
+        try { HTTNaviApp.instance.audioPlayerManager.onAppForegroundChanged(true) } catch (_: Throwable) {}
     }
 
-    override fun onPause() {
-        super.onPause()
-        try { HTTNaviApp.instance.audioPlayerManager.isAppInForeground = false } catch (_: Throwable) {}
+    override fun onStop() {
+        super.onStop()
+        try { HTTNaviApp.instance.audioPlayerManager.onAppForegroundChanged(false) } catch (_: Throwable) {}
     }
 
     override fun onDestroy() {

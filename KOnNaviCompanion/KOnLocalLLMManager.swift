@@ -152,6 +152,7 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
 
     @Published var messages: [KOnAIChatMessage] = []
     @Published var isGenerating: Bool = false
+    @Published var isLoadingModel: Bool = false
     @Published var activeModelFileName: String = ""
     @Published var activeModelLoaded: Bool = false
     @Published var activeModelInfo: GGUFHeaderInfo? = nil
@@ -234,6 +235,16 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
             name: UIApplication.didReceiveMemoryWarningNotification,
             object: nil
         )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleAppDidBecomeActive),
+            name: UIApplication.didBecomeActiveNotification,
+            object: nil
+        )
+    }
+
+    @objc private func handleAppDidBecomeActive() {
+        autoMountIfNeeded()
     }
 
     @objc private func handleSystemMemoryWarning() {
@@ -362,6 +373,7 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
             self.installedModels = ggufs
             if !self.activeModelFileName.isEmpty && !ggufs.contains(self.activeModelFileName) {
                 self.activeModelFileName = ggufs.first ?? ""
+                self.isLoadingModel = false
                 self.activeModelLoaded = false
                 self.activeModelInfo = nil
             }
@@ -410,6 +422,7 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
             return
         }
         cancelIdleUnload()
+        isLoadingModel = true
         statusMessage = "正在安全挂载本地大模型（剩余可用内存约 \(freeMB)MB）..."
         UserDefaults.standard.set(true, forKey: loadingGuardKey)
         UserDefaults.standard.set("1:backend_init", forKey: loadingStageKey)
@@ -446,7 +459,8 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
                 UserDefaults.standard.set(false, forKey: self.loadingGuardKey)
                 UserDefaults.standard.removeObject(forKey: self.loadingStageKey)
                 DispatchQueue.main.async {
-                    self.activeModelLoaded = false
+                    self.isLoadingModel = false
+                self.activeModelLoaded = false
                     self.statusMessage = "模型加载失败（文件可能损坏或内存不足，建议重新下载或改用 0.5B）"
                 }
                 return
@@ -468,7 +482,8 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
                 UserDefaults.standard.set(false, forKey: self.loadingGuardKey)
                 UserDefaults.standard.removeObject(forKey: self.loadingStageKey)
                 DispatchQueue.main.async {
-                    self.activeModelLoaded = false
+                    self.isLoadingModel = false
+                self.activeModelLoaded = false
                     self.statusMessage = "无法初始化推理上下文（建议开启低内存保护或换 0.5B）"
                 }
                 return
@@ -493,6 +508,7 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
             DispatchQueue.main.async {
                 self.activeModelFileName = fileName
                 self.activeModelInfo = info
+                self.isLoadingModel = false
                 self.activeModelLoaded = true
                 UserDefaults.standard.set(fileName, forKey: self.activeModelKey)
                 let engineTag = self.hasNativeLlamaEngine ? "llama.cpp 本地引擎已就绪" : "GGUF 已挂载"
@@ -821,6 +837,31 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
             } else {
                 runRealLlamaInference(userPrompt: text, persona: persona, speakerOverride: nil, actionHint: nil)
             }
+        } else if hasNativeLlamaEngine && !activeModelFileName.isEmpty && installedModels.contains(activeModelFileName) {
+            if !isLoadingModel {
+                autoMountIfNeeded()
+            }
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                guard let self = self else { return }
+                var waitedMs = 0
+                while waitedMs < 6000 && !self.activeModelLoaded {
+                    Thread.sleep(forTimeInterval: 0.2)
+                    waitedMs += 200
+                }
+                DispatchQueue.main.async {
+                    if self.activeModelLoaded {
+                        if self.isWeatherQuery(lower) {
+                            self.fetchLiveWeatherAndInfer(userText: text, persona: persona, manager: mgr)
+                        } else if self.enableWebSearch && self.shouldSearchWeb(for: lower) {
+                            self.fetchWebSearchAndInfer(userText: text, persona: persona)
+                        } else {
+                            self.runRealLlamaInference(userPrompt: text, persona: persona, speakerOverride: nil, actionHint: nil)
+                        }
+                    } else {
+                        self.emitStreamedReply(speaker: persona.displayName(.zhHans), charId: max(1, persona.charId), emotion: "开心", text: "本地模型还在后台挂载初始化中，请过 2 秒再发一次试试看！", actionHint: nil)
+                    }
+                }
+            }
         } else {
             // Honest prompt when no GGUF is loaded yet
             let speed = Int(mgr.currentSpeedKmh.rounded())
@@ -915,58 +956,148 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
         }
     }
 
+    private func cleanSearchQueryForLookup(from text: String) -> String {
+        var q = cleanSearchQuery(from: text)
+        for noise in ["是什么", "是谁", "什么是", "位于哪里", "在哪里", "在哪", "介绍一下", "介绍", "怎么去", "有什么"] {
+            q = q.replacingOccurrences(of: noise, with: " ")
+        }
+        q = q.trimmingCharacters(in: .whitespacesAndNewlines)
+        return q.isEmpty ? text : q
+    }
+
+    private func isRelevantSnippet(query: String, title: String, body: String) -> Bool {
+        let core = query.replacingOccurrences(of: " ", with: "")
+        if core.count < 2 { return !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        let hay = title + " " + body
+        if hay.localizedCaseInsensitiveContains(core) { return true }
+        let chars = Array(core)
+        var bigrams: [String] = []
+        for i in 0..<(chars.count - 1) {
+            bigrams.append(String(chars[i...i+1]))
+        }
+        let hits = bigrams.filter { hay.localizedCaseInsensitiveContains($0) }.count
+        return hits >= max(1, (bigrams.count + 1) / 2)
+    }
+
     private func fetchWebSearchAndInfer(userText: String, persona: AudioPlayerManager.CharacterFilter) {
-        let query = cleanSearchQuery(from: userText)
+        let query = cleanSearchQueryForLookup(from: userText)
         let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? query
         let group = DispatchGroup()
+        var baikeSnippets: [String] = []
         var wikiSnippets: [String] = []
-        var ddgSnippets: [String] = []
+        var bingSnippets: [String] = []
+        let lock = NSLock()
 
-        if let wikiURL = URL(string: "https://zh.wikipedia.org/w/api.php?action=query&list=search&srsearch=\(encoded)&format=json&utf8=1&srlimit=2") {
+        // 1. Baidu Baike OpenAPI (best for mainland Chinese entities & local specialties like 钟村三宝)
+        if let baikeApiURL = URL(string: "https://baike.baidu.com/api/openapi/BaikeLemmaCardApi?scope=103&format=json&appid=379020&bk_key=\(encoded)&bk_length=600") {
             group.enter()
-            var req = URLRequest(url: wikiURL, timeoutInterval: 2.8)
-            req.setValue("HTT-NaviCompanion/1.6", forHTTPHeaderField: "User-Agent")
-            URLSession.shared.dataTask(with: req) { data, _, _ in
+            var req = URLRequest(url: baikeApiURL, timeoutInterval: 2.8)
+            req.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15", forHTTPHeaderField: "User-Agent")
+            URLSession.shared.dataTask(with: req) { [weak self] data, _, _ in
                 defer { group.leave() }
-                guard let data = data,
-                      let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                      let qObj = json["query"] as? [String: Any],
-                      let arr = qObj["search"] as? [[String: Any]] else { return }
-                for item in arr.prefix(2) {
-                    let title = item["title"] as? String ?? ""
-                    let raw = item["snippet"] as? String ?? ""
-                    let clean = raw.replacingOccurrences(of: #"<[^>]+>"#, with: "", options: .regularExpression)
-                        .replacingOccurrences(of: "&quot;", with: "\"")
-                        .trimmingCharacters(in: .whitespacesAndNewlines)
-                    if !clean.isEmpty {
-                        wikiSnippets.append("【\(title)】\(clean)")
+                guard let self = self, let data = data,
+                      let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+                let title = json["title"] as? String ?? query
+                let abs = (json["abstract"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                if !abs.isEmpty && self.isRelevantSnippet(query: query, title: title, body: abs) {
+                    lock.lock()
+                    baikeSnippets.append("【百度百科·\(title)】\(String(abs.prefix(280)))")
+                    lock.unlock()
+                }
+            }.resume()
+        }
+
+        // 2. Baidu Baike HTML meta description fallback
+        if let baikePageURL = URL(string: "https://baike.baidu.com/item/\(encoded)") {
+            group.enter()
+            var req = URLRequest(url: baikePageURL, timeoutInterval: 2.8)
+            req.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15", forHTTPHeaderField: "User-Agent")
+            URLSession.shared.dataTask(with: req) { [weak self] data, _, _ in
+                defer { group.leave() }
+                guard let self = self, let data = data,
+                      let html = String(data: data, encoding: .utf8) else { return }
+                if let regex = try? NSRegularExpression(pattern: #"<meta\s+name=["']description["']\s+content=["']([^"']+)["']"#, options: [.caseInsensitive]),
+                   let match = regex.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)),
+                   let r = Range(match.range(at: 1), in: html) {
+                    let desc = String(html[r]).trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !desc.isEmpty && self.isRelevantSnippet(query: query, title: query, body: desc) {
+                        lock.lock()
+                        if baikeSnippets.isEmpty {
+                            baikeSnippets.append("【百度百科】\(String(desc.prefix(280)))")
+                        }
+                        lock.unlock()
                     }
                 }
             }.resume()
         }
 
-        if let ddgURL = URL(string: "https://api.duckduckgo.com/?q=\(encoded)&format=json&no_html=1&skip_disambig=1") {
+        // 3. Chinese Wikipedia (strictly filtered for relevance)
+        if let wikiURL = URL(string: "https://zh.wikipedia.org/w/api.php?action=query&list=search&srsearch=\(encoded)&format=json&utf8=1&srlimit=3") {
             group.enter()
-            let req = URLRequest(url: ddgURL, timeoutInterval: 2.8)
-            URLSession.shared.dataTask(with: req) { data, _, _ in
+            var req = URLRequest(url: wikiURL, timeoutInterval: 2.6)
+            req.setValue("HTT-NaviCompanion/1.6", forHTTPHeaderField: "User-Agent")
+            URLSession.shared.dataTask(with: req) { [weak self] data, _, _ in
                 defer { group.leave() }
-                guard let data = data,
-                      let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
-                if let abs = json["AbstractText"] as? String, !abs.isEmpty {
-                    ddgSnippets.append(String(abs.prefix(220)))
+                guard let self = self, let data = data,
+                      let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let qObj = json["query"] as? [String: Any],
+                      let arr = qObj["search"] as? [[String: Any]] else { return }
+                for item in arr {
+                    let title = item["title"] as? String ?? ""
+                    let raw = item["snippet"] as? String ?? ""
+                    let clean = raw.replacingOccurrences(of: #"<[^>]+>"#, with: "", options: .regularExpression)
+                        .replacingOccurrences(of: "&quot;", with: "\"")
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !clean.isEmpty && self.isRelevantSnippet(query: query, title: title, body: clean) {
+                        lock.lock()
+                        wikiSnippets.append("【维基百科·\(title)】\(String(clean.prefix(220)))")
+                        lock.unlock()
+                        break
+                    }
+                }
+            }.resume()
+        }
+
+        // 4. Bing CN snippet fallback
+        if let bingURL = URL(string: "https://cn.bing.com/search?q=\(encoded)") {
+            group.enter()
+            var req = URLRequest(url: bingURL, timeoutInterval: 2.8)
+            req.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15", forHTTPHeaderField: "User-Agent")
+            req.setValue("zh-CN,zh;q=0.9", forHTTPHeaderField: "Accept-Language")
+            URLSession.shared.dataTask(with: req) { [weak self] data, _, _ in
+                defer { group.leave() }
+                guard let self = self, let data = data,
+                      let html = String(data: data, encoding: .utf8) else { return }
+                if let regex = try? NSRegularExpression(pattern: #"<li class="b_algo"[\s\S]*?<p[^>]*>([\s\S]*?)</p>"#, options: []) {
+                    let matches = regex.matches(in: html, range: NSRange(html.startIndex..., in: html))
+                    for m in matches.prefix(2) {
+                        if let r = Range(m.range(at: 1), in: html) {
+                            let clean = String(html[r])
+                                .replacingOccurrences(of: #"<[^>]+>"#, with: "", options: .regularExpression)
+                                .replacingOccurrences(of: "&nbsp;", with: " ")
+                                .replacingOccurrences(of: "&quot;", with: "\"")
+                                .trimmingCharacters(in: .whitespacesAndNewlines)
+                            if clean.count > 15 && self.isRelevantSnippet(query: query, title: query, body: clean) {
+                                lock.lock()
+                                bingSnippets.append("【必应搜索】\(String(clean.prefix(220)))")
+                                lock.unlock()
+                            }
+                        }
+                    }
                 }
             }.resume()
         }
 
         group.notify(queue: .main) { [weak self] in
             guard let self = self else { return }
-            let combined = (wikiSnippets + ddgSnippets).joined(separator: "\n")
-            let webCtx = combined.isEmpty ? nil : String(combined.prefix(380))
+            let primary = !baikeSnippets.isEmpty ? baikeSnippets : (!wikiSnippets.isEmpty ? wikiSnippets : bingSnippets)
+            let combined = primary.joined(separator: "\n")
+            let webCtx = combined.isEmpty ? nil : String(combined.prefix(480))
             self.runRealLlamaInference(
                 userPrompt: userText,
                 persona: persona,
                 speakerOverride: nil,
-                actionHint: webCtx != nil ? "🌐 已联网检索：\(query)" : "联网未命中，使用本地推理",
+                actionHint: webCtx != nil ? "🌐 已联网检索：\(query)" : "⚠️ 联网未命中确切词条，以下为本地推理",
                 webContext: webCtx
             )
         }
@@ -999,14 +1130,17 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
         default: personaRole = "你是日本动画《轻音少女》(K-ON!)的中野梓（梓喵），轻音部节奏吉他手，认真靠谱的后辈，称呼用户为前辈。"
         }
 
-        let webBlock = (webContext != nil && !webContext!.isEmpty) ? "\n联网检索真实资料（请优先依据此资料回答）：\n\(webContext!)\n" : ""
+        let webBlock = (webContext != nil && !webContext!.isEmpty)
+            ? "\n【联网检索到的真实资料（必须严格依据以下事实作答，禁止编造或套用动漫设定）】：\n\(webContext!)\n"
+            : "\n【知识边界提示】：如果不确定某个现实地名、美食或专有名词，请直接坦诚说不知道，绝不要胡编或把《轻音少女》角色设定套上去。\n"
 
         let sysPrompt = """
-        \(personaRole)你们五人组成了“放课后茶会”(HTT)乐队，不是偶像养成节目。你正在作为车载副驾伙伴陪伴前辈开车。
+        \(personaRole)你们五人组成了“放课后茶会”(HTT)乐队。你正坐在副驾陪前辈开车。
         实时车况：时间 \(nowStr)；车速 \(speed) km/h；\(navState)；音乐：\(songStr)；最近牌局：\(gameStr)；记忆：\(memStr)。\(webBlock)
         说话规则：
-        1. 用活泼自然的中文口语回答（1~3句），贴合角色性格，可以适度吐槽、撒娇或关心前辈。
-        2. 严禁说“抱歉，我无法理解您的问题”“我无法连接外部设备”“作为AI助手”等客服套话！遇到撒娇、吐槽、问号或无厘头问题也要顺着角色自然接话。
+        1. 若上面提供了【联网检索到的真实资料】，必须先把真实事实准确、具体地讲清楚（例如地道美食/地点/定义），再顺带用一句自然口吻收尾，绝不能偏题或篡改事实。
+        2. 日常闲聊（如“今天好冷啊”）要像真实少女一样自然关心（比如提醒多穿点、要不要喝热红茶），严禁说“我明白您的感受”“毕竟开车时”“我们已经切换到空调模式了吗”“作为AI助手”等机械客服腔！
+        3. 回答简洁清晰（2~4句）。
         """
 
         // Build Qwen2.5 ChatML prompt with recent turns

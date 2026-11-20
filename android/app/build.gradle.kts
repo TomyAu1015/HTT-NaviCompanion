@@ -12,8 +12,8 @@ android {
         applicationId = "com.tomy.httnavicompanion"
         minSdk = 26
         targetSdk = 34
-        versionCode = 2
-        versionName = "1.6.3"
+        versionCode = 3
+        versionName = "1.6.4"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -95,6 +95,12 @@ android {
 
     buildFeatures {
         compose = true
+    }
+
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
     }
 
     sourceSets {

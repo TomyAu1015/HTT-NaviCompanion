@@ -1332,61 +1332,6 @@ struct ContentView: View {
                     }
                 }
                 
-                // Apple Maps / GaoDe Style Background Navigation Floating Mini-Popup
-                if manager.hasActiveNavigation && (!manager.isMapEnlarged || !manager.showMapMode || activeModalSheet != nil) {
-                    VStack {
-                        Spacer()
-                        HStack(spacing: 10) {
-                            Image(systemName: manager.travelMode == .transit ? "tram.fill" : (manager.travelMode == .walking ? "figure.walk" : "arrow.turn.up.right"))
-                                .font(.system(size: 16, weight: .black))
-                                .foregroundColor(.white)
-                                .frame(width: 34, height: 34)
-                                .background(manager.travelMode == .transit ? Color.green : Color.blue)
-                                .cornerRadius(10)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(manager.currentStepInstruction.isEmpty ? "正在前往 \(manager.destinationName)" : manager.currentStepInstruction)
-                                    .font(.system(size: 12, weight: .black))
-                                    .foregroundColor(.white)
-                                    .lineLimit(1)
-                                Text(String(format: tr("距目的地 %.1f km · 约 %d 分钟 · 点击返回导航", "距目的地 %.1f km · 約 %d 分鐘 · 點擊返回導航", "%.1f km to dest · ~%d min · Tap to return"), manager.remainingRouteDistanceKm, max(1, manager.remainingRouteMinutes)))
-                                    .font(.system(size: 10, weight: .semibold))
-                                    .foregroundColor(httGold)
-                                    .lineLimit(1)
-                            }
-                            Spacer(minLength: 4)
-                            Button(action: {
-                                activeModalSheet = nil
-                                manager.showMapMode = true
-                                manager.isMapEnlarged = true
-                            }) {
-                                Text("回到地图")
-                                    .font(.system(size: 10, weight: .black))
-                                    .padding(.horizontal, 9).padding(.vertical, 6)
-                                    .background(Color.blue).foregroundColor(.white).cornerRadius(8)
-                            }.buttonStyle(PlainButtonStyle())
-                            Button(action: { manager.cancelNavigation() }) {
-                                Text("结束")
-                                    .font(.system(size: 10, weight: .black))
-                                    .padding(.horizontal, 9).padding(.vertical, 6)
-                                    .background(httCrimson).foregroundColor(.white).cornerRadius(8)
-                            }.buttonStyle(PlainButtonStyle())
-                        }
-                        .padding(.horizontal, 12).padding(.vertical, 9)
-                        .background(Color(red: 0.08, green: 0.11, blue: 0.16).opacity(0.95))
-                        .cornerRadius(14)
-                        .overlay(RoundedRectangle(cornerRadius: 14).stroke(httGold.opacity(0.85), lineWidth: 1.5))
-                        .shadow(color: .black.opacity(0.45), radius: 10, y: 4)
-                        .padding(.horizontal, 12)
-                        .padding(.bottom, max(geo.safeAreaInsets.bottom + 8, 14))
-                        .onTapGesture {
-                            activeModalSheet = nil
-                            manager.showMapMode = true
-                            manager.isMapEnlarged = true
-                        }
-                    }
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-                }
-
                 // Long-Press RM-500HTT Beautified Outfit Quick Switcher Modal!
                 if showOutfitPopup {
                     outfitQuickPickerModalOverlay

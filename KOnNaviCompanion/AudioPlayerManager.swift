@@ -1,5 +1,6 @@
 import MultipeerConnectivity
 import Foundation
+import UserNotifications
 import AVFoundation
 import CryptoKit
 import CoreLocation
@@ -1089,7 +1090,63 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         return destinationCoord != nil && (isNavigatingFocused || isDemoSimulating) && (activeRoute != nil || customTransitPolyline != nil || travelMode == .transit)
     }
     @Published var currentStepIndex: Int = 0
-    @Published var currentStepInstruction: String = ""
+    @Published var currentStepInstruction: String = "" {
+        didSet {
+            if isAppInBackground && hasActiveNavigation && currentStepInstruction != oldValue {
+                postOrUpdateBackgroundNavNotification(forceAlert: false)
+            }
+        }
+    }
+    var isAppInBackground: Bool = false
+    private var lastBgNotifStep: String = ""
+    private var lastBgNotifTime: Date = .distantPast
+
+    func requestBackgroundNotificationPermissionIfNeeded() {
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
+    }
+
+    func onAppBackgroundChanged(_ inBackground: Bool) {
+        isAppInBackground = inBackground
+        if inBackground {
+            if hasActiveNavigation {
+                postOrUpdateBackgroundNavNotification(forceAlert: true)
+            }
+        } else {
+            cancelBackgroundNavNotification()
+        }
+    }
+
+    func postOrUpdateBackgroundNavNotification(forceAlert: Bool) {
+        guard isAppInBackground && hasActiveNavigation else { return }
+        let step = currentStepInstruction.isEmpty ? "沿当前路线继续前行" : currentStepInstruction
+        let now = Date()
+        if !forceAlert && step == lastBgNotifStep && now.timeIntervalSince(lastBgNotifTime) < 6.0 {
+            return
+        }
+        lastBgNotifStep = step
+        lastBgNotifTime = now
+
+        let content = UNMutableNotificationContent()
+        content.title = "🧭 正在导航前往 \(destinationName)"
+        content.subtitle = String(format: "距目的地 %.1f km · 约 %d 分钟", remainingRouteDistanceKm, max(1, remainingRouteMinutes))
+        content.body = step
+        if forceAlert {
+            content.sound = .default
+        }
+        if #available(iOS 15.0, *) {
+            content.interruptionLevel = .timeSensitive
+        }
+
+        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 0.3, repeats: false)
+        let req = UNNotificationRequest(identifier: "htt_bg_nav_alert", content: content, trigger: trigger)
+        UNUserNotificationCenter.current().add(req, withCompletionHandler: nil)
+    }
+
+    func cancelBackgroundNavNotification() {
+        lastBgNotifStep = ""
+        UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ["htt_bg_nav_alert"])
+        UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ["htt_bg_nav_alert"])
+    }
     @Published var distanceToNextStepMeters: Double = 0.0
     @Published var remainingRouteDistanceKm: Double = 0.0
     @Published var remainingRouteMinutes: Int = 0
@@ -1837,6 +1894,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     
     func startFocusedNavigation() {
         stop()
+        requestBackgroundNotificationPermissionIfNeeded()
         isNavigatingFocused = true
         mapTrackingUser = true
         recenterTrigger += 1
@@ -1862,6 +1920,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         remainingRouteDistanceKm = 0.0
         remainingRouteMinutes = 0
         isMapEnlarged = false
+        cancelBackgroundNavNotification()
     }
     
     private func announceTravelModeSwitch() {

@@ -6,6 +6,17 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 set(LLAMA_CPP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/llama.cpp")
 
+if(NOT EXISTS "${LLAMA_CPP_DIR}/CMakeLists.txt")
+    message(STATUS "llama.cpp not found at ${LLAMA_CPP_DIR}, cloning b5046...")
+    execute_process(
+        COMMAND git clone --depth 1 --branch b5046 https://github.com/ggml-org/llama.cpp.git "${LLAMA_CPP_DIR}"
+        RESULT_VARIABLE GIT_CLONE_RES
+    )
+    if(NOT GIT_CLONE_RES EQUAL 0)
+        message(FATAL_ERROR "Failed to clone llama.cpp b5046 into ${LLAMA_CPP_DIR}")
+    endif()
+endif()
+
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_COMMON OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_TESTS OFF CACHE BOOL "" FORCE)

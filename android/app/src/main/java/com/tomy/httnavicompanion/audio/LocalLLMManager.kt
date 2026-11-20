@@ -537,12 +537,37 @@ class LocalLLMManager(
                 runRealLlamaInference(text, persona, speaker, null, null)
             }
         } else {
-            val fallback = if (_activeModelFileName.value.isNotEmpty() && LlamaNativeBridge.isAvailable) {
-                "正在为你挂载本地模型，请稍等一两秒再试，或到「本地模型与记忆」里确认挂载状态哦。"
+            val savedName = _activeModelFileName.value
+            val savedFile = if (savedName.isNotEmpty()) File(modelsDir(), savedName) else null
+            if (LlamaNativeBridge.isAvailable && savedFile != null && savedFile.exists()) {
+                if (!_isLoadingModel.value) {
+                    mountModel(savedName)
+                }
+                Thread {
+                    var waited = 0
+                    while (waited < 6000 && !_activeModelLoaded.value) {
+                        Thread.sleep(200L)
+                        waited += 200
+                    }
+                    mainHandler.post {
+                        if (_activeModelLoaded.value) {
+                            val lower = text.lowercase()
+                            if (isWeatherQuery(lower)) {
+                                fetchLiveWeatherAndInfer(text, persona, speaker)
+                            } else if (_enableWebSearch.value && shouldSearchWeb(lower)) {
+                                fetchWebSearchAndInfer(text, persona, speaker)
+                            } else {
+                                runRealLlamaInference(text, persona, speaker, null, null)
+                            }
+                        } else {
+                            streamStaticReply(speaker, "开心", "本地模型还在后台初始化中，请过 2 秒再发送一次试试看！", null)
+                        }
+                    }
+                }.start()
             } else {
-                "当前还未挂载本地大模型，请点击上方「本地模型与记忆」下载并挂载 Qwen2.5 模型，这样我就能自由回答你的各种问题啦！"
+                val fallback = "当前还未挂载本地大模型，请点击上方「本地模型与记忆」下载并挂载 Qwen2.5 模型，这样我就能自由回答你的各种问题啦！"
+                streamStaticReply(speaker, "开心", fallback, null)
             }
-            streamStaticReply(speaker, "开心", fallback, null)
         }
     }
 
@@ -638,48 +663,117 @@ class LocalLLMManager(
         }.start()
     }
 
+    private fun cleanSearchQueryForLookup(text: String): String {
+        var q = cleanSearchQuery(text)
+        listOf("是什么", "是谁", "什么是", "位于哪里", "在哪里", "在哪", "介绍一下", "介绍", "怎么去", "有什么").forEach {
+            q = q.replace(it, " ")
+        }
+        return q.trim().ifEmpty { text }
+    }
+
+    private fun isRelevantSnippet(query: String, title: String, body: String): Boolean {
+        val core = query.replace(" ", "")
+        if (core.length < 2) return body.isNotBlank()
+        val hay = "$title $body"
+        if (hay.contains(core, ignoreCase = true)) return true
+        val bigrams = (0 until core.length - 1).map { core.substring(it, it + 2) }
+        val hits = bigrams.count { hay.contains(it, ignoreCase = true) }
+        return hits >= maxOf(1, (bigrams.size + 1) / 2)
+    }
+
     private fun fetchWebSearchAndInfer(userText: String, persona: CharacterFilter, speaker: String) {
-        val query = cleanSearchQuery(userText)
+        val query = cleanSearchQueryForLookup(userText)
         Thread {
             val snippets = mutableListOf<String>()
+            val enc = URLEncoder.encode(query, "UTF-8")
+
+            // 1. Baidu Baike OpenAPI (best for mainland Chinese entities & local specialties like 钟村三宝)
             try {
-                val enc = URLEncoder.encode(query, "UTF-8")
-                val conn = (URL("https://zh.wikipedia.org/w/api.php?action=query&list=search&srsearch=$enc&format=json&utf8=1&srlimit=2").openConnection() as HttpURLConnection).apply {
+                val conn = (URL("https://baike.baidu.com/api/openapi/BaikeLemmaCardApi?scope=103&format=json&appid=379020&bk_key=$enc&bk_length=600").openConnection() as HttpURLConnection).apply {
                     connectTimeout = 2800
                     readTimeout = 2800
+                    setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36")
+                }
+                val body = conn.inputStream.bufferedReader().readText()
+                conn.disconnect()
+                val json = JSONObject(body)
+                val title = json.optString("title", query)
+                val abs = json.optString("abstract", "").trim()
+                if (abs.isNotEmpty() && isRelevantSnippet(query, title, abs)) {
+                    snippets.add("【百度百科·$title】${abs.take(280)}")
+                }
+            } catch (_: Throwable) {}
+
+            // 2. Baidu Baike HTML meta description fallback
+            if (snippets.isEmpty()) {
+                try {
+                    val conn = (URL("https://baike.baidu.com/item/$enc").openConnection() as HttpURLConnection).apply {
+                        connectTimeout = 2800
+                        readTimeout = 2800
+                        instanceFollowRedirects = true
+                        setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36")
+                    }
+                    val html = conn.inputStream.bufferedReader().readText()
+                    conn.disconnect()
+                    val m = Regex("""<meta\s+name=["']description["']\s+content=["']([^"']+)["']""", RegexOption.IGNORE_CASE).find(html)
+                    val desc = m?.groupValues?.getOrNull(1)?.trim() ?: ""
+                    if (desc.isNotEmpty() && isRelevantSnippet(query, query, desc)) {
+                        snippets.add("【百度百科】${desc.take(280)}")
+                    }
+                } catch (_: Throwable) {}
+            }
+
+            // 3. Chinese Wikipedia (strictly filtered for relevance)
+            try {
+                val conn = (URL("https://zh.wikipedia.org/w/api.php?action=query&list=search&srsearch=$enc&format=json&utf8=1&srlimit=3").openConnection() as HttpURLConnection).apply {
+                    connectTimeout = 2600
+                    readTimeout = 2600
                     setRequestProperty("User-Agent", "HTT-NaviCompanion/1.6")
                 }
                 val body = conn.inputStream.bufferedReader().readText()
                 conn.disconnect()
                 val arr = JSONObject(body).optJSONObject("query")?.optJSONArray("search")
                 if (arr != null) {
-                    for (i in 0 until minOf(2, arr.length())) {
+                    for (i in 0 until arr.length()) {
                         val item = arr.optJSONObject(i) ?: continue
                         val title = item.optString("title", "")
                         val clean = item.optString("snippet", "").replace(Regex("<[^>]+>"), "").replace("&quot;", "\"").trim()
-                        if (clean.isNotEmpty()) snippets.add("【$title】$clean")
+                        if (clean.isNotEmpty() && isRelevantSnippet(query, title, clean)) {
+                            snippets.add("【维基百科·$title】${clean.take(220)}")
+                            break
+                        }
                     }
                 }
             } catch (_: Throwable) {}
-            try {
-                val enc = URLEncoder.encode(query, "UTF-8")
-                val conn = (URL("https://api.duckduckgo.com/?q=$enc&format=json&no_html=1&skip_disambig=1").openConnection() as HttpURLConnection).apply {
-                    connectTimeout = 2800
-                    readTimeout = 2800
-                }
-                val body = conn.inputStream.bufferedReader().readText()
-                conn.disconnect()
-                val abs = JSONObject(body).optString("AbstractText", "")
-                if (abs.isNotEmpty()) snippets.add(abs.take(220))
-            } catch (_: Throwable) {}
 
-            val combined = snippets.joinToString("\n").take(380).ifEmpty { null }
+            // 4. Bing CN snippet fallback when Baike & Wiki both miss
+            if (snippets.isEmpty()) {
+                try {
+                    val conn = (URL("https://cn.bing.com/search?q=$enc").openConnection() as HttpURLConnection).apply {
+                        connectTimeout = 2800
+                        readTimeout = 2800
+                        setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36")
+                        setRequestProperty("Accept-Language", "zh-CN,zh;q=0.9")
+                    }
+                    val html = conn.inputStream.bufferedReader().readText()
+                    conn.disconnect()
+                    val matches = Regex("""<li class="b_algo"[\s\S]*?<p[^>]*>([\s\S]*?)</p>""").findAll(html)
+                    for (m in matches.take(2)) {
+                        val clean = m.groupValues[1].replace(Regex("<[^>]+>"), "").replace("&nbsp;", " ").replace("&quot;", "\"").trim()
+                        if (clean.length > 15 && isRelevantSnippet(query, query, clean)) {
+                            snippets.add("【必应搜索】${clean.take(220)}")
+                        }
+                    }
+                } catch (_: Throwable) {}
+            }
+
+            val combined = snippets.joinToString("\n").take(480).ifEmpty { null }
             mainHandler.post {
                 runRealLlamaInference(
                     userText,
                     persona,
                     speaker,
-                    if (combined != null) "🌐 已联网检索：$query" else "联网未命中，使用本地推理",
+                    if (combined != null) "🌐 已联网检索：$query" else "⚠️ 联网未命中确切词条，以下为本地推理",
                     combined
                 )
             }
@@ -710,14 +804,19 @@ class LocalLLMManager(
             CharacterFilter.MUGI -> "你是日本动画《轻音少女》(K-ON!)的琴吹紬，轻音部键盘手，温柔体贴的大小姐，每天给大家准备红茶和点心。"
             else -> "你是日本动画《轻音少女》(K-ON!)的中野梓（梓喵），轻音部节奏吉他手，认真靠谱的后辈，称呼用户为前辈。"
         }
-        val webBlock = if (!webContext.isNullOrBlank()) "\n联网检索真实资料（请优先依据此资料回答）：\n$webContext\n" else ""
+        val webBlock = if (!webContext.isNullOrBlank()) {
+            "\n【联网检索到的真实资料（必须严格依据以下事实作答，禁止编造或套用动漫设定）】：\n$webContext\n"
+        } else {
+            "\n【知识边界提示】：如果不确定某个现实地名、美食或专有名词，请直接坦诚说不知道，绝不要胡编或把《轻音少女》角色设定套上去。\n"
+        }
 
         val sysPrompt = """
-$personaRole你们五人组成了“放课后茶会”(HTT)乐队，不是偶像养成节目。你正在作为车载副驾伙伴陪伴前辈开车。
+${personaRole}你们五人组成了“放课后茶会”(HTT)乐队。你正坐在副驾陪前辈开车。
 实时车况：时间 $nowStr；车速 $speed km/h；$navState；音乐：$songStr；最近牌局：$gameStr；记忆：$memStr。$webBlock
 说话规则：
-1. 用活泼自然的中文口语回答（1~3句），贴合角色性格，可以适度吐槽、撒娇或关心前辈。
-2. 严禁说“抱歉，我无法理解您的问题”“我无法连接外部设备”“作为AI助手”等客服套话！遇到撒娇、吐槽、问号或无厘头问题也要顺着角色自然接话。
+1. 若上面提供了【联网检索到的真实资料】，必须先把真实事实准确、具体地讲清楚（例如地道美食/地点/定义），再顺带用一句自然口吻收尾，绝不能偏题或篡改事实。
+2. 日常闲聊（如“今天好冷啊”）要像真实少女一样自然关心（比如提醒多穿点、要不要喝热红茶），严禁说“我明白您的感受”“毕竟开车时”“我们已经切换到空调模式了吗”“作为AI助手”等机械客服腔！
+3. 回答简洁清晰（2~4句）。
 """.trimIndent()
 
         val sb = StringBuilder()

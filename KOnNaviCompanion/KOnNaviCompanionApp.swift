@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import UserNotifications
 
 @objc(PhoneSceneDelegate)
 class PhoneSceneDelegate: UIResponder, UIWindowSceneDelegate {
@@ -26,13 +27,22 @@ class PhoneSceneDelegate: UIResponder, UIWindowSceneDelegate {
     }
 
     func sceneDidBecomeActive(_ scene: UIScene) {
+        AudioPlayerManager.shared.onAppBackgroundChanged(false)
         if AudioPlayerManager.shared.travelMode == .transit && AudioPlayerManager.shared.transitPlans.isEmpty {
             AudioPlayerManager.shared.refreshTransitPlansForCurrentLocation(force: false)
         }
     }
+
+    func sceneWillEnterForeground(_ scene: UIScene) {
+        AudioPlayerManager.shared.onAppBackgroundChanged(false)
+    }
+
+    func sceneDidEnterBackground(_ scene: UIScene) {
+        AudioPlayerManager.shared.onAppBackgroundChanged(true)
+    }
 }
 
-class AppDelegate: NSObject, UIApplicationDelegate {
+class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
     static var orientationLock: UIInterfaceOrientationMask = .all
 
     func application(_ application: UIApplication, supportedInterfaceOrientationsFor window: UIWindow?) -> UIInterfaceOrientationMask {
@@ -58,7 +68,15 @@ class AppDelegate: NSObject, UIApplicationDelegate {
     func application(_ application: UIApplication,
                      didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey : Any]? = nil) -> Bool {
         AudioPlayerManager.shared.configureAudioSession()
+        UNUserNotificationCenter.current().delegate = self
         return true
+    }
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                willPresent notification: UNNotification,
+                                withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+        // Suppress banner while app is in foreground; show only when in OS background
+        completionHandler([])
     }
 
     func applicationDidBecomeActive(_ application: UIApplication) {

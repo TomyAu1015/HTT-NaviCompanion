@@ -9,7 +9,17 @@ import android.media.MediaPlayer
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.content.Intent
+import android.content.pm.PackageManager
 import android.util.Log
+import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
+import androidx.core.content.ContextCompat
+import com.tomy.httnavicompanion.MainActivity
+import com.tomy.httnavicompanion.R
 import com.tomy.httnavicompanion.HTTNaviApp
 import com.tomy.httnavicompanion.data.*
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -600,6 +610,76 @@ class AudioPlayerManager(
     val rummikubEngine: RummikubEngine by lazy { RummikubEngine(context, this) }
 
     @Volatile var isAppInForeground: Boolean = true
+    private var lastBgNotifStep: String = ""
+    private var lastBgNotifAtMs: Long = 0L
+
+    fun onAppForegroundChanged(inForeground: Boolean) {
+        isAppInForeground = inForeground
+        if (inForeground) {
+            cancelBackgroundNavNotification()
+        } else if (_hasActiveNavigation.value) {
+            postOrUpdateBackgroundNavNotification(forceAlert = true)
+        }
+    }
+
+    private fun postOrUpdateBackgroundNavNotification(forceAlert: Boolean = false) {
+        if (isAppInForeground || !_hasActiveNavigation.value) return
+        val ctx = HTTNaviApp.instance
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (ContextCompat.checkSelfPermission(ctx, android.Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                return
+            }
+        }
+        val step = _currentStepInstruction.value.ifBlank { "沿当前路线继续前行" }
+        val now = System.currentTimeMillis()
+        if (!forceAlert && step == lastBgNotifStep && (now - lastBgNotifAtMs) < 8000L) return
+        lastBgNotifStep = step
+        lastBgNotifAtMs = now
+
+        val channelId = "htt_bg_nav_channel"
+        val nm = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val ch = NotificationChannel(channelId, "后台实时导航弹窗", NotificationManager.IMPORTANCE_HIGH).apply {
+                description = "App 退入后台时实时推送转向与距离提醒"
+                enableVibration(false)
+            }
+            nm.createNotificationChannel(ch)
+        }
+
+        val launchIntent = Intent(ctx, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val piFlags = PendingIntent.FLAG_UPDATE_CURRENT or (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0)
+        val pendingIntent = PendingIntent.getActivity(ctx, 20261, launchIntent, piFlags)
+
+        val remKm = String.format(java.util.Locale.US, "%.1f", _remainingRouteDistanceKm.value)
+        val remMin = maxOf(1, _remainingRouteMinutes.value)
+        val dest = _destinationName.value.ifBlank { "目的地" }
+        val bodyText = " · 距目的地  km · 约  分钟"
+
+        val notif = NotificationCompat.Builder(ctx, channelId)
+            .setSmallIcon(R.mipmap.ic_launcher)
+            .setContentTitle("🧭 正在导航前往 ")
+            .setContentText(bodyText)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(bodyText))
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_NAVIGATION)
+            .setOngoing(true)
+            .setOnlyAlertOnce(!forceAlert)
+            .setContentIntent(pendingIntent)
+            .build()
+
+        try {
+            NotificationManagerCompat.from(ctx).notify(20261, notif)
+        } catch (_: Throwable) {}
+    }
+
+    fun cancelBackgroundNavNotification() {
+        lastBgNotifStep = ""
+        try {
+            NotificationManagerCompat.from(HTTNaviApp.instance).cancel(20261)
+        } catch (_: Throwable) {}
+    }
     val appVersion = "17/11/2026"
 
     fun appAuthorLabel(): String = when (_language.value) {
@@ -755,6 +835,7 @@ class AudioPlayerManager(
             _candidateRoutes.value = emptyList()
             _destinationCoord.value = null
             _isDemoSimulating.value = false
+            cancelBackgroundNavNotification()
             return
         }
 
@@ -788,6 +869,7 @@ class AudioPlayerManager(
             val distToManeuver = CoordinateConverter.distanceMeters(coord, step.maneuverLocation).toInt()
             _distanceToNextStepMeters.value = distToManeuver
             _currentStepInstruction.value = step.instruction
+            if (!isAppInForeground && _hasActiveNavigation.value) { postOrUpdateBackgroundNavNotification(forceAlert = false) }
             var futureDist = distToManeuver.toDouble()
             for (idx in (currentRouteStepIdx + 1) until steps.size) {
                 futureDist += steps[idx].distanceMeters
@@ -905,6 +987,7 @@ class AudioPlayerManager(
         _remainingRouteMinutes.value = 0
         _isDemoSimulating.value = false
         _isMapEnlarged.value = false
+        cancelBackgroundNavNotification()
     }
 
     fun triggerFastRecenter() {
