@@ -123,31 +123,7 @@ jobs:
           fi
 
           # 2.9 Ensure Info.plist always contains CarPlay & Multi-Scene manifest (even if repo Info.plist was stale)
-          python3 - <<'PYEOF'
-import plistlib
-p = "build/Release-iphoneos/KOnNaviCompanion.app/Info.plist"
-with open(p, "rb") as f:
-    d = plistlib.load(f)
-d["UISupportsCarPlay"] = True
-d["UIApplicationSceneManifest"] = {
-    "UIApplicationSupportsMultipleScenes": True,
-    "UISceneConfigurations": {
-        "CPTemplateApplicationSceneSessionRoleApplication": [{
-            "UISceneClassName": "CPTemplateApplicationScene",
-            "UISceneConfigurationName": "CarPlayConfiguration",
-            "UISceneDelegateClassName": "CarPlaySceneDelegate",
-        }],
-        "UIWindowSceneSessionRoleApplication": [{
-            "UISceneClassName": "UIWindowScene",
-            "UISceneConfigurationName": "Default Configuration",
-            "UISceneDelegateClassName": "PhoneSceneDelegate",
-        }],
-    },
-}
-with open(p, "wb") as f:
-    plistlib.dump(d, f, fmt=plistlib.FMT_BINARY)
-print("Injected CarPlay + Multi-Scene manifest into", p)
-PYEOF
+          python3 -c 'import plistlib; p="build/Release-iphoneos/KOnNaviCompanion.app/Info.plist"; d=plistlib.load(open(p,"rb")); d["UISupportsCarPlay"]=True; d["UIApplicationSceneManifest"]={"UIApplicationSupportsMultipleScenes":True,"UISceneConfigurations":{"CPTemplateApplicationSceneSessionRoleApplication":[{"UISceneClassName":"CPTemplateApplicationScene","UISceneConfigurationName":"CarPlayConfiguration","UISceneDelegateClassName":"CarPlaySceneDelegate"}],"UIWindowSceneSessionRoleApplication":[{"UISceneClassName":"UIWindowScene","UISceneConfigurationName":"Default Configuration","UISceneDelegateClassName":"PhoneSceneDelegate"}]}}; plistlib.dump(d,open(p,"wb"),fmt=plistlib.FMT_BINARY); print("Injected CarPlay + Multi-Scene manifest into", p)'
           otool -l build/Release-iphoneos/KOnNaviCompanion.app/Frameworks/llama.framework/llama 2>/dev/null | grep -A 5 "LC_BUILD_VERSION\|LC_VERSION_MIN" || true
 
           # 3. Ad-Hoc sign with entitlements (DO NOT strip binary after codesign, so both TrollStore and Sideloaders get an intact signature!)
