@@ -291,42 +291,61 @@ fun MusicLibrarySheetDialog(onDismiss: () -> Unit) {
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(10.dp))
-                                .background(if (isCur) SheetCrimson.copy(alpha = 0.35f) else SheetCardBg)
-                                .border(1.dp, if (isCur) SheetGold else Color.White.copy(alpha = 0.08f), RoundedCornerShape(10.dp))
+                                .background(if (isCur) SheetCrimson.copy(alpha = 0.32f) else SheetCardBg)
+                                .border(1.dp, if (isCur) SheetGold.copy(alpha = 0.7f) else Color.White.copy(alpha = 0.06f), RoundedCornerShape(10.dp))
                                 .clickable { musicMgr.playSong(song) }
-                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                                .padding(horizontal = 10.dp, vertical = 7.dp),
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.weight(1f)) {
+                            Text(
+                                String.format("%02d", song.trackNumber),
+                                color = if (isCur) SheetGold else Color.Gray,
+                                fontWeight = FontWeight.Bold,
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 11.sp,
+                                softWrap = false
+                            )
+                            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
                                 Text(
-                                    String.format("%02d", song.trackNumber),
-                                    color = SheetGold,
+                                    song.title,
+                                    color = if (isCur) SheetGold else Color.White,
                                     fontWeight = FontWeight.Bold,
-                                    fontFamily = FontFamily.Monospace,
-                                    fontSize = 12.sp
+                                    fontSize = 13.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
                                 )
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(song.title, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                        Text("${song.artist} · ${song.album}", color = Color.LightGray, fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                        Text(
-                                            if (song.isAvailable) "● 已就绪" else "○ 待导入",
-                                            color = if (song.isAvailable) Color(0xFF4CAF50) else Color(0xFFFF9800),
-                                            fontSize = 9.sp,
-                                            fontWeight = FontWeight.Bold
-                                        )
-                                    }
-                                }
+                                Text(
+                                    "${song.artist} · ${song.album}",
+                                    color = Color.LightGray,
+                                    fontSize = 10.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
                             }
                             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                Text(song.durationFormatted, color = SheetCream, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(6.dp))
+                                        .background(if (song.isAvailable) Color(0xFF4CAF50).copy(alpha = 0.16f) else Color(0xFFFF9800).copy(alpha = 0.14f))
+                                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                                ) {
+                                    Text(
+                                        if (song.isAvailable) "已就绪" else "待放入",
+                                        color = if (song.isAvailable) Color(0xFF4CAF50) else Color(0xFFFF9800),
+                                        fontSize = 9.5.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        maxLines = 1,
+                                        softWrap = false
+                                    )
+                                }
+                                Text(song.durationFormatted, color = SheetCream.copy(alpha = 0.8f), fontSize = 10.sp, fontFamily = FontFamily.Monospace, softWrap = false)
                                 if (song.localFilePath != null) {
                                     IconButton(
                                         onClick = { musicMgr.deleteSongFile(song) },
-                                        modifier = Modifier.size(24.dp)
+                                        modifier = Modifier.size(22.dp)
                                     ) {
-                                        Icon(Icons.Default.Delete, contentDescription = "移除", tint = Color(0xFFFF5252), modifier = Modifier.size(16.dp))
+                                        Icon(Icons.Default.Delete, contentDescription = "移除", tint = Color(0xFFFF5252), modifier = Modifier.size(15.dp))
                                     }
                                 }
                             }

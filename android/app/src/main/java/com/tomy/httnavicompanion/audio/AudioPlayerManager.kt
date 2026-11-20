@@ -1544,41 +1544,50 @@ class AudioPlayerManager(
     }
 
     private fun playAudioData(audioBytes: ByteArray) {
-        try {
-            requestAudioFocus()
-            HTTNaviApp.instance.musicManager.duckForVoice(true)
+        mainHandler.post {
+            try {
+                requestAudioFocus()
+                HTTNaviApp.instance.musicManager.duckForVoice(true)
 
-            val tempFile = File.createTempFile("htt_voice_", ".mp3", context.cacheDir)
-            FileOutputStream(tempFile).use { it.write(audioBytes) }
+                val tempFile = File.createTempFile("htt_voice_", ".mp3", context.cacheDir)
+                FileOutputStream(tempFile).use { it.write(audioBytes) }
 
-            mediaPlayer?.release()
-            mediaPlayer = MediaPlayer().apply {
-                setDataSource(tempFile.absolutePath)
-                setAudioAttributes(
-                    AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_ASSISTANCE_NAVIGATION_GUIDANCE)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                        .build()
-                )
-                setOnCompletionListener {
-                    tempFile.delete()
-                    if (voiceQueue.isNotEmpty()) {
-                        val next = voiceQueue.removeAt(0)
-                        playVoice(next.first, next.second, clearQueue = false)
-                    } else {
-                        _isPlaying.value = false
-                        _currentPlayingId.value = null
-                        HTTNaviApp.instance.musicManager.duckForVoice(false)
+                try { mediaPlayer?.stop() } catch (_: Exception) {}
+                try { mediaPlayer?.release() } catch (_: Exception) {}
+                mediaPlayer = MediaPlayer().apply {
+                    setDataSource(tempFile.absolutePath)
+                    setAudioAttributes(
+                        AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_MEDIA)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                            .build()
+                    )
+                    setOnCompletionListener {
+                        try { tempFile.delete() } catch (_: Exception) {}
+                        if (voiceQueue.isNotEmpty()) {
+                            val next = voiceQueue.removeAt(0)
+                            playVoice(next.first, next.second, clearQueue = false)
+                        } else {
+                            _isPlaying.value = false
+                            _currentPlayingId.value = null
+                            HTTNaviApp.instance.musicManager.duckForVoice(false)
+                        }
                     }
+                    setOnErrorListener { _, _, _ ->
+                        try { tempFile.delete() } catch (_: Exception) {}
+                        _isPlaying.value = false
+                        HTTNaviApp.instance.musicManager.duckForVoice(false)
+                        true
+                    }
+                    prepare()
+                    start()
                 }
-                prepare()
-                start()
+                _isPlaying.value = true
+            } catch (e: Exception) {
+                Log.e(TAG, "Error playing voice audio", e)
+                _isPlaying.value = false
+                HTTNaviApp.instance.musicManager.duckForVoice(false)
             }
-            _isPlaying.value = true
-        } catch (e: Exception) {
-            Log.e(TAG, "Error playing voice audio", e)
-            _isPlaying.value = false
-            HTTNaviApp.instance.musicManager.duckForVoice(false)
         }
     }
 
@@ -1587,7 +1596,7 @@ class AudioPlayerManager(
             val req = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
                 .setAudioAttributes(
                     AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_ASSISTANCE_NAVIGATION_GUIDANCE)
+                        .setUsage(AudioAttributes.USAGE_MEDIA)
                         .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                         .build()
                 )
