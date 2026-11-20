@@ -67,7 +67,9 @@ enum class KOnAITTSAccent(val label: String, val locale: Locale) {
 }
 
 
+@androidx.annotation.Keep
 interface LlamaTokenCallback {
+    @androidx.annotation.Keep
     fun onTokenBytes(utf8Bytes: ByteArray)
 }
 
@@ -383,6 +385,16 @@ class LocalLLMManager(
         _statusMessage.value = "正在挂载本地大模型 $fileName..."
         val ctxLen = if (_lowMemoryGuard.value || deviceTotalRamGB < 6.0) 768 else 1024
         val threads = Runtime.getRuntime().availableProcessors().coerceIn(2, 4)
+        val watchdog = Runnable {
+            if (_isGenerating.value) {
+                LlamaNativeBridge.nativeCancel()
+                _messages.value = _messages.value.map {
+                    if (it.id == msgId && it.text.isBlank()) it.copy(text = "本地模型响应超时，建议切换 1.5B/0.5B 或云端 API 试试看♪") else it
+                }
+                _isGenerating.value = false
+            }
+        }
+        mainHandler.postDelayed(watchdog, 28000L)
         llmExecutor.execute {
             var ok = false
             var errNote = ""
@@ -1070,6 +1082,7 @@ ${personaRole}你们五人组成了“放课后茶会”(HTT)乐队。你正坐�
                 ""
             }
             val finalText = out.ifEmpty { "嗯…我刚刚走神了一下，前辈可以再说一次吗？" }
+            mainHandler.removeCallbacks(watchdog)
             mainHandler.post {
                 _messages.value = _messages.value.map { if (it.id == msgId) it.copy(text = finalText) else it }
                 _isGenerating.value = false

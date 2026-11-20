@@ -4,6 +4,7 @@
 #include <atomic>
 #include <mutex>
 #include <algorithm>
+#include <chrono>
 #include <android/log.h>
 #include "llama.h"
 #include "ggml-backend.h"
@@ -150,15 +151,27 @@ Java_com_tomy_httnavicompanion_audio_LlamaNativeBridge_nativeGenerateBytes(
         return to_jbyte_array(env, "");
     }
 
-    int max_prompt = std::max(128, g_ctx_len - 96);
-    int total_prompt = std::min(n_tokens, max_prompt);
+    int max_prompt = std::max(128, g_ctx_len - 128);
+    if (n_tokens > max_prompt) {
+        int drop = n_tokens - max_prompt;
+        std::copy(tokens.begin() + drop, tokens.begin() + n_tokens, tokens.begin());
+        n_tokens = max_prompt;
+    }
+    int total_prompt = n_tokens;
 
     llama_kv_self_clear(g_ctx);
     llama_sampler_reset(g_smpl);
 
+    auto start_tp = std::chrono::steady_clock::now();
+    auto timed_out = [&]() {
+        return std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::steady_clock::now() - start_tp
+        ).count() >= 25;
+    };
+
     for (int off = 0; off < total_prompt; ) {
-        if (g_cancel.load()) break;
-        int step = std::min(128, total_prompt - off);
+        if (g_cancel.load() || timed_out()) break;
+        int step = std::min(64, total_prompt - off);
         llama_batch batch = llama_batch_get_one(tokens.data() + off, step);
         if (llama_decode(g_ctx, batch) != 0) {
             LOGE("llama_decode prompt failed at off=%d", off);
@@ -172,16 +185,20 @@ Java_com_tomy_httnavicompanion_audio_LlamaNativeBridge_nativeGenerateBytes(
         jclass cls = env->GetObjectClass(callback);
         if (cls) {
             onTokenBytesMethod = env->GetMethodID(cls, "onTokenBytes", "([B)V");
+            if (env->ExceptionCheck()) {
+                env->ExceptionClear();
+                onTokenBytesMethod = nullptr;
+            }
             env->DeleteLocalRef(cls);
         }
     }
 
     std::string accumulated;
     std::string utf8_pending;
-    int max_gen = std::min(160, std::max(32, g_ctx_len - total_prompt - 4));
+    int max_gen = std::min(128, std::max(32, g_ctx_len - total_prompt - 4));
 
     for (int i = 0; i < max_gen; ++i) {
-        if (g_cancel.load()) break;
+        if (g_cancel.load() || timed_out()) break;
         llama_token new_tok = llama_sampler_sample(g_smpl, g_ctx, -1);
         if (llama_vocab_is_eog(vocab, new_tok)) break;
 

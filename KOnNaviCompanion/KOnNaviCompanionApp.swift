@@ -27,6 +27,8 @@ class PhoneSceneDelegate: UIResponder, UIWindowSceneDelegate {
     }
 
     func sceneDidBecomeActive(_ scene: UIScene) {
+        window?.makeKey()
+        AudioPlayerManager.shared.isDraggingMascot = false
         AudioPlayerManager.shared.onAppBackgroundChanged(false)
         if AudioPlayerManager.shared.travelMode == .transit && AudioPlayerManager.shared.transitPlans.isEmpty {
             AudioPlayerManager.shared.refreshTransitPlansForCurrentLocation(force: false)
