@@ -11,6 +11,9 @@ struct KOnAIChatSheetView: View {
 
     @State private var selectedTab: Int = 0
     @State private var inputText: String = ""
+    @State private var apiKeyDraft: String = ""
+    @State private var baseUrlDraft: String = ""
+    @State private var modelNameDraft: String = ""
     @State private var showFileImporter: Bool = false
     @FocusState private var isInputFocused: Bool
 
@@ -106,7 +109,7 @@ struct KOnAIChatSheetView: View {
         VStack(spacing: 8) {
             // Live Context Bar (Character + Emotion + Speed + Music + Accent)
             HStack(spacing: 8) {
-                Text("[\(manager.selectedCharacter.displayName(.zhHans)) · \(llm.currentEmotionTag)]")
+                Text("[\(manager.selectedCharacter.displayName(.zhHans)) · \(llm.isCloudActive ? "☁️ " + llm.cloudProvider.label : "📱 本地")]")
                     .font(.system(size: 11, weight: .bold))
                     .foregroundColor(httGold)
                 Spacer()
@@ -272,6 +275,107 @@ struct KOnAIChatSheetView: View {
     private var modelManagerTabView: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
+                // Cloud API Key Card (Gemini / Doubao / DeepSeek / Custom)
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("☁️ 云端大模型 API Key（Gemini / 豆包 / DeepSeek）")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundColor(httGold)
+
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 6) {
+                            ForEach(CloudAIProvider.allCases) { prov in
+                                let selected = llm.cloudProvider == prov
+                                Button(action: {
+                                    llm.selectCloudProvider(prov)
+                                    baseUrlDraft = prov.defaultBaseUrl
+                                    modelNameDraft = prov.defaultModel
+                                }) {
+                                    Text(prov.label)
+                                        .font(.system(size: 11, weight: .bold))
+                                        .padding(.horizontal, 10)
+                                        .padding(.vertical, 6)
+                                        .background(selected ? httCrimson : Color.white.opacity(0.1))
+                                        .foregroundColor(.white)
+                                        .cornerRadius(8)
+                                }
+                            }
+                        }
+                    }
+
+                    if llm.cloudProvider != .local {
+                        TextField("填入 API Key", text: $apiKeyDraft)
+                            .textFieldStyle(.plain)
+                            .font(.system(size: 12))
+                            .foregroundColor(.white)
+                            .padding(8)
+                            .background(Color.black.opacity(0.35))
+                            .cornerRadius(8)
+                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold.opacity(0.4), lineWidth: 1))
+
+                        TextField("模型名 / 豆包接入点 ID (ep-...)", text: $modelNameDraft)
+                            .textFieldStyle(.plain)
+                            .font(.system(size: 12))
+                            .foregroundColor(.white)
+                            .padding(8)
+                            .background(Color.black.opacity(0.35))
+                            .cornerRadius(8)
+                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.2), lineWidth: 1))
+
+                        if llm.cloudProvider != .gemini {
+                            TextField("API Base URL", text: $baseUrlDraft)
+                                .textFieldStyle(.plain)
+                                .font(.system(size: 12))
+                                .foregroundColor(.white)
+                                .padding(8)
+                                .background(Color.black.opacity(0.35))
+                                .cornerRadius(8)
+                                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.2), lineWidth: 1))
+                        }
+
+                        HStack(spacing: 8) {
+                            Button(action: {
+                                dismissKeyboard()
+                                llm.saveCloudConfig(provider: llm.cloudProvider, apiKey: apiKeyDraft, baseUrl: baseUrlDraft, modelName: modelNameDraft)
+                            }) {
+                                Text("保存启用")
+                                    .font(.system(size: 12, weight: .bold))
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 8)
+                                    .background(Color(red: 0.18, green: 0.49, blue: 0.2))
+                                    .foregroundColor(.white)
+                                    .cornerRadius(8)
+                            }
+                            Button(action: {
+                                dismissKeyboard()
+                                llm.saveCloudConfig(provider: llm.cloudProvider, apiKey: apiKeyDraft, baseUrl: baseUrlDraft, modelName: modelNameDraft)
+                                llm.testCloudConnection()
+                            }) {
+                                Text("保存并测试连接")
+                                    .font(.system(size: 12, weight: .bold))
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 8)
+                                    .background(Color.blue.opacity(0.8))
+                                    .foregroundColor(.white)
+                                    .cornerRadius(8)
+                            }
+                        }
+
+                        if !llm.cloudTestStatus.isEmpty {
+                            Text(llm.cloudTestStatus)
+                                .font(.system(size: 11))
+                                .foregroundColor(httGold)
+                        }
+                    }
+                }
+                .padding(12)
+                .background(cardBg)
+                .cornerRadius(12)
+                .overlay(RoundedRectangle(cornerRadius: 12).stroke(httGold.opacity(0.35), lineWidth: 1))
+                .onAppear {
+                    apiKeyDraft = llm.cloudApiKey
+                    baseUrlDraft = llm.cloudBaseUrl
+                    modelNameDraft = llm.cloudModelName
+                }
                 // Status & Memory Guard Card
                 VStack(alignment: .leading, spacing: 6) {
                     HStack {

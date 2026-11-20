@@ -114,6 +114,46 @@ private final class LlamaWorkerThread {
 }
 
 // MARK: - K-ON! Real Local LLM Manager (llama.cpp Metal GPU + Co-Pilot Tools + Real Match History)
+enum CloudAIProvider: String, CaseIterable, Identifiable {
+    case local = "local"
+    case gemini = "gemini"
+    case doubao = "doubao"
+    case deepseek = "deepseek"
+    case custom = "custom"
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .local: return "本地 Qwen2.5"
+        case .gemini: return "Gemini"
+        case .doubao: return "豆包 Doubao"
+        case .deepseek: return "DeepSeek"
+        case .custom: return "自定义 OpenAI"
+        }
+    }
+
+    var defaultBaseUrl: String {
+        switch self {
+        case .local: return ""
+        case .gemini: return "https://generativelanguage.googleapis.com/v1beta"
+        case .doubao: return "https://ark.cn-beijing.volces.com/api/v3/chat/completions"
+        case .deepseek: return "https://api.deepseek.com/v1/chat/completions"
+        case .custom: return "https://api.openai.com/v1/chat/completions"
+        }
+    }
+
+    var defaultModel: String {
+        switch self {
+        case .local: return ""
+        case .gemini: return "gemini-2.5-flash"
+        case .doubao: return "doubao-1-5-pro-32k-250115"
+        case .deepseek: return "deepseek-chat"
+        case .custom: return "gpt-4o-mini"
+        }
+    }
+}
+
 final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDelegate {
     static let shared = KOnLocalLLMManager()
 
@@ -167,6 +207,11 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
     @Published var enableWebSearch: Bool = true
     @Published var ttsAccent: KOnAITTSAccent = .mandarin
     @Published var lowMemoryGuardEnabled: Bool = false
+    @Published var cloudProvider: CloudAIProvider = .local
+    @Published var cloudApiKey: String = ""
+    @Published var cloudBaseUrl: String = ""
+    @Published var cloudModelName: String = ""
+    @Published var cloudTestStatus: String = ""
     @Published var memories: [String] = []
     @Published var lastGameSummary: String = ""
 
@@ -222,6 +267,13 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
         super.init()
         loadPersistedMemories()
         activeModelFileName = UserDefaults.standard.string(forKey: activeModelKey) ?? ""
+        let savedProv = CloudAIProvider(rawValue: UserDefaults.standard.string(forKey: "htt_cloud_provider") ?? "local") ?? .local
+        cloudProvider = savedProv
+        cloudApiKey = UserDefaults.standard.string(forKey: "htt_cloud_api_key") ?? ""
+        let savedUrl = UserDefaults.standard.string(forKey: "htt_cloud_base_url") ?? ""
+        cloudBaseUrl = savedUrl.isEmpty ? savedProv.defaultBaseUrl : savedUrl
+        let savedModel = UserDefaults.standard.string(forKey: "htt_cloud_model_name") ?? ""
+        cloudModelName = savedModel.isEmpty ? savedProv.defaultModel : savedModel
         lastGameSummary = UserDefaults.standard.string(forKey: lastGameKey) ?? ""
         refreshInstalledModels()
         seedGreetingIfNeeded()
@@ -427,6 +479,31 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
         UserDefaults.standard.set(true, forKey: loadingGuardKey)
         UserDefaults.standard.set("1:backend_init", forKey: loadingStageKey)
         let ctxLen: UInt32 = (lowMemoryGuardEnabled || freeMB < 1400) ? 512 : 1024
+
+        if isCloudActive {
+            let prov = cloudProvider
+            let key = cloudApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+            let base = cloudBaseUrl
+            let model = cloudModelName
+            let histList = recent.map { ($0.isUser ? "user" : "assistant", String($0.text.prefix(300))) }
+            executeCloudLLMRequest(provider: prov, apiKey: key, baseUrl: base, modelName: model, systemPrompt: sysPrompt, history: histList, userPrompt: userPrompt) { [weak self] ok, reply in
+                DispatchQueue.main.async {
+                    guard let self = self else { return }
+                    let finalText = (ok && !reply.isEmpty) ? reply : "☁️ \(prov.label) 请求失败：\(reply)"
+                    if let pos = self.messages.firstIndex(where: { $0.id == msgId }) {
+                        self.messages[pos].text = finalText
+                        if self.messages[pos].actionHint == nil {
+                            self.messages[pos] = KOnAIChatMessage(id: msgId, isUser: false, speakerName: spk, speakerCharId: max(1, persona.charId), emotionTag: "开心", text: finalText, actionHint: "☁️ \(prov.label) (\(model))")
+                        }
+                    }
+                    self.isGenerating = false
+                    if ok && !reply.isEmpty {
+                        self.speakOfflineTTSOnly(finalText)
+                    }
+                }
+            }
+            return
+        }
 
         llmQueue.async { [weak self] in
             guard let self = self else { return }
@@ -690,6 +767,53 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
     }
 
     // MARK: - Main Chat Entry Point (Real Tools + Real llama.cpp Inference!)
+    var isCloudActive: Bool {
+        cloudProvider != .local && !cloudApiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    func selectCloudProvider(_ prov: CloudAIProvider) {
+        cloudProvider = prov
+        cloudBaseUrl = prov.defaultBaseUrl
+        cloudModelName = prov.defaultModel
+        cloudTestStatus = ""
+        UserDefaults.standard.set(prov.rawValue, forKey: "htt_cloud_provider")
+        UserDefaults.standard.set(prov.defaultBaseUrl, forKey: "htt_cloud_base_url")
+        UserDefaults.standard.set(prov.defaultModel, forKey: "htt_cloud_model_name")
+    }
+
+    func saveCloudConfig(provider: CloudAIProvider, apiKey: String, baseUrl: String, modelName: String) {
+        let cleanKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let finalProv: CloudAIProvider = (!cleanKey.isEmpty && provider == .local) ? .gemini : provider
+        let cleanUrl = baseUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? finalProv.defaultBaseUrl : baseUrl.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanModel = modelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? finalProv.defaultModel : modelName.trimmingCharacters(in: .whitespacesAndNewlines)
+        cloudProvider = finalProv
+        cloudApiKey = cleanKey
+        cloudBaseUrl = cleanUrl
+        cloudModelName = cleanModel
+        UserDefaults.standard.set(finalProv.rawValue, forKey: "htt_cloud_provider")
+        UserDefaults.standard.set(cleanKey, forKey: "htt_cloud_api_key")
+        UserDefaults.standard.set(cleanUrl, forKey: "htt_cloud_base_url")
+        UserDefaults.standard.set(cleanModel, forKey: "htt_cloud_model_name")
+        cloudTestStatus = (finalProv == .local) ? "已切换回本地离线模型" : "已保存 \(finalProv.label) 配置"
+    }
+
+    func testCloudConnection() {
+        guard cloudProvider != .local, !cloudApiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            cloudTestStatus = "请先选择 Gemini / 豆包 / DeepSeek 并填入 API Key"
+            return
+        }
+        let prov = cloudProvider
+        let key = cloudApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let base = cloudBaseUrl
+        let model = cloudModelName
+        cloudTestStatus = "正在测试 \(prov.label) 连接..."
+        executeCloudLLMRequest(provider: prov, apiKey: key, baseUrl: base, modelName: model, systemPrompt: "你是一个测试助手。", history: [], userPrompt: "请只回复：连接成功") { [weak self] ok, info in
+            DispatchQueue.main.async {
+                self?.cloudTestStatus = ok ? "✅ \(prov.label) 连接正常：\(info)" : "❌ 连接失败：\(info)"
+            }
+        }
+    }
+
     func sendUserMessage(_ rawText: String) {
         let text = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !isGenerating else { return }
@@ -810,7 +934,7 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
             let todaySum = todaySummaryText()
             let lastLine = lastGameSummary.isEmpty ? "暂无最近一局记录" : lastGameSummary
             let headerHint = "今日汇总：\(todaySum)"
-            if activeModelLoaded && hasNativeLlamaEngine {
+            if isCloudActive || (activeModelLoaded && hasNativeLlamaEngine) {
                 let recapPrompt = "今日放学后棋牌室战绩汇总：【\(todaySum)】；最近一局战绩：【\(lastLine)】。请先简明报出今日汇总和最后一局战绩，再用田井中律和秋山澪一唱一和的口吻点评两句（如果车友赢了就夸奖车友）。"
                 runRealLlamaInference(userPrompt: recapPrompt, persona: persona, speakerOverride: speakerName, actionHint: headerHint)
             } else {
@@ -829,7 +953,7 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
         }
 
         // 6. General Conversation & Real-Time Web Search RAG -> Real llama.cpp Inference!
-        if activeModelLoaded && hasNativeLlamaEngine {
+        if isCloudActive || (activeModelLoaded && hasNativeLlamaEngine) {
             if isWeatherQuery(lower) {
                 fetchLiveWeatherAndInfer(userText: text, persona: persona, manager: mgr)
             } else if enableWebSearch && shouldSearchWeb(for: lower) {
@@ -979,78 +1103,108 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
         return hits >= max(1, (bigrams.count + 1) / 2)
     }
 
+    private func cleanHtmlText(_ raw: String) -> String {
+        var t = raw.replacingOccurrences(of: #"<script[\s\S]*?</script>"#, with: " ", options: [.regularExpression, .caseInsensitive])
+        t = t.replacingOccurrences(of: #"<style[\s\S]*?</style>"#, with: " ", options: [.regularExpression, .caseInsensitive])
+        t = t.replacingOccurrences(of: #"<[^>]+>"#, with: " ", options: .regularExpression)
+        t = t.replacingOccurrences(of: "&nbsp;", with: " ")
+            .replacingOccurrences(of: "&quot;", with: "\"")
+            .replacingOccurrences(of: "&amp;", with: "&")
+            .replacingOccurrences(of: "&lt;", with: "<")
+            .replacingOccurrences(of: "&gt;", with: ">")
+        t = t.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+        return t.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     private func fetchWebSearchAndInfer(userText: String, persona: AudioPlayerManager.CharacterFilter) {
         let query = cleanSearchQueryForLookup(from: userText)
         let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? query
         let group = DispatchGroup()
         var baikeSnippets: [String] = []
+        var baiduSnippets: [String] = []
         var wikiSnippets: [String] = []
-        var bingSnippets: [String] = []
+        var sogouSnippets: [String] = []
         let lock = NSLock()
 
-        // 1. Baidu Baike OpenAPI (best for mainland Chinese entities & local specialties like 钟村三宝)
-        if let baikeApiURL = URL(string: "https://baike.baidu.com/api/openapi/BaikeLemmaCardApi?scope=103&format=json&appid=379020&bk_key=\(encoded)&bk_length=600") {
+        // 1. Baidu Baike item page (lemma-summary + meta description)
+        if let baikePageURL = URL(string: "https://baike.baidu.com/item/\(encoded)") {
             group.enter()
-            var req = URLRequest(url: baikeApiURL, timeoutInterval: 2.8)
-            req.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15", forHTTPHeaderField: "User-Agent")
+            var req = URLRequest(url: baikePageURL, timeoutInterval: 3.2)
+            req.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1", forHTTPHeaderField: "User-Agent")
+            req.setValue("zh-CN,zh;q=0.9", forHTTPHeaderField: "Accept-Language")
             URLSession.shared.dataTask(with: req) { [weak self] data, _, _ in
                 defer { group.leave() }
                 guard let self = self, let data = data,
-                      let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
-                let title = json["title"] as? String ?? query
-                let abs = (json["abstract"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-                if !abs.isEmpty && self.isRelevantSnippet(query: query, title: title, body: abs) {
+                      let html = String(data: data, encoding: .utf8),
+                      !html.contains("百度安全验证"), !html.contains("wappass.baidu.com") else { return }
+                var sumText = ""
+                if let r1 = try? NSRegularExpression(pattern: #"<div[^>]*class=["'][^"']*(?:lemma-summary|lemmaSummary)[^"']*["'][^>]*>([\s\S]*?)</div>"#, options: [.caseInsensitive]),
+                   let m1 = r1.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)),
+                   let range1 = Range(m1.range(at: 1), in: html) {
+                    sumText = self.cleanHtmlText(String(html[range1]))
+                }
+                var metaText = ""
+                if let r2 = try? NSRegularExpression(pattern: #"<meta\s+name=["']description["']\s+content=["']([^"']+)["']"#, options: [.caseInsensitive]),
+                   let m2 = r2.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)),
+                   let range2 = Range(m2.range(at: 1), in: html) {
+                    metaText = self.cleanHtmlText(String(html[range2]))
+                }
+                let best = (sumText.count >= metaText.count && sumText.count > 15) ? sumText : metaText
+                if best.count > 15 && self.isRelevantSnippet(query: query, title: query, body: best) {
                     lock.lock()
-                    baikeSnippets.append("【百度百科·\(title)】\(String(abs.prefix(280)))")
+                    baikeSnippets.append("【百度百科】\(String(best.prefix(320)))")
                     lock.unlock()
                 }
             }.resume()
         }
 
-        // 2. Baidu Baike HTML meta description fallback
-        if let baikePageURL = URL(string: "https://baike.baidu.com/item/\(encoded)") {
+        // 2. Baidu Mobile Search (m.baidu.com)
+        if let baiduURL = URL(string: "https://m.baidu.com/s?word=\(encoded)") {
             group.enter()
-            var req = URLRequest(url: baikePageURL, timeoutInterval: 2.8)
-            req.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15", forHTTPHeaderField: "User-Agent")
+            var req = URLRequest(url: baiduURL, timeoutInterval: 3.2)
+            req.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1", forHTTPHeaderField: "User-Agent")
+            req.setValue("zh-CN,zh;q=0.9", forHTTPHeaderField: "Accept-Language")
             URLSession.shared.dataTask(with: req) { [weak self] data, _, _ in
                 defer { group.leave() }
                 guard let self = self, let data = data,
-                      let html = String(data: data, encoding: .utf8) else { return }
-                if let regex = try? NSRegularExpression(pattern: #"<meta\s+name=["']description["']\s+content=["']([^"']+)["']"#, options: [.caseInsensitive]),
-                   let match = regex.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)),
-                   let r = Range(match.range(at: 1), in: html) {
-                    let desc = String(html[r]).trimmingCharacters(in: .whitespacesAndNewlines)
-                    if !desc.isEmpty && self.isRelevantSnippet(query: query, title: query, body: desc) {
-                        lock.lock()
-                        if baikeSnippets.isEmpty {
-                            baikeSnippets.append("【百度百科】\(String(desc.prefix(280)))")
+                      let html = String(data: data, encoding: .utf8),
+                      !html.contains("百度安全验证"), !html.contains("wappass.baidu.com") else { return }
+                if let regex = try? NSRegularExpression(pattern: #"<(?:div|span|p)[^>]*class=["'][^"']*(?:c-abstract|c-line-clamp|content|tts-text)[^"']*["'][^>]*>([\s\S]*?)</(?:div|span|p)>"#, options: [.caseInsensitive]) {
+                    let matches = regex.matches(in: html, range: NSRange(html.startIndex..., in: html))
+                    for m in matches {
+                        if let r = Range(m.range(at: 1), in: html) {
+                            let clean = self.cleanHtmlText(String(html[r]))
+                            if clean.count >= 20 && clean.count <= 400 && self.isRelevantSnippet(query: query, title: query, body: clean) {
+                                lock.lock()
+                                if baiduSnippets.count < 2 {
+                                    baiduSnippets.append("【百度搜索】\(String(clean.prefix(260)))")
+                                }
+                                lock.unlock()
+                            }
                         }
-                        lock.unlock()
                     }
                 }
             }.resume()
         }
 
-        // 3. Chinese Wikipedia (strictly filtered for relevance)
-        if let wikiURL = URL(string: "https://zh.wikipedia.org/w/api.php?action=query&list=search&srsearch=\(encoded)&format=json&utf8=1&srlimit=3") {
+        // 3. Chinese Wikipedia full intro extract
+        if let wikiURL = URL(string: "https://zh.wikipedia.org/w/api.php?action=query&prop=extracts&exintro=1&explaintext=1&redirects=1&titles=\(encoded)&format=json&utf8=1") {
             group.enter()
-            var req = URLRequest(url: wikiURL, timeoutInterval: 2.6)
+            var req = URLRequest(url: wikiURL, timeoutInterval: 2.8)
             req.setValue("HTT-NaviCompanion/1.6", forHTTPHeaderField: "User-Agent")
             URLSession.shared.dataTask(with: req) { [weak self] data, _, _ in
                 defer { group.leave() }
                 guard let self = self, let data = data,
                       let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                       let qObj = json["query"] as? [String: Any],
-                      let arr = qObj["search"] as? [[String: Any]] else { return }
-                for item in arr {
-                    let title = item["title"] as? String ?? ""
-                    let raw = item["snippet"] as? String ?? ""
-                    let clean = raw.replacingOccurrences(of: #"<[^>]+>"#, with: "", options: .regularExpression)
-                        .replacingOccurrences(of: "&quot;", with: "\"")
-                        .trimmingCharacters(in: .whitespacesAndNewlines)
-                    if !clean.isEmpty && self.isRelevantSnippet(query: query, title: title, body: clean) {
+                      let pages = qObj["pages"] as? [String: Any] else { return }
+                for (_, val) in pages {
+                    guard let page = val as? [String: Any] else { continue }
+                    let title = page["title"] as? String ?? ""
+                    let extract = (page["extract"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !extract.isEmpty && self.isRelevantSnippet(query: query, title: title, body: extract) {
                         lock.lock()
-                        wikiSnippets.append("【维基百科·\(title)】\(String(clean.prefix(220)))")
+                        wikiSnippets.append("【维基百科·\(title)】\(String(extract.prefix(300)))")
                         lock.unlock()
                         break
                     }
@@ -1058,29 +1212,27 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
             }.resume()
         }
 
-        // 4. Bing CN snippet fallback
-        if let bingURL = URL(string: "https://cn.bing.com/search?q=\(encoded)") {
+        // 4. Sogou Search fallback
+        if let sogouURL = URL(string: "https://www.sogou.com/web?query=\(encoded)") {
             group.enter()
-            var req = URLRequest(url: bingURL, timeoutInterval: 2.8)
+            var req = URLRequest(url: sogouURL, timeoutInterval: 2.8)
             req.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15", forHTTPHeaderField: "User-Agent")
             req.setValue("zh-CN,zh;q=0.9", forHTTPHeaderField: "Accept-Language")
             URLSession.shared.dataTask(with: req) { [weak self] data, _, _ in
                 defer { group.leave() }
                 guard let self = self, let data = data,
                       let html = String(data: data, encoding: .utf8) else { return }
-                if let regex = try? NSRegularExpression(pattern: #"<li class="b_algo"[\s\S]*?<p[^>]*>([\s\S]*?)</p>"#, options: []) {
+                if let regex = try? NSRegularExpression(pattern: #"<p[^>]*class=["'][^"']*star-wiki[^"']*["'][^>]*>([\s\S]*?)</p>|<div[^>]*class=["'][^"']*text-layout[^"']*["'][^>]*>([\s\S]*?)</div>"#, options: [.caseInsensitive]) {
                     let matches = regex.matches(in: html, range: NSRange(html.startIndex..., in: html))
                     for m in matches.prefix(2) {
-                        if let r = Range(m.range(at: 1), in: html) {
-                            let clean = String(html[r])
-                                .replacingOccurrences(of: #"<[^>]+>"#, with: "", options: .regularExpression)
-                                .replacingOccurrences(of: "&nbsp;", with: " ")
-                                .replacingOccurrences(of: "&quot;", with: "\"")
-                                .trimmingCharacters(in: .whitespacesAndNewlines)
-                            if clean.count > 15 && self.isRelevantSnippet(query: query, title: query, body: clean) {
+                        let r = Range(m.range(at: 1), in: html) ?? Range(m.range(at: 2), in: html)
+                        if let r = r {
+                            let clean = self.cleanHtmlText(String(html[r]))
+                            if clean.count > 20 && self.isRelevantSnippet(query: query, title: query, body: clean) {
                                 lock.lock()
-                                bingSnippets.append("【必应搜索】\(String(clean.prefix(220)))")
+                                sogouSnippets.append("【搜狗搜索】\(String(clean.prefix(260)))")
                                 lock.unlock()
+                                break
                             }
                         }
                     }
@@ -1090,16 +1242,28 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
 
         group.notify(queue: .main) { [weak self] in
             guard let self = self else { return }
-            let primary = !baikeSnippets.isEmpty ? baikeSnippets : (!wikiSnippets.isEmpty ? wikiSnippets : bingSnippets)
+            let primary = !baikeSnippets.isEmpty ? baikeSnippets : (!baiduSnippets.isEmpty ? baiduSnippets : (!wikiSnippets.isEmpty ? wikiSnippets : sogouSnippets))
             let combined = primary.joined(separator: "\n")
-            let webCtx = combined.isEmpty ? nil : String(combined.prefix(480))
-            self.runRealLlamaInference(
-                userPrompt: userText,
-                persona: persona,
-                speakerOverride: nil,
-                actionHint: webCtx != nil ? "🌐 已联网检索：\(query)" : "⚠️ 联网未命中确切词条，以下为本地推理",
-                webContext: webCtx
-            )
+            let webCtx = combined.isEmpty ? nil : String(combined.prefix(600))
+            if !self.isCloudActive(), let fact = webCtx {
+                // Local 1.5B: output verified search facts verbatim so it NEVER hallucinates wrong dates/places!
+                let reply = "\(fact)\n\n—— 已经按实时百科/搜索帮你查准啦，前辈还有哪里想了解吗？"
+                self.emitStreamedReply(
+                    speaker: persona.displayName(.zhHans),
+                    charId: max(1, persona.charId),
+                    emotion: "开心",
+                    text: reply,
+                    actionHint: "🌐 已联网检索：\(query)（百科直出 · 100% 依据原文）"
+                )
+            } else {
+                self.runRealLlamaInference(
+                    userPrompt: userText,
+                    persona: persona,
+                    speakerOverride: nil,
+                    actionHint: webCtx != nil ? "🌐 已联网检索：\(query)" : "⚠️ 联网未命中确切词条",
+                    webContext: webCtx
+                )
+            }
         }
     }
 
@@ -1434,5 +1598,101 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
         utt.rate = 0.51
         utt.pitchMultiplier = 1.12
         speechSynthesizer.speak(utt)
+    }
+
+    private func executeCloudLLMRequest(
+        provider: CloudAIProvider,
+        apiKey: String,
+        baseUrl: String,
+        modelName: String,
+        systemPrompt: String,
+        history: [(String, String)],
+        userPrompt: String,
+        completion: @escaping (Bool, String) -> Void
+    ) {
+        let model = modelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? provider.defaultModel : modelName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if provider == .gemini {
+            let base = baseUrl.trimmingCharacters(in: .whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            let finalBase = base.isEmpty ? provider.defaultBaseUrl : base
+            let encKey = apiKey.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? apiKey
+            guard let url = URL(string: "\(finalBase)/models/\(model):generateContent?key=\(encKey)") else {
+                completion(false, "无效的 Gemini URL")
+                return
+            }
+            var contents: [[String: Any]] = history.map { (role, text) in
+                ["role": role == "user" ? "user" : "model", "parts": [["text": text]]]
+            }
+            contents.append(["role": "user", "parts": [["text": userPrompt]]])
+            let payload: [String: Any] = [
+                "systemInstruction": ["parts": [["text": systemPrompt]]],
+                "contents": contents,
+                "generationConfig": ["temperature": 0.6, "maxOutputTokens": 512]
+            ]
+            var req = URLRequest(url: url, timeoutInterval: 20.0)
+            req.httpMethod = "POST"
+            req.setValue("application/json; charset=UTF-8", forHTTPHeaderField: "Content-Type")
+            req.httpBody = try? JSONSerialization.data(withJSONObject: payload)
+            URLSession.shared.dataTask(with: req) { data, resp, err in
+                if let err = err { completion(false, err.localizedDescription); return }
+                let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+                guard let data = data,
+                      let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                    completion(false, "HTTP \(code) 响应解析失败")
+                    return
+                }
+                if code < 200 || code >= 300 {
+                    let msg = (json["error"] as? [String: Any])?["message"] as? String ?? "HTTP \(code)"
+                    completion(false, msg)
+                    return
+                }
+                let candidates = json["candidates"] as? [[String: Any]]
+                let parts = (candidates?.first?["content"] as? [String: Any])?["parts"] as? [[String: Any]]
+                let text = (parts?.first?["text"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                completion(!text.isEmpty, text.isEmpty ? "Gemini 返回为空" : text)
+            }.resume()
+        } else {
+            var endpoint = baseUrl.trimmingCharacters(in: .whitespacesAndNewlines)
+            if endpoint.isEmpty { endpoint = provider.defaultBaseUrl }
+            if !endpoint.hasSuffix("/chat/completions") {
+                endpoint = endpoint.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + "/chat/completions"
+            }
+            guard let url = URL(string: endpoint) else {
+                completion(false, "无效的 API URL")
+                return
+            }
+            var msgs: [[String: Any]] = [["role": "system", "content": systemPrompt]]
+            for (role, text) in history {
+                msgs.append(["role": role, "content": text])
+            }
+            msgs.append(["role": "user", "content": userPrompt])
+            let payload: [String: Any] = [
+                "model": model,
+                "messages": msgs,
+                "temperature": 0.6,
+                "max_tokens": 512
+            ]
+            var req = URLRequest(url: url, timeoutInterval: 20.0)
+            req.httpMethod = "POST"
+            req.setValue("application/json; charset=UTF-8", forHTTPHeaderField: "Content-Type")
+            req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+            req.httpBody = try? JSONSerialization.data(withJSONObject: payload)
+            URLSession.shared.dataTask(with: req) { data, resp, err in
+                if let err = err { completion(false, err.localizedDescription); return }
+                let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+                guard let data = data,
+                      let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                    completion(false, "HTTP \(code) 响应解析失败")
+                    return
+                }
+                if code < 200 || code >= 300 {
+                    let msg = (json["error"] as? [String: Any])?["message"] as? String ?? "HTTP \(code)"
+                    completion(false, msg)
+                    return
+                }
+                let choices = json["choices"] as? [[String: Any]]
+                let text = ((choices?.first?["message"] as? [String: Any])?["content"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                completion(!text.isEmpty, text.isEmpty ? "云端返回为空" : text)
+            }.resume()
+        }
     }
 }

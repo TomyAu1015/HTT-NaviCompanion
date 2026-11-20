@@ -37,6 +37,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.tomy.httnavicompanion.HTTNaviApp
 import com.tomy.httnavicompanion.audio.AppLanguage
+import com.tomy.httnavicompanion.audio.CloudAIProvider
 import com.tomy.httnavicompanion.audio.LocalLLMManager
 
 private val AiCrimson = Color(0xFFA61E2E)
@@ -68,6 +69,14 @@ fun LocalAIChatSheetDialog(
     val webOn by llm.enableWebSearch.collectAsState()
     val accent by llm.ttsAccent.collectAsState()
     val lowMemGuard by llm.lowMemoryGuard.collectAsState()
+    val cloudProvider by llm.cloudProvider.collectAsState()
+    val cloudApiKey by llm.cloudApiKey.collectAsState()
+    val cloudBaseUrl by llm.cloudBaseUrl.collectAsState()
+    val cloudModelName by llm.cloudModelName.collectAsState()
+    val cloudTestStatus by llm.cloudTestStatus.collectAsState()
+    var keyDraft by remember(cloudApiKey) { mutableStateOf(cloudApiKey) }
+    var urlDraft by remember(cloudBaseUrl) { mutableStateOf(cloudBaseUrl) }
+    var modelDraft by remember(cloudModelName) { mutableStateOf(cloudModelName) }
     val memories by llm.memories.collectAsState()
     val speedKmh by manager.currentSpeedKmh.collectAsState()
     val selectedChar by manager.selectedCharacter.collectAsState()
@@ -179,8 +188,9 @@ fun LocalAIChatSheetDialog(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
+                        val engineLabel = if (cloudProvider != CloudAIProvider.LOCAL && cloudApiKey.isNotBlank()) "☁️ ${cloudProvider.label}" else "📱 本地"
                         Text(
-                            "[${selectedChar.displayName(AppLanguage.ZH_HANS)} · $emotionTag]",
+                            "[${selectedChar.displayName(AppLanguage.ZH_HANS)} · $engineLabel]",
                             color = AiGold,
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Bold
@@ -324,6 +334,111 @@ fun LocalAIChatSheetDialog(
                         modifier = Modifier.weight(1f).verticalScroll(rememberScrollState()),
                         verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
+                        // Cloud API Key Card (Gemini / Doubao / DeepSeek / Custom)
+                        Column(
+                            modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(AiCardBg).border(1.dp, AiGold.copy(alpha = 0.4f), RoundedCornerShape(12.dp)).padding(10.dp),
+                            verticalArrangement = Arrangement.spacedBy(7.dp)
+                        ) {
+                            Text("☁️ 云端大模型 API Key（Gemini / 豆包 / DeepSeek）", color = AiGold, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            Row(
+                                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                CloudAIProvider.values().forEach { prov ->
+                                    val selected = cloudProvider == prov
+                                    Box(
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(if (selected) AiCrimson else Color.White.copy(alpha = 0.1f))
+                                            .clickable {
+                                                llm.selectCloudProvider(prov)
+                                                urlDraft = prov.defaultBaseUrl
+                                                modelDraft = prov.defaultModel
+                                            }
+                                            .padding(horizontal = 9.dp, vertical = 5.dp)
+                                    ) {
+                                        Text(prov.label, color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                    }
+                                }
+                            }
+                            if (cloudProvider != CloudAIProvider.LOCAL) {
+                                OutlinedTextField(
+                                    value = keyDraft,
+                                    onValueChange = { keyDraft = it },
+                                    label = { Text("API Key", color = Color.LightGray, fontSize = 11.sp) },
+                                    singleLine = true,
+                                    modifier = Modifier.fillMaxWidth(),
+                                    colors = OutlinedTextFieldDefaults.colors(
+                                        focusedTextColor = Color.White,
+                                        unfocusedTextColor = Color.White,
+                                        focusedBorderColor = AiGold,
+                                        unfocusedBorderColor = Color.Gray
+                                    )
+                                )
+                                OutlinedTextField(
+                                    value = modelDraft,
+                                    onValueChange = { modelDraft = it },
+                                    label = { Text("模型名 / 豆包接入点 ID (ep-...)", color = Color.LightGray, fontSize = 11.sp) },
+                                    singleLine = true,
+                                    modifier = Modifier.fillMaxWidth(),
+                                    colors = OutlinedTextFieldDefaults.colors(
+                                        focusedTextColor = Color.White,
+                                        unfocusedTextColor = Color.White,
+                                        focusedBorderColor = AiGold,
+                                        unfocusedBorderColor = Color.Gray
+                                    )
+                                )
+                                if (cloudProvider != CloudAIProvider.GEMINI) {
+                                    OutlinedTextField(
+                                        value = urlDraft,
+                                        onValueChange = { urlDraft = it },
+                                        label = { Text("API Base URL", color = Color.LightGray, fontSize = 11.sp) },
+                                        singleLine = true,
+                                        modifier = Modifier.fillMaxWidth(),
+                                        colors = OutlinedTextFieldDefaults.colors(
+                                            focusedTextColor = Color.White,
+                                            unfocusedTextColor = Color.White,
+                                            focusedBorderColor = AiGold,
+                                            unfocusedBorderColor = Color.Gray
+                                        )
+                                    )
+                                }
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Box(
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(Color(0xFF2E7D32))
+                                            .clickable {
+                                                hideKb()
+                                                llm.saveCloudConfig(cloudProvider, keyDraft, urlDraft, modelDraft)
+                                            }
+                                            .padding(vertical = 8.dp),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Text("保存启用", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                    }
+                                    Box(
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(Color(0xFF1565C0))
+                                            .clickable {
+                                                hideKb()
+                                                llm.saveCloudConfig(cloudProvider, keyDraft, urlDraft, modelDraft)
+                                                llm.testCloudConnection()
+                                            }
+                                            .padding(vertical = 8.dp),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Text("保存并测试连接", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                    }
+                                }
+                                if (cloudTestStatus.isNotBlank()) {
+                                    Text(cloudTestStatus, color = AiGold, fontSize = 11.sp)
+                                }
+                            }
+                        }
                         Column(
                             modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(AiCardBg).padding(10.dp),
                             verticalArrangement = Arrangement.spacedBy(5.dp)

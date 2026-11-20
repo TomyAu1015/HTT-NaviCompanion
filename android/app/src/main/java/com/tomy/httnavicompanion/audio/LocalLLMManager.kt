@@ -75,6 +75,23 @@ object LlamaNativeBridge {
     external fun nativeGenerate(prompt: String, callback: LlamaTokenCallback?): String
 }
 
+enum class CloudAIProvider(
+    val id: String,
+    val label: String,
+    val defaultBaseUrl: String,
+    val defaultModel: String
+) {
+    LOCAL("local", "本地 Qwen2.5", "", ""),
+    GEMINI("gemini", "Gemini", "https://generativelanguage.googleapis.com/v1beta", "gemini-2.5-flash"),
+    DOUBAO("doubao", "豆包 Doubao", "https://ark.cn-beijing.volces.com/api/v3/chat/completions", "doubao-1-5-pro-32k-250115"),
+    DEEPSEEK("deepseek", "DeepSeek", "https://api.deepseek.com/v1/chat/completions", "deepseek-chat"),
+    CUSTOM("custom", "自定义 OpenAI", "https://api.openai.com/v1/chat/completions", "gpt-4o-mini");
+
+    companion object {
+        fun fromId(id: String?): CloudAIProvider = values().firstOrNull { it.id == id } ?: LOCAL
+    }
+}
+
 class LocalLLMManager(
     private val context: Context,
     private val audioManager: AudioPlayerManager,
@@ -162,6 +179,24 @@ class LocalLLMManager(
     private val _lowMemoryGuard = MutableStateFlow(false)
     val lowMemoryGuard: StateFlow<Boolean> = _lowMemoryGuard
 
+    private val _isLoadingModel = MutableStateFlow(false)
+    val isLoadingModel: StateFlow<Boolean> = _isLoadingModel
+
+    private val _cloudProvider = MutableStateFlow(CloudAIProvider.LOCAL)
+    val cloudProvider: StateFlow<CloudAIProvider> = _cloudProvider
+
+    private val _cloudApiKey = MutableStateFlow("")
+    val cloudApiKey: StateFlow<String> = _cloudApiKey
+
+    private val _cloudBaseUrl = MutableStateFlow("")
+    val cloudBaseUrl: StateFlow<String> = _cloudBaseUrl
+
+    private val _cloudModelName = MutableStateFlow("")
+    val cloudModelName: StateFlow<String> = _cloudModelName
+
+    private val _cloudTestStatus = MutableStateFlow("")
+    val cloudTestStatus: StateFlow<String> = _cloudTestStatus
+
     private val _memories = MutableStateFlow<List<String>>(emptyList())
     val memories: StateFlow<List<String>> = _memories
 
@@ -216,6 +251,11 @@ class LocalLLMManager(
         get() = File(context.filesDir, "local_models").apply { if (!exists()) mkdirs() }
 
     init {
+        val savedProv = CloudAIProvider.fromId(prefs.getString("cloud_provider", "local"))
+        _cloudProvider.value = savedProv
+        _cloudApiKey.value = prefs.getString("cloud_api_key", "") ?: ""
+        _cloudBaseUrl.value = prefs.getString("cloud_base_url", savedProv.defaultBaseUrl)?.ifBlank { savedProv.defaultBaseUrl } ?: savedProv.defaultBaseUrl
+        _cloudModelName.value = prefs.getString("cloud_model_name", savedProv.defaultModel)?.ifBlank { savedProv.defaultModel } ?: savedProv.defaultModel
         loadMemories()
         refreshInstalledModels()
         seedGreetingIfNeeded()
@@ -317,6 +357,29 @@ class LocalLLMManager(
         _statusMessage.value = "正在挂载本地大模型 $fileName..."
         val ctxLen = if (_lowMemoryGuard.value || deviceTotalRamGB < 6.0) 768 else 1024
         val threads = Runtime.getRuntime().availableProcessors().coerceIn(2, 6)
+        if (isCloudActive()) {
+            val prov = _cloudProvider.value
+            val key = _cloudApiKey.value.trim()
+            val base = _cloudBaseUrl.value
+            val model = _cloudModelName.value
+            val histList = history.map { (if (it.isUser) "user" else "assistant") to it.text.take(300) }
+            Thread {
+                val (ok, reply) = executeCloudLLMRequest(prov, key, base, model, sysPrompt, histList, userPrompt)
+                mainHandler.post {
+                    val finalText = if (ok && reply.isNotBlank()) reply else "☁️ ${prov.label} 请求失败：$reply"
+                    _messages.value = _messages.value.map { it ->
+                        if (it.id == msgId) it.copy(
+                            text = finalText,
+                            actionHint = it.actionHint ?: "☁️ ${prov.label} ($model)"
+                        ) else it
+                    }
+                    _isGenerating.value = false
+                    if (ok && reply.isNotBlank()) speakOfflineTTS(reply)
+                }
+            }.start()
+            return
+        }
+
         llmExecutor.execute {
             val ok = LlamaNativeBridge.nativeLoadModel(f.absolutePath, ctxLen, threads)
             mainHandler.post {
@@ -491,6 +554,63 @@ class LocalLLMManager(
     private fun activePersona(filter: CharacterFilter): CharacterFilter =
         if (filter == CharacterFilter.ALL) CharacterFilter.YUI else filter
 
+    fun selectCloudProvider(provider: CloudAIProvider) {
+        _cloudProvider.value = provider
+        _cloudBaseUrl.value = provider.defaultBaseUrl
+        _cloudModelName.value = provider.defaultModel
+        _cloudTestStatus.value = ""
+        prefs.edit()
+            .putString("cloud_provider", provider.id)
+            .putString("cloud_base_url", provider.defaultBaseUrl)
+            .putString("cloud_model_name", provider.defaultModel)
+            .apply()
+    }
+
+    fun saveCloudConfig(provider: CloudAIProvider, apiKey: String, baseUrl: String, modelName: String) {
+        val cleanKey = apiKey.trim()
+        val finalProv = if (cleanKey.isNotEmpty() && provider == CloudAIProvider.LOCAL) CloudAIProvider.GEMINI else provider
+        val cleanUrl = baseUrl.trim().ifEmpty { finalProv.defaultBaseUrl }
+        val cleanModel = modelName.trim().ifEmpty { finalProv.defaultModel }
+        _cloudProvider.value = finalProv
+        _cloudApiKey.value = cleanKey
+        _cloudBaseUrl.value = cleanUrl
+        _cloudModelName.value = cleanModel
+        prefs.edit()
+            .putString("cloud_provider", finalProv.id)
+            .putString("cloud_api_key", cleanKey)
+            .putString("cloud_base_url", cleanUrl)
+            .putString("cloud_model_name", cleanModel)
+            .apply()
+        _cloudTestStatus.value = if (finalProv == CloudAIProvider.LOCAL) "已切换回本地离线模型" else "已保存 ${finalProv.label} 配置"
+    }
+
+    fun testCloudConnection() {
+        val prov = _cloudProvider.value
+        val key = _cloudApiKey.value.trim()
+        if (prov == CloudAIProvider.LOCAL || key.isEmpty()) {
+            _cloudTestStatus.value = "请先选择 Gemini / 豆包 / DeepSeek 并填入 API Key"
+            return
+        }
+        _cloudTestStatus.value = "正在测试 ${prov.label} 连接..."
+        Thread {
+            val (ok, info) = executeCloudLLMRequest(
+                provider = prov,
+                apiKey = key,
+                baseUrl = _cloudBaseUrl.value,
+                modelName = _cloudModelName.value,
+                systemPrompt = "你是一个测试助手。",
+                history = emptyList(),
+                userPrompt = "请只回复：连接成功"
+            )
+            mainHandler.post {
+                _cloudTestStatus.value = if (ok) "✅ ${prov.label} 连接正常：$info" else "❌ 连接失败：$info"
+            }
+        }.start()
+    }
+
+    private fun isCloudActive(): Boolean =
+        _cloudProvider.value != CloudAIProvider.LOCAL && _cloudApiKey.value.trim().isNotEmpty()
+
     fun sendUserMessage(rawText: String) {
         val text = rawText.trim()
         if (text.isEmpty() || _isGenerating.value) return
@@ -522,7 +642,7 @@ class LocalLLMManager(
         val isRecap = text.lowercase().let { it.contains("复盘") || it.contains("吐槽") || it.contains("牌局") || it.contains("战绩") }
         val speaker = if (isAllFive && isRecap) "田井中律 & 秋山澪" else persona.displayName(AppLanguage.ZH_HANS)
 
-        if (_activeModelLoaded.value && LlamaNativeBridge.isAvailable) {
+        if (isCloudActive() || (_activeModelLoaded.value && LlamaNativeBridge.isAvailable)) {
             val lower = text.lowercase()
             if (isRecap) {
                 val todaySum = todaySummaryText()
@@ -538,10 +658,10 @@ class LocalLLMManager(
             }
         } else {
             val savedName = _activeModelFileName.value
-            val savedFile = if (savedName.isNotEmpty()) File(modelsDir(), savedName) else null
+            val savedFile = if (savedName.isNotEmpty()) File(modelsDir, savedName) else null
             if (LlamaNativeBridge.isAvailable && savedFile != null && savedFile.exists()) {
                 if (!_isLoadingModel.value) {
-                    mountModel(savedName)
+                    loadModelIntoMemory(savedName)
                 }
                 Thread {
                     var waited = 0
@@ -565,7 +685,7 @@ class LocalLLMManager(
                     }
                 }.start()
             } else {
-                val fallback = "当前还未挂载本地大模型，请点击上方「本地模型与记忆」下载并挂载 Qwen2.5 模型，这样我就能自由回答你的各种问题啦！"
+                val fallback = "当前未挂载本地模型且未配置云端 API Key。请在「本地模型与记忆」挂载 Qwen2.5，或填入 Gemini / 豆包 API Key！"
                 streamStaticReply(speaker, "开心", fallback, null)
             }
         }
@@ -681,101 +801,136 @@ class LocalLLMManager(
         return hits >= maxOf(1, (bigrams.size + 1) / 2)
     }
 
+    private fun cleanHtmlText(raw: String): String =
+        raw.replace(Regex("<script[\\s\\S]*?</script>", RegexOption.IGNORE_CASE), " ")
+            .replace(Regex("<style[\\s\\S]*?</style>", RegexOption.IGNORE_CASE), " ")
+            .replace(Regex("<[^>]+>"), " ")
+            .replace("&nbsp;", " ")
+            .replace("&quot;", "\"")
+            .replace("&amp;", "&")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace(Regex("\\s+"), " ")
+            .trim()
+
     private fun fetchWebSearchAndInfer(userText: String, persona: CharacterFilter, speaker: String) {
         val query = cleanSearchQueryForLookup(userText)
         Thread {
             val snippets = mutableListOf<String>()
             val enc = URLEncoder.encode(query, "UTF-8")
 
-            // 1. Baidu Baike OpenAPI (best for mainland Chinese entities & local specialties like 钟村三宝)
+            // 1. Baidu Baike item page (meta description + lemma-summary)
             try {
-                val conn = (URL("https://baike.baidu.com/api/openapi/BaikeLemmaCardApi?scope=103&format=json&appid=379020&bk_key=$enc&bk_length=600").openConnection() as HttpURLConnection).apply {
-                    connectTimeout = 2800
-                    readTimeout = 2800
-                    setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36")
+                val conn = (URL("https://baike.baidu.com/item/$enc").openConnection() as HttpURLConnection).apply {
+                    connectTimeout = 3200
+                    readTimeout = 3200
+                    instanceFollowRedirects = true
+                    setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 Chrome/126.0.0.0 Mobile Safari/537.36")
+                    setRequestProperty("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+                    setRequestProperty("Accept-Language", "zh-CN,zh;q=0.9")
                 }
-                val body = conn.inputStream.bufferedReader().readText()
+                val html = conn.inputStream.bufferedReader(Charsets.UTF_8).readText()
                 conn.disconnect()
-                val json = JSONObject(body)
-                val title = json.optString("title", query)
-                val abs = json.optString("abstract", "").trim()
-                if (abs.isNotEmpty() && isRelevantSnippet(query, title, abs)) {
-                    snippets.add("【百度百科·$title】${abs.take(280)}")
+                if (!html.contains("百度安全验证") && !html.contains("wappass.baidu.com")) {
+                    val sumMatch = Regex("""<div[^>]*class=["'][^"']*lemma-summary[^"']*["'][^>]*>([\s\S]*?)</div>\s*</div>""", RegexOption.IGNORE_CASE).find(html)
+                        ?: Regex("""<div[^>]*class=["'][^"']*lemmaSummary[^"']*["'][^>]*>([\s\S]*?)</div>""", RegexOption.IGNORE_CASE).find(html)
+                    val sumText = sumMatch?.groupValues?.getOrNull(1)?.let { cleanHtmlText(it) } ?: ""
+                    val metaMatch = Regex("""<meta\s+name=["']description["']\s+content=["']([^"']+)["']""", RegexOption.IGNORE_CASE).find(html)
+                        ?: Regex("""<meta\s+content=["']([^"']+)["']\s+name=["']description["']""", RegexOption.IGNORE_CASE).find(html)
+                    val metaText = metaMatch?.groupValues?.getOrNull(1)?.let { cleanHtmlText(it) } ?: ""
+                    val best = if (sumText.length >= metaText.length && sumText.length > 15) sumText else metaText
+                    if (best.length > 15 && isRelevantSnippet(query, query, best)) {
+                        snippets.add("【百度百科】${best.take(320)}")
+                    }
                 }
             } catch (_: Throwable) {}
 
-            // 2. Baidu Baike HTML meta description fallback
+            // 2. Baidu Mobile Search (m.baidu.com)
             if (snippets.isEmpty()) {
                 try {
-                    val conn = (URL("https://baike.baidu.com/item/$enc").openConnection() as HttpURLConnection).apply {
-                        connectTimeout = 2800
-                        readTimeout = 2800
+                    val conn = (URL("https://m.baidu.com/s?word=$enc").openConnection() as HttpURLConnection).apply {
+                        connectTimeout = 3200
+                        readTimeout = 3200
                         instanceFollowRedirects = true
-                        setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36")
+                        setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 Chrome/126.0.0.0 Mobile Safari/537.36")
+                        setRequestProperty("Accept-Language", "zh-CN,zh;q=0.9")
                     }
-                    val html = conn.inputStream.bufferedReader().readText()
+                    val html = conn.inputStream.bufferedReader(Charsets.UTF_8).readText()
                     conn.disconnect()
-                    val m = Regex("""<meta\s+name=["']description["']\s+content=["']([^"']+)["']""", RegexOption.IGNORE_CASE).find(html)
-                    val desc = m?.groupValues?.getOrNull(1)?.trim() ?: ""
-                    if (desc.isNotEmpty() && isRelevantSnippet(query, query, desc)) {
-                        snippets.add("【百度百科】${desc.take(280)}")
+                    if (!html.contains("百度安全验证") && !html.contains("wappass.baidu.com")) {
+                        val matches = Regex("""<(?:div|span|p)[^>]*class=["'][^"']*(?:c-abstract|c-line-clamp|content|tts-text)[^"']*["'][^>]*>([\s\S]*?)</(?:div|span|p)>""", RegexOption.IGNORE_CASE).findAll(html)
+                        for (m in matches) {
+                            val clean = cleanHtmlText(m.groupValues[1])
+                            if (clean.length in 20..400 && isRelevantSnippet(query, query, clean)) {
+                                snippets.add("【百度搜索】${clean.take(260)}")
+                                if (snippets.size >= 2) break
+                            }
+                        }
                     }
                 } catch (_: Throwable) {}
             }
 
-            // 3. Chinese Wikipedia (strictly filtered for relevance)
-            try {
-                val conn = (URL("https://zh.wikipedia.org/w/api.php?action=query&list=search&srsearch=$enc&format=json&utf8=1&srlimit=3").openConnection() as HttpURLConnection).apply {
-                    connectTimeout = 2600
-                    readTimeout = 2600
-                    setRequestProperty("User-Agent", "HTT-NaviCompanion/1.6")
-                }
-                val body = conn.inputStream.bufferedReader().readText()
-                conn.disconnect()
-                val arr = JSONObject(body).optJSONObject("query")?.optJSONArray("search")
-                if (arr != null) {
-                    for (i in 0 until arr.length()) {
-                        val item = arr.optJSONObject(i) ?: continue
-                        val title = item.optString("title", "")
-                        val clean = item.optString("snippet", "").replace(Regex("<[^>]+>"), "").replace("&quot;", "\"").trim()
-                        if (clean.isNotEmpty() && isRelevantSnippet(query, title, clean)) {
-                            snippets.add("【维基百科·$title】${clean.take(220)}")
+            // 3. Chinese Wikipedia full intro extract (with redirects=1)
+            if (snippets.isEmpty()) {
+                try {
+                    val conn = (URL("https://zh.wikipedia.org/w/api.php?action=query&prop=extracts&exintro=1&explaintext=1&redirects=1&titles=$enc&format=json&utf8=1").openConnection() as HttpURLConnection).apply {
+                        connectTimeout = 2800
+                        readTimeout = 2800
+                        setRequestProperty("User-Agent", "HTT-NaviCompanion/1.6")
+                    }
+                    val body = conn.inputStream.bufferedReader(Charsets.UTF_8).readText()
+                    conn.disconnect()
+                    val pages = JSONObject(body).optJSONObject("query")?.optJSONObject("pages")
+                    val keys = pages?.keys()
+                    while (keys != null && keys.hasNext()) {
+                        val page = pages.optJSONObject(keys.next()) ?: continue
+                        val title = page.optString("title", "")
+                        val extract = page.optString("extract", "").trim()
+                        if (extract.isNotEmpty() && isRelevantSnippet(query, title, extract)) {
+                            snippets.add("【维基百科·$title】${extract.take(300)}")
                             break
                         }
                     }
-                }
-            } catch (_: Throwable) {}
+                } catch (_: Throwable) {}
+            }
 
-            // 4. Bing CN snippet fallback when Baike & Wiki both miss
+            // 4. Sogou Search fallback
             if (snippets.isEmpty()) {
                 try {
-                    val conn = (URL("https://cn.bing.com/search?q=$enc").openConnection() as HttpURLConnection).apply {
+                    val conn = (URL("https://www.sogou.com/web?query=$enc").openConnection() as HttpURLConnection).apply {
                         connectTimeout = 2800
                         readTimeout = 2800
-                        setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36")
+                        setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/126.0.0.0 Safari/537.36")
                         setRequestProperty("Accept-Language", "zh-CN,zh;q=0.9")
                     }
-                    val html = conn.inputStream.bufferedReader().readText()
+                    val html = conn.inputStream.bufferedReader(Charsets.UTF_8).readText()
                     conn.disconnect()
-                    val matches = Regex("""<li class="b_algo"[\s\S]*?<p[^>]*>([\s\S]*?)</p>""").findAll(html)
-                    for (m in matches.take(2)) {
-                        val clean = m.groupValues[1].replace(Regex("<[^>]+>"), "").replace("&nbsp;", " ").replace("&quot;", "\"").trim()
-                        if (clean.length > 15 && isRelevantSnippet(query, query, clean)) {
-                            snippets.add("【必应搜索】${clean.take(220)}")
+                    val matches = Regex("""<p[^>]*class=["'][^"']*star-wiki[^"']*["'][^>]*>([\s\S]*?)</p>|<div[^>]*class=["'][^"']*text-layout[^"']*["'][^>]*>([\s\S]*?)</div>""", RegexOption.IGNORE_CASE).findAll(html)
+                    for (m in matches) {
+                        val raw = m.groupValues[1].ifBlank { m.groupValues[2] }
+                        val clean = cleanHtmlText(raw)
+                        if (clean.length > 20 && isRelevantSnippet(query, query, clean)) {
+                            snippets.add("【搜狗搜索】${clean.take(260)}")
+                            break
                         }
                     }
                 } catch (_: Throwable) {}
             }
 
-            val combined = snippets.joinToString("\n").take(480).ifEmpty { null }
+            val combined = snippets.joinToString("\n").take(600).ifEmpty { null }
             mainHandler.post {
-                runRealLlamaInference(
-                    userText,
-                    persona,
-                    speaker,
-                    if (combined != null) "🌐 已联网检索：$query" else "⚠️ 联网未命中确切词条，以下为本地推理",
-                    combined
-                )
+                if (!isCloudActive() && combined != null) {
+                    val reply = "$combined\n\n—— 已经按实时百科/搜索帮你查准啦，前辈还有哪里想了解吗？"
+                    streamStaticReply(speaker, "开心", reply, "🌐 已联网检索：$query（百科直出 · 100% 依据原文）")
+                } else {
+                    runRealLlamaInference(
+                        userText,
+                        persona,
+                        speaker,
+                        if (combined != null) "🌐 已联网检索：$query" else "⚠️ 联网未命中确切词条",
+                        combined
+                    )
+                }
             }
         }.start()
     }
@@ -953,5 +1108,94 @@ ${personaRole}你们五人组成了“放课后茶会”(HTT)乐队。你正坐�
         }
 
         return null
+    }
+
+    private fun executeCloudLLMRequest(
+        provider: CloudAIProvider,
+        apiKey: String,
+        baseUrl: String,
+        modelName: String,
+        systemPrompt: String,
+        history: List<Pair<String, String>>,
+        userPrompt: String
+    ): Pair<Boolean, String> {
+        return try {
+            if (provider == CloudAIProvider.GEMINI) {
+                val model = modelName.trim().ifEmpty { provider.defaultModel }
+                val base = baseUrl.trim().trimEnd('/').ifEmpty { provider.defaultBaseUrl }
+                val endpoint = "$base/models/$model:generateContent?key=${URLEncoder.encode(apiKey, "UTF-8")}"
+                val contents = org.json.JSONArray()
+                for ((role, content) in history) {
+                    val gRole = if (role == "user") "user" else "model"
+                    contents.put(JSONObject().put("role", gRole).put("parts", org.json.JSONArray().put(JSONObject().put("text", content))))
+                }
+                contents.put(JSONObject().put("role", "user").put("parts", org.json.JSONArray().put(JSONObject().put("text", userPrompt))))
+                val payload = JSONObject()
+                    .put("systemInstruction", JSONObject().put("parts", org.json.JSONArray().put(JSONObject().put("text", systemPrompt))))
+                    .put("contents", contents)
+                    .put("generationConfig", JSONObject().put("temperature", 0.6).put("maxOutputTokens", 512))
+                val conn = (URL(endpoint).openConnection() as HttpURLConnection).apply {
+                    requestMethod = "POST"
+                    connectTimeout = 12000
+                    readTimeout = 20000
+                    doOutput = true
+                    setRequestProperty("Content-Type", "application/json; charset=UTF-8")
+                }
+                conn.outputStream.use { it.write(payload.toString().toByteArray(Charsets.UTF_8)) }
+                val code = conn.responseCode
+                val stream = if (code in 200..299) conn.inputStream else conn.errorStream
+                val resp = stream?.bufferedReader(Charsets.UTF_8)?.readText() ?: ""
+                conn.disconnect()
+                if (code !in 200..299) {
+                    val errMsg = try { JSONObject(resp).optJSONObject("error")?.optString("message") ?: resp } catch (_: Throwable) { resp }
+                    return false to "HTTP $code: ${errMsg.take(180)}"
+                }
+                val text = JSONObject(resp)
+                    .optJSONArray("candidates")?.optJSONObject(0)
+                    ?.optJSONObject("content")?.optJSONArray("parts")?.optJSONObject(0)
+                    ?.optString("text", "")?.trim() ?: ""
+                if (text.isNotEmpty()) true to text else false to "Gemini 返回为空"
+            } else {
+                val model = modelName.trim().ifEmpty { provider.defaultModel }
+                var endpoint = baseUrl.trim().ifEmpty { provider.defaultBaseUrl }
+                if (!endpoint.endsWith("/chat/completions")) {
+                    endpoint = endpoint.trimEnd('/') + "/chat/completions"
+                }
+                val msgs = org.json.JSONArray()
+                msgs.put(JSONObject().put("role", "system").put("content", systemPrompt))
+                for ((role, content) in history) {
+                    msgs.put(JSONObject().put("role", role).put("content", content))
+                }
+                msgs.put(JSONObject().put("role", "user").put("content", userPrompt))
+                val payload = JSONObject()
+                    .put("model", model)
+                    .put("messages", msgs)
+                    .put("temperature", 0.6)
+                    .put("max_tokens", 512)
+                val conn = (URL(endpoint).openConnection() as HttpURLConnection).apply {
+                    requestMethod = "POST"
+                    connectTimeout = 12000
+                    readTimeout = 20000
+                    doOutput = true
+                    setRequestProperty("Content-Type", "application/json; charset=UTF-8")
+                    setRequestProperty("Authorization", "Bearer $apiKey")
+                }
+                conn.outputStream.use { it.write(payload.toString().toByteArray(Charsets.UTF_8)) }
+                val code = conn.responseCode
+                val stream = if (code in 200..299) conn.inputStream else conn.errorStream
+                val resp = stream?.bufferedReader(Charsets.UTF_8)?.readText() ?: ""
+                conn.disconnect()
+                if (code !in 200..299) {
+                    val errMsg = try { JSONObject(resp).optJSONObject("error")?.optString("message") ?: resp } catch (_: Throwable) { resp }
+                    return false to "HTTP $code: ${errMsg.take(180)}"
+                }
+                val text = JSONObject(resp)
+                    .optJSONArray("choices")?.optJSONObject(0)
+                    ?.optJSONObject("message")?.optString("content", "")?.trim() ?: ""
+                if (text.isNotEmpty()) true to text else false to "云端返回为空"
+            }
+        } catch (t: Throwable) {
+            false to (t.message ?: "网络请求异常")
+        }
     }
 }
