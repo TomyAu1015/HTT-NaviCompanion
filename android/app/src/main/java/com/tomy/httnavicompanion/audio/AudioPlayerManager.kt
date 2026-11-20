@@ -954,8 +954,8 @@ class AudioPlayerManager(
                 startWgs = start,
                 destWgs = destCoord,
                 travelMode = mode,
-                avoidHighways = avoids.contains(DrivingAvoidanceOption.AVOID_HIGHWAYS),
-                avoidTolls = avoids.contains(DrivingAvoidanceOption.AVOID_TOLLS)
+                avoidHighways = avoids.contains(DrivingAvoidanceOption.AVOID_HIGHWAY),
+                avoidTolls = avoids.contains(DrivingAvoidanceOption.AVOID_TOLL)
             )
             mainHandler.post {
                 _candidateRoutes.value = routes
