@@ -385,16 +385,6 @@ class LocalLLMManager(
         _statusMessage.value = "正在挂载本地大模型 $fileName..."
         val ctxLen = if (_lowMemoryGuard.value || deviceTotalRamGB < 6.0) 768 else 1024
         val threads = Runtime.getRuntime().availableProcessors().coerceIn(2, 4)
-        val watchdog = Runnable {
-            if (_isGenerating.value) {
-                LlamaNativeBridge.nativeCancel()
-                _messages.value = _messages.value.map {
-                    if (it.id == msgId && it.text.isBlank()) it.copy(text = "本地模型响应超时，建议切换 1.5B/0.5B 或云端 API 试试看♪") else it
-                }
-                _isGenerating.value = false
-            }
-        }
-        mainHandler.postDelayed(watchdog, 28000L)
         llmExecutor.execute {
             var ok = false
             var errNote = ""
@@ -1067,6 +1057,16 @@ ${personaRole}你们五人组成了“放课后茶会”(HTT)乐队。你正坐�
             return
         }
 
+        val watchdog = Runnable {
+            if (_isGenerating.value) {
+                LlamaNativeBridge.nativeCancel()
+                _messages.value = _messages.value.map {
+                    if (it.id == msgId && it.text.isBlank()) it.copy(text = "本地模型响应超时，建议切换 1.5B/0.5B 或云端 API 试试看♪") else it
+                }
+                _isGenerating.value = false
+            }
+        }
+        mainHandler.postDelayed(watchdog, 28000L)
         llmExecutor.execute {
             val out = try {
                 val rawBytes = LlamaNativeBridge.nativeGenerateBytes(fullPrompt.toByteArray(Charsets.UTF_8), object : LlamaTokenCallback {
