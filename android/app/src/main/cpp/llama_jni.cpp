@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <android/log.h>
 #include "llama.h"
+#include "ggml-backend.h"
 
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, "HTT_LLAMA", __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, "HTT_LLAMA", __VA_ARGS__)
@@ -33,6 +34,15 @@ static void free_all_locked() {
     }
 }
 
+static jbyteArray to_jbyte_array(JNIEnv * env, const std::string & str) {
+    jsize len = (jsize)str.size();
+    jbyteArray arr = env->NewByteArray(len);
+    if (arr && len > 0) {
+        env->SetByteArrayRegion(arr, 0, len, reinterpret_cast<const jbyte *>(str.data()));
+    }
+    return arr;
+}
+
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_tomy_httnavicompanion_audio_LlamaNativeBridge_nativeLoadModel(
         JNIEnv * env,
@@ -58,6 +68,13 @@ Java_com_tomy_httnavicompanion_audio_LlamaNativeBridge_nativeLoadModel(
     mparams.use_mmap = true;
     mparams.use_mlock = false;
 
+    ggml_backend_dev_t cpu_devs[2] = { nullptr, nullptr };
+    ggml_backend_dev_t cpu_dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
+    if (cpu_dev) {
+        cpu_devs[0] = cpu_dev;
+        mparams.devices = cpu_devs;
+    }
+
     g_model = llama_model_load_from_file(model_path.c_str(), mparams);
     if (!g_model) {
         LOGE("Failed to load GGUF model: %s", model_path.c_str());
@@ -72,7 +89,7 @@ Java_com_tomy_httnavicompanion_audio_LlamaNativeBridge_nativeLoadModel(
     cparams.n_seq_max = 1;
     cparams.offload_kqv = false;
     cparams.no_perf = true;
-    int thr = std::max(2, std::min(6, (int)threads));
+    int thr = std::max(2, std::min(4, (int)threads));
     cparams.n_threads = thr;
     cparams.n_threads_batch = thr;
 
@@ -107,49 +124,54 @@ Java_com_tomy_httnavicompanion_audio_LlamaNativeBridge_nativeCancel(JNIEnv * /* 
     g_cancel.store(true);
 }
 
-extern "C" JNIEXPORT jstring JNICALL
-Java_com_tomy_httnavicompanion_audio_LlamaNativeBridge_nativeGenerate(
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_com_tomy_httnavicompanion_audio_LlamaNativeBridge_nativeGenerateBytes(
         JNIEnv * env,
         jobject /* thiz */,
-        jstring jprompt,
+        jbyteArray jpromptBytes,
         jobject callback) {
     std::lock_guard<std::mutex> lock(g_mutex);
-    if (!g_model || !g_ctx || !g_smpl) {
-        return env->NewStringUTF("");
+    if (!g_model || !g_ctx || !g_smpl || !jpromptBytes) {
+        return to_jbyte_array(env, "");
     }
     g_cancel.store(false);
 
-    const char * cprompt = env->GetStringUTFChars(jprompt, nullptr);
-    if (!cprompt) return env->NewStringUTF("");
-    std::string prompt(cprompt);
-    env->ReleaseStringUTFChars(jprompt, cprompt);
+    jsize plen = env->GetArrayLength(jpromptBytes);
+    std::string prompt(plen, '\0');
+    if (plen > 0) {
+        env->GetByteArrayRegion(jpromptBytes, 0, plen, reinterpret_cast<jbyte *>(&prompt[0]));
+    }
 
     const llama_vocab * vocab = llama_model_get_vocab(g_model);
     int max_toks = (int)prompt.size() + 64;
     std::vector<llama_token> tokens(max_toks);
     int n_tokens = llama_tokenize(vocab, prompt.c_str(), (int32_t)prompt.size(), tokens.data(), max_toks, true, true);
     if (n_tokens <= 0) {
-        return env->NewStringUTF("");
+        return to_jbyte_array(env, "");
     }
 
     int max_prompt = std::max(128, g_ctx_len - 96);
     int total_prompt = std::min(n_tokens, max_prompt);
 
     llama_kv_self_clear(g_ctx);
+    llama_sampler_reset(g_smpl);
+
     for (int off = 0; off < total_prompt; ) {
+        if (g_cancel.load()) break;
         int step = std::min(128, total_prompt - off);
         llama_batch batch = llama_batch_get_one(tokens.data() + off, step);
         if (llama_decode(g_ctx, batch) != 0) {
-            return env->NewStringUTF("");
+            LOGE("llama_decode prompt failed at off=%d", off);
+            return to_jbyte_array(env, "");
         }
         off += step;
     }
 
-    jmethodID onTokenMethod = nullptr;
+    jmethodID onTokenBytesMethod = nullptr;
     if (callback) {
         jclass cls = env->GetObjectClass(callback);
         if (cls) {
-            onTokenMethod = env->GetMethodID(cls, "onToken", "(Ljava/lang/String;)V");
+            onTokenBytesMethod = env->GetMethodID(cls, "onTokenBytes", "([B)V");
             env->DeleteLocalRef(cls);
         }
     }
@@ -167,12 +189,10 @@ Java_com_tomy_httnavicompanion_audio_LlamaNativeBridge_nativeGenerate(
         int n = llama_token_to_piece(vocab, new_tok, piece, sizeof(piece), 0, true);
         if (n > 0) {
             utf8_pending.append(piece, n);
-            // Check complete UTF-8 sequence before sending to JNI NewStringUTF
             size_t valid_len = utf8_pending.size();
             while (valid_len > 0) {
                 unsigned char c = (unsigned char)utf8_pending[valid_len - 1];
                 if ((c & 0x80) == 0) break;
-                // Walk back to start of multi-byte char
                 size_t start = valid_len - 1;
                 while (start > 0 && (((unsigned char)utf8_pending[start] & 0xC0) == 0x80)) {
                     start--;
@@ -194,11 +214,14 @@ Java_com_tomy_httnavicompanion_audio_LlamaNativeBridge_nativeGenerate(
                     break;
                 }
                 accumulated += chunk;
-                if (callback && onTokenMethod) {
-                    jstring jchunk = env->NewStringUTF(accumulated.c_str());
-                    if (jchunk) {
-                        env->CallVoidMethod(callback, onTokenMethod, jchunk);
-                        env->DeleteLocalRef(jchunk);
+                if (callback && onTokenBytesMethod) {
+                    jbyteArray jbytes = to_jbyte_array(env, accumulated);
+                    if (jbytes) {
+                        env->CallVoidMethod(callback, onTokenBytesMethod, jbytes);
+                        env->DeleteLocalRef(jbytes);
+                        if (env->ExceptionCheck()) {
+                            env->ExceptionClear();
+                        }
                     }
                 }
             }
@@ -208,5 +231,5 @@ Java_com_tomy_httnavicompanion_audio_LlamaNativeBridge_nativeGenerate(
         if (llama_decode(g_ctx, next_batch) != 0) break;
     }
 
-    return env->NewStringUTF(accumulated.c_str());
+    return to_jbyte_array(env, accumulated);
 }

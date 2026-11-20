@@ -291,6 +291,44 @@ fun LocalAIChatSheetDialog(
                                 ) {
                                     Text(msg.text.ifEmpty { "..." }, color = if (msg.isUser) Color.White else AiCream, fontSize = 13.sp)
                                 }
+                                if (msg.nearbyPlaces.isNotEmpty()) {
+                                    Spacer(Modifier.height(6.dp))
+                                    Column(
+                                        modifier = Modifier.widthIn(max = 295.dp),
+                                        verticalArrangement = Arrangement.spacedBy(5.dp)
+                                    ) {
+                                        msg.nearbyPlaces.forEachIndexed { idx, place ->
+                                            val distLabel = if (place.distanceMeters < 1000.0) "${place.distanceMeters.toInt()}m" else String.format("%.1fkm", place.distanceMeters / 1000.0)
+                                            Row(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .clip(RoundedCornerShape(10.dp))
+                                                    .background(Color(0xFF1A2232))
+                                                    .border(1.dp, AiGold.copy(alpha = 0.45f), RoundedCornerShape(10.dp))
+                                                    .padding(horizontal = 9.dp, vertical = 7.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                            ) {
+                                                Column(modifier = Modifier.weight(1f)) {
+                                                    Text("${idx + 1}. ${place.name}", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                                    Text("距你 $distLabel" + if (place.address.isNotBlank()) " · ${place.address}" else "", color = Color.LightGray, fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                                }
+                                                Box(
+                                                    modifier = Modifier
+                                                        .clip(RoundedCornerShape(7.dp))
+                                                        .background(Color(0xFF1565C0))
+                                                        .clickable {
+                                                            llm.navigateToNearbyPlace(place)
+                                                            onDismiss()
+                                                        }
+                                                        .padding(horizontal = 9.dp, vertical = 5.dp)
+                                                ) {
+                                                    Text("一键导航", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
                                 msg.actionHint?.let { hint ->
                                     Text("✨ $hint", color = Color(0xFF4CAF50), fontSize = 10.sp, fontWeight = FontWeight.Bold)
                                 }

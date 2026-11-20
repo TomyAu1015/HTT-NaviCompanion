@@ -111,6 +111,7 @@ fun CockpitScreen(
             Column(
                 modifier = Modifier
                     .fillMaxSize()
+                    .statusBarsPadding()
                     .verticalScroll(rememberScrollState())
                     .padding(horizontal = 10.dp, vertical = 6.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp)
@@ -188,6 +189,7 @@ fun CockpitScreen(
                 Column(
                     modifier = Modifier
                         .fillMaxSize()
+                        .statusBarsPadding()
                         .verticalScroll(rememberScrollState())
                         .padding(horizontal = 9.dp, vertical = 4.dp),
                     verticalArrangement = Arrangement.spacedBy(5.dp)

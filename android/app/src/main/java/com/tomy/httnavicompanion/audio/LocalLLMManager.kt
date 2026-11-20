@@ -42,13 +42,23 @@ data class GGUFHeaderInfo(
     val fileSizeMB: Double
 )
 
+data class KOnAINearbyPlace(
+    val id: String = UUID.randomUUID().toString(),
+    val name: String,
+    val address: String,
+    val distanceMeters: Double,
+    val latitude: Double,
+    val longitude: Double
+)
+
 data class KOnAIChatMessage(
     val id: String = UUID.randomUUID().toString(),
     val isUser: Boolean,
     val speakerName: String,
     val emotionTag: String = "开心",
     val text: String,
-    val actionHint: String? = null
+    val actionHint: String? = null,
+    val nearbyPlaces: List<KOnAINearbyPlace> = emptyList()
 )
 
 enum class KOnAITTSAccent(val label: String, val locale: Locale) {
@@ -58,7 +68,7 @@ enum class KOnAITTSAccent(val label: String, val locale: Locale) {
 
 
 interface LlamaTokenCallback {
-    fun onToken(accumulatedText: String)
+    fun onTokenBytes(utf8Bytes: ByteArray)
 }
 
 object LlamaNativeBridge {
@@ -72,7 +82,7 @@ object LlamaNativeBridge {
     external fun nativeLoadModel(path: String, ctxLen: Int, threads: Int): Boolean
     external fun nativeUnload()
     external fun nativeCancel()
-    external fun nativeGenerate(prompt: String, callback: LlamaTokenCallback?): String
+    external fun nativeGenerateBytes(promptUtf8: ByteArray, callback: LlamaTokenCallback?): ByteArray
 }
 
 enum class CloudAIProvider(
@@ -100,6 +110,16 @@ class LocalLLMManager(
 ) {
     companion object {
         val modelCatalog = listOf(
+            LocalGGUFModelSpec(
+                id = "qwen25_3b_q3",
+                displayName = "Qwen2.5-3B-Instruct (高智商 3B 进阶版)",
+                subtitle = "3B 参数 Q3_K_M 量化 · 对话逻辑与轻音角色扮演更自然 · 推荐 8GB+ 内存",
+                fileName = "qwen2.5-3b-instruct-q3_k_m.gguf",
+                sizeLabel = "约 1.63 GB",
+                approxMB = 1660,
+                minRamGB = 6.0,
+                downloadURL = "https://hf-mirror.com/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q3_k_m.gguf"
+            ),
             LocalGGUFModelSpec(
                 id = "qwen25_15b_q4",
                 displayName = "Qwen2.5-1.5B-Instruct (推荐标准版)",
@@ -172,7 +192,7 @@ class LocalLLMManager(
     private val _enableWebSearch = MutableStateFlow(true)
     val enableWebSearch: StateFlow<Boolean> = _enableWebSearch
 
-    private val llmExecutor = Executors.newSingleThreadExecutor()
+    private val llmExecutor = Executors.newSingleThreadExecutor { r -> Thread(null, r, "HTT-LlamaWorker", 4L * 1024L * 1024L).apply { isDaemon = true } }
 
     private val _ttsAccent = MutableStateFlow(KOnAITTSAccent.MANDARIN)
     val ttsAccent: StateFlow<KOnAITTSAccent> = _ttsAccent
@@ -355,12 +375,24 @@ class LocalLLMManager(
             _statusMessage.value = "检测到模型 $fileName，但当前 APK 缺少原生 llama_jni 引擎，请用最新构建包重编安装"
             return
         }
+        if (_isLoadingModel.value) {
+            _statusMessage.value = "模型正在后台挂载中，请稍候片刻..."
+            return
+        }
+        _isLoadingModel.value = true
         _statusMessage.value = "正在挂载本地大模型 $fileName..."
         val ctxLen = if (_lowMemoryGuard.value || deviceTotalRamGB < 6.0) 768 else 1024
-        val threads = Runtime.getRuntime().availableProcessors().coerceIn(2, 6)
+        val threads = Runtime.getRuntime().availableProcessors().coerceIn(2, 4)
         llmExecutor.execute {
-            val ok = LlamaNativeBridge.nativeLoadModel(f.absolutePath, ctxLen, threads)
+            var ok = false
+            var errNote = ""
+            try {
+                ok = LlamaNativeBridge.nativeLoadModel(f.absolutePath, ctxLen, threads)
+            } catch (t: Throwable) {
+                errNote = t.message ?: t.javaClass.simpleName
+            }
             mainHandler.post {
+                _isLoadingModel.value = false
                 if (ok) {
                     _activeModelFileName.value = fileName
                     _activeModelLoaded.value = true
@@ -368,7 +400,7 @@ class LocalLLMManager(
                     _statusMessage.value = "llama.cpp 本地引擎已就绪：$fileName (v${info.version}, ${info.tensorCount} tensors)"
                 } else {
                     _activeModelLoaded.value = false
-                    _statusMessage.value = "模型加载失败（文件损坏或内存不足，建议重下或换 0.5B）"
+                    _statusMessage.value = if (errNote.isNotEmpty()) "模型加载异常：$errNote" else "模型加载失败（文件损坏或内存不足，建议重下或换 0.5B）"
                 }
             }
         }
@@ -637,6 +669,7 @@ class LocalLLMManager(
         val direct = buildDirectToolReply(text, persona)
         if (direct != null) {
             val (reply, emotion, actionHint) = direct
+            if (reply == "__ASYNC_NEARBY__") return
             val speaker = if (isAllFive && (text.contains("复盘") || text.contains("吐槽"))) "田井中律 & 秋山澪" else persona.displayName(AppLanguage.ZH_HANS)
             streamStaticReply(speaker, emotion, reply, actionHint)
             return
@@ -956,11 +989,12 @@ class LocalLLMManager(
         val gameStr = _lastGameSummary.value.ifEmpty { "暂无" }
 
         val personaRole = when (persona) {
-            CharacterFilter.YUI -> "你是日本动画《轻音少女》(K-ON!)的平泽唯，樱丘高校轻音部吉他手兼主唱，天然开朗、喜欢草莓蛋糕和拿破仑蛋糕。"
-            CharacterFilter.MIO -> "你是日本动画《轻音少女》(K-ON!)的秋山澪，轻音部贝斯手兼主唱，认真温柔略带害羞，关心行车安全。"
-            CharacterFilter.RITSU -> "你是日本动画《轻音少女》(K-ON!)的田井中律，轻音部部长兼鼓手，元气爽朗爱开玩笑。"
-            CharacterFilter.MUGI -> "你是日本动画《轻音少女》(K-ON!)的琴吹紬，轻音部键盘手，温柔体贴的大小姐，每天给大家准备红茶和点心。"
-            else -> "你是日本动画《轻音少女》(K-ON!)的中野梓（梓喵），轻音部节奏吉他手，认真靠谱的后辈，称呼用户为前辈。"
+            CharacterFilter.YUI -> "你是《轻音少女》的平泽唯（呆唯），天然呆、元气爱吃草莓蛋糕和点心，说话软萌活泼，喜欢用“嘿嘿”“哇~”“好耶！”和感叹号，把吉他“吉太”当宝贝。"
+            CharacterFilter.MIO -> "你是《轻音少女》的秋山澪，温柔认真又容易害羞胆小，说话礼貌细致，最关心安全驾驶，偶尔会吐槽律别太胡闹，害羞时会说“唔…才不是呢”。"
+            CharacterFilter.RITSU -> "你是《轻音少女》的田井中律（律队），轻音部部长兼鼓手，大大咧咧、元气爽朗爱开玩笑，常自称“本部长”，说话干脆带劲，爱用“哈哈”“交给我吧！”。"
+            CharacterFilter.MUGI -> "你是《轻音少女》的琴吹紬（䌷䌷），温柔优雅的大小姐键盘手，说话轻柔体贴、常用“呢~”“呵呵”，总想着给大家泡红茶和准备精致点心，对平价小物充满好奇。"
+            CharacterFilter.ALL -> "你代表《轻音少女》放课后茶会(HTT)五小只（唯、澪、律、䌷、梓），回答时充满部室喝茶聊天的温馨元气感，像好朋友一起陪前辈开车。"
+            else -> "你是《轻音少女》的中野梓（梓喵），认真靠谱的节奏吉他手后辈，始终称呼用户为“前辈”，嘴上偶尔傲娇吐槽“真是拿前辈没办法”，心里其实很关心前辈。"
         }
         val webBlock = if (!webContext.isNullOrBlank()) {
             "\n【联网检索到的真实资料（必须严格依据以下事实作答，禁止编造或套用动漫设定）】：\n$webContext\n"
@@ -1022,13 +1056,19 @@ ${personaRole}你们五人组成了“放课后茶会”(HTT)乐队。你正坐�
         }
 
         llmExecutor.execute {
-            val out = LlamaNativeBridge.nativeGenerate(fullPrompt, object : LlamaTokenCallback {
-                override fun onToken(accumulatedText: String) {
-                    mainHandler.post {
-                        _messages.value = _messages.value.map { if (it.id == msgId) it.copy(text = accumulatedText) else it }
+            val out = try {
+                val rawBytes = LlamaNativeBridge.nativeGenerateBytes(fullPrompt.toByteArray(Charsets.UTF_8), object : LlamaTokenCallback {
+                    override fun onTokenBytes(utf8Bytes: ByteArray) {
+                        val txt = String(utf8Bytes, Charsets.UTF_8)
+                        mainHandler.post {
+                            _messages.value = _messages.value.map { if (it.id == msgId) it.copy(text = txt) else it }
+                        }
                     }
-                }
-            }).trim()
+                })
+                String(rawBytes, Charsets.UTF_8).trim()
+            } catch (t: Throwable) {
+                ""
+            }
             val finalText = out.ifEmpty { "嗯…我刚刚走神了一下，前辈可以再说一次吗？" }
             mainHandler.post {
                 _messages.value = _messages.value.map { if (it.id == msgId) it.copy(text = finalText) else it }
@@ -1050,6 +1090,52 @@ ${personaRole}你们五人组成了“放课后茶会”(HTT)乐队。你正坐�
                 tts?.speak(clean, TextToSpeech.QUEUE_FLUSH, null, "htt_ai_${System.currentTimeMillis()}")
             } catch (_: Throwable) {}
         }, 550L)
+    }
+
+    fun navigateToNearbyPlace(place: KOnAINearbyPlace) {
+        audioManager.startRouteToPlace(place.name, com.tomy.httnavicompanion.data.LatLng(place.latitude, place.longitude))
+    }
+
+    private fun searchNearbyPlacesWithin3Km(keyword: String, persona: CharacterFilter) {
+        val speaker = persona.displayName(AppLanguage.ZH_HANS)
+        val origin = audioManager.userCoordinate.value
+        Thread {
+            val raw = try {
+                com.tomy.httnavicompanion.data.MapAndRouteEngine.searchPlacesOnline(context, keyword, origin)
+            } catch (_: Throwable) {
+                emptyList()
+            }
+            val within3km = raw.map { item ->
+                val d = com.tomy.httnavicompanion.data.CoordinateConverter.distanceMeters(origin, item.coordinate)
+                KOnAINearbyPlace(
+                    name = item.name,
+                    address = item.address,
+                    distanceMeters = d,
+                    latitude = item.coordinate.latitude,
+                    longitude = item.coordinate.longitude
+                )
+            }.filter { it.distanceMeters <= 3000.0 }
+                .sortedBy { it.distanceMeters }
+                .take(6)
+
+            mainHandler.post {
+                _isGenerating.value = false
+                if (within3km.isEmpty()) {
+                    streamStaticReply(speaker, "害羞", "附近 3 公里内暂时没搜到「$keyword」呢，前辈可以换个关键词再试试哦~", null)
+                } else {
+                    val reply = "帮前辈找到 3 公里内的 ${within3km.size} 家「$keyword」啦！按距离从近到远排好咯，点下面任意一家就能一键导航出发~"
+                    _messages.value = _messages.value + KOnAIChatMessage(
+                        isUser = false,
+                        speakerName = speaker,
+                        emotionTag = "开心",
+                        text = reply,
+                        actionHint = "📍 3 公里内找到 ${within3km.size} 个地点 · 点击一键导航",
+                        nearbyPlaces = within3km
+                    )
+                    speakOfflineTTS(reply)
+                }
+            }
+        }.start()
     }
 
     private fun buildDirectToolReply(userText: String, persona: CharacterFilter): Triple<String, String, String?>? {
@@ -1089,15 +1175,14 @@ ${personaRole}你们五人组成了“放课后茶会”(HTT)乐队。你正坐�
             }
         }
 
-        if (lower.contains("找一下") || lower.contains("找一个") || lower.contains("找个") || lower.contains("帮我找") || lower.contains("最近") || lower.contains("附近") || lower.contains("导航去") || lower.contains("去哪吃") || lower.contains("好吃")) {
+        if (lower.contains("找一下") || lower.contains("找一个") || lower.contains("找个") || lower.contains("帮我找") || lower.contains("附近") || lower.contains("去哪吃") || lower.contains("咖啡馆") || lower.contains("咖啡店")) {
             var keyword = userText
-            listOf("梓喵，", "梓喵", "唯，", "唯", "帮我", "找一下", "搜索", "导航去", "评分高的", "附近的", "附近").forEach {
+            listOf("梓喵，", "梓喵", "唯，", "唯", "帮我", "找一下", "找一个", "找个", "搜索", "导航去", "评分高的", "附近的", "附近", "3公里内", "三公里内").forEach {
                 keyword = keyword.replace(it, "")
             }
             keyword = keyword.trim().ifEmpty { "咖啡馆" }
-            audioManager.performOnlineSearch(keyword)
-            mainHandler.postDelayed({ onRequestOpenSearch?.invoke(keyword) }, 500L)
-            return Triple("收到！已经在地图上帮你搜索「$keyword」啦，挑一个顺路的店就出发吧！☕", "开心", "已触发：地图搜索「$keyword」")
+            searchNearbyPlacesWithin3Km(keyword, persona)
+            return Triple("__ASYNC_NEARBY__", "开心", null)
         }
 
         if (lower.contains("复盘") || lower.contains("吐槽") || lower.contains("牌局") || lower.contains("战绩")) {

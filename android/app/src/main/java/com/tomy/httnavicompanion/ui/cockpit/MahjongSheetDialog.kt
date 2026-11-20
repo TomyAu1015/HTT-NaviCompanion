@@ -452,6 +452,7 @@ fun KOnGameRoomSheetDialog(onDismiss: () -> Unit) {
         onDispose {
             val w = activity?.window
             if (w != null) {
+                WindowCompat.setDecorFitsSystemWindows(w, true)
                 WindowInsetsControllerCompat(w, hostView).show(WindowInsetsCompat.Type.systemBars())
             }
         }
