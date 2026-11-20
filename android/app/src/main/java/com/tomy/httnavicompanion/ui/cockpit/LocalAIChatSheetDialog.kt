@@ -65,6 +65,7 @@ fun LocalAIChatSheetDialog(
     val statusMsg by llm.statusMessage.collectAsState()
     val emotionTag by llm.currentEmotionTag.collectAsState()
     val voiceOn by llm.enableVoiceBroadcast.collectAsState()
+    val webOn by llm.enableWebSearch.collectAsState()
     val accent by llm.ttsAccent.collectAsState()
     val lowMemGuard by llm.lowMemoryGuard.collectAsState()
     val memories by llm.memories.collectAsState()
@@ -100,9 +101,9 @@ fun LocalAIChatSheetDialog(
         }
     }
 
-    DisposableEffect(Unit) {
-        onDispose {
-            llm.unloadModelFromMemory(silent = true)
+    LaunchedEffect(activeModel, activeLoaded) {
+        if (activeModel.isNotEmpty() && !activeLoaded) {
+            llm.autoMountIfNeeded()
         }
     }
 
@@ -186,6 +187,15 @@ fun LocalAIChatSheetDialog(
                         )
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             Text("$speedKmh km/h", color = Color(0xFF4CAF50), fontSize = 11.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .background(if (webOn) Color(0xFF1E5AA8) else Color.White.copy(alpha = 0.12f))
+                                    .clickable { llm.toggleWebSearch() }
+                                    .padding(horizontal = 7.dp, vertical = 3.dp)
+                            ) {
+                                Text(if (webOn) "🌐联网:开" else "🌐联网:关", color = AiCream, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                            }
                             Box(
                                 modifier = Modifier
                                     .clip(RoundedCornerShape(6.dp))

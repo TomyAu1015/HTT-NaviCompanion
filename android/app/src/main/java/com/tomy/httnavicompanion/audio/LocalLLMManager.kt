@@ -9,6 +9,9 @@ import android.speech.tts.TextToSpeech
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import org.json.JSONArray
+import org.json.JSONObject
+import java.net.URLEncoder
+import java.util.concurrent.Executors
 import java.io.File
 import java.io.FileOutputStream
 import java.io.RandomAccessFile
@@ -53,6 +56,25 @@ enum class KOnAITTSAccent(val label: String, val locale: Locale) {
     CANTONESE("粤语", Locale("zh", "HK"))
 }
 
+
+interface LlamaTokenCallback {
+    fun onToken(accumulatedText: String)
+}
+
+object LlamaNativeBridge {
+    val isAvailable: Boolean = try {
+        System.loadLibrary("llama_jni")
+        true
+    } catch (_: Throwable) {
+        false
+    }
+
+    external fun nativeLoadModel(path: String, ctxLen: Int, threads: Int): Boolean
+    external fun nativeUnload()
+    external fun nativeCancel()
+    external fun nativeGenerate(prompt: String, callback: LlamaTokenCallback?): String
+}
+
 class LocalLLMManager(
     private val context: Context,
     private val audioManager: AudioPlayerManager,
@@ -69,6 +91,16 @@ class LocalLLMManager(
                 approxMB = 940,
                 minRamGB = 5.5,
                 downloadURL = "https://hf-mirror.com/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_0.gguf"
+            ),
+            LocalGGUFModelSpec(
+                id = "qwen25_15b_q3",
+                displayName = "Qwen2.5-1.5B-Instruct (省内存 1.5B)",
+                subtitle = "Q3_K_M 量化 · 兼顾 1.5B 智商与 3D 导航/音乐同开余量",
+                fileName = "qwen2.5-1.5b-instruct-q3_k_m.gguf",
+                sizeLabel = "约 824 MB",
+                approxMB = 824,
+                minRamGB = 5.0,
+                downloadURL = "https://hf-mirror.com/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q3_k_m.gguf"
             ),
             LocalGGUFModelSpec(
                 id = "qwen25_05b_q4",
@@ -119,10 +151,15 @@ class LocalLLMManager(
     private val _enableVoiceBroadcast = MutableStateFlow(true)
     val enableVoiceBroadcast: StateFlow<Boolean> = _enableVoiceBroadcast
 
+    private val _enableWebSearch = MutableStateFlow(true)
+    val enableWebSearch: StateFlow<Boolean> = _enableWebSearch
+
+    private val llmExecutor = Executors.newSingleThreadExecutor()
+
     private val _ttsAccent = MutableStateFlow(KOnAITTSAccent.MANDARIN)
     val ttsAccent: StateFlow<KOnAITTSAccent> = _ttsAccent
 
-    private val _lowMemoryGuard = MutableStateFlow(true)
+    private val _lowMemoryGuard = MutableStateFlow(false)
     val lowMemoryGuard: StateFlow<Boolean> = _lowMemoryGuard
 
     private val _memories = MutableStateFlow<List<String>>(emptyList())
@@ -183,6 +220,18 @@ class LocalLLMManager(
         refreshInstalledModels()
         seedGreetingIfNeeded()
         initTTS()
+        mainHandler.postDelayed({ autoMountIfNeeded() }, 1000L)
+    }
+
+    fun toggleWebSearch() {
+        _enableWebSearch.value = !_enableWebSearch.value
+    }
+
+    fun autoMountIfNeeded() {
+        val fn = _activeModelFileName.value
+        if (_activeModelLoaded.value || fn.isEmpty()) return
+        if (!_installedModels.value.contains(fn)) return
+        loadModelIntoMemory(fn)
     }
 
     private fun initTTS() {
@@ -259,13 +308,36 @@ class LocalLLMManager(
             _statusMessage.value = "低内存保护已拦截：当前设备内存 ${String.format("%.1f", deviceTotalRamGB)}GB，建议改用 0.5B 轻量版"
             return
         }
-        _activeModelFileName.value = fileName
-        _activeModelLoaded.value = true
-        prefs.edit().putString("active_model", fileName).apply()
-        _statusMessage.value = "已挂载本地 GGUF 模型：$fileName (v${info.version}, ${info.tensorCount} tensors)"
+        if (!LlamaNativeBridge.isAvailable) {
+            _activeModelFileName.value = fileName
+            _activeModelLoaded.value = false
+            _statusMessage.value = "检测到模型 $fileName，但当前 APK 缺少原生 llama_jni 引擎，请用最新构建包重编安装"
+            return
+        }
+        _statusMessage.value = "正在挂载本地大模型 $fileName..."
+        val ctxLen = if (_lowMemoryGuard.value || deviceTotalRamGB < 6.0) 768 else 1024
+        val threads = Runtime.getRuntime().availableProcessors().coerceIn(2, 6)
+        llmExecutor.execute {
+            val ok = LlamaNativeBridge.nativeLoadModel(f.absolutePath, ctxLen, threads)
+            mainHandler.post {
+                if (ok) {
+                    _activeModelFileName.value = fileName
+                    _activeModelLoaded.value = true
+                    prefs.edit().putString("active_model", fileName).apply()
+                    _statusMessage.value = "llama.cpp 本地引擎已就绪：$fileName (v${info.version}, ${info.tensorCount} tensors)"
+                } else {
+                    _activeModelLoaded.value = false
+                    _statusMessage.value = "模型加载失败（文件损坏或内存不足，建议重下或换 0.5B）"
+                }
+            }
+        }
     }
 
     fun unloadModelFromMemory(silent: Boolean = false) {
+        if (LlamaNativeBridge.isAvailable) {
+            LlamaNativeBridge.nativeCancel()
+            llmExecutor.execute { LlamaNativeBridge.nativeUnload() }
+        }
         _activeModelLoaded.value = false
         if (!silent) {
             _statusMessage.value = "已释放模型内存，保障导航与棋牌室流畅运行"
@@ -435,14 +507,47 @@ class LocalLLMManager(
 
         val isAllFive = audioManager.selectedCharacter.value == CharacterFilter.ALL
         val persona = activePersona(audioManager.selectedCharacter.value)
-        val (reply, emotion, actionHint) = buildKOnReply(text, persona)
-        val speaker = if (isAllFive && (text.contains("复盘") || text.contains("吐槽"))) "田井中律 & 秋山澪" else persona.displayName(AppLanguage.ZH_HANS)
-
-        _currentEmotionTag.value = emotion
         if (_enableVoiceBroadcast.value) {
             audioManager.triggerCharacterTap(persona)
         }
 
+        val direct = buildDirectToolReply(text, persona)
+        if (direct != null) {
+            val (reply, emotion, actionHint) = direct
+            val speaker = if (isAllFive && (text.contains("复盘") || text.contains("吐槽"))) "田井中律 & 秋山澪" else persona.displayName(AppLanguage.ZH_HANS)
+            streamStaticReply(speaker, emotion, reply, actionHint)
+            return
+        }
+
+        val isRecap = text.lowercase().let { it.contains("复盘") || it.contains("吐槽") || it.contains("牌局") || it.contains("战绩") }
+        val speaker = if (isAllFive && isRecap) "田井中律 & 秋山澪" else persona.displayName(AppLanguage.ZH_HANS)
+
+        if (_activeModelLoaded.value && LlamaNativeBridge.isAvailable) {
+            val lower = text.lowercase()
+            if (isRecap) {
+                val todaySum = todaySummaryText()
+                val gs = _lastGameSummary.value.ifEmpty { "暂无最近一局记录" }
+                val recapPrompt = "今日放学后棋牌室战绩汇总：【$todaySum】；最近一局战绩：【$gs】。请先简明报出今日汇总和最后一局战绩，再用田井中律和秋山澪一唱一和的口吻点评两句（如果车友赢了就夸奖车友）。"
+                runRealLlamaInference(recapPrompt, persona, speaker, "今日汇总：$todaySum", null)
+            } else if (isWeatherQuery(lower)) {
+                fetchLiveWeatherAndInfer(text, persona, speaker)
+            } else if (_enableWebSearch.value && shouldSearchWeb(lower)) {
+                fetchWebSearchAndInfer(text, persona, speaker)
+            } else {
+                runRealLlamaInference(text, persona, speaker, null, null)
+            }
+        } else {
+            val fallback = if (_activeModelFileName.value.isNotEmpty() && LlamaNativeBridge.isAvailable) {
+                "正在为你挂载本地模型，请稍等一两秒再试，或到「本地模型与记忆」里确认挂载状态哦。"
+            } else {
+                "当前还未挂载本地大模型，请点击上方「本地模型与记忆」下载并挂载 Qwen2.5 模型，这样我就能自由回答你的各种问题啦！"
+            }
+            streamStaticReply(speaker, "开心", fallback, null)
+        }
+    }
+
+    private fun streamStaticReply(speaker: String, emotion: String, reply: String, actionHint: String?) {
+        _currentEmotionTag.value = emotion
         val msgId = UUID.randomUUID().toString()
         _messages.value = _messages.value + KOnAIChatMessage(
             id = msgId,
@@ -452,8 +557,6 @@ class LocalLLMManager(
             text = "",
             actionHint = actionHint
         )
-
-        // Smooth typewriter streaming on background thread
         Thread {
             var idx = 0
             while (idx < reply.length) {
@@ -463,13 +566,196 @@ class LocalLLMManager(
                 mainHandler.post {
                     _messages.value = _messages.value.map { if (it.id == msgId) it.copy(text = partial) else it }
                 }
-                Thread.sleep(28L)
+                Thread.sleep(24L)
             }
             mainHandler.post {
                 _isGenerating.value = false
                 speakOfflineTTS(reply)
             }
         }.start()
+    }
+
+    private fun isWeatherQuery(lower: String): Boolean =
+        lower.contains("天气") || lower.contains("气温") || lower.contains("温度") || lower.contains("下雨") || lower.contains("多少度") || lower.contains("天气预报")
+
+    private fun shouldSearchWeb(lower: String): Boolean {
+        if (lower.contains("联网") || lower.contains("搜索") || lower.contains("查一下") || lower.contains("帮我查") || lower.contains("百科") || lower.contains("新闻") || lower.contains("最新")) return true
+        val triggers = listOf("是什么", "是谁", "什么是", "介绍", "为什么", "怎么", "多少", "哪里", "哪个", "历史", "知道", "动画", "动漫", "电影", "游戏", "价格", "评分", "攻略")
+        return triggers.any { lower.contains(it) }
+    }
+
+    private fun cleanSearchQuery(text: String): String {
+        var q = text
+        listOf("联网搜索", "联网查一下", "联网", "帮我查一下", "帮我查", "查一下", "搜索一下", "搜索", "你知道", "吗？", "吗?", "吗", "？", "?").forEach {
+            q = q.replace(it, " ")
+        }
+        return q.trim().ifEmpty { text }
+    }
+
+    private fun fetchLiveWeatherAndInfer(userText: String, persona: CharacterFilter, speaker: String) {
+        Thread {
+            var weatherNote: String? = null
+            try {
+                val c = audioManager.userCoordinate.value
+                val url = URL("https://api.open-meteo.com/v1/forecast?latitude=${c.latitude}&longitude=${c.longitude}&current_weather=true&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max&timezone=auto")
+                val conn = (url.openConnection() as HttpURLConnection).apply {
+                    connectTimeout = 3000
+                    readTimeout = 3000
+                }
+                val body = conn.inputStream.bufferedReader().readText()
+                conn.disconnect()
+                val json = JSONObject(body)
+                val cur = json.optJSONObject("current_weather")
+                if (cur != null) {
+                    val temp = cur.optDouble("temperature", 0.0)
+                    val wind = cur.optDouble("windspeed", 0.0)
+                    val code = cur.optInt("weathercode", 0)
+                    val desc = when (code) {
+                        0 -> "晴朗"
+                        1, 2, 3 -> "多云"
+                        45, 48 -> "有雾"
+                        51, 53, 55, 61, 63, 65, 80, 81, 82 -> "有雨"
+                        71, 73, 75 -> "降雪"
+                        95, 96, 99 -> "雷阵雨"
+                        else -> "阴天"
+                    }
+                    var extra = ""
+                    val daily = json.optJSONObject("daily")
+                    if (daily != null) {
+                        val tmax = daily.optJSONArray("temperature_2m_max")?.optDouble(0)
+                        val tmin = daily.optJSONArray("temperature_2m_min")?.optDouble(0)
+                        val pop = daily.optJSONArray("precipitation_probability_max")?.optInt(0)
+                        if (tmax != null && tmin != null && pop != null) {
+                            extra = "，今日气温 ${Math.round(tmin)}~${Math.round(tmax)}°C，降水概率 ${pop}%"
+                        }
+                    }
+                    weatherNote = "当前位置实时气象：$desc，气温 ${String.format(Locale.US, "%.1f", temp)}°C，风速 ${Math.round(wind)} km/h$extra。"
+                }
+            } catch (_: Throwable) {}
+            mainHandler.post {
+                runRealLlamaInference(userText, persona, speaker, if (weatherNote != null) "🌐 已获取实时气象" else null, weatherNote)
+            }
+        }.start()
+    }
+
+    private fun fetchWebSearchAndInfer(userText: String, persona: CharacterFilter, speaker: String) {
+        val query = cleanSearchQuery(userText)
+        Thread {
+            val snippets = mutableListOf<String>()
+            try {
+                val enc = URLEncoder.encode(query, "UTF-8")
+                val conn = (URL("https://zh.wikipedia.org/w/api.php?action=query&list=search&srsearch=$enc&format=json&utf8=1&srlimit=2").openConnection() as HttpURLConnection).apply {
+                    connectTimeout = 2800
+                    readTimeout = 2800
+                    setRequestProperty("User-Agent", "HTT-NaviCompanion/1.6")
+                }
+                val body = conn.inputStream.bufferedReader().readText()
+                conn.disconnect()
+                val arr = JSONObject(body).optJSONObject("query")?.optJSONArray("search")
+                if (arr != null) {
+                    for (i in 0 until minOf(2, arr.length())) {
+                        val item = arr.optJSONObject(i) ?: continue
+                        val title = item.optString("title", "")
+                        val clean = item.optString("snippet", "").replace(Regex("<[^>]+>"), "").replace("&quot;", "\"").trim()
+                        if (clean.isNotEmpty()) snippets.add("【$title】$clean")
+                    }
+                }
+            } catch (_: Throwable) {}
+            try {
+                val enc = URLEncoder.encode(query, "UTF-8")
+                val conn = (URL("https://api.duckduckgo.com/?q=$enc&format=json&no_html=1&skip_disambig=1").openConnection() as HttpURLConnection).apply {
+                    connectTimeout = 2800
+                    readTimeout = 2800
+                }
+                val body = conn.inputStream.bufferedReader().readText()
+                conn.disconnect()
+                val abs = JSONObject(body).optString("AbstractText", "")
+                if (abs.isNotEmpty()) snippets.add(abs.take(220))
+            } catch (_: Throwable) {}
+
+            val combined = snippets.joinToString("\n").take(380).ifEmpty { null }
+            mainHandler.post {
+                runRealLlamaInference(
+                    userText,
+                    persona,
+                    speaker,
+                    if (combined != null) "🌐 已联网检索：$query" else "联网未命中，使用本地推理",
+                    combined
+                )
+            }
+        }.start()
+    }
+
+    private fun runRealLlamaInference(
+        userPrompt: String,
+        persona: CharacterFilter,
+        speaker: String,
+        actionHint: String?,
+        webContext: String?
+    ) {
+        val nowStr = java.text.SimpleDateFormat("yyyy年M月d日 EEEE HH:mm", Locale.CHINA).format(java.util.Date())
+        val speed = audioManager.currentSpeedKmh.value
+        val dest = audioManager.destinationName.value
+        val remKm = String.format("%.1f", audioManager.remainingRouteDistanceKm.value)
+        val remMin = audioManager.remainingRouteMinutes.value
+        val navState = if (audioManager.hasActiveNavigation.value) "正在导航去「$dest」，剩余${remKm}公里、约${remMin}分钟" else "当前未开启导航（自由巡航）"
+        val songStr = if (musicManager.isPlaying.value) musicManager.currentTrack.value.title else "未播放"
+        val memStr = _memories.value.take(5).joinToString("；").ifEmpty { "无" }
+        val gameStr = _lastGameSummary.value.ifEmpty { "暂无" }
+
+        val personaRole = when (persona) {
+            CharacterFilter.YUI -> "你是日本动画《轻音少女》(K-ON!)的平泽唯，樱丘高校轻音部吉他手兼主唱，天然开朗、喜欢草莓蛋糕和拿破仑蛋糕。"
+            CharacterFilter.MIO -> "你是日本动画《轻音少女》(K-ON!)的秋山澪，轻音部贝斯手兼主唱，认真温柔略带害羞，关心行车安全。"
+            CharacterFilter.RITSU -> "你是日本动画《轻音少女》(K-ON!)的田井中律，轻音部部长兼鼓手，元气爽朗爱开玩笑。"
+            CharacterFilter.MUGI -> "你是日本动画《轻音少女》(K-ON!)的琴吹紬，轻音部键盘手，温柔体贴的大小姐，每天给大家准备红茶和点心。"
+            else -> "你是日本动画《轻音少女》(K-ON!)的中野梓（梓喵），轻音部节奏吉他手，认真靠谱的后辈，称呼用户为前辈。"
+        }
+        val webBlock = if (!webContext.isNullOrBlank()) "\n联网检索真实资料（请优先依据此资料回答）：\n$webContext\n" else ""
+
+        val sysPrompt = """
+$personaRole你们五人组成了“放课后茶会”(HTT)乐队，不是偶像养成节目。你正在作为车载副驾伙伴陪伴前辈开车。
+实时车况：时间 $nowStr；车速 $speed km/h；$navState；音乐：$songStr；最近牌局：$gameStr；记忆：$memStr。$webBlock
+说话规则：
+1. 用活泼自然的中文口语回答（1~3句），贴合角色性格，可以适度吐槽、撒娇或关心前辈。
+2. 严禁说“抱歉，我无法理解您的问题”“我无法连接外部设备”“作为AI助手”等客服套话！遇到撒娇、吐槽、问号或无厘头问题也要顺着角色自然接话。
+""".trimIndent()
+
+        val sb = StringBuilder()
+        sb.append("<|im_start|>system\n").append(sysPrompt).append("<|im_end|>\n")
+        val history = _messages.value.dropLast(1).takeLast(4)
+        for (m in history) {
+            val role = if (m.isUser) "user" else "assistant"
+            sb.append("<|im_start|>").append(role).append("\n").append(m.text.take(120)).append("<|im_end|>\n")
+        }
+        sb.append("<|im_start|>user\n").append(userPrompt).append("<|im_end|>\n<|im_start|>assistant\n")
+        val fullPrompt = sb.toString()
+
+        _currentEmotionTag.value = "开心"
+        val msgId = UUID.randomUUID().toString()
+        _messages.value = _messages.value + KOnAIChatMessage(
+            id = msgId,
+            isUser = false,
+            speakerName = speaker,
+            emotionTag = "开心",
+            text = "",
+            actionHint = actionHint
+        )
+
+        llmExecutor.execute {
+            val out = LlamaNativeBridge.nativeGenerate(fullPrompt, object : LlamaTokenCallback {
+                override fun onToken(accumulatedText: String) {
+                    mainHandler.post {
+                        _messages.value = _messages.value.map { if (it.id == msgId) it.copy(text = accumulatedText) else it }
+                    }
+                }
+            }).trim()
+            val finalText = out.ifEmpty { "嗯…我刚刚走神了一下，前辈可以再说一次吗？" }
+            mainHandler.post {
+                _messages.value = _messages.value.map { if (it.id == msgId) it.copy(text = finalText) else it }
+                _isGenerating.value = false
+                speakOfflineTTS(finalText)
+            }
+        }
     }
 
     private fun speakOfflineTTS(text: String) {
@@ -486,7 +772,7 @@ class LocalLLMManager(
         }, 550L)
     }
 
-    private fun buildKOnReply(userText: String, persona: CharacterFilter): Triple<String, String, String?> {
+    private fun buildDirectToolReply(userText: String, persona: CharacterFilter): Triple<String, String, String?>? {
         val lower = userText.lowercase()
         val speed = audioManager.currentSpeedKmh.value
         val dest = audioManager.destinationName.value
@@ -534,7 +820,8 @@ class LocalLLMManager(
             return Triple("收到！已经在地图上帮你搜索「$keyword」啦，挑一个顺路的店就出发吧！☕", "开心", "已触发：地图搜索「$keyword」")
         }
 
-        if (lower.contains("复盘") || lower.contains("吐槽") || lower.contains("牌局")) {
+        if (lower.contains("复盘") || lower.contains("吐槽") || lower.contains("牌局") || lower.contains("战绩")) {
+            if (_activeModelLoaded.value && LlamaNativeBridge.isAvailable) return null
             val todaySum = todaySummaryText()
             val gs = _lastGameSummary.value.ifEmpty { "暂无最近一局记录" }
             val comment = when {
@@ -566,14 +853,6 @@ class LocalLLMManager(
             return Triple("嗯嗯，我已经在茶会小本本里记下来啦！以后聊天都会记得这件事的~ 📝", "开心", "已写入本地长期记忆")
         }
 
-        val memHint = _memories.value.firstOrNull()?.let { "（对了，我还记得你说过「$it」呢~）" } ?: ""
-        val general = when (persona) {
-            CharacterFilter.YUI -> "嘿嘿，听你这么说我都想吃草莓蛋糕和红茶啦！$memHint$modelTag"
-            CharacterFilter.MIO -> "嗯…你的话我都认真听着呢。专心看路的同时偶尔聊聊天挺放松的，别分心就好啦。$memHint$modelTag"
-            CharacterFilter.RITSU -> "哈哈这个话题有意思！等停好车我们再去棋牌室大战三百回合！$memHint$modelTag"
-            CharacterFilter.MUGI -> "真开心能陪你一起在路上聊天呀~ 等会儿要是累了，记得靠边休息喝杯热茶哦。$memHint$modelTag"
-            else -> "前辈，收到啦！路上有什么想查的店、想听的轻音歌或者想问的路况，随时喊我一声就行。$memHint$modelTag"
-        }
-        return Triple(general, "开心", null)
+        return null
     }
 }
