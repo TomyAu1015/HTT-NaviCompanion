@@ -109,9 +109,16 @@ struct KOnAIChatSheetView: View {
         VStack(spacing: 8) {
             // Live Context Bar (Character + Emotion + Speed + Music + Accent)
             HStack(spacing: 8) {
-                Text("[\(manager.selectedCharacter.displayName(.zhHans)) · \(llm.isCloudActive ? "☁️ " + llm.cloudProvider.label : "📱 本地")]")
-                    .font(.system(size: 11, weight: .bold))
-                    .foregroundColor(httGold)
+                Button(action: {
+                    if llm.hasSavedCloudKey { llm.toggleCloudLocalMode() } else { selectedTab = 1 }
+                }) {
+                    Text("[\(manager.selectedCharacter.displayName(.zhHans)) · \(llm.isCloudActive ? "☁️ " + llm.cloudProvider.label : "📱 本地")]")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundColor(httGold)
+                        .padding(.horizontal, 6).padding(.vertical, 2)
+                        .background(Color.white.opacity(0.08))
+                        .cornerRadius(6)
+                }
                 Spacer()
                 Text("\(Int(manager.currentSpeedKmh)) km/h")
                     .font(.system(size: 11, weight: .bold, design: .monospaced))
@@ -287,8 +294,8 @@ struct KOnAIChatSheetView: View {
                                 let selected = llm.cloudProvider == prov
                                 Button(action: {
                                     llm.selectCloudProvider(prov)
-                                    baseUrlDraft = prov.defaultBaseUrl
-                                    modelNameDraft = prov.defaultModel
+                                    baseUrlDraft = llm.cloudBaseUrl
+                                    modelNameDraft = llm.cloudModelName
                                 }) {
                                     Text(prov.label)
                                         .font(.system(size: 11, weight: .bold))
@@ -301,6 +308,10 @@ struct KOnAIChatSheetView: View {
                             }
                         }
                     }
+
+                    Text(llm.isCloudActive ? "当前生效：☁️ \(llm.cloudProvider.label)（点上方「本地 Qwen2.5」可随时切回离线模型）" : "当前生效：📱 本地离线 Qwen2.5（不消耗云端 API 额度）")
+                        .font(.system(size: 11))
+                        .foregroundColor(llm.isCloudActive ? Color.green : httCream)
 
                     if llm.cloudProvider != .local {
                         TextField("填入 API Key", text: $apiKeyDraft)

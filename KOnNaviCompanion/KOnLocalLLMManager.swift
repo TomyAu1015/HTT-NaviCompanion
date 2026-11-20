@@ -117,6 +117,7 @@ private final class LlamaWorkerThread {
 enum CloudAIProvider: String, CaseIterable, Identifiable {
     case local = "local"
     case gemini = "gemini"
+    case vertexai = "vertexai"
     case doubao = "doubao"
     case deepseek = "deepseek"
     case custom = "custom"
@@ -127,6 +128,7 @@ enum CloudAIProvider: String, CaseIterable, Identifiable {
         switch self {
         case .local: return "本地 Qwen2.5"
         case .gemini: return "Gemini"
+        case .vertexai: return "Vertex AI (香港直连)"
         case .doubao: return "豆包 Doubao"
         case .deepseek: return "DeepSeek"
         case .custom: return "自定义 OpenAI"
@@ -137,6 +139,7 @@ enum CloudAIProvider: String, CaseIterable, Identifiable {
         switch self {
         case .local: return ""
         case .gemini: return "https://generativelanguage.googleapis.com/v1beta"
+        case .vertexai: return "https://aiplatform.googleapis.com/v1/publishers/google"
         case .doubao: return "https://ark.cn-beijing.volces.com/api/v3/chat/completions"
         case .deepseek: return "https://api.deepseek.com/v1/chat/completions"
         case .custom: return "https://api.openai.com/v1/chat/completions"
@@ -146,7 +149,8 @@ enum CloudAIProvider: String, CaseIterable, Identifiable {
     var defaultModel: String {
         switch self {
         case .local: return ""
-        case .gemini: return "gemini-2.5-flash"
+        case .gemini: return "gemini-3.5-flash-lite"
+        case .vertexai: return "gemini-3.5-flash-lite"
         case .doubao: return "doubao-1-5-pro-32k-250115"
         case .deepseek: return "deepseek-chat"
         case .custom: return "gpt-4o-mini"
@@ -746,14 +750,36 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
         cloudProvider != .local && !cloudApiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
+    var hasSavedCloudKey: Bool {
+        !cloudApiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    func toggleCloudLocalMode() {
+        if isCloudActive {
+            selectCloudProvider(.local)
+            autoMountIfNeeded()
+        } else if hasSavedCloudKey {
+            let lastId = UserDefaults.standard.string(forKey: "htt_last_cloud_provider") ?? "gemini"
+            let target = CloudAIProvider(rawValue: lastId) ?? .gemini
+            selectCloudProvider(target == .local ? .gemini : target)
+        }
+    }
+
     func selectCloudProvider(_ prov: CloudAIProvider) {
         cloudProvider = prov
-        cloudBaseUrl = prov.defaultBaseUrl
-        cloudModelName = prov.defaultModel
-        cloudTestStatus = ""
+        if prov != .local {
+            UserDefaults.standard.set(prov.rawValue, forKey: "htt_last_cloud_provider")
+            let savedUrl = UserDefaults.standard.string(forKey: "htt_cloud_base_url_\(prov.rawValue)") ?? ""
+            let savedModel = UserDefaults.standard.string(forKey: "htt_cloud_model_name_\(prov.rawValue)") ?? ""
+            cloudBaseUrl = savedUrl.isEmpty ? prov.defaultBaseUrl : savedUrl
+            cloudModelName = savedModel.isEmpty ? prov.defaultModel : savedModel
+        } else {
+            autoMountIfNeeded()
+        }
+        cloudTestStatus = prov == .local ? "已切换为 📱 本地离线 Qwen2.5（不消耗云端额度）" : ""
         UserDefaults.standard.set(prov.rawValue, forKey: "htt_cloud_provider")
-        UserDefaults.standard.set(prov.defaultBaseUrl, forKey: "htt_cloud_base_url")
-        UserDefaults.standard.set(prov.defaultModel, forKey: "htt_cloud_model_name")
+        UserDefaults.standard.set(cloudBaseUrl, forKey: "htt_cloud_base_url")
+        UserDefaults.standard.set(cloudModelName, forKey: "htt_cloud_model_name")
     }
 
     func saveCloudConfig(provider: CloudAIProvider, apiKey: String, baseUrl: String, modelName: String) {
@@ -766,6 +792,11 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
         cloudBaseUrl = cleanUrl
         cloudModelName = cleanModel
         UserDefaults.standard.set(finalProv.rawValue, forKey: "htt_cloud_provider")
+        if finalProv != .local {
+            UserDefaults.standard.set(finalProv.rawValue, forKey: "htt_last_cloud_provider")
+            UserDefaults.standard.set(cleanUrl, forKey: "htt_cloud_base_url_\(finalProv.rawValue)")
+            UserDefaults.standard.set(cleanModel, forKey: "htt_cloud_model_name_\(finalProv.rawValue)")
+        }
         UserDefaults.standard.set(cleanKey, forKey: "htt_cloud_api_key")
         UserDefaults.standard.set(cleanUrl, forKey: "htt_cloud_base_url")
         UserDefaults.standard.set(cleanModel, forKey: "htt_cloud_model_name")
@@ -1611,7 +1642,7 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
         completion: @escaping (Bool, String) -> Void
     ) {
         let model = modelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? provider.defaultModel : modelName.trimmingCharacters(in: .whitespacesAndNewlines)
-        if provider == .gemini {
+        if provider == .gemini || provider == .vertexai {
             let base = baseUrl.trimmingCharacters(in: .whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
             let finalBase = base.isEmpty ? provider.defaultBaseUrl : base
             let encKey = apiKey.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? apiKey
@@ -1675,13 +1706,22 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
             req.httpMethod = "POST"
             req.setValue("application/json; charset=UTF-8", forHTTPHeaderField: "Content-Type")
             req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+            if endpoint.lowercased().contains("googleapis.com") || endpoint.lowercased().contains("gemini") {
+                req.setValue(apiKey, forHTTPHeaderField: "x-goog-api-key")
+            }
             req.httpBody = try? JSONSerialization.data(withJSONObject: payload)
             URLSession.shared.dataTask(with: req) { data, resp, err in
                 if let err = err { completion(false, err.localizedDescription); return }
                 let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
-                guard let data = data,
-                      let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                    completion(false, "HTTP \(code) 响应解析失败")
+                guard let data = data else {
+                    completion(false, "HTTP \(code) 无响应数据")
+                    return
+                }
+                let rawObj = try? JSONSerialization.jsonObject(with: data)
+                let json = (rawObj as? [String: Any]) ?? (rawObj as? [[String: Any]])?.first
+                guard let json = json else {
+                    let rawTxt = String(data: data, encoding: .utf8) ?? ""
+                    completion(false, "HTTP \(code) 响应解析失败: \(String(rawTxt.prefix(120)))")
                     return
                 }
                 if code < 200 || code >= 300 {
