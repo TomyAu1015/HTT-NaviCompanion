@@ -163,8 +163,9 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
 
     // Settings & State
     @Published var enableVoiceBroadcast: Bool = true
+    @Published var enableWebSearch: Bool = true
     @Published var ttsAccent: KOnAITTSAccent = .mandarin
-    @Published var lowMemoryGuardEnabled: Bool = true
+    @Published var lowMemoryGuardEnabled: Bool = false
     @Published var memories: [String] = []
     @Published var lastGameSummary: String = ""
 
@@ -223,6 +224,10 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
         lastGameSummary = UserDefaults.standard.string(forKey: lastGameKey) ?? ""
         refreshInstalledModels()
         seedGreetingIfNeeded()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+            self?.checkPreviousCrashGuard()
+            self?.autoMountIfNeeded()
+        }
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(handleSystemMemoryWarning),
@@ -290,6 +295,21 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
     // MARK: - Model Files Management (Download / Import / Inspect / Native llama.cpp Load & Unload)
     private let loadingGuardKey = "htt_ai_loading_guard_v1"
     private let loadingStageKey = "htt_ai_loading_stage_v1"
+
+    func autoMountIfNeeded() {
+        guard !activeModelLoaded, !activeModelFileName.isEmpty else { return }
+        guard !UserDefaults.standard.bool(forKey: loadingGuardKey) else { return }
+        guard installedModels.contains(activeModelFileName) else { return }
+        let url = modelsDirectoryURL.appendingPathComponent(activeModelFileName)
+        let info = inspectGGUFFile(at: url)
+        guard info.valid else { return }
+        let freeMB = availableAppMemoryMB()
+        if freeMB > 0 && Int(info.fileSizeMB) + 280 > freeMB {
+            statusMessage = "已记住上次模型 \(activeModelFileName)，当前可用内存 \(freeMB)MB 偏紧，可手动点击挂载或切到 0.5B"
+            return
+        }
+        loadModelIntoMemory(fileName: activeModelFileName)
+    }
 
     func checkPreviousCrashGuard() {
         if UserDefaults.standard.bool(forKey: loadingGuardKey) {
@@ -393,7 +413,7 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
         statusMessage = "正在安全挂载本地大模型（剩余可用内存约 \(freeMB)MB）..."
         UserDefaults.standard.set(true, forKey: loadingGuardKey)
         UserDefaults.standard.set("1:backend_init", forKey: loadingStageKey)
-        let ctxLen: UInt32 = (lowMemoryGuardEnabled || freeMB < 1800) ? 512 : 1024
+        let ctxLen: UInt32 = (lowMemoryGuardEnabled || freeMB < 1400) ? 512 : 1024
 
         llmQueue.async { [weak self] in
             guard let self = self else { return }
@@ -456,6 +476,7 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
             UserDefaults.standard.set("4:init_sampler", forKey: self.loadingStageKey)
             let sparams = llama_sampler_chain_default_params()
             let smpl = llama_sampler_chain_init(sparams)
+            llama_sampler_chain_add(smpl, llama_sampler_init_penalties(64, 1.12, 0.0, 0.0))
             llama_sampler_chain_add(smpl, llama_sampler_init_top_k(40))
             llama_sampler_chain_add(smpl, llama_sampler_init_top_p(0.9, 1))
             llama_sampler_chain_add(smpl, llama_sampler_init_temp(0.75))
@@ -791,9 +812,15 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
             return
         }
 
-        // 6. General Conversation & Knowledge Questions -> REAL llama.cpp Metal GPU Inference!
+        // 6. General Conversation & Real-Time Web Search RAG -> Real llama.cpp Inference!
         if activeModelLoaded && hasNativeLlamaEngine {
-            runRealLlamaInference(userPrompt: text, persona: persona, speakerOverride: nil, actionHint: nil)
+            if isWeatherQuery(lower) {
+                fetchLiveWeatherAndInfer(userText: text, persona: persona, manager: mgr)
+            } else if enableWebSearch && shouldSearchWeb(for: lower) {
+                fetchWebSearchAndInfer(userText: text, persona: persona)
+            } else {
+                runRealLlamaInference(userPrompt: text, persona: persona, speakerOverride: nil, actionHint: nil)
+            }
         } else {
             // Honest prompt when no GGUF is loaded yet
             let speed = Int(mgr.currentSpeedKmh.rounded())
@@ -815,11 +842,142 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
     }
 
     // MARK: - Real llama.cpp Metal GPU Autoregressive Generation
+    private func isWeatherQuery(_ lower: String) -> Bool {
+        return lower.contains("天气") || lower.contains("气温") || lower.contains("温度") || lower.contains("下雨") || lower.contains("多少度") || lower.contains("天气预报")
+    }
+
+    private func shouldSearchWeb(for lower: String) -> Bool {
+        if lower.contains("联网") || lower.contains("搜索") || lower.contains("查一下") || lower.contains("帮我查") || lower.contains("百科") || lower.contains("新闻") || lower.contains("最新") {
+            return true
+        }
+        let triggers = ["是什么", "是谁", "什么是", "介绍", "为什么", "怎么", "多少", "哪里", "哪个", "历史", "知道", "动画", "动漫", "电影", "游戏", "价格", "评分", "攻略"]
+        return triggers.contains { lower.contains($0) }
+    }
+
+    private func cleanSearchQuery(from text: String) -> String {
+        var q = text
+        for noise in ["联网搜索", "联网查一下", "联网", "帮我查一下", "帮我查", "查一下", "搜索一下", "搜索", "你知道", "吗？", "吗?", "吗", "？", "?"] {
+            q = q.replacingOccurrences(of: noise, with: " ")
+        }
+        q = q.trimmingCharacters(in: .whitespacesAndNewlines)
+        return q.isEmpty ? text : q
+    }
+
+    private func fetchLiveWeatherAndInfer(userText: String, persona: AudioPlayerManager.CharacterFilter, manager: AudioPlayerManager) {
+        let coord = manager.userCoordinate
+        let urlStr = "https://api.open-meteo.com/v1/forecast?latitude=\(coord.latitude)&longitude=\(coord.longitude)&current_weather=true&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max&timezone=auto"
+        guard let url = URL(string: urlStr) else {
+            runRealLlamaInference(userPrompt: userText, persona: persona, speakerOverride: nil, actionHint: nil)
+            return
+        }
+        var req = URLRequest(url: url, timeoutInterval: 3.0)
+        req.cachePolicy = .reloadIgnoringLocalCacheData
+        URLSession.shared.dataTask(with: req) { [weak self] data, _, _ in
+            guard let self = self else { return }
+            var weatherNote: String? = nil
+            if let data = data,
+               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let cur = json["current_weather"] as? [String: Any] {
+                let temp = cur["temperature"] as? Double ?? 0
+                let wind = cur["windspeed"] as? Double ?? 0
+                let code = cur["weathercode"] as? Int ?? 0
+                let desc = self.wmoWeatherDesc(code)
+                var extra = ""
+                if let daily = json["daily"] as? [String: Any],
+                   let tmax = (daily["temperature_2m_max"] as? [Double])?.first,
+                   let tmin = (daily["temperature_2m_min"] as? [Double])?.first,
+                   let pop = (daily["precipitation_probability_max"] as? [Int])?.first {
+                    extra = "，今日气温 \(Int(tmin.rounded()))~\(Int(tmax.rounded()))°C，降水概率 \(pop)%"
+                }
+                weatherNote = "当前位置实时气象：\(desc)，气温 \(String(format: "%.1f", temp))°C，风速 \(Int(wind.rounded())) km/h\(extra)。"
+            }
+            DispatchQueue.main.async {
+                self.runRealLlamaInference(
+                    userPrompt: userText,
+                    persona: persona,
+                    speakerOverride: nil,
+                    actionHint: weatherNote != nil ? "🌐 已获取实时气象" : nil,
+                    webContext: weatherNote
+                )
+            }
+        }.resume()
+    }
+
+    private func wmoWeatherDesc(_ code: Int) -> String {
+        switch code {
+        case 0: return "晴朗"
+        case 1, 2, 3: return "多云"
+        case 45, 48: return "有雾"
+        case 51, 53, 55, 61, 63, 65, 80, 81, 82: return "有雨"
+        case 71, 73, 75: return "降雪"
+        case 95, 96, 99: return "雷阵雨"
+        default: return "阴天"
+        }
+    }
+
+    private func fetchWebSearchAndInfer(userText: String, persona: AudioPlayerManager.CharacterFilter) {
+        let query = cleanSearchQuery(from: userText)
+        let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? query
+        let group = DispatchGroup()
+        var wikiSnippets: [String] = []
+        var ddgSnippets: [String] = []
+
+        if let wikiURL = URL(string: "https://zh.wikipedia.org/w/api.php?action=query&list=search&srsearch=\(encoded)&format=json&utf8=1&srlimit=2") {
+            group.enter()
+            var req = URLRequest(url: wikiURL, timeoutInterval: 2.8)
+            req.setValue("HTT-NaviCompanion/1.6", forHTTPHeaderField: "User-Agent")
+            URLSession.shared.dataTask(with: req) { data, _, _ in
+                defer { group.leave() }
+                guard let data = data,
+                      let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let qObj = json["query"] as? [String: Any],
+                      let arr = qObj["search"] as? [[String: Any]] else { return }
+                for item in arr.prefix(2) {
+                    let title = item["title"] as? String ?? ""
+                    let raw = item["snippet"] as? String ?? ""
+                    let clean = raw.replacingOccurrences(of: #"<[^>]+>"#, with: "", options: .regularExpression)
+                        .replacingOccurrences(of: "&quot;", with: "\"")
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !clean.isEmpty {
+                        wikiSnippets.append("【\(title)】\(clean)")
+                    }
+                }
+            }.resume()
+        }
+
+        if let ddgURL = URL(string: "https://api.duckduckgo.com/?q=\(encoded)&format=json&no_html=1&skip_disambig=1") {
+            group.enter()
+            let req = URLRequest(url: ddgURL, timeoutInterval: 2.8)
+            URLSession.shared.dataTask(with: req) { data, _, _ in
+                defer { group.leave() }
+                guard let data = data,
+                      let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+                if let abs = json["AbstractText"] as? String, !abs.isEmpty {
+                    ddgSnippets.append(String(abs.prefix(220)))
+                }
+            }.resume()
+        }
+
+        group.notify(queue: .main) { [weak self] in
+            guard let self = self else { return }
+            let combined = (wikiSnippets + ddgSnippets).joined(separator: "\n")
+            let webCtx = combined.isEmpty ? nil : String(combined.prefix(380))
+            self.runRealLlamaInference(
+                userPrompt: userText,
+                persona: persona,
+                speakerOverride: nil,
+                actionHint: webCtx != nil ? "🌐 已联网检索：\(query)" : "联网未命中，使用本地推理",
+                webContext: webCtx
+            )
+        }
+    }
+
     private func runRealLlamaInference(
         userPrompt: String,
         persona: AudioPlayerManager.CharacterFilter,
         speakerOverride: String?,
-        actionHint: String?
+        actionHint: String?,
+        webContext: String? = nil
     ) {
         let mgr = AudioPlayerManager.shared
         let music = KOnMusicManager.shared
@@ -834,17 +992,21 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
 
         let personaRole: String
         switch persona {
-        case .yui: personaRole = "你是《轻音少女》的平泽唯，性格开朗天然、喜欢草莓蛋糕和下午茶。"
-        case .mio: personaRole = "你是《轻音少女》的秋山澪，认真温柔略带害羞，关心行车安全。"
-        case .ritsu: personaRole = "你是《轻音少女》的田井中律，元气爽朗爱开玩笑，是轻音部部长。"
-        case .mugi: personaRole = "你是《轻音少女》的琴吹紬，温柔体贴的大小姐，喜欢红茶和美食。"
-        default: personaRole = "你是《轻音少女》的中野梓，认真靠谱的后辈，称呼用户为前辈。"
+        case .yui: personaRole = "你是日本动画《轻音少女》(K-ON!)的平泽唯，樱丘高校轻音部吉他手兼主唱，天然开朗、喜欢草莓蛋糕和拿破仑蛋糕。"
+        case .mio: personaRole = "你是日本动画《轻音少女》(K-ON!)的秋山澪，轻音部贝斯手兼主唱，认真温柔略带害羞，关心行车安全。"
+        case .ritsu: personaRole = "你是日本动画《轻音少女》(K-ON!)的田井中律，轻音部部长兼鼓手，元气爽朗爱开玩笑。"
+        case .mugi: personaRole = "你是日本动画《轻音少女》(K-ON!)的琴吹紬，轻音部键盘手，温柔体贴的大小姐，每天给大家准备红茶和点心。"
+        default: personaRole = "你是日本动画《轻音少女》(K-ON!)的中野梓（梓喵），轻音部节奏吉他手，认真靠谱的后辈，称呼用户为前辈。"
         }
 
+        let webBlock = (webContext != nil && !webContext!.isEmpty) ? "\n联网检索真实资料（请优先依据此资料回答）：\n\(webContext!)\n" : ""
+
         let sysPrompt = """
-        \(personaRole)你正在作为车载副驾助手陪伴用户。
-        实时信息：当前时间 \(nowStr)；车速 \(speed) km/h；\(navState)；音乐：\(songStr)；最近牌局：\(gameStr)；用户记忆：\(memStr)。
-        要求：用自然简短的中文口语（2~4句话以内）准确回答用户的问题，贴合角色性格，不要编造不存在的系统提示，不要输出“本地GGUF”字样。
+        \(personaRole)你们五人组成了“放课后茶会”(HTT)乐队，不是偶像养成节目。你正在作为车载副驾伙伴陪伴前辈开车。
+        实时车况：时间 \(nowStr)；车速 \(speed) km/h；\(navState)；音乐：\(songStr)；最近牌局：\(gameStr)；记忆：\(memStr)。\(webBlock)
+        说话规则：
+        1. 用活泼自然的中文口语回答（1~3句），贴合角色性格，可以适度吐槽、撒娇或关心前辈。
+        2. 严禁说“抱歉，我无法理解您的问题”“我无法连接外部设备”“作为AI助手”等客服套话！遇到撒娇、吐槽、问号或无厘头问题也要顺着角色自然接话。
         """
 
         // Build Qwen2.5 ChatML prompt with recent turns

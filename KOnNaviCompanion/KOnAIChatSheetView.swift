@@ -71,6 +71,7 @@ struct KOnAIChatSheetView: View {
             // Do NOT auto-load 1GB GGUF inside .onAppear so opening AI sheet is 100% instant and crash-free!
             llm.cancelIdleUnload()
             llm.checkPreviousCrashGuard()
+            llm.autoMountIfNeeded()
         }
         .onDisappear {
             // Smart delayed unload (90s) when low-memory guard is on; keep resident otherwise for 3D map + music + AI
@@ -112,6 +113,17 @@ struct KOnAIChatSheetView: View {
                 Text("\(Int(manager.currentSpeedKmh)) km/h")
                     .font(.system(size: 11, weight: .bold, design: .monospaced))
                     .foregroundColor(.green)
+                Button(action: {
+                    llm.enableWebSearch.toggle()
+                }) {
+                    Text(llm.enableWebSearch ? "🌐联网:开" : "🌐联网:关")
+                        .font(.system(size: 10, weight: .bold))
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(llm.enableWebSearch ? Color.blue.opacity(0.45) : Color.white.opacity(0.12))
+                        .foregroundColor(httCream)
+                        .cornerRadius(6)
+                }
                 Button(action: {
                     llm.ttsAccent = (llm.ttsAccent == .mandarin) ? .cantonese : .mandarin
                 }) {
