@@ -480,31 +480,6 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
         UserDefaults.standard.set("1:backend_init", forKey: loadingStageKey)
         let ctxLen: UInt32 = (lowMemoryGuardEnabled || freeMB < 1400) ? 512 : 1024
 
-        if isCloudActive {
-            let prov = cloudProvider
-            let key = cloudApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-            let base = cloudBaseUrl
-            let model = cloudModelName
-            let histList = recent.map { ($0.isUser ? "user" : "assistant", String($0.text.prefix(300))) }
-            executeCloudLLMRequest(provider: prov, apiKey: key, baseUrl: base, modelName: model, systemPrompt: sysPrompt, history: histList, userPrompt: userPrompt) { [weak self] ok, reply in
-                DispatchQueue.main.async {
-                    guard let self = self else { return }
-                    let finalText = (ok && !reply.isEmpty) ? reply : "☁️ \(prov.label) 请求失败：\(reply)"
-                    if let pos = self.messages.firstIndex(where: { $0.id == msgId }) {
-                        self.messages[pos].text = finalText
-                        if self.messages[pos].actionHint == nil {
-                            self.messages[pos] = KOnAIChatMessage(id: msgId, isUser: false, speakerName: spk, speakerCharId: max(1, persona.charId), emotionTag: "开心", text: finalText, actionHint: "☁️ \(prov.label) (\(model))")
-                        }
-                    }
-                    self.isGenerating = false
-                    if ok && !reply.isEmpty {
-                        self.speakOfflineTTSOnly(finalText)
-                    }
-                }
-            }
-            return
-        }
-
         llmQueue.async { [weak self] in
             guard let self = self else { return }
             self.freeNativeLlamaOnQueue()
@@ -1245,7 +1220,7 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
             let primary = !baikeSnippets.isEmpty ? baikeSnippets : (!baiduSnippets.isEmpty ? baiduSnippets : (!wikiSnippets.isEmpty ? wikiSnippets : sogouSnippets))
             let combined = primary.joined(separator: "\n")
             let webCtx = combined.isEmpty ? nil : String(combined.prefix(600))
-            if !self.isCloudActive(), let fact = webCtx {
+            if !self.isCloudActive, let fact = webCtx {
                 // Local 1.5B: output verified search facts verbatim so it NEVER hallucinates wrong dates/places!
                 let reply = "\(fact)\n\n—— 已经按实时百科/搜索帮你查准啦，前辈还有哪里想了解吗？"
                 self.emitStreamedReply(
@@ -1321,6 +1296,31 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
         let spk = speakerOverride ?? persona.displayName(.zhHans)
         messages.append(KOnAIChatMessage(id: msgId, isUser: false, speakerName: spk, speakerCharId: max(1, persona.charId), emotionTag: "开心", text: "", actionHint: actionHint))
         currentEmotionTag = "开心"
+
+        if isCloudActive {
+            let prov = cloudProvider
+            let key = cloudApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+            let base = cloudBaseUrl
+            let model = cloudModelName
+            let histList = recent.map { ($0.isUser ? "user" : "assistant", String($0.text.prefix(300))) }
+            executeCloudLLMRequest(provider: prov, apiKey: key, baseUrl: base, modelName: model, systemPrompt: sysPrompt, history: histList, userPrompt: userPrompt) { [weak self] ok, reply in
+                DispatchQueue.main.async {
+                    guard let self = self else { return }
+                    let finalText = (ok && !reply.isEmpty) ? reply : "☁️ \(prov.label) 请求失败：\(reply)"
+                    if let pos = self.messages.firstIndex(where: { $0.id == msgId }) {
+                        self.messages[pos].text = finalText
+                        if self.messages[pos].actionHint == nil {
+                            self.messages[pos] = KOnAIChatMessage(id: msgId, isUser: false, speakerName: spk, speakerCharId: max(1, persona.charId), emotionTag: "开心", text: finalText, actionHint: "☁️ \(prov.label) (\(model))")
+                        }
+                    }
+                    self.isGenerating = false
+                    if ok && !reply.isEmpty {
+                        self.speakOfflineTTSOnly(finalText)
+                    }
+                }
+            }
+            return
+        }
 
         llmQueue.async { [weak self] in
             guard let self = self else { return }

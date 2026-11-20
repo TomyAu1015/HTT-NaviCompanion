@@ -357,29 +357,6 @@ class LocalLLMManager(
         _statusMessage.value = "正在挂载本地大模型 $fileName..."
         val ctxLen = if (_lowMemoryGuard.value || deviceTotalRamGB < 6.0) 768 else 1024
         val threads = Runtime.getRuntime().availableProcessors().coerceIn(2, 6)
-        if (isCloudActive()) {
-            val prov = _cloudProvider.value
-            val key = _cloudApiKey.value.trim()
-            val base = _cloudBaseUrl.value
-            val model = _cloudModelName.value
-            val histList = history.map { (if (it.isUser) "user" else "assistant") to it.text.take(300) }
-            Thread {
-                val (ok, reply) = executeCloudLLMRequest(prov, key, base, model, sysPrompt, histList, userPrompt)
-                mainHandler.post {
-                    val finalText = if (ok && reply.isNotBlank()) reply else "☁️ ${prov.label} 请求失败：$reply"
-                    _messages.value = _messages.value.map { it ->
-                        if (it.id == msgId) it.copy(
-                            text = finalText,
-                            actionHint = it.actionHint ?: "☁️ ${prov.label} ($model)"
-                        ) else it
-                    }
-                    _isGenerating.value = false
-                    if (ok && reply.isNotBlank()) speakOfflineTTS(reply)
-                }
-            }.start()
-            return
-        }
-
         llmExecutor.execute {
             val ok = LlamaNativeBridge.nativeLoadModel(f.absolutePath, ctxLen, threads)
             mainHandler.post {
@@ -994,6 +971,29 @@ ${personaRole}你们五人组成了“放课后茶会”(HTT)乐队。你正坐�
             text = "",
             actionHint = actionHint
         )
+
+        if (isCloudActive()) {
+            val prov = _cloudProvider.value
+            val key = _cloudApiKey.value.trim()
+            val base = _cloudBaseUrl.value
+            val model = _cloudModelName.value
+            val histList = history.map { (if (it.isUser) "user" else "assistant") to it.text.take(300) }
+            Thread {
+                val (ok, reply) = executeCloudLLMRequest(prov, key, base, model, sysPrompt, histList, userPrompt)
+                mainHandler.post {
+                    val finalText = if (ok && reply.isNotBlank()) reply else "☁️ ${prov.label} 请求失败：$reply"
+                    _messages.value = _messages.value.map { it ->
+                        if (it.id == msgId) it.copy(
+                            text = finalText,
+                            actionHint = it.actionHint ?: "☁️ ${prov.label} ($model)"
+                        ) else it
+                    }
+                    _isGenerating.value = false
+                    if (ok && reply.isNotBlank()) speakOfflineTTS(reply)
+                }
+            }.start()
+            return
+        }
 
         llmExecutor.execute {
             val out = LlamaNativeBridge.nativeGenerate(fullPrompt, object : LlamaTokenCallback {
