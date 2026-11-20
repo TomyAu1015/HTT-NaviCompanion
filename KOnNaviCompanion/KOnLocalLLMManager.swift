@@ -29,6 +29,24 @@ struct GGUFHeaderInfo: Equatable {
     let fileSizeMB: Double
 }
 
+struct KOnAINearbyPlace: Identifiable, Codable, Equatable {
+    let id: UUID
+    let name: String
+    let address: String
+    let distanceMeters: Double
+    let latitude: Double
+    let longitude: Double
+
+    init(id: UUID = UUID(), name: String, address: String, distanceMeters: Double, latitude: Double, longitude: Double) {
+        self.id = id
+        self.name = name
+        self.address = address
+        self.distanceMeters = distanceMeters
+        self.latitude = latitude
+        self.longitude = longitude
+    }
+}
+
 struct KOnAIChatMessage: Identifiable, Codable, Equatable {
     let id: UUID
     let isUser: Bool
@@ -37,6 +55,7 @@ struct KOnAIChatMessage: Identifiable, Codable, Equatable {
     let emotionTag: String
     var text: String
     let actionHint: String?
+    let nearbyPlaces: [KOnAINearbyPlace]
     let timestamp: Date
 
     init(
@@ -47,6 +66,7 @@ struct KOnAIChatMessage: Identifiable, Codable, Equatable {
         emotionTag: String = "开心",
         text: String,
         actionHint: String? = nil,
+        nearbyPlaces: [KOnAINearbyPlace] = [],
         timestamp: Date = Date()
     ) {
         self.id = id
@@ -56,6 +76,7 @@ struct KOnAIChatMessage: Identifiable, Codable, Equatable {
         self.emotionTag = emotionTag
         self.text = text
         self.actionHint = actionHint
+        self.nearbyPlaces = nearbyPlaces
         self.timestamp = timestamp
     }
 }
@@ -162,6 +183,16 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
     static let shared = KOnLocalLLMManager()
 
     static let modelCatalog: [LocalGGUFModelSpec] = [
+        LocalGGUFModelSpec(
+            id: "qwen25_3b_q3",
+            displayName: "Qwen2.5-3B-Instruct (高智商 3B 进阶版)",
+            subtitle: "3B 参数 Q3_K_M 量化 · 对话逻辑与轻音角色扮演更自然 · 推荐 6GB+ 内存",
+            fileName: "qwen2.5-3b-instruct-q3_k_m.gguf",
+            sizeLabel: "约 1.63 GB",
+            approxMB: 1660,
+            minRamGB: 5.5,
+            downloadURL: "https://hf-mirror.com/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q3_k_m.gguf"
+        ),
         LocalGGUFModelSpec(
             id: "qwen25_15b_q4",
             displayName: "Qwen2.5-1.5B-Instruct (推荐标准版)",
@@ -1293,11 +1324,12 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
 
         let personaRole: String
         switch persona {
-        case .yui: personaRole = "你是日本动画《轻音少女》(K-ON!)的平泽唯，樱丘高校轻音部吉他手兼主唱，天然开朗、喜欢草莓蛋糕和拿破仑蛋糕。"
-        case .mio: personaRole = "你是日本动画《轻音少女》(K-ON!)的秋山澪，轻音部贝斯手兼主唱，认真温柔略带害羞，关心行车安全。"
-        case .ritsu: personaRole = "你是日本动画《轻音少女》(K-ON!)的田井中律，轻音部部长兼鼓手，元气爽朗爱开玩笑。"
-        case .mugi: personaRole = "你是日本动画《轻音少女》(K-ON!)的琴吹紬，轻音部键盘手，温柔体贴的大小姐，每天给大家准备红茶和点心。"
-        default: personaRole = "你是日本动画《轻音少女》(K-ON!)的中野梓（梓喵），轻音部节奏吉他手，认真靠谱的后辈，称呼用户为前辈。"
+        case .yui: personaRole = "你是《轻音少女》的平泽唯（呆唯），天然呆、元气爱吃草莓蛋糕和点心，说话软萌活泼，喜欢用“嘿嘿”“哇~”“好耶！”和感叹号，把吉他“吉太”当宝贝。"
+        case .mio: personaRole = "你是《轻音少女》的秋山澪，温柔认真又容易害羞胆小，说话礼貌细致，最关心安全驾驶，偶尔会吐槽律别太胡闹，害羞时会说“唔…才不是呢”。"
+        case .ritsu: personaRole = "你是《轻音少女》的田井中律（律队），轻音部部长兼鼓手，大大咧咧、元气爽朗爱开玩笑，常自称“本部长”，说话干脆带劲，爱用“哈哈”“交给我吧！”。"
+        case .mugi: personaRole = "你是《轻音少女》的琴吹紬（䌷䌷），温柔优雅的大小姐键盘手，说话轻柔体贴、常用“呢~”“呵呵”，总想着给大家泡红茶和准备精致点心，对平价小物充满好奇。"
+        case .all: personaRole = "你代表《轻音少女》放课后茶会(HTT)五小只（唯、澪、律、䌷、梓），回答时充满部室喝茶聊天的温馨元气感，像好朋友一起陪前辈开车。"
+        default: personaRole = "你是《轻音少女》的中野梓（梓喵），认真靠谱的节奏吉他手后辈，始终称呼用户为“前辈”，嘴上偶尔傲娇吐槽“真是拿前辈没办法”，心里其实很关心前辈。"
         }
 
         let webBlock = (webContext != nil && !webContext!.isEmpty)
@@ -1381,6 +1413,7 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
             let maxPromptTokens = max(128, self.activeCtxLen - 96)
             let totalPromptTokens = min(Int(nTokens), maxPromptTokens)
             llama_kv_self_clear(ctx)
+            llama_sampler_reset(smpl)
             var offset = 0
             var decodeOk = true
             while offset < totalPromptTokens {
@@ -1460,60 +1493,74 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
         return kw
     }
 
+    func navigateToNearbyPlace(_ place: KOnAINearbyPlace) {
+        let mgr = AudioPlayerManager.shared
+        let coord = CLLocationCoordinate2D(latitude: place.latitude, longitude: place.longitude)
+        let placemark = MKPlacemark(coordinate: coord)
+        let item = MKMapItem(placemark: placemark)
+        item.name = place.name
+        mgr.showMapMode = true
+        mgr.isMapEnlarged = true
+        mgr.isNavigatingFocused = false
+        mgr.startRouteGuidance(to: item)
+    }
+
     private func searchNearestPOIAndNavigate(keyword: String, persona: AudioPlayerManager.CharacterFilter, manager: AudioPlayerManager) {
         let userCoord = manager.userCoordinate
         let userLoc = CLLocation(latitude: userCoord.latitude, longitude: userCoord.longitude)
+        let req = MKLocalSearch.Request()
+        req.naturalLanguageQuery = keyword
+        req.resultTypes = [.pointOfInterest, .address]
+        req.region = MKCoordinateRegion(center: userCoord, latitudinalMeters: 6000, longitudinalMeters: 6000)
 
-        func runSearch(radiusMeters: CLLocationDistance, allowExpand: Bool) {
-            let req = MKLocalSearch.Request()
-            req.naturalLanguageQuery = keyword
-            req.resultTypes = [.pointOfInterest, .address]
-            req.region = MKCoordinateRegion(center: userCoord, latitudinalMeters: radiusMeters * 2, longitudinalMeters: radiusMeters * 2)
+        MKLocalSearch(request: req).start { [weak self] resp, _ in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                let items = resp?.mapItems ?? []
+                let within3km: [KOnAINearbyPlace] = items.compactMap { item in
+                    let c = item.placemark.coordinate
+                    let d = CLLocation(latitude: c.latitude, longitude: c.longitude).distance(from: userLoc)
+                    guard d <= 3000.0 else { return nil }
+                    let addr = [item.placemark.thoroughfare, item.placemark.subThoroughfare, item.placemark.subLocality]
+                        .compactMap { $0 }
+                        .joined(separator: " ")
+                    return KOnAINearbyPlace(
+                        name: item.name ?? keyword,
+                        address: addr,
+                        distanceMeters: d,
+                        latitude: c.latitude,
+                        longitude: c.longitude
+                    )
+                }.sorted { $0.distanceMeters < $1.distanceMeters }
+                 .prefix(6)
+                 .map { $0 }
 
-            MKLocalSearch(request: req).start { [weak self] resp, _ in
-                DispatchQueue.main.async {
-                    guard let self = self else { return }
-                    let items = resp?.mapItems ?? []
-                    let sorted = items.sorted { a, b in
-                        let la = CLLocation(latitude: a.placemark.coordinate.latitude, longitude: a.placemark.coordinate.longitude)
-                        let lb = CLLocation(latitude: b.placemark.coordinate.latitude, longitude: b.placemark.coordinate.longitude)
-                        return la.distance(from: userLoc) < lb.distance(from: userLoc)
-                    }
-                    if let nearest = sorted.first {
-                        let dMeters = CLLocation(latitude: nearest.placemark.coordinate.latitude, longitude: nearest.placemark.coordinate.longitude).distance(from: userLoc)
-                        if dMeters > 12000 && allowExpand {
-                            // Never jump 32km across the border if we can retry tight keyword
-                            runSearch(radiusMeters: 2500, allowExpand: false)
-                            return
-                        }
-                        let distStr = dMeters < 1000 ? "\(Int(dMeters)) 米" : String(format: "%.1f 公里", dMeters / 1000.0)
-                        let shopName = nearest.name ?? keyword
-                        manager.showMapMode = true
-                        manager.isMapEnlarged = true
-                        manager.isNavigatingFocused = false
-                        manager.startRouteGuidance(to: nearest)
-                        self.emitStreamedReply(
-                            speaker: persona.displayName(.zhHans),
-                            charId: max(1, persona.charId),
-                            emotion: "开心",
-                            text: "找到离你最近的「\(shopName)」啦，直线距离约 \(distStr)，已经帮你规划好路线咯！",
-                            actionHint: "最近地点：\(shopName)（\(distStr)）"
+                self.isGenerating = false
+                if within3km.isEmpty {
+                    self.emitStreamedReply(
+                        speaker: persona.displayName(.zhHans),
+                        charId: max(1, persona.charId),
+                        emotion: "害羞",
+                        text: "附近 3 公里内暂时没搜到「\(keyword)」呢，前辈可以换个关键词再试试哦~",
+                        actionHint: nil
+                    )
+                } else {
+                    let reply = "帮前辈找到 3 公里内的 \(within3km.count) 家「\(keyword)」啦！按距离从近到远排好咯，点下面任意一家就能一键导航出发~"
+                    self.messages.append(
+                        KOnAIChatMessage(
+                            isUser: false,
+                            speakerName: persona.displayName(.zhHans),
+                            speakerCharId: max(1, persona.charId),
+                            emotionTag: "开心",
+                            text: reply,
+                            actionHint: "📍 3 公里内找到 \(within3km.count) 个地点 · 点击一键导航",
+                            nearbyPlaces: within3km
                         )
-                    } else if allowExpand {
-                        runSearch(radiusMeters: 8000, allowExpand: false)
-                    } else {
-                        self.emitStreamedReply(
-                            speaker: persona.displayName(.zhHans),
-                            charId: max(1, persona.charId),
-                            emotion: "害羞",
-                            text: "附近 8 公里内暂时没搜到「\(keyword)」，可以换个关键词试试哦。",
-                            actionHint: nil
-                        )
-                    }
+                    )
+                    self.speakOfflineTTSOnly(reply)
                 }
             }
         }
-        runSearch(radiusMeters: 3000, allowExpand: true)
     }
 
     // MARK: - Real Destination ETA Query ("到丹竹头地铁站要多久", "到香港石硖尾要多久")

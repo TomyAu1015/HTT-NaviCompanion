@@ -268,6 +268,46 @@ struct KOnAIChatSheetView: View {
                     .padding(.vertical, 9)
                     .background(msg.isUser ? httCrimson : cardBg)
                     .cornerRadius(14)
+                if !msg.nearbyPlaces.isEmpty {
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(Array(msg.nearbyPlaces.enumerated()), id: \.element.id) { idx, place in
+                            let distLabel = place.distanceMeters < 1000 ? "\(Int(place.distanceMeters))m" : String(format: "%.1fkm", place.distanceMeters / 1000.0)
+                            HStack(spacing: 8) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("\(idx + 1). \(place.name)")
+                                        .font(.system(size: 12, weight: .bold))
+                                        .foregroundColor(.white)
+                                        .lineLimit(1)
+                                    Text("距你 \(distLabel)" + (place.address.isEmpty ? "" : " · \(place.address)"))
+                                        .font(.system(size: 10))
+                                        .foregroundColor(.gray)
+                                        .lineLimit(1)
+                                }
+                                Spacer(minLength: 4)
+                                Button(action: {
+                                    llm.navigateToNearbyPlace(place)
+                                    dismiss()
+                                }) {
+                                    Text("一键导航")
+                                        .font(.system(size: 10, weight: .bold))
+                                        .padding(.horizontal, 9)
+                                        .padding(.vertical, 5)
+                                        .background(Color.blue)
+                                        .foregroundColor(.white)
+                                        .cornerRadius(7)
+                                }
+                                .buttonStyle(PlainButtonStyle())
+                            }
+                            .padding(.horizontal, 9)
+                            .padding(.vertical, 7)
+                            .background(Color(red: 0.10, green: 0.13, blue: 0.20))
+                            .cornerRadius(10)
+                            .overlay(RoundedRectangle(cornerRadius: 10).stroke(httGold.opacity(0.45), lineWidth: 1))
+                        }
+                    }
+                    .frame(maxWidth: 290, alignment: .leading)
+                    .padding(.top, 4)
+                }
                 if let hint = msg.actionHint {
                     Text("✨ \(hint)")
                         .font(.system(size: 10, weight: .bold))
