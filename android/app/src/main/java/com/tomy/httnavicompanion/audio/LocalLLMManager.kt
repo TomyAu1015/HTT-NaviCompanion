@@ -82,7 +82,8 @@ enum class CloudAIProvider(
     val defaultModel: String
 ) {
     LOCAL("local", "本地 Qwen2.5", "", ""),
-    GEMINI("gemini", "Gemini", "https://generativelanguage.googleapis.com/v1beta", "gemini-2.5-flash"),
+    GEMINI("gemini", "Gemini", "https://generativelanguage.googleapis.com/v1beta", "gemini-3.5-flash-lite"),
+    VERTEXAI("vertexai", "Vertex AI (香港直连)", "https://aiplatform.googleapis.com/v1/publishers/google", "gemini-3.5-flash-lite"),
     DOUBAO("doubao", "豆包 Doubao", "https://ark.cn-beijing.volces.com/api/v3/chat/completions", "doubao-1-5-pro-32k-250115"),
     DEEPSEEK("deepseek", "DeepSeek", "https://api.deepseek.com/v1/chat/completions", "deepseek-chat"),
     CUSTOM("custom", "自定义 OpenAI", "https://api.openai.com/v1/chat/completions", "gpt-4o-mini");
@@ -531,15 +532,35 @@ class LocalLLMManager(
     private fun activePersona(filter: CharacterFilter): CharacterFilter =
         if (filter == CharacterFilter.ALL) CharacterFilter.YUI else filter
 
+    fun hasSavedCloudKey(): Boolean = _cloudApiKey.value.trim().isNotEmpty()
+
+    fun toggleCloudLocalMode() {
+        if (isCloudActive()) {
+            selectCloudProvider(CloudAIProvider.LOCAL)
+            autoMountIfNeeded()
+        } else if (hasSavedCloudKey()) {
+            val lastId = prefs.getString("last_cloud_provider", "gemini") ?: "gemini"
+            val target = CloudAIProvider.fromId(lastId)
+            selectCloudProvider(if (target == CloudAIProvider.LOCAL) CloudAIProvider.GEMINI else target)
+        }
+    }
+
     fun selectCloudProvider(provider: CloudAIProvider) {
         _cloudProvider.value = provider
-        _cloudBaseUrl.value = provider.defaultBaseUrl
-        _cloudModelName.value = provider.defaultModel
-        _cloudTestStatus.value = ""
+        if (provider != CloudAIProvider.LOCAL) {
+            prefs.edit().putString("last_cloud_provider", provider.id).apply()
+            val savedUrl = prefs.getString("cloud_base_url_${provider.id}", "") ?: ""
+            val savedModel = prefs.getString("cloud_model_name_${provider.id}", "") ?: ""
+            _cloudBaseUrl.value = savedUrl.ifBlank { provider.defaultBaseUrl }
+            _cloudModelName.value = savedModel.ifBlank { provider.defaultModel }
+        } else {
+            autoMountIfNeeded()
+        }
+        _cloudTestStatus.value = if (provider == CloudAIProvider.LOCAL) "已切换为 📱 本地离线 Qwen2.5（不消耗云端额度）" else ""
         prefs.edit()
             .putString("cloud_provider", provider.id)
-            .putString("cloud_base_url", provider.defaultBaseUrl)
-            .putString("cloud_model_name", provider.defaultModel)
+            .putString("cloud_base_url", _cloudBaseUrl.value)
+            .putString("cloud_model_name", _cloudModelName.value)
             .apply()
     }
 
@@ -552,12 +573,17 @@ class LocalLLMManager(
         _cloudApiKey.value = cleanKey
         _cloudBaseUrl.value = cleanUrl
         _cloudModelName.value = cleanModel
-        prefs.edit()
+        val ed = prefs.edit()
             .putString("cloud_provider", finalProv.id)
             .putString("cloud_api_key", cleanKey)
             .putString("cloud_base_url", cleanUrl)
             .putString("cloud_model_name", cleanModel)
-            .apply()
+        if (finalProv != CloudAIProvider.LOCAL) {
+            ed.putString("last_cloud_provider", finalProv.id)
+                .putString("cloud_base_url_${finalProv.id}", cleanUrl)
+                .putString("cloud_model_name_${finalProv.id}", cleanModel)
+        }
+        ed.apply()
         _cloudTestStatus.value = if (finalProv == CloudAIProvider.LOCAL) "已切换回本地离线模型" else "已保存 ${finalProv.label} 配置"
     }
 
@@ -1120,7 +1146,7 @@ ${personaRole}你们五人组成了“放课后茶会”(HTT)乐队。你正坐�
         userPrompt: String
     ): Pair<Boolean, String> {
         return try {
-            if (provider == CloudAIProvider.GEMINI) {
+            if (provider == CloudAIProvider.GEMINI || provider == CloudAIProvider.VERTEXAI) {
                 val model = modelName.trim().ifEmpty { provider.defaultModel }
                 val base = baseUrl.trim().trimEnd('/').ifEmpty { provider.defaultBaseUrl }
                 val endpoint = "$base/models/$model:generateContent?key=${URLEncoder.encode(apiKey, "UTF-8")}"
@@ -1147,7 +1173,11 @@ ${personaRole}你们五人组成了“放课后茶会”(HTT)乐队。你正坐�
                 val resp = stream?.bufferedReader(Charsets.UTF_8)?.readText() ?: ""
                 conn.disconnect()
                 if (code !in 200..299) {
-                    val errMsg = try { JSONObject(resp).optJSONObject("error")?.optString("message") ?: resp } catch (_: Throwable) { resp }
+                    val errMsg = try {
+                        val trimmed = resp.trim()
+                        val obj = if (trimmed.startsWith("[")) org.json.JSONArray(trimmed).optJSONObject(0) else JSONObject(trimmed)
+                        obj?.optJSONObject("error")?.optString("message")?.ifBlank { resp } ?: resp
+                    } catch (_: Throwable) { resp }
                     return false to "HTTP $code: ${errMsg.take(180)}"
                 }
                 val text = JSONObject(resp)
@@ -1179,6 +1209,9 @@ ${personaRole}你们五人组成了“放课后茶会”(HTT)乐队。你正坐�
                     doOutput = true
                     setRequestProperty("Content-Type", "application/json; charset=UTF-8")
                     setRequestProperty("Authorization", "Bearer $apiKey")
+                    if (endpoint.contains("googleapis.com", ignoreCase = true) || endpoint.contains("gemini", ignoreCase = true)) {
+                        setRequestProperty("x-goog-api-key", apiKey)
+                    }
                 }
                 conn.outputStream.use { it.write(payload.toString().toByteArray(Charsets.UTF_8)) }
                 val code = conn.responseCode
@@ -1186,7 +1219,11 @@ ${personaRole}你们五人组成了“放课后茶会”(HTT)乐队。你正坐�
                 val resp = stream?.bufferedReader(Charsets.UTF_8)?.readText() ?: ""
                 conn.disconnect()
                 if (code !in 200..299) {
-                    val errMsg = try { JSONObject(resp).optJSONObject("error")?.optString("message") ?: resp } catch (_: Throwable) { resp }
+                    val errMsg = try {
+                        val trimmed = resp.trim()
+                        val obj = if (trimmed.startsWith("[")) org.json.JSONArray(trimmed).optJSONObject(0) else JSONObject(trimmed)
+                        obj?.optJSONObject("error")?.optString("message")?.ifBlank { resp } ?: resp
+                    } catch (_: Throwable) { resp }
                     return false to "HTTP $code: ${errMsg.take(180)}"
                 }
                 val text = JSONObject(resp)

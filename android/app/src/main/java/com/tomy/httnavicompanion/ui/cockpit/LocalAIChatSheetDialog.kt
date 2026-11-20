@@ -193,7 +193,14 @@ fun LocalAIChatSheetDialog(
                             "[${selectedChar.displayName(AppLanguage.ZH_HANS)} · $engineLabel]",
                             color = AiGold,
                             fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(Color.White.copy(alpha = 0.08f))
+                                .clickable {
+                                    if (llm.hasSavedCloudKey()) llm.toggleCloudLocalMode() else selectedTab = 1
+                                }
+                                .padding(horizontal = 6.dp, vertical = 2.dp)
                         )
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             Text("$speedKmh km/h", color = Color(0xFF4CAF50), fontSize = 11.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
@@ -352,8 +359,8 @@ fun LocalAIChatSheetDialog(
                                             .background(if (selected) AiCrimson else Color.White.copy(alpha = 0.1f))
                                             .clickable {
                                                 llm.selectCloudProvider(prov)
-                                                urlDraft = prov.defaultBaseUrl
-                                                modelDraft = prov.defaultModel
+                                                urlDraft = llm.cloudBaseUrl.value
+                                                modelDraft = llm.cloudModelName.value
                                             }
                                             .padding(horizontal = 9.dp, vertical = 5.dp)
                                     ) {
@@ -361,6 +368,12 @@ fun LocalAIChatSheetDialog(
                                     }
                                 }
                             }
+                            val isCloudOn = cloudProvider != CloudAIProvider.LOCAL && cloudApiKey.isNotBlank()
+                            Text(
+                                if (isCloudOn) "当前生效：☁️ ${cloudProvider.label}（点上方「本地 Qwen2.5」可随时切回离线模型）" else "当前生效：📱 本地离线 Qwen2.5（不消耗云端 API 额度）",
+                                color = if (isCloudOn) Color(0xFF4CAF50) else AiCream,
+                                fontSize = 11.sp
+                            )
                             if (cloudProvider != CloudAIProvider.LOCAL) {
                                 OutlinedTextField(
                                     value = keyDraft,
