@@ -18,7 +18,8 @@ jobs:
       - name: Generate Mugi App Icons
         run: |
           if [ -f "generate_icons.py" ]; then
-            python3 generate_icons.py
+            python3 -m pip install --quiet --break-system-packages pillow 2>/dev/null || pip3 install --quiet pillow 2>/dev/null || true
+            python3 generate_icons.py || true
           fi
 
       - name: Download and Embed K-ON Music from Google Drive
@@ -29,7 +30,7 @@ jobs:
 
       - name: Auto-Sync Root Source Uploads Safeguard
         run: |
-          for f in AudioPlayerManager.swift ContentView.swift KOnMusicManager.swift KOnLocalLLMManager.swift KOnAIChatSheetView.swift; do
+          for f in AudioPlayerManager.swift ContentView.swift KOnMusicManager.swift KOnLocalLLMManager.swift KOnAIChatSheetView.swift Entitlements.plist Info.plist; do
             if [ -f "$f" ]; then
               echo "Found root $f, syncing to KOnNaviCompanion/..."
               cp -f "$f" "KOnNaviCompanion/"
