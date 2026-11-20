@@ -949,7 +949,14 @@ class AudioPlayerManager(
         val mode = _travelMode.value
 
         Thread {
-            val routes = MapAndRouteEngine.calculateRoute(start, destCoord, mode)
+            val avoids = _drivingAvoidOptions.value
+            val routes = MapAndRouteEngine.calculateRoute(
+                startWgs = start,
+                destWgs = destCoord,
+                travelMode = mode,
+                avoidHighways = avoids.contains(DrivingAvoidanceOption.AVOID_HIGHWAYS),
+                avoidTolls = avoids.contains(DrivingAvoidanceOption.AVOID_TOLLS)
+            )
             mainHandler.post {
                 _candidateRoutes.value = routes
                 selectRoute(0)
@@ -1399,8 +1406,14 @@ class AudioPlayerManager(
             _destinationCoord.value = dest
             startRouteToPlace("模拟巡航路线", dest)
         }
-        _currentSpeedKmh.value = 52
-        if (_maxSpeedKmh.value < 52) _maxSpeedKmh.value = 52
+        val simSpeed = when (_travelMode.value) {
+            NavigationTravelMode.DRIVING -> 52
+            NavigationTravelMode.EBIKE -> 18
+            NavigationTravelMode.WALKING -> 5
+            NavigationTravelMode.TRANSIT -> 34
+        }
+        _currentSpeedKmh.value = simSpeed
+        if (_maxSpeedKmh.value < simSpeed) _maxSpeedKmh.value = simSpeed
         demoStepCounter = 0
     }
 
@@ -1413,38 +1426,38 @@ class AudioPlayerManager(
     }
 
     private fun advanceDemoSimulationStep() {
-        demoStepCounter = (demoStepCounter + 1) % 4
+        demoStepCounter += 1
         val b = activeBaseId()
         val pts = _activeRoutePoints.value
-        if (pts.size > 2) {
-            val idx = ((demoStepCounter + 1) * pts.size / 4).coerceIn(0, pts.lastIndex)
+        val mode = _travelMode.value
+        val simSpeed = when (mode) {
+            NavigationTravelMode.DRIVING -> Random.nextInt(44, 68)
+            NavigationTravelMode.EBIKE -> Random.nextInt(15, 22)
+            NavigationTravelMode.WALKING -> Random.nextInt(4, 6)
+            NavigationTravelMode.TRANSIT -> Random.nextInt(24, 46)
+        }
+        _currentSpeedKmh.value = simSpeed
+        if (simSpeed > _maxSpeedKmh.value) _maxSpeedKmh.value = simSpeed
+
+        if (pts.size >= 2) {
+            val totalSteps = 20
+            val frac = (demoStepCounter.coerceAtMost(totalSteps)).toDouble() / totalSteps.toDouble()
+            val idx = (frac * (pts.size - 1)).toInt().coerceIn(0, pts.lastIndex)
             val nextPt = pts[idx]
+            val stepMeters = CoordinateConverter.distanceMeters(_userCoordinate.value, nextPt)
             _headingDegrees.value = CoordinateConverter.bearingDegrees(_userCoordinate.value, nextPt)
             _userCoordinate.value = nextPt
-        }
-        _tripDistanceKm.value += 0.25
-        _currentSpeedKmh.value = Random.nextInt(42, 76)
-        if (_currentSpeedKmh.value > _maxSpeedKmh.value) _maxSpeedKmh.value = _currentSpeedKmh.value
-
-        when (demoStepCounter) {
-            1 -> {
-                _distanceToNextStepMeters.value = 120
-                _currentStepInstruction.value = "前方 120 米左转"
-                enqueueVoiceCombo(listOf(Pair(b + 14, "📍 およそ 100m先"), Pair(b + 29, "↩️ 左方向に行きまーす！")))
-            }
-            2 -> {
-                _distanceToNextStepMeters.value = 40
-                _currentStepInstruction.value = "即将进入主干道 (靠右)"
-                enqueueVoiceCombo(listOf(Pair(b + 15, "📍 まもなく"), Pair(b + 19, "🛣️ 入口だよ！合流に注意してね！")))
-            }
-            3 -> {
-                _distanceToNextStepMeters.value = 0
-                _currentStepInstruction.value = "已到达终点附近！"
+            _tripDistanceKm.value += (stepMeters / 1000.0).coerceAtLeast(0.05)
+            updateAndroidNavigationProgress(nextPt)
+            if (idx >= pts.lastIndex || !_hasActiveNavigation.value) {
                 enqueueVoiceCombo(listOf(Pair(b + 37, "🎉 目的地周辺に到着したよ！"), Pair(b + 38, "✨ お疲れ様♪")))
+                stopDemoSimulation()
+            } else if (demoStepCounter % 4 == 1) {
+                enqueueVoiceCombo(listOf(Pair(b + 13, "📍 およそ 300m先"), Pair(b + 18, "⬆️ そのまま道なりだよ！")))
             }
-            0 -> {
-                _distanceToNextStepMeters.value = 300
-                _currentStepInstruction.value = "前方 300 米直行"
+        } else {
+            _tripDistanceKm.value += 0.12
+            if (demoStepCounter % 4 == 0) {
                 playVoice(b + 12, "📍 およそ 300m先 直進だよ♪")
             }
         }
