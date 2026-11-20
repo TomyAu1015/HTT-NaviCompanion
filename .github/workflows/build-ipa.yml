@@ -42,19 +42,31 @@ jobs:
             rm -rf KOnNaviCompanion/KOnNaviCompanion
           fi
 
-      - name: Download Official llama.cpp iOS Metal XCFramework (b5046)
+      - name: Build iOS 15-Compatible llama.cpp Static Framework (b5046)
         run: |
-          rm -rf build-llama && mkdir -p build-llama
-          curl -fL "https://github.com/ggml-org/llama.cpp/releases/download/b5046/llama-b5046-xcframework.zip" -o build-llama/llama-xcframework.zip
-          unzip -q -o build-llama/llama-xcframework.zip -d build-llama/
-          LLAMA_FW=$(find build-llama -type d -path "*/ios-arm64/llama.framework" | head -n 1)
-          echo "Found llama.framework at: $LLAMA_FW"
-          cp -R "$LLAMA_FW" build-llama/llama.framework
-          if [ ! -f "build-llama/llama.framework/Modules/module.modulemap" ]; then
-            mkdir -p build-llama/llama.framework/Modules
-            printf 'framework module llama {\n  umbrella header "llama.h"\n  export *\n  module * { export * }\n}\n' > build-llama/llama.framework/Modules/module.modulemap
-          fi
-          ls -la build-llama/llama.framework build-llama/llama.framework/Modules
+          rm -rf build-llama llama-src llama-build
+          mkdir -p build-llama/llama.framework/Headers build-llama/llama.framework/Modules
+          git clone --depth 1 --branch b5046 https://github.com/ggml-org/llama.cpp.git llama-src
+          cmake -S llama-src -B llama-build \
+            -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DGGML_BLAS=OFF \
+            -DGGML_METAL=OFF \
+            -DLLAMA_BUILD_TESTS=OFF \
+            -DLLAMA_BUILD_EXAMPLES=OFF \
+            -DLLAMA_BUILD_SERVER=OFF \
+            -DLLAMA_CURL=OFF
+          cmake --build llama-build --config Release -j4 --target llama
+          LIB_FILES=$(find llama-build -name "*.a")
+          echo "Merging static libs: $LIB_FILES"
+          libtool -static -o build-llama/llama.framework/llama $LIB_FILES
+          cp llama-src/include/*.h build-llama/llama.framework/Headers/
+          cp llama-src/ggml/include/*.h build-llama/llama.framework/Headers/
+          printf 'framework module llama {\n  umbrella header "llama.h"\n  export *\n  module * { export * }\n}\n' > build-llama/llama.framework/Modules/module.modulemap
+          ls -lh build-llama/llama.framework/llama
 
       - name: Build iOS App (with Native llama.cpp Engine)
         run: |
@@ -110,6 +122,34 @@ jobs:
             codesign --force --sign - --timestamp=none build/Release-iphoneos/KOnNaviCompanion.app/Frameworks/llama.framework || true
           fi
 
+          # 2.9 Ensure Info.plist always contains CarPlay & Multi-Scene manifest (even if repo Info.plist was stale)
+          python3 - <<'PYEOF'
+import plistlib
+p = "build/Release-iphoneos/KOnNaviCompanion.app/Info.plist"
+with open(p, "rb") as f:
+    d = plistlib.load(f)
+d["UISupportsCarPlay"] = True
+d["UIApplicationSceneManifest"] = {
+    "UIApplicationSupportsMultipleScenes": True,
+    "UISceneConfigurations": {
+        "CPTemplateApplicationSceneSessionRoleApplication": [{
+            "UISceneClassName": "CPTemplateApplicationScene",
+            "UISceneConfigurationName": "CarPlayConfiguration",
+            "UISceneDelegateClassName": "CarPlaySceneDelegate",
+        }],
+        "UIWindowSceneSessionRoleApplication": [{
+            "UISceneClassName": "UIWindowScene",
+            "UISceneConfigurationName": "Default Configuration",
+            "UISceneDelegateClassName": "PhoneSceneDelegate",
+        }],
+    },
+}
+with open(p, "wb") as f:
+    plistlib.dump(d, f, fmt=plistlib.FMT_BINARY)
+print("Injected CarPlay + Multi-Scene manifest into", p)
+PYEOF
+          otool -l build/Release-iphoneos/KOnNaviCompanion.app/Frameworks/llama.framework/llama 2>/dev/null | grep -A 5 "LC_BUILD_VERSION\|LC_VERSION_MIN" || true
+
           # 3. Ad-Hoc sign with entitlements (DO NOT strip binary after codesign, so both TrollStore and Sideloaders get an intact signature!)
           if [ -f "KOnNaviCompanion/Entitlements.plist" ]; then
             codesign --force --sign - --entitlements KOnNaviCompanion/Entitlements.plist --timestamp=none build/Release-iphoneos/KOnNaviCompanion.app
@@ -117,6 +157,7 @@ jobs:
             codesign --force --sign - --timestamp=none build/Release-iphoneos/KOnNaviCompanion.app
           fi
           codesign -dvvv --entitlements - build/Release-iphoneos/KOnNaviCompanion.app || true
+          plutil -p build/Release-iphoneos/KOnNaviCompanion.app/Info.plist | grep -E -A 35 "UIApplicationSceneManifest|UISupportsCarPlay" || true
 
       - name: Package Universal IPA (TrollStore & Sideload Compatible)
         run: |
