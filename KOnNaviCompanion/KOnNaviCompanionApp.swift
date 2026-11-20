@@ -44,6 +44,7 @@ class PhoneSceneDelegate: UIResponder, UIWindowSceneDelegate {
 
 @main
 class AppDelegate: UIResponder, UIApplicationDelegate, UNUserNotificationCenterDelegate {
+    var window: UIWindow?
     static var orientationLock: UIInterfaceOrientationMask = .all
 
     func application(_ application: UIApplication, supportedInterfaceOrientationsFor window: UIWindow?) -> UIInterfaceOrientationMask {
@@ -70,6 +71,12 @@ class AppDelegate: UIResponder, UIApplicationDelegate, UNUserNotificationCenterD
                      didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey : Any]? = nil) -> Bool {
         AudioPlayerManager.shared.configureAudioSession()
         UNUserNotificationCenter.current().delegate = self
+        if Bundle.main.object(forInfoDictionaryKey: "UIApplicationSceneManifest") == nil {
+            let fallbackWindow = UIWindow(frame: UIScreen.main.bounds)
+            fallbackWindow.rootViewController = UIHostingController(rootView: ContentView())
+            self.window = fallbackWindow
+            fallbackWindow.makeKeyAndVisible()
+        }
         return true
     }
 
