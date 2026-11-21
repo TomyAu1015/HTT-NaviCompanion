@@ -1,3 +1,7 @@
+import java.time.LocalDate
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -12,11 +16,22 @@ android {
         applicationId = "com.tomy.httnavicompanion"
         minSdk = 26
         targetSdk = 34
+        val shanghaiNow = LocalDate.now(ZoneId.of("Asia/Shanghai"))
         val buildDateStr = System.getenv("APP_BUILD_DATE")
-            ?: java.time.LocalDate.now(java.time.ZoneId.of("Asia/Shanghai")).format(java.time.format.DateTimeFormatter.ofPattern("dd/MM/yyyy"))
-        val dailySeq = (System.getenv("APP_DAILY_SEQ")?.toIntOrNull() ?: 1).coerceAtLeast(1)
+            ?: shanghaiNow.format(DateTimeFormatter.ofPattern("dd/MM/yyyy"))
+        val todayIso = shanghaiNow.format(DateTimeFormatter.ofPattern("yyyy-MM-dd"))
+        val gitDailySeq = try {
+            val proc = ProcessBuilder("git", "log", "--since=$todayIso 00:00:00 +0800", "--oneline", "--", "android/")
+                .directory(rootProject.file(".."))
+                .redirectErrorStream(true)
+                .start()
+            val lines = proc.inputStream.bufferedReader().readLines().count { it.isNotBlank() }
+            proc.waitFor()
+            lines.coerceAtLeast(1)
+        } catch (_: Throwable) { 1 }
+        val dailySeq = (System.getenv("APP_DAILY_SEQ")?.toIntOrNull() ?: gitDailySeq).coerceAtLeast(1)
         val computedCode = (System.getenv("APP_VERSION_CODE")?.toIntOrNull()
-            ?: (java.time.LocalDate.now(java.time.ZoneId.of("Asia/Shanghai")).format(java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd")).toInt() * 100 + (dailySeq % 100)))
+            ?: (shanghaiNow.format(DateTimeFormatter.ofPattern("yyyyMMdd")).toInt() * 100 + (dailySeq % 100)))
         versionCode = computedCode
         versionName = "${dailySeq}.0 (v${buildDateStr})"
         buildConfigField("String", "APP_BUILD_DATE", "\"${buildDateStr}\"")
