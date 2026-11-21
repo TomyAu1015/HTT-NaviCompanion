@@ -2289,7 +2289,7 @@ struct ContentView: View {
                             .foregroundColor(.white)
                             .cornerRadius(6)
                     }
-                    Button(action: { manager.switchTransitToDirectMode(.cycling) }) {
+                    Button(action: { manager.switchTransitToDirectMode(.ebike) }) {
                         Label(tr("骑行 \(bikeMins)分", "騎行 \(bikeMins)分", "Bike \(bikeMins)m"), systemImage: "bicycle")
                             .font(.system(size: 10, weight: .black))
                             .padding(.horizontal, 7)
@@ -5766,56 +5766,7 @@ struct InAppTransitPlanSheetView: View {
                     } else {
                         ScrollView(.vertical, showsIndicators: true) {
                             VStack(alignment: .leading, spacing: 12) {
-                                if manager.directDistanceToDestinationMeters > 0 && manager.directDistanceToDestinationMeters < 3500 {
-                                    let directM = manager.directDistanceToDestinationMeters
-                                    let walkMins = max(1, Int((directM / 76.0).rounded()))
-                                    let bikeMins = max(1, Int((directM / 250.0).rounded()))
-                                    VStack(alignment: .leading, spacing: 8) {
-                                        HStack(spacing: 6) {
-                                            Image(systemName: "location.circle.fill")
-                                                .foregroundColor(httGold)
-                                            Text(tr(String(format: "目的地较近（约 %.1f 公里），推荐步行或骑行直达", directM / 1000.0), String(format: "目的地較近（約 %.1f 公里），推薦步行或騎行直達", directM / 1000.0), String(format: "Destination is close (%.1f km) — Walk or Bike directly", directM / 1000.0)))
-                                                .font(.system(size: 12, weight: .bold))
-                                                .foregroundColor(httCream)
-                                        }
-                                        HStack(spacing: 10) {
-                                            Button(action: {
-                                                dismiss()
-                                                manager.switchTransitToDirectMode(.walking)
-                                            }) {
-                                                HStack(spacing: 5) {
-                                                    Image(systemName: "figure.walk")
-                                                    Text(tr("步行直达 · 约\(walkMins)分钟", "步行直達 · 約\(walkMins)分鐘", "Walk · ~\(walkMins)m"))
-                                                }
-                                                .font(.system(size: 12, weight: .black))
-                                                .frame(maxWidth: .infinity)
-                                                .padding(.vertical, 8)
-                                                .background(Color.green.opacity(0.85))
-                                                .foregroundColor(.white)
-                                                .cornerRadius(9)
-                                            }
-                                            Button(action: {
-                                                dismiss()
-                                                manager.switchTransitToDirectMode(.cycling)
-                                            }) {
-                                                HStack(spacing: 5) {
-                                                    Image(systemName: "bicycle")
-                                                    Text(tr("骑行直达 · 约\(bikeMins)分钟", "騎行直達 · 約\(bikeMins)分鐘", "Bike · ~\(bikeMins)m"))
-                                                }
-                                                .font(.system(size: 12, weight: .black))
-                                                .frame(maxWidth: .infinity)
-                                                .padding(.vertical, 8)
-                                                .background(Color.teal.opacity(0.9))
-                                                .foregroundColor(.white)
-                                                .cornerRadius(9)
-                                            }
-                                        }
-                                    }
-                                    .padding(10)
-                                    .background(Color.orange.opacity(0.16))
-                                    .cornerRadius(12)
-                                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(httGold.opacity(0.55), lineWidth: 1))
-                                }
+                                sheetNearDistanceBanner
 
                                 // Show Cross-City Flight / High-Speed Rail / Train overview banner if applicable
                                 if let firstPlan = manager.transitPlans.first, let ic = firstPlan.intercityBanner {
@@ -6049,6 +6000,66 @@ struct InAppTransitPlanSheetView: View {
         }
     }
     
+    @ViewBuilder
+    private var sheetNearDistanceBanner: some View {
+        let directM: Double = manager.directDistanceToDestinationMeters
+        if directM > 0 && directM < 3500 {
+            let walkMins: Int = max(1, Int((directM / 76.0).rounded()))
+            let bikeMins: Int = max(1, Int((directM / 250.0).rounded()))
+            let kmText: String = String(format: "%.1f", directM / 1000.0)
+            let bannerTitle: String = tr(
+                "目的地较近（约 \(kmText) 公里），推荐步行或骑行直达",
+                "目的地較近（約 \(kmText) 公里），推薦步行或騎行直達",
+                "Destination is close (\(kmText) km) — Walk or Bike directly"
+            )
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 6) {
+                    Image(systemName: "location.circle.fill")
+                        .foregroundColor(httGold)
+                    Text(bannerTitle)
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundColor(httCream)
+                }
+                HStack(spacing: 10) {
+                    Button(action: {
+                        dismiss()
+                        manager.switchTransitToDirectMode(.walking)
+                    }) {
+                        HStack(spacing: 5) {
+                            Image(systemName: "figure.walk")
+                            Text(tr("步行直达 · 约\(walkMins)分钟", "步行直達 · 約\(walkMins)分鐘", "Walk · ~\(walkMins)m"))
+                        }
+                        .font(.system(size: 12, weight: .black))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 8)
+                        .background(Color.green.opacity(0.85))
+                        .foregroundColor(.white)
+                        .cornerRadius(9)
+                    }
+                    Button(action: {
+                        dismiss()
+                        manager.switchTransitToDirectMode(.ebike)
+                    }) {
+                        HStack(spacing: 5) {
+                            Image(systemName: "bicycle")
+                            Text(tr("骑行直达 · 约\(bikeMins)分钟", "騎行直達 · 約\(bikeMins)分鐘", "Bike · ~\(bikeMins)m"))
+                        }
+                        .font(.system(size: 12, weight: .black))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 8)
+                        .background(Color.teal.opacity(0.9))
+                        .foregroundColor(.white)
+                        .cornerRadius(9)
+                    }
+                }
+            }
+            .padding(10)
+            .background(Color.orange.opacity(0.16))
+            .cornerRadius(12)
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(httGold.opacity(0.55), lineWidth: 1))
+        }
+    }
+
     @ViewBuilder
     private func planStepTimelineView(plan: TransitPlanOption, planIndex: Int) -> some View {
         VStack(alignment: .leading, spacing: 0) {

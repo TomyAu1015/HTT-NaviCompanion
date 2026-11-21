@@ -1535,7 +1535,7 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
         if lower.contains("步行") || lower.contains("走路") {
             manager.travelMode = .walking
         } else if lower.contains("骑车") || lower.contains("骑行") || lower.contains("单车") {
-            manager.travelMode = .cycling
+            manager.travelMode = .ebike
         } else if lower.contains("地铁") || lower.contains("公交") || lower.contains("巴士") {
             if lower.contains("坐地铁") || lower.contains("坐公交") || lower.contains("坐巴士") || lower.contains("乘地铁") || lower.contains("乘公交") {
                 manager.travelMode = .transit
