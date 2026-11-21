@@ -508,7 +508,7 @@ fun RM500AlbumAndOutfitSheetDialog(
                     }
 
                     1 -> {
-                        // 36 Episode CG Album Tab
+                        // 36 Episode CG Album Tab (1:1 iOS RM-500HTT Album Grid)
                         Column(
                             modifier = Modifier.fillMaxSize(),
                             horizontalAlignment = Alignment.CenterHorizontally
@@ -517,45 +517,107 @@ fun RM500AlbumAndOutfitSheetDialog(
                             val cgBmp = remember(selectedCGIndex) {
                                 app.assetDecryptor.getSpriteBitmap(cgName)
                             }
-                            if (cgBmp != null) {
-                                Image(
-                                    bitmap = cgBmp.asImageBitmap(),
-                                    contentDescription = null,
-                                    contentScale = ContentScale.Fit,
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .height(190.dp)
-                                        .clip(RoundedCornerShape(12.dp))
-                                        .border(2.dp, SheetGold, RoundedCornerShape(12.dp))
-                                )
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(175.dp)
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(Color.Black.copy(alpha = 0.45f))
+                                    .border(1.5.dp, SheetGold, RoundedCornerShape(12.dp)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                if (cgBmp != null) {
+                                    Image(
+                                        bitmap = cgBmp.asImageBitmap(),
+                                        contentDescription = null,
+                                        contentScale = ContentScale.Fit,
+                                        modifier = Modifier.fillMaxSize().padding(4.dp)
+                                    )
+                                } else {
+                                    Text("CG #$selectedCGIndex", color = SheetGold, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                                }
                             }
                             Spacer(Modifier.height(6.dp))
-                            Text(
-                                episodeTitles.getOrElse(selectedCGIndex - 1) { "K-ON! CG #$selectedCGIndex" },
-                                color = SheetGold,
-                                fontWeight = FontWeight.Black,
-                                fontSize = 13.sp
-                            )
-                            Spacer(Modifier.height(8.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                TextButton(
+                                    onClick = { selectedCGIndex = if (selectedCGIndex <= 1) 36 else selectedCGIndex - 1 },
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                                ) {
+                                    Text("◀ 上一张", color = SheetGold, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                }
+                                Text(
+                                    "$selectedCGIndex / 36 · ${episodeTitles.getOrElse(selectedCGIndex - 1) { "K-ON! #$selectedCGIndex" }}",
+                                    color = SheetCream,
+                                    fontWeight = FontWeight.Black,
+                                    fontSize = 11.5.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                TextButton(
+                                    onClick = { selectedCGIndex = if (selectedCGIndex >= 36) 1 else selectedCGIndex + 1 },
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                                ) {
+                                    Text("下一张 ▶", color = SheetGold, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                            Spacer(Modifier.height(4.dp))
 
                             LazyVerticalGrid(
-                                columns = GridCells.Adaptive(minSize = 64.dp),
+                                columns = GridCells.Fixed(3),
                                 modifier = Modifier.weight(1f),
                                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                                 verticalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
                                 items((1..36).toList()) { idx ->
                                     val sel = idx == selectedCGIndex
-                                    Box(
+                                    val thumbName = String.format("rm_cg_%02d", idx)
+                                    val thumbBmp = remember(idx) { app.assetDecryptor.getSpriteBitmap(thumbName) }
+                                    val epTitle = episodeTitles.getOrElse(idx - 1) { "#$idx" }
+                                    Column(
                                         modifier = Modifier
                                             .clip(RoundedCornerShape(8.dp))
-                                            .background(if (sel) SheetCrimson else SheetCardBg)
-                                            .border(1.dp, if (sel) SheetGold else Color.White.copy(alpha = 0.15f), RoundedCornerShape(8.dp))
+                                            .background(if (sel) SheetCrimson.copy(alpha = 0.65f) else SheetCardBg)
+                                            .border(if (sel) 1.5.dp else 1.dp, if (sel) SheetGold else Color.White.copy(alpha = 0.14f), RoundedCornerShape(8.dp))
                                             .clickable { selectedCGIndex = idx }
-                                            .padding(vertical = 8.dp),
-                                        contentAlignment = Alignment.Center
+                                            .padding(4.dp),
+                                        horizontalAlignment = Alignment.CenterHorizontally
                                     ) {
-                                        Text("#$idx", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                        if (thumbBmp != null) {
+                                            Image(
+                                                bitmap = thumbBmp.asImageBitmap(),
+                                                contentDescription = epTitle,
+                                                contentScale = ContentScale.Crop,
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .height(54.dp)
+                                                    .clip(RoundedCornerShape(6.dp))
+                                            )
+                                        } else {
+                                            Box(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .height(54.dp)
+                                                    .clip(RoundedCornerShape(6.dp))
+                                                    .background(Color.Black.copy(alpha = 0.35f)),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Text("#$idx", color = SheetGold, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                            }
+                                        }
+                                        Spacer(Modifier.height(3.dp))
+                                        Text(
+                                            epTitle,
+                                            color = if (sel) SheetGold else Color.White,
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 9.5.sp,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
                                     }
                                 }
                             }

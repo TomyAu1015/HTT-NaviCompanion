@@ -183,7 +183,7 @@ fun CockpitScreen(
         } else {
             // Portrait Single-Column Cockpit matching iOS ContentView.swift (adaptive height for all Android screen ratios)
             BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
-                val adaptiveStageH = (maxHeight * 0.205f).coerceIn(142.dp, 182.dp)
+                val adaptiveStageH = (maxHeight * 0.19f).coerceIn(132.dp, 168.dp)
                 Column(
                     modifier = Modifier
                         .fillMaxSize()
@@ -412,21 +412,6 @@ fun TopBezelBar(
                 fontWeight = FontWeight.Bold,
                 maxLines = 1
             )
-        }
-
-        // 4.6 Vehicle & Map Layer Settings
-        Row(
-            modifier = Modifier
-                .clip(RoundedCornerShape(8.dp))
-                .background(Color.White.copy(alpha = 0.14f))
-                .border(1.dp, HTTGold.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
-                .clickable { onOpenVehicle() }
-                .padding(horizontal = 8.dp, vertical = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(3.dp)
-        ) {
-            Icon(Icons.Default.DirectionsCar, contentDescription = null, tint = HTTGold, modifier = Modifier.size(13.dp))
-            Text("车辆/图层", color = HTTCream, fontSize = 11.sp, fontWeight = FontWeight.Bold, maxLines = 1)
         }
 
         // 5. Language Switcher
@@ -1444,7 +1429,7 @@ fun UtilityControlGrid(
     val cruiseRem by manager.cruiseRemainingSeconds.collectAsState()
     var showIntervalMenu by remember { mutableStateOf(false) }
 
-    Column(verticalArrangement = Arrangement.spacedBy(if (isCompact) 5.dp else 7.dp)) {
+    Column(verticalArrangement = Arrangement.spacedBy(if (isCompact) 4.dp else 5.dp)) {
         // Row 1: 3 Tactical Buttons (出发进行 / 多人相声 / 顶蛋糕下午茶)
         Row(
             modifier = Modifier.fillMaxWidth(),

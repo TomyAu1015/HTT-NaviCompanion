@@ -765,30 +765,30 @@ class AudioPlayerManager(
             lastRealLocTimeMs = nowMs
             _userCoordinate.value = newCoord
 
-            // Smooth Doppler GPS speed with EMA & anti-zero-jump hysteresis
-            val sampleKmh: Double? = when {
-                accuracyMeters in 0.1f..50f && speedMps >= 0.01f -> (speedMps * 3.6).coerceIn(0.0, 260.0)
-                accuracyMeters in 0.1f..25f && dtSec >= 0.8 && movedMeters >= 2.0 && movedMeters <= 80.0 * dtSec ->
+            // Stationary anti-jitter + responsive EMA aligned 1:1 with iOS
+            val rawKmh: Double? = when {
+                accuracyMeters in 0.1f..45f && speedMps >= 0f -> (speedMps * 3.6).coerceIn(0.0, 260.0)
+                accuracyMeters in 0.1f..18f && dtSec >= 0.9 && movedMeters >= 2.5 && movedMeters <= 75.0 * dtSec ->
                     ((movedMeters / dtSec) * 3.6).coerceIn(0.0, 260.0)
-                accuracyMeters in 0.1f..50f && speedMps == 0f -> 0.0
                 else -> null
             }
+            val sampleKmh = if (rawKmh != null && rawKmh < 6.5 && movedMeters < 2.2 && accuracyMeters > 12f) 0.0 else rawKmh
             if (sampleKmh != null) {
-                if (sampleKmh < 1.8) {
+                if (sampleKmh < 3.0) {
                     consecutiveLowSpeedFixes += 1
-                    if (consecutiveLowSpeedFixes >= 2 || smoothedSpeedKmh < 4.0) {
+                    if (consecutiveLowSpeedFixes >= 2 || smoothedSpeedKmh < 6.0) {
                         smoothedSpeedKmh = 0.0
                     }
                 } else {
                     consecutiveLowSpeedFixes = 0
-                    smoothedSpeedKmh = if (smoothedSpeedKmh < 1.0 || kotlin.math.abs(sampleKmh - smoothedSpeedKmh) > 18.0) {
+                    smoothedSpeedKmh = if (smoothedSpeedKmh < 1.0 || kotlin.math.abs(sampleKmh - smoothedSpeedKmh) > 12.0) {
                         sampleKmh
                     } else {
-                        smoothedSpeedKmh * 0.62 + sampleKmh * 0.38
+                        smoothedSpeedKmh * 0.25 + sampleKmh * 0.75
                     }
                     lastValidSpeedMs = nowMs
                 }
-            } else if (nowMs - lastValidSpeedMs > 3500L) {
+            } else if (nowMs - lastValidSpeedMs > 2500L) {
                 smoothedSpeedKmh = 0.0
             }
             val kmh = kotlin.math.round(smoothedSpeedKmh).toInt().coerceAtLeast(0)

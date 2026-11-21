@@ -9182,25 +9182,26 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                         sampleKmh = min(260.0, (movedDelta / dtSec) * 3.6)
                     }
                 }
-                if let sKmh = sampleKmh {
-                    if sKmh < 1.8 {
+                let filteredKmh = (sampleKmh != nil && sampleKmh! < 6.5 && movedDelta < 2.2 && loc.horizontalAccuracy > 12.0) ? 0.0 : sampleKmh
+                if let sKmh = filteredKmh {
+                    if sKmh < 3.0 {
                         self.consecutiveLowSpeedFixes += 1
-                        if self.consecutiveLowSpeedFixes >= 2 || self.smoothedSpeedKmh < 4.0 {
+                        if self.consecutiveLowSpeedFixes >= 2 || self.smoothedSpeedKmh < 6.0 {
                             self.smoothedSpeedKmh = 0.0
                         }
                     } else {
                         self.consecutiveLowSpeedFixes = 0
-                        if self.smoothedSpeedKmh < 1.0 || abs(sKmh - self.smoothedSpeedKmh) > 18.0 {
+                        if self.smoothedSpeedKmh < 1.0 || abs(sKmh - self.smoothedSpeedKmh) > 12.0 {
                             self.smoothedSpeedKmh = sKmh
                         } else {
-                            self.smoothedSpeedKmh = self.smoothedSpeedKmh * 0.62 + sKmh * 0.38
+                            self.smoothedSpeedKmh = self.smoothedSpeedKmh * 0.25 + sKmh * 0.75
                         }
                         self.lastValidSpeedTimestamp = now
                     }
-                } else if now.timeIntervalSince(self.lastValidSpeedTimestamp) > 3.5 {
+                } else if now.timeIntervalSince(self.lastValidSpeedTimestamp) > 2.5 {
                     self.smoothedSpeedKmh = 0.0
                 }
-                self.currentSpeedKmh = self.smoothedSpeedKmh
+                self.currentSpeedKmh = Foundation.round(self.smoothedSpeedKmh)
             }
             
             // TRANSIT NAVIGATION AUTO-SWITCH ENGINE (GaoDe 1:1 Lifecycle!)
