@@ -183,7 +183,7 @@ fun CockpitScreen(
         } else {
             // Portrait Single-Column Cockpit matching iOS ContentView.swift (adaptive height for all Android screen ratios)
             BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
-                val adaptiveStageH = (maxHeight * 0.19f).coerceIn(132.dp, 168.dp)
+                val adaptiveStageH = (maxHeight * 0.245f).coerceIn(176.dp, 212.dp)
                 Column(
                     modifier = Modifier
                         .fillMaxSize()
@@ -477,7 +477,16 @@ fun TopBezelBar(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(3.dp)
         ) {
-            Icon(Icons.Default.PhotoLibrary, contentDescription = null, tint = Color.White, modifier = Modifier.size(13.dp))
+            val albumIconBmp = remember { HTTNaviApp.instance.assetDecryptor.getSpriteBitmap("rm_btn_icon_on") }
+            if (albumIconBmp != null) {
+                Image(
+                    bitmap = albumIconBmp.asImageBitmap(),
+                    contentDescription = null,
+                    modifier = Modifier.size(15.dp).clip(RoundedCornerShape(3.dp))
+                )
+            } else {
+                Icon(Icons.Default.PhotoLibrary, contentDescription = null, tint = Color.White, modifier = Modifier.size(13.dp))
+            }
             Text("相册/车标", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Black, maxLines = 1)
         }
     }
@@ -657,9 +666,9 @@ fun ClubroomStageView(
 
     val themeColor = characterThemeColor(selectedChar)
     val isCompactStage = stageHeight < 215.dp
-    val spriteSize = if (isCompactStage) 56.dp else 64.dp
-    val singleSpriteSize = if (isCompactStage) 66.dp else 76.dp
-    val teaSceneHeight = if (isCompactStage) 100.dp else 114.dp
+    val spriteSize = if (isCompactStage) 64.dp else 72.dp
+    val singleSpriteSize = if (isCompactStage) 76.dp else 86.dp
+    val teaSceneHeight = if (isCompactStage) 118.dp else 134.dp
 
     val seatedOrder = remember {
         listOf(
@@ -1328,14 +1337,14 @@ fun SpeechBubbleBox(manager: AudioPlayerManager) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
+            .clip(RoundedCornerShape(10.dp))
             .background(HTTCream)
-            .border(2.dp, HTTGold, RoundedCornerShape(12.dp))
-            .padding(horizontal = 12.dp, vertical = 8.dp),
+            .border(1.2.dp, HTTGold, RoundedCornerShape(10.dp))
+            .padding(horizontal = 10.dp, vertical = 5.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween
     ) {
-        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -1344,25 +1353,26 @@ fun SpeechBubbleBox(manager: AudioPlayerManager) {
                 Text(
                     selectedChar.roleTag(lang),
                     color = HTTCrimson,
-                    fontSize = 10.sp,
-                    fontWeight = FontWeight.Black
+                    fontSize = 9.5.sp,
+                    fontWeight = FontWeight.Black,
+                    maxLines = 1
                 )
                 Box(
                     modifier = Modifier
                         .clip(RoundedCornerShape(4.dp))
-                        .background(HTTCrimson.copy(alpha = 0.15f))
+                        .background(HTTCrimson.copy(alpha = 0.14f))
                         .clickable { manager.resetPositions() }
-                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                        .padding(horizontal = 5.dp, vertical = 1.dp)
                 ) {
-                    Text("位置归位", color = HTTCrimson, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                    Text("位置归位", color = HTTCrimson, fontSize = 8.5.sp, fontWeight = FontWeight.Bold)
                 }
             }
             Text(
                 text = bubbleText,
                 color = Color.Black.copy(alpha = 0.88f),
-                fontSize = 12.sp,
+                fontSize = 11.sp,
                 fontWeight = FontWeight.Bold,
-                maxLines = 2,
+                maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
         }
@@ -1564,16 +1574,18 @@ fun TacticalButton(
 ) {
     Column(
         modifier = modifier
-            .clip(RoundedCornerShape(11.dp))
+            .clip(RoundedCornerShape(10.dp))
             .background(bgColor)
-            .border(1.4.dp, HTTGold.copy(alpha = 0.8f), RoundedCornerShape(11.dp))
+            .border(1.dp, HTTGold.copy(alpha = 0.72f), RoundedCornerShape(10.dp))
             .clickable { onClick() }
-            .padding(vertical = 6.dp, horizontal = 4.dp),
+            .padding(vertical = 4.dp, horizontal = 4.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(2.dp)
+        verticalArrangement = Arrangement.spacedBy(1.dp)
     ) {
-        Icon(icon, contentDescription = null, tint = HTTCream, modifier = Modifier.size(14.dp))
-        Text(title, color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Black, maxLines = 1)
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+            Icon(icon, contentDescription = null, tint = HTTCream, modifier = Modifier.size(12.dp))
+            Text(title, color = Color.White, fontSize = 10.5.sp, fontWeight = FontWeight.Black, maxLines = 1)
+        }
         Text(subtitle, color = HTTCream.copy(alpha = 0.85f), fontSize = 8.sp, maxLines = 1)
     }
 }

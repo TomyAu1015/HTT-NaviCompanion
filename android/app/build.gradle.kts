@@ -147,3 +147,13 @@ dependencies {
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 }
+
+val syncSharedDatAssets by tasks.registering(Copy::class) {
+    from(rootProject.file("../KOnNaviCompanion")) {
+        include("mascot_assets.dat", "voice_assets.dat")
+    }
+    into(file("src/main/assets"))
+}
+tasks.matching { it.name.startsWith("merge") && it.name.endsWith("Assets") }.configureEach {
+    dependsOn(syncSharedDatAssets)
+}
