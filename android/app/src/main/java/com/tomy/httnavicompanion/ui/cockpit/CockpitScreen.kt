@@ -74,6 +74,7 @@ fun CockpitScreen(
     val isHUDMirrored by manager.isHUDMirrored.collectAsState()
     val themeBgBmp by manager.themeBackgroundBitmap.collectAsState()
     val isDraggingMascot by manager.isDraggingMascot.collectAsState()
+    val isTouchingMap by manager.isTouchingMap.collectAsState()
 
     var showMusicDialog by remember { mutableStateOf(false) }
     var showAlbumDialog by remember { mutableStateOf(false) }
@@ -115,7 +116,7 @@ fun CockpitScreen(
                 modifier = Modifier
                     .fillMaxSize()
                     .statusBarsPadding()
-                    .verticalScroll(rememberScrollState(), enabled = !isDraggingMascot)
+                    .verticalScroll(rememberScrollState(), enabled = !isDraggingMascot && !isTouchingMap)
                     .padding(horizontal = 10.dp, vertical = 6.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
@@ -190,7 +191,7 @@ fun CockpitScreen(
                         .fillMaxSize()
                         .statusBarsPadding()
                         .navigationBarsPadding()
-                        .verticalScroll(rememberScrollState(), enabled = !isDraggingMascot)
+                        .verticalScroll(rememberScrollState(), enabled = !isDraggingMascot && !isTouchingMap)
                         .padding(horizontal = 9.dp, vertical = 3.dp),
                     verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
@@ -1806,6 +1807,10 @@ fun EnlargedNavigationHUDView(
     val remKm by manager.remainingRouteDistanceKm.collectAsState()
     val remMins by manager.remainingRouteMinutes.collectAsState()
     val candidateRoutes by manager.candidateRoutes.collectAsState()
+    val isRoutePreviewing by manager.isRoutePreviewing.collectAsState()
+    val transitFirstLegUseBike by manager.transitFirstLegUseBike.collectAsState()
+    val drivingAvoids by manager.drivingAvoidOptions.collectAsState()
+    val destName by manager.destinationName.collectAsState()
     val selectedRouteIdx by manager.selectedRouteIndex.collectAsState()
     val tappedCoord by manager.tappedCoord.collectAsState()
     val tappedTitle by manager.tappedTitle.collectAsState()
@@ -2057,8 +2062,8 @@ fun EnlargedNavigationHUDView(
                 }
             }
 
-            // Active Turn-by-Turn Card (when navigating)
-            if (hasNav) {
+            // Active Turn-by-Turn Card (when actively navigating, not in route preview)
+            if (hasNav && !isRoutePreviewing) {
                 Surface(
                     color = Color(0xFF0F211C).copy(alpha = 0.94f),
                     shape = RoundedCornerShape(14.dp),
@@ -2174,6 +2179,196 @@ fun EnlargedNavigationHUDView(
                         contentPadding = PaddingValues(0.dp)
                     ) {
                         Text("导航到这里", color = Color.White, fontSize = 11.5.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
+
+        // Amap-Style Interactive Route Preview Sheet (Preserves K-ON! Outline: Top Pills, Right Controls, Bottom Music + Speed + Bubble + Mascot)
+        if (hasNav && isRoutePreviewing && candidateRoutes.isNotEmpty()) {
+            val selectedRoute = candidateRoutes.getOrNull(selectedRouteIdx) ?: candidateRoutes.first()
+            val directKm = selectedRoute.totalDistanceMeters / 1000.0
+            Surface(
+                color = Color(0xFF101522).copy(alpha = 0.96f),
+                shape = RoundedCornerShape(16.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .align(Alignment.BottomCenter)
+                    .navigationBarsPadding()
+                    .padding(start = 10.dp, end = 10.dp, bottom = 128.dp)
+                    .border(1.2.dp, HTTGold.copy(alpha = 0.78f), RoundedCornerShape(16.dp))
+            ) {
+                Column(
+                    modifier = Modifier.padding(horizontal = 11.dp, vertical = 9.dp),
+                    verticalArrangement = Arrangement.spacedBy(7.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                "路线预览 · $destName",
+                                color = HTTGold,
+                                fontSize = 12.5.sp,
+                                fontWeight = FontWeight.Black,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                "共 ${candidateRoutes.size} 套方案 · 选定方案后点击下方「开始导航」",
+                                color = Color(0xFFD1D5DB),
+                                fontSize = 9.5.sp
+                            )
+                        }
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(7.dp))
+                                .background(Color.White.copy(alpha = 0.12f))
+                                .clickable { manager.stopNavigation() }
+                                .padding(horizontal = 8.dp, vertical = 4.dp)
+                        ) {
+                            Text("取消", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+
+                    if (travelMode == NavigationTravelMode.DRIVING) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            listOf(
+                                DrivingAvoidanceOption.AVOID_CONGESTION to "躲避拥堵",
+                                DrivingAvoidanceOption.AVOID_HIGHWAY to "不走高速",
+                                DrivingAvoidanceOption.AVOID_TOLL to "少收费"
+                            ).forEach { (opt, label) ->
+                                val active = drivingAvoids.contains(opt)
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(if (active) Color(0xFF1D4ED8) else Color.White.copy(alpha = 0.08f))
+                                        .border(1.dp, if (active) Color(0xFF60A5FA) else Color.White.copy(alpha = 0.18f), RoundedCornerShape(8.dp))
+                                        .clickable { manager.toggleDrivingAvoidOption(opt) }
+                                        .padding(horizontal = 8.dp, vertical = 4.dp)
+                                ) {
+                                    Text(label, color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
+                    }
+
+                    if (travelMode == NavigationTravelMode.TRANSIT) {
+                        if (directKm > 0.0 && directKm < 3.5) {
+                            val walkM = (selectedRoute.totalDistanceMeters / 76.0).toInt().coerceAtLeast(1)
+                            val bikeM = (selectedRoute.totalDistanceMeters / 250.0).toInt().coerceAtLeast(1)
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(9.dp))
+                                    .background(Color(0xFF3A2510))
+                                    .border(1.dp, HTTGold.copy(alpha = 0.55f), RoundedCornerShape(9.dp))
+                                    .padding(horizontal = 8.dp, vertical = 5.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Text("距离较近", color = HTTGold, fontSize = 10.sp, fontWeight = FontWeight.Black)
+                                Spacer(Modifier.weight(1f))
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(6.dp))
+                                        .background(Color(0xFF15803D))
+                                        .clickable { manager.switchTransitToDirectMode(NavigationTravelMode.WALKING) }
+                                        .padding(horizontal = 7.dp, vertical = 4.dp)
+                                ) {
+                                    Text("步行 ${walkM}分", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                }
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(6.dp))
+                                        .background(Color(0xFF0F766E))
+                                        .clickable { manager.switchTransitToDirectMode(NavigationTravelMode.EBIKE) }
+                                        .padding(horizontal = 7.dp, vertical = 4.dp)
+                                ) {
+                                    Text("骑行 ${bikeM}分", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Text("第一步去上车站：", color = HTTCream, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .background(if (!transitFirstLegUseBike) Color(0xFF2563EB) else Color.White.copy(alpha = 0.1f))
+                                    .clickable { manager.setTransitFirstLegUseBike(false) }
+                                    .padding(horizontal = 8.dp, vertical = 4.dp)
+                            ) {
+                                Text("🚶 步行前往", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                            }
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .background(if (transitFirstLegUseBike) Color(0xFF0D9488) else Color.White.copy(alpha = 0.1f))
+                                    .clickable { manager.setTransitFirstLegUseBike(true) }
+                                    .padding(horizontal = 8.dp, vertical = 4.dp)
+                            ) {
+                                Text("🚲 骑车前往", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        candidateRoutes.take(3).forEachIndexed { idx, r ->
+                            val isSel = idx == selectedRouteIdx
+                            val mins = (r.durationSeconds / 60.0).toInt().coerceAtLeast(1)
+                            val kmStr = String.format("%.1f公里", r.totalDistanceMeters / 1000.0)
+                            Column(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(if (isSel) Color(0xFF1E293B) else Color.White.copy(alpha = 0.06f))
+                                    .border(if (isSel) 1.5.dp else 1.dp, if (isSel) HTTGold else Color.White.copy(alpha = 0.15f), RoundedCornerShape(10.dp))
+                                    .clickable { manager.selectRoute(idx) }
+                                    .padding(horizontal = 8.dp, vertical = 6.dp),
+                                verticalArrangement = Arrangement.spacedBy(2.dp)
+                            ) {
+                                Text(r.name, color = if (isSel) HTTGold else Color(0xFF9CA3AF), fontSize = 9.5.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Text("${mins}分钟", color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Black)
+                                Text(kmStr, color = Color(0xFFD1D5DB), fontSize = 10.sp)
+                            }
+                        }
+                    }
+
+                    if (travelMode == NavigationTravelMode.TRANSIT && selectedRoute.steps.isNotEmpty()) {
+                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            selectedRoute.steps.take(3).forEachIndexed { idx, st ->
+                                Text(
+                                    "${idx + 1}. ${st.instruction}",
+                                    color = if (idx == 1) Color(0xFF7DD3FC) else HTTCream,
+                                    fontSize = 10.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+                    }
+
+                    Button(
+                        onClick = { manager.confirmStartNavigation() },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF16A34A)),
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.fillMaxWidth().height(38.dp),
+                        contentPadding = PaddingValues(0.dp)
+                    ) {
+                        Text("🚀 开始导航（${selectedRoute.name}）", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Black)
                     }
                 }
             }

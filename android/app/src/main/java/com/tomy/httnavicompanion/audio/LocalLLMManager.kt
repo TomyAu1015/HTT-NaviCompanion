@@ -1105,6 +1105,85 @@ ${personaRole}你们五人组成了“放课后茶会”(HTT)乐队。你正坐�
         }, 550L)
     }
 
+    private fun extractDirectNavDestination(text: String): String {
+        var q = text
+        val triggers = listOf(
+            "帮我导航到", "请帮我导航到", "给我导航到", "导航到",
+            "帮我导航去", "请帮我导航去", "给我导航去", "导航去",
+            "帮我规划路线到", "规划路线到", "路线到", "帮我导航",
+            "带我去", "带我到", "开车去", "骑车去", "骑行去",
+            "步行去", "走路去", "坐地铁去", "坐公交去", "navigate to"
+        )
+        for (t in triggers) {
+            val idx = q.indexOf(t, ignoreCase = true)
+            if (idx >= 0) {
+                q = q.substring(idx + t.length)
+                break
+            }
+        }
+        listOf("吧", "啊", "呀", "呢", "哦", "一下", "谢谢", "。", "！", "!", "?", "？").forEach {
+            q = q.replace(it, "")
+        }
+        return q.trim()
+    }
+
+    private fun searchDirectDestinationAndNavigate(destQuery: String, persona: CharacterFilter) {
+        val speaker = persona.displayName(AppLanguage.ZH_HANS)
+        val origin = audioManager.userCoordinate.value
+        Thread {
+            val raw = try {
+                com.tomy.httnavicompanion.data.MapAndRouteEngine.searchPlacesOnline(context, destQuery, origin)
+            } catch (_: Throwable) {
+                emptyList()
+            }
+            val matches = raw.map { item ->
+                val d = com.tomy.httnavicompanion.data.CoordinateConverter.distanceMeters(origin, item.coordinate)
+                KOnAINearbyPlace(
+                    name = item.name,
+                    address = item.address,
+                    distanceMeters = d,
+                    latitude = item.coordinate.latitude,
+                    longitude = item.coordinate.longitude
+                )
+            }.take(5)
+
+            mainHandler.post {
+                _isGenerating.value = false
+                val best = matches.firstOrNull()
+                if (best == null) {
+                    val cur = _messages.value.toMutableList()
+                    cur.add(
+                        KOnAIChatMessage(
+                            isUser = false,
+                            speakerName = speaker,
+                            emotionTag = "委屈",
+                            text = "呜呜，地图里暂时没搜到「$destQuery」，要不要加上城市或区名再说一次（比如「深圳丹竹头地铁站」）？",
+                            actionHint = "未找到：$destQuery"
+                        )
+                    )
+                    _messages.value = cur
+                } else {
+                    navigateToNearbyPlace(best)
+                    val distStr = if (best.distanceMeters < 1000.0) "${best.distanceMeters.toInt()}米" else String.format("%.1f公里", best.distanceMeters / 1000.0)
+                    val reply = "好耶！已经为你规划好前往「${best.name}」（距你约 $distStr）的路线啦！点击下方「一键导航」或关闭弹窗即可查看导航地图！"
+                    val cur = _messages.value.toMutableList()
+                    cur.add(
+                        KOnAIChatMessage(
+                            isUser = false,
+                            speakerName = speaker,
+                            emotionTag = "元气",
+                            text = reply,
+                            actionHint = "🧭 已规划路线：${best.name}（$distStr）",
+                            nearbyPlaces = matches
+                        )
+                    )
+                    _messages.value = cur
+                    speakOfflineTTSOnly(reply)
+                }
+            }
+        }.start()
+    }
+
     fun navigateToNearbyPlace(place: KOnAINearbyPlace) {
         audioManager.startRouteToPlace(place.name, com.tomy.httnavicompanion.data.LatLng(place.latitude, place.longitude))
     }
@@ -1185,6 +1264,27 @@ ${personaRole}你们五人组成了“放课后茶会”(HTT)乐队。你正坐�
             } else {
                 if (!musicManager.isPlaying.value) musicManager.togglePlayPause()
                 return Triple("已经为你响起《$trackTitle》啦，边听歌边看风景最治愈了！🎶", "开心", "已触发：播放轻音音乐")
+            }
+        }
+
+        val isDirectNavIntent = (
+            lower.contains("导航到") || lower.contains("导航去") || lower.contains("帮我导航") ||
+            lower.contains("带我去") || lower.contains("带我到") || lower.contains("规划路线") ||
+            lower.contains("路线到") || lower.contains("开车去") || lower.contains("骑车去") ||
+            lower.contains("骑行去") || lower.contains("步行去") || lower.contains("走路去") ||
+            lower.contains("坐地铁去") || lower.contains("坐公交去") || lower.contains("navigate to")
+        ) && !lower.contains("附近") && !lower.contains("多久") && !lower.contains("多远")
+        if (isDirectNavIntent) {
+            val destQuery = extractDirectNavDestination(userText)
+            if (destQuery.isNotBlank()) {
+                when {
+                    lower.contains("步行") || lower.contains("走路") -> audioManager.setTravelMode(NavigationTravelMode.WALKING)
+                    lower.contains("骑车") || lower.contains("骑行") -> audioManager.setTravelMode(NavigationTravelMode.EBIKE)
+                    lower.contains("坐地铁") || lower.contains("坐公交") -> audioManager.setTravelMode(NavigationTravelMode.TRANSIT)
+                    lower.contains("开车") || lower.contains("驾车") -> audioManager.setTravelMode(NavigationTravelMode.DRIVING)
+                }
+                searchDirectDestinationAndNavigate(destQuery, persona)
+                return Triple("__ASYNC_NEARBY__", "元气", null)
             }
         }
 

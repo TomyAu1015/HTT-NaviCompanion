@@ -20,7 +20,15 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Send
+import androidx.compose.material.icons.filled.Stop
+import androidx.compose.ui.platform.LocalContext
+import androidx.core.content.ContextCompat
+import com.tomy.httnavicompanion.audio.VoiceInputLanguage
+import com.tomy.httnavicompanion.audio.VoiceInputManager
 import androidx.compose.material.icons.filled.VolumeOff
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.*
@@ -84,6 +92,27 @@ fun LocalAIChatSheetDialog(
 
     var selectedTab by remember { mutableIntStateOf(0) }
     var inputText by remember { mutableStateOf("") }
+    val ctx = LocalContext.current
+    val voiceMgr = remember { VoiceInputManager(ctx.applicationContext) }
+    val isVoiceRecording by voiceMgr.isRecording.collectAsState()
+    val voiceStatus by voiceMgr.statusMessage.collectAsState()
+    val voiceLang by voiceMgr.selectedLanguage.collectAsState()
+    var showLangMenu by remember { mutableStateOf(false) }
+
+    val startVoiceNow: () -> Unit = {
+        val basePrefix = inputText.trim()
+        voiceMgr.startRecording { partial ->
+            inputText = if (basePrefix.isEmpty()) partial else "$basePrefix $partial"
+        }
+    }
+    val micPermLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) startVoiceNow()
+    }
+    DisposableEffect(Unit) {
+        onDispose { voiceMgr.stopRecording() }
+    }
     val listState = rememberLazyListState()
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
@@ -339,16 +368,98 @@ fun LocalAIChatSheetDialog(
 
                     Spacer(Modifier.height(6.dp))
 
-                    // Input Bar
+                    // Voice Status Banner
+                    if (isVoiceRecording || voiceStatus.isNotBlank()) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(Color.White.copy(alpha = 0.08f))
+                                .padding(horizontal = 10.dp, vertical = 5.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Text(
+                                if (isVoiceRecording) "🎙️ 正在聆听（${voiceLang.shortLabel} · 软件内直录）..." else voiceStatus,
+                                color = if (isVoiceRecording) Color(0xFFFCA5A5) else AiCream,
+                                fontSize = 11.sp,
+                                modifier = Modifier.weight(1f),
+                                maxLines = 2
+                            )
+                            if (isVoiceRecording) {
+                                Text(
+                                    "完成",
+                                    color = AiGold,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.clickable { voiceMgr.stopRecording() }
+                                )
+                            }
+                        }
+                        Spacer(Modifier.height(4.dp))
+                    }
+
+                    // Input Bar with In-App Voice Recognition (Cantonese / Multi-Language / iFlytek)
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
+                        Box {
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(AiCardBg)
+                                    .border(1.dp, AiGold.copy(alpha = 0.5f), RoundedCornerShape(12.dp))
+                                    .clickable { showLangMenu = true }
+                                    .padding(horizontal = 8.dp, vertical = 10.dp)
+                            ) {
+                                Text(voiceLang.shortLabel, color = AiGold, fontSize = 11.sp, fontWeight = FontWeight.Black)
+                            }
+                            DropdownMenu(
+                                expanded = showLangMenu,
+                                onDismissRequest = { showLangMenu = false }
+                            ) {
+                                VoiceInputLanguage.values().forEach { lang ->
+                                    DropdownMenuItem(
+                                        text = { Text(lang.displayName, fontSize = 12.sp) },
+                                        onClick = {
+                                            voiceMgr.setLanguage(lang)
+                                            showLangMenu = false
+                                        }
+                                    )
+                                }
+                            }
+                        }
+
+                        Box(
+                            modifier = Modifier
+                                .size(38.dp)
+                                .clip(CircleShape)
+                                .background(if (isVoiceRecording) Color(0xFFDC2626) else Color(0xFF2563EB))
+                                .clickable {
+                                    hideKb()
+                                    if (isVoiceRecording) {
+                                        voiceMgr.stopRecording()
+                                    } else {
+                                        val granted = ContextCompat.checkSelfPermission(ctx, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+                                        if (granted) startVoiceNow() else micPermLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                    }
+                                },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                if (isVoiceRecording) Icons.Default.Stop else Icons.Default.Mic,
+                                contentDescription = null,
+                                tint = Color.White,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+
                         OutlinedTextField(
                             value = inputText,
                             onValueChange = { inputText = it },
-                            placeholder = { Text("和轻音部聊天，或下达控车指令...", color = Color.Gray, fontSize = 12.sp) },
+                            placeholder = { Text("语音或打字提问（支持粤语/多语言）...", color = Color.Gray, fontSize = 11.5.sp) },
                             singleLine = true,
                             colors = OutlinedTextFieldDefaults.colors(
                                 focusedTextColor = Color.White,
@@ -360,10 +471,11 @@ fun LocalAIChatSheetDialog(
                         )
                         Box(
                             modifier = Modifier
-                                .size(42.dp)
+                                .size(38.dp)
                                 .clip(CircleShape)
                                 .background(if (isGenerating || inputText.isBlank()) Color.Gray else AiCrimson)
                                 .clickable(enabled = !isGenerating && inputText.isNotBlank()) {
+                                    voiceMgr.stopRecording()
                                     val q = inputText
                                     inputText = ""
                                     hideKb()
@@ -371,7 +483,7 @@ fun LocalAIChatSheetDialog(
                                 },
                             contentAlignment = Alignment.Center
                         ) {
-                            Icon(Icons.Default.Send, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
+                            Icon(Icons.Default.Send, contentDescription = null, tint = Color.White, modifier = Modifier.size(17.dp))
                         }
                     }
                 } else {
@@ -380,6 +492,24 @@ fun LocalAIChatSheetDialog(
                         modifier = Modifier.weight(1f).verticalScroll(rememberScrollState()),
                         verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
+                        // In-App Zero-Cost System Voice Recognition Card
+                        Column(
+                            modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(AiCardBg).border(1.dp, AiGold.copy(alpha = 0.4f), RoundedCornerShape(12.dp)).padding(10.dp),
+                            verticalArrangement = Arrangement.spacedBy(5.dp)
+                        ) {
+                            Text("🎙️ 软件内语音录入（零成本 · 粤语/多语言）", color = AiGold, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            Text(
+                                "当前语言：${voiceLang.displayName}。直接嵌入本软件内流式转文字，不跳转外部应用、无需 API Key。",
+                                color = AiCream,
+                                fontSize = 10.5.sp
+                            )
+                            Text(
+                                "离线多语言包：在手机「系统设置 → 语言与输入法 → 语音输入 / 语音识别」下载粤语、英语、日语等语言包即可离线使用。",
+                                color = Color.LightGray,
+                                fontSize = 10.sp
+                            )
+                        }
+
                         // Cloud API Key Card (Gemini / Doubao / DeepSeek / Custom)
                         Column(
                             modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(AiCardBg).border(1.dp, AiGold.copy(alpha = 0.4f), RoundedCornerShape(12.dp)).padding(10.dp),

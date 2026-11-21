@@ -28,6 +28,14 @@
 
     <!-- Floating Mascot Desktop Pet (System-wide Overlay) -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <!-- In-App AI Voice Recognition -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
+        <queries>
+        <intent>
+            <action android:name="android.speech.RecognitionService" />
+        </intent>
+    </queries>
 
     <application
         android:name=".HTTNaviApp"

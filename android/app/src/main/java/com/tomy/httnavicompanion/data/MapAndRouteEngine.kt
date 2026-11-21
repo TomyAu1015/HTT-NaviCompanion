@@ -360,12 +360,13 @@ object MapAndRouteEngine {
         destWgs: LatLng,
         travelMode: NavigationTravelMode,
         avoidHighways: Boolean = false,
-        avoidTolls: Boolean = false
+        avoidTolls: Boolean = false,
+        transitFirstLegUseBike: Boolean = false
     ): List<ComputedRoute> {
         val isChina = CoordinateConverter.isInMainlandChina(startWgs.latitude, startWgs.longitude)
 
         if (travelMode == NavigationTravelMode.TRANSIT) {
-            return calculateTransitRoutes(startWgs, destWgs, isChina)
+            return calculateTransitRoutes(startWgs, destWgs, isChina, transitFirstLegUseBike)
         }
 
         val fossgisService = when (travelMode) {
@@ -519,7 +520,8 @@ object MapAndRouteEngine {
     private fun calculateTransitRoutes(
         startWgs: LatLng,
         destWgs: LatLng,
-        isChina: Boolean
+        isChina: Boolean,
+        firstLegUseBike: Boolean = false
     ): List<ComputedRoute> {
         val boardStation = resolveNearestStationWithNameSync(startWgs, isChina)
         val alightStation = resolveNearestStationWithNameSync(destWgs, isChina)
@@ -531,7 +533,13 @@ object MapAndRouteEngine {
             CoordinateConverter.distanceMeters(boardStation.coord, alightStation.coord) > 350.0
 
         if (useStations && boardStation != null && alightStation != null) {
-            val w1Pts = fetchRoadPolyline(startWgs, boardStation.coord, "routed-foot", "foot") ?: listOf(startWgs, boardStation.coord)
+            val w1Pts = if (firstLegUseBike) {
+                fetchRoadPolyline(startWgs, boardStation.coord, "routed-bike", "cycling")
+                    ?: fetchRoadPolyline(startWgs, boardStation.coord, "routed-foot", "foot")
+                    ?: listOf(startWgs, boardStation.coord)
+            } else {
+                fetchRoadPolyline(startWgs, boardStation.coord, "routed-foot", "foot") ?: listOf(startWgs, boardStation.coord)
+            }
             val trPts = fetchRoadPolyline(boardStation.coord, alightStation.coord, "routed-car", "driving") ?: listOf(boardStation.coord, alightStation.coord)
             val w2Pts = fetchRoadPolyline(alightStation.coord, destWgs, "routed-foot", "foot") ?: listOf(alightStation.coord, destWgs)
 
@@ -543,7 +551,8 @@ object MapAndRouteEngine {
             val walkSpeedMps = 1.28
             val transitSpeedMps = if (trDist > 12000.0) 11.5 else 7.8 // ~41 km/h metro/express vs ~28 km/h bus
             val waitSeconds = 300.0
-            val totalDur = (w1Dist / walkSpeedMps) + (trDist / transitSpeedMps) + (w2Dist / walkSpeedMps) + waitSeconds
+            val firstLegSpeed = if (firstLegUseBike) 4.16 else walkSpeedMps
+            val totalDur = (w1Dist / firstLegSpeed) + (trDist / transitSpeedMps) + (w2Dist / walkSpeedMps) + waitSeconds
 
             val allPts = ArrayList<LatLng>(w1Pts.size + trPts.size + w2Pts.size)
             allPts.addAll(w1Pts)
@@ -552,12 +561,12 @@ object MapAndRouteEngine {
 
             val transitTitle = if (trDist > 6000.0) "乘坐地铁/快线" else "乘坐公交/地铁"
             val steps = listOf(
-                RouteStepInfo("步行 ${w1Dist.toInt()}米 前往 ${boardStation.name}", w1Dist, boardStation.coord),
+                RouteStepInfo("${if (firstLegUseBike) "骑车" else "步行"} ${w1Dist.toInt()}米 前往 ${boardStation.name}", w1Dist, boardStation.coord),
                 RouteStepInfo("$transitTitle (${String.format("%.1f", trDist / 1000.0)}公里) 前往 ${alightStation.name}", trDist, alightStation.coord),
                 RouteStepInfo("在 ${alightStation.name} 下车，步行 ${w2Dist.toInt()}米 到达终点", w2Dist, destWgs)
             )
             val segs = listOf(
-                RouteSegment(w1Pts, "WALK"),
+                RouteSegment(w1Pts, if (firstLegUseBike) "BIKE" else "WALK"),
                 RouteSegment(trPts, "TRANSIT"),
                 RouteSegment(w2Pts, "WALK")
             )

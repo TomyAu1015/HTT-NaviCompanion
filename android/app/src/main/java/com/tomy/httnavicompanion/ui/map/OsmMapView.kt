@@ -131,18 +131,27 @@ fun OsmMapView(
                 // Pause auto-follow when user manually drags/pans the map
                 var downX = 0f
                 var downY = 0f
-                setOnTouchListener { _, ev ->
+                setOnTouchListener { v, ev ->
                     when (ev.actionMasked) {
-                        MotionEvent.ACTION_DOWN -> {
-                            downX = ev.x
-                            downY = ev.y
+                        MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> {
+                            v.parent?.requestDisallowInterceptTouchEvent(true)
+                            manager.setTouchingMap(true)
+                            if (ev.actionMasked == MotionEvent.ACTION_DOWN) {
+                                downX = ev.x
+                                downY = ev.y
+                            }
                         }
                         MotionEvent.ACTION_MOVE -> {
+                            v.parent?.requestDisallowInterceptTouchEvent(true)
                             val dx = ev.x - downX
                             val dy = ev.y - downY
-                            if (dx * dx + dy * dy > 400f) {
+                            if (dx * dx + dy * dy > 320f) {
                                 manager.setMapTracking(false)
                             }
+                        }
+                        MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                            v.parent?.requestDisallowInterceptTouchEvent(false)
+                            manager.setTouchingMap(false)
                         }
                     }
                     false

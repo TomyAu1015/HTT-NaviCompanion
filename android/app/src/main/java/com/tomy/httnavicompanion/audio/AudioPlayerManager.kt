@@ -444,6 +444,15 @@ class AudioPlayerManager(
     private val _candidateRoutes = MutableStateFlow<List<ComputedRoute>>(emptyList())
     val candidateRoutes: StateFlow<List<ComputedRoute>> = _candidateRoutes
 
+    private val _isTouchingMap = MutableStateFlow(false)
+    val isTouchingMap: StateFlow<Boolean> = _isTouchingMap
+
+    private val _isRoutePreviewing = MutableStateFlow(false)
+    val isRoutePreviewing: StateFlow<Boolean> = _isRoutePreviewing
+
+    private val _transitFirstLegUseBike = MutableStateFlow(false)
+    val transitFirstLegUseBike: StateFlow<Boolean> = _transitFirstLegUseBike
+
     private val _selectedRouteIndex = MutableStateFlow(0)
     val selectedRouteIndex: StateFlow<Int> = _selectedRouteIndex
 
@@ -956,12 +965,13 @@ class AudioPlayerManager(
                 destWgs = destCoord,
                 travelMode = mode,
                 avoidHighways = avoids.contains(DrivingAvoidanceOption.AVOID_HIGHWAY),
-                avoidTolls = avoids.contains(DrivingAvoidanceOption.AVOID_TOLL)
+                avoidTolls = avoids.contains(DrivingAvoidanceOption.AVOID_TOLL),
+                transitFirstLegUseBike = _transitFirstLegUseBike.value
             )
             mainHandler.post {
                 _candidateRoutes.value = routes
                 selectRoute(0)
-                triggerDepartureGreeting()
+                _isRoutePreviewing.value = true
             }
         }.start()
     }
@@ -983,8 +993,32 @@ class AudioPlayerManager(
         _distanceToNextStepMeters.value = activeStep?.distanceMeters?.toInt() ?: r.totalDistanceMeters.toInt()
     }
 
+    fun setTouchingMap(touching: Boolean) {
+        _isTouchingMap.value = touching
+    }
+
+    fun confirmStartNavigation() {
+        _isRoutePreviewing.value = false
+        triggerDepartureGreeting()
+    }
+
+    fun setTransitFirstLegUseBike(useBike: Boolean) {
+        if (_transitFirstLegUseBike.value == useBike) return
+        _transitFirstLegUseBike.value = useBike
+        val dest = _destinationCoord.value
+        if (dest != null && _hasActiveNavigation.value && _travelMode.value == NavigationTravelMode.TRANSIT) {
+            startRouteToPlace(_destinationName.value, dest)
+        }
+    }
+
+    fun switchTransitToDirectMode(mode: NavigationTravelMode) {
+        _transitFirstLegUseBike.value = false
+        setTravelMode(mode)
+    }
+
     fun stopNavigation() {
         _hasActiveNavigation.value = false
+        _isRoutePreviewing.value = false
         _activeRoutePoints.value = emptyList()
         _transitSegments.value = emptyList()
         _candidateRoutes.value = emptyList()
