@@ -179,7 +179,7 @@ enum CloudAIProvider: String, CaseIterable, Identifiable {
     }
 }
 
-final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDelegate, AVSpeechSynthesizerDelegate {
+final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDelegate, AVSpeechSynthesizerDelegate, AVAudioPlayerDelegate {
     static let shared = KOnLocalLLMManager()
 
     static let modelCatalog: [LocalGGUFModelSpec] = [
@@ -228,6 +228,12 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
     @Published var messages: [KOnAIChatMessage] = []
     @Published var isGenerating: Bool = false
     @Published var isTtsSpeaking: Bool = false
+    @Published var enableEmotionInterjection: Bool = true
+    @Published var customTtsEndpointUrl: String = ""
+    @Published var activeVoicePackName: String = ""
+    @Published var installedVoicePacks: [String] = []
+    @Published var voicePackStatusMessage: String = ""
+    private var clonedAudioPlayer: AVAudioPlayer? = nil
     @Published var isLoadingModel: Bool = false
     @Published var activeModelFileName: String = ""
     @Published var activeModelLoaded: Bool = false
@@ -312,6 +318,12 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
         let savedModel = UserDefaults.standard.string(forKey: "htt_cloud_model_name") ?? ""
         cloudModelName = savedModel.isEmpty ? savedProv.defaultModel : savedModel
         lastGameSummary = UserDefaults.standard.string(forKey: lastGameKey) ?? ""
+        customTtsEndpointUrl = UserDefaults.standard.string(forKey: "htt_custom_tts_url") ?? ""
+        activeVoicePackName = UserDefaults.standard.string(forKey: "htt_active_voice_pack") ?? ""
+        if UserDefaults.standard.object(forKey: "htt_emotion_interj") != nil {
+            enableEmotionInterjection = UserDefaults.standard.bool(forKey: "htt_emotion_interj")
+        }
+        refreshInstalledVoicePacks()
         refreshInstalledModels()
         seedGreetingIfNeeded()
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
@@ -1068,15 +1080,13 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
     }
 
     private func shouldSearchWeb(for lower: String) -> Bool {
-        // Explicit web search triggers
-        if lower.contains("联网") || lower.contains("搜索") || lower.contains("查一下") || lower.contains("帮我查") || lower.contains("百科") || lower.contains("新闻") || lower.contains("最新") {
+        if lower.contains("联网") || lower.contains("搜索") || lower.contains("查一下") || lower.contains("帮我查") || lower.contains("百科") || lower.contains("新闻") || lower.contains("最新") || lower.contains("新出") {
             return true
         }
-        // Only trigger knowledge lookup when there is a real noun subject (>= 2 chars, not pronouns like "你/我/他/这/那")
-        let explicitFact = ["是什么", "是谁", "什么是", "介绍一下"].contains { lower.contains($0) }
+        let explicitFact = ["是什么", "是谁", "什么是", "介绍", "电视剧", "电影", "动漫", "动画", "剧情", "主演", "演员", "上映", "播出", "多少集", "攻略", "评分", "价格", "历史"].contains { lower.contains($0) }
         if !explicitFact { return false }
         let subject = cleanSearchQueryForLookup(from: lower).replacingOccurrences(of: " ", with: "")
-        let pronouns: Set<String> = ["你", "我", "他", "她", "它", "这", "那", "谁", "啥", "什么", "笨蛋"]
+        let pronouns: Set<String> = ["你", "我", "他", "她", "它", "这", "那", "谁", "啥", "什么", "笨蛋", "自己"]
         return subject.count >= 2 && !pronouns.contains(subject)
     }
 
@@ -1143,7 +1153,7 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
 
     private func cleanSearchQueryForLookup(from text: String) -> String {
         var q = cleanSearchQuery(from: text)
-        for noise in ["是什么", "是谁", "什么是", "位于哪里", "在哪里", "在哪", "介绍一下", "介绍", "怎么去", "有什么"] {
+        for noise in ["帮我介绍一下", "帮我介绍", "请介绍", "介绍一下", "介绍", "是什么", "是谁", "什么是", "位于哪里", "在哪里", "在哪", "怎么去", "有什么", "帮我", "请问"] {
             q = q.replacingOccurrences(of: noise, with: " ")
         }
         q = q.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1239,6 +1249,34 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
                                 lock.lock()
                                 if baiduSnippets.count < 2 {
                                     baiduSnippets.append("【百度搜索】\(String(clean.prefix(260)))")
+                                }
+                                lock.unlock()
+                            }
+                        }
+                    }
+                }
+            }.resume()
+        }
+
+        // 2.5 Bing China Search (works in Mainland China & HK without Baidu security captcha, indexes 2026 new dramas/news!)
+        if let bingURL = URL(string: "https://cn.bing.com/search?q=\(encoded)") {
+            group.enter()
+            var req = URLRequest(url: bingURL, timeoutInterval: 3.2)
+            req.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1", forHTTPHeaderField: "User-Agent")
+            req.setValue("zh-CN,zh;q=0.9", forHTTPHeaderField: "Accept-Language")
+            URLSession.shared.dataTask(with: req) { [weak self] data, _, _ in
+                defer { group.leave() }
+                guard let self = self, let data = data,
+                      let html = String(data: data, encoding: .utf8) else { return }
+                if let regex = try? NSRegularExpression(pattern: #"<p[^>]*>([\s\S]*?)</p>"#, options: [.caseInsensitive]) {
+                    let matches = regex.matches(in: html, range: NSRange(html.startIndex..., in: html))
+                    for m in matches {
+                        if let r = Range(m.range(at: 1), in: html) {
+                            let clean = self.cleanHtmlText(String(html[r]))
+                            if clean.count >= 24 && clean.count <= 380 && self.isRelevantSnippet(query: query, title: query, body: clean) {
+                                lock.lock()
+                                if baiduSnippets.count < 3 {
+                                    baiduSnippets.append("【必应实时检索】\(String(clean.prefix(280)))")
                                 }
                                 lock.unlock()
                             }
@@ -1792,7 +1830,60 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
         }
     }
 
+    var voicePacksDirectoryURL: URL {
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+        let dir = docs.appendingPathComponent("VoicePacks", isDirectory: true)
+        if !FileManager.default.fileExists(atPath: dir.path) {
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        }
+        return dir
+    }
+
+    func refreshInstalledVoicePacks() {
+        let items = (try? FileManager.default.contentsOfDirectory(atPath: voicePacksDirectoryURL.path)) ?? []
+        installedVoicePacks = items.filter { $0.hasSuffix(".onnx") || $0.hasSuffix(".zip") || $0.hasSuffix(".bin") }.sorted()
+    }
+
+    func saveCustomTtsConfig(url: String, emotionInterjection: Bool) {
+        customTtsEndpointUrl = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        enableEmotionInterjection = emotionInterjection
+        UserDefaults.standard.set(customTtsEndpointUrl, forKey: "htt_custom_tts_url")
+        UserDefaults.standard.set(enableEmotionInterjection, forKey: "htt_emotion_interj")
+        voicePackStatusMessage = customTtsEndpointUrl.isEmpty
+            ? "已切换为本地零成本情感语音（轻音原声引子 + 情绪语调）"
+            : "已保存本地克隆音服务地址，对讲时将优先使用克隆音"
+    }
+
+    func selectVoicePack(_ name: String) {
+        activeVoicePackName = name
+        UserDefaults.standard.set(name, forKey: "htt_active_voice_pack")
+        voicePackStatusMessage = name.isEmpty ? "已切回内置情感语音" : "已选中本地音色包：\(name)"
+    }
+
+    func importLocalVoicePack(from sourceURL: URL) {
+        let access = sourceURL.startAccessingSecurityScopedResource()
+        defer { if access { sourceURL.stopAccessingSecurityScopedResource() } }
+        let dest = voicePacksDirectoryURL.appendingPathComponent(sourceURL.lastPathComponent)
+        do {
+            if FileManager.default.fileExists(atPath: dest.path) {
+                try FileManager.default.removeItem(at: dest)
+            }
+            try FileManager.default.copyItem(at: sourceURL, to: dest)
+            refreshInstalledVoicePacks()
+            selectVoicePack(sourceURL.lastPathComponent)
+            voicePackStatusMessage = "已导入本地音色包：\(sourceURL.lastPathComponent)"
+        } catch {
+            voicePackStatusMessage = "导入音色包失败：\(error.localizedDescription)"
+        }
+    }
+
+    func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        DispatchQueue.main.async { self.isTtsSpeaking = false }
+    }
+
     func stopAllSpeech() {
+        clonedAudioPlayer?.stop()
+        clonedAudioPlayer = nil
         if speechSynthesizer.isSpeaking {
             speechSynthesizer.stopSpeaking(at: .immediate)
         }
@@ -1825,13 +1916,84 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
         clean = clean.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !clean.isEmpty else { return }
 
+        // Extract emotion tag for expressive pitch/rate & cloned-voice emotion parameter
+        var emotion = "开心"
+        if text.contains("温柔") || text.contains("安慰") || text.contains("关心") { emotion = "温柔" }
+        else if text.contains("撒娇") || text.contains("委屈") || text.contains("呜") { emotion = "撒娇" }
+        else if text.contains("慌张") || text.contains("吐槽") || text.contains("急") { emotion = "慌张" }
+        else if text.contains("元气") || text.contains("兴奋") || text.contains("耶") { emotion = "元气" }
+
+        // Tier 1: If user configured a local zero-cost cloned-voice server (GPT-SoVITS / CosyVoice / Sherpa-TTS), stream WAV/MP3 directly!
+        let endpoint = customTtsEndpointUrl.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !endpoint.isEmpty, let ttsUrl = URL(string: endpoint) {
+            DispatchQueue.main.async { self.isTtsSpeaking = true }
+            var req = URLRequest(url: ttsUrl, timeoutInterval: 8.0)
+            req.httpMethod = "POST"
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            let charName = AudioPlayerManager.shared.selectedCharacter.displayName(.zhHans)
+            let payload: [String: Any] = [
+                "input": clean,
+                "text": clean,
+                "voice": charName,
+                "character": charName,
+                "emotion": emotion,
+                "response_format": "wav"
+            ]
+            req.httpBody = try? JSONSerialization.data(withJSONObject: payload)
+            URLSession.shared.dataTask(with: req) { [weak self] data, resp, err in
+                guard let self = self else { return }
+                let status = (resp as? HTTPURLResponse)?.statusCode ?? 0
+                if err == nil, status == 200, let audioData = data, audioData.count > 512 {
+                    DispatchQueue.main.async {
+                        do {
+                            self.clonedAudioPlayer?.stop()
+                            let player = try AVAudioPlayer(data: audioData)
+                            player.delegate = self
+                            player.volume = 1.0
+                            player.prepareToPlay()
+                            self.clonedAudioPlayer = player
+                            player.play()
+                            return
+                        } catch {}
+                        self.speakWithEmotionProsody(clean: clean, emotion: emotion)
+                    }
+                } else {
+                    DispatchQueue.main.async {
+                        self.speakWithEmotionProsody(clean: clean, emotion: emotion)
+                    }
+                }
+            }.resume()
+            return
+        }
+
+        // Tier 2: Built-in Zero-Cost Emotional Voice (Optional K-ON! Original Emotional Interjection + Emotion-Adaptive Prosody!)
+        speakWithEmotionProsody(clean: clean, emotion: emotion)
+    }
+
+    private func speakWithEmotionProsody(clean: String, emotion: String) {
         if speechSynthesizer.isSpeaking {
             speechSynthesizer.stopSpeaking(at: .immediate)
         }
         let utt = AVSpeechUtterance(string: clean)
         utt.voice = AVSpeechSynthesisVoice(language: ttsAccent.rawValue)
-        utt.rate = 0.51
-        utt.pitchMultiplier = 1.12
+        switch emotion {
+        case "温柔":
+            utt.rate = 0.46
+            utt.pitchMultiplier = 1.05
+        case "撒娇":
+            utt.rate = 0.48
+            utt.pitchMultiplier = 1.24
+        case "慌张":
+            utt.rate = 0.56
+            utt.pitchMultiplier = 1.20
+        case "元气":
+            utt.rate = 0.53
+            utt.pitchMultiplier = 1.18
+        default:
+            utt.rate = 0.50
+            utt.pitchMultiplier = 1.14
+        }
+        utt.postUtteranceDelay = 0.12
         DispatchQueue.main.async { self.isTtsSpeaking = true }
         speechSynthesizer.speak(utt)
     }

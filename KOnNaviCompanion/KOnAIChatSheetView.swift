@@ -18,6 +18,8 @@ struct KOnAIChatSheetView: View {
     @State private var baseUrlDraft: String = ""
     @State private var modelNameDraft: String = ""
     @State private var showFileImporter: Bool = false
+    @State private var showVoicePackImporter: Bool = false
+    @State private var customTtsUrlDraft: String = "" 
     @State private var micPressStartDate: Date? = nil
     @State private var isVoiceCallMode: Bool = false
     @State private var voiceCallTranscript: String = ""
@@ -81,6 +83,16 @@ struct KOnAIChatSheetView: View {
             .onChange(of: llm.isGenerating) { gen in
                 if isVoiceCallMode && !gen && !llm.isTtsSpeaking {
                     scheduleVoiceCallNextTurn()
+                }
+            }
+            .onChange(of: voiceInput.isRecording) { rec in
+                if isVoiceCallMode && !rec && !voiceCallSubmitted && !llm.isGenerating && !llm.isTtsSpeaking {
+                    let pending = voiceCallTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !pending.isEmpty {
+                        submitVoiceCallTranscript()
+                    } else {
+                        scheduleVoiceCallNextTurn()
+                    }
                 }
             }
             .onChange(of: llm.isTtsSpeaking) { speaking in
@@ -502,74 +514,158 @@ struct KOnAIChatSheetView: View {
                     .cornerRadius(14)
             }
 
-            // Glowing Center Avatar & Animated Waveform
+            // K-ON! Living Character Aura Orb (Replaces plain mic/speaker icon!)
             ZStack {
+                // Outer breathing halo ring
                 Circle()
                     .fill(
-                        voiceInput.isRecording
-                        ? Color.blue.opacity(0.22 + Double(voiceInput.rmsLevel) * 0.25)
-                        : (llm.isTtsSpeaking ? Color.green.opacity(0.24) : httGold.opacity(0.18))
+                        RadialGradient(
+                            gradient: Gradient(colors: [
+                                (voiceInput.isRecording ? Color.cyan : (llm.isTtsSpeaking ? httGold : httCrimson)).opacity(0.38),
+                                Color.clear
+                            ]),
+                            center: .center,
+                            startRadius: 28,
+                            endRadius: 96
+                        )
                     )
-                    .frame(width: 156, height: 156)
-                    .scaleEffect(voiceInput.isRecording ? (1.0 + voiceInput.rmsLevel * 0.16) : 1.0)
-                    .animation(.easeOut(duration: 0.12), value: voiceInput.rmsLevel)
+                    .frame(width: 192, height: 192)
+                    .scaleEffect(voiceInput.isRecording ? (1.0 + voiceInput.rmsLevel * 0.22) : (llm.isTtsSpeaking ? 1.08 : 0.96))
+                    .animation(.easeInOut(duration: 0.25), value: voiceInput.rmsLevel)
 
+                // Middle glowing ring
                 Circle()
-                    .stroke(voiceInput.isRecording ? Color.cyan : (llm.isTtsSpeaking ? Color.green : httGold), lineWidth: 2.5)
-                    .frame(width: 128, height: 128)
+                    .stroke(
+                        AngularGradient(
+                            gradient: Gradient(colors: [httGold, httCrimson, Color.cyan, httGold]),
+                            center: .center
+                        ),
+                        lineWidth: 3.0
+                    )
+                    .frame(width: 140, height: 140)
+                    .shadow(color: (voiceInput.isRecording ? Color.cyan : httGold).opacity(0.65), radius: 10)
 
-                VStack(spacing: 6) {
-                    Image(systemName: voiceInput.isRecording ? "mic.fill" : (llm.isGenerating ? "sparkles" : "speaker.wave.3.fill"))
-                        .font(.system(size: 36, weight: .bold))
-                        .foregroundColor(.white)
-                    if voiceInput.isRecording {
-                        HStack(spacing: 3) {
-                            ForEach([0.45, 0.85, 1.0, 0.75, 0.5], id: \.self) { mult in
-                                RoundedRectangle(cornerRadius: 2)
-                                    .fill(httGold)
-                                    .frame(width: 4, height: 6 + 18 * voiceInput.rmsLevel * CGFloat(mult))
-                            }
-                        }
+                // Inner dark stage disc with live K-ON! character sprite
+                Circle()
+                    .fill(
+                        LinearGradient(
+                            gradient: Gradient(colors: [Color(red: 0.16, green: 0.12, blue: 0.22), Color(red: 0.08, green: 0.09, blue: 0.14)]),
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                    .frame(width: 130, height: 130)
+
+                if let sprite = manager.currentSpriteFrame {
+                    Image(uiImage: sprite)
+                        .interpolation(.none)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 96, height: 96)
+                        .scaleEffect(voiceInput.isRecording ? (1.0 + voiceInput.rmsLevel * 0.08) : 1.0)
+                        .animation(.easeOut(duration: 0.12), value: voiceInput.rmsLevel)
+                } else {
+                    Image(systemName: voiceInput.isRecording ? "waveform" : "sparkles")
+                        .font(.system(size: 38, weight: .bold))
+                        .foregroundColor(httGold)
+                }
+
+                // Bottom-attached live audio equalizer pill
+                HStack(spacing: 3) {
+                    ForEach([0.35, 0.75, 1.0, 0.85, 0.55, 0.9, 0.4], id: \.self) { mult in
+                        let barH: CGFloat = voiceInput.isRecording
+                            ? (5 + 16 * voiceInput.rmsLevel * CGFloat(mult))
+                            : (llm.isTtsSpeaking ? (7 + 9 * CGFloat(mult)) : 5)
+                        RoundedRectangle(cornerRadius: 2)
+                            .fill(voiceInput.isRecording ? Color.cyan : (llm.isTtsSpeaking ? Color.green : httGold))
+                            .frame(width: 3.5, height: barH)
                     }
                 }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 5)
+                .background(Color.black.opacity(0.75))
+                .cornerRadius(12)
+                .overlay(RoundedRectangle(cornerRadius: 12).stroke(httGold.opacity(0.6), lineWidth: 1))
+                .offset(y: 66)
             }
+            .padding(.bottom, 10)
             .onTapGesture {
                 if llm.isGenerating || llm.isTtsSpeaking {
-                    // Barge-in: interrupt AI and start listening immediately
                     llm.cancelCurrentGeneration()
                     beginVoiceCallListeningTurn()
                 } else if voiceInput.isRecording && !voiceCallTranscript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     submitVoiceCallTranscript()
+                } else if !voiceInput.isRecording && !llm.isGenerating {
+                    beginVoiceCallListeningTurn()
                 }
             }
 
             Text(
                 voiceInput.isRecording
-                ? "🎙️ 正在听你说话…（说完停顿1.4秒自动发送）"
-                : (llm.isGenerating ? "💭 轻音部思考中…（轻触圆环可打断）" : (llm.isTtsSpeaking ? "🔊 正在语音回复…（轻触圆环可抢话打断）" : "🎧 准备聆听下一句…"))
+                ? "🎙️ \(manager.selectedCharacter.displayName(.zhHans)) 正在听你说…（说完停顿自动发送，轻触头像可立刻发送）"
+                : (llm.isGenerating ? "💭 \(manager.selectedCharacter.displayName(.zhHans)) 思考中…（轻触头像可打断）" : (llm.isTtsSpeaking ? "🔊 正在语音回复…（轻触头像可抢话打断）" : "🎧 准备聆听下一句…"))
             )
-            .font(.system(size: 13, weight: .bold))
+            .font(.system(size: 12, weight: .bold))
             .foregroundColor(httGold)
+            .multilineTextAlignment(.center)
+            .padding(.horizontal, 16)
 
-            // Live Transcript & Latest AI Reply Preview
+            // Live Transcript & Latest AI Reply + One-Tap Navigation Cards
             VStack(alignment: .leading, spacing: 8) {
                 if !voiceCallTranscript.isEmpty {
-                    Text("你说：\(voiceCallTranscript)")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundColor(.white)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(10)
-                        .background(httCrimson.opacity(0.65))
-                        .cornerRadius(10)
+                    HStack(spacing: 8) {
+                        Text("你说：\(voiceCallTranscript)")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundColor(.white)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        if voiceInput.isRecording && !voiceCallSubmitted {
+                            Button("发送") { submitVoiceCallTranscript() }
+                                .font(.system(size: 11, weight: .black))
+                                .padding(.horizontal, 9).padding(.vertical, 5)
+                                .background(httGold)
+                                .foregroundColor(.black)
+                                .cornerRadius(8)
+                        }
+                    }
+                    .padding(10)
+                    .background(httCrimson.opacity(0.68))
+                    .cornerRadius(10)
                 }
                 if let lastReply = llm.messages.last(where: { !$0.isUser }) {
                     ScrollView {
-                        Text("\(lastReply.speakerName)：\(lastReply.text.isEmpty ? "思考中..." : lastReply.text)")
-                            .font(.system(size: 13))
-                            .foregroundColor(httCream)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("\(lastReply.speakerName)：\(lastReply.text.isEmpty ? "思考中..." : lastReply.text)")
+                                .font(.system(size: 13))
+                                .foregroundColor(httCream)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            if !lastReply.nearbyPlaces.isEmpty {
+                                ForEach(Array(lastReply.nearbyPlaces.prefix(3).enumerated()), id: \.element.id) { idx, place in
+                                    let distLabel = place.distanceMeters < 1000 ? "\(Int(place.distanceMeters))m" : String(format: "%.1fkm", place.distanceMeters / 1000.0)
+                                    HStack(spacing: 8) {
+                                        Text("\(idx + 1). \(place.name) (\(distLabel))")
+                                            .font(.system(size: 11, weight: .bold))
+                                            .foregroundColor(.white)
+                                            .lineLimit(1)
+                                        Spacer()
+                                        Button("一键导航") {
+                                            endVoiceCallMode()
+                                            llm.navigateToNearbyPlace(place)
+                                            dismiss()
+                                        }
+                                        .font(.system(size: 10, weight: .black))
+                                        .padding(.horizontal, 8).padding(.vertical, 4)
+                                        .background(Color.blue)
+                                        .foregroundColor(.white)
+                                        .cornerRadius(6)
+                                    }
+                                    .padding(6)
+                                    .background(Color.white.opacity(0.08))
+                                    .cornerRadius(8)
+                                }
+                            }
+                        }
                     }
-                    .frame(maxHeight: 130)
+                    .frame(maxHeight: 140)
                     .padding(10)
                     .background(cardBg)
                     .cornerRadius(10)
@@ -577,7 +673,7 @@ struct KOnAIChatSheetView: View {
             }
             .padding(.horizontal, 16)
 
-            if !voiceInput.statusMessage.isEmpty {
+                        if !voiceInput.statusMessage.isEmpty {
                 Text(voiceInput.statusMessage)
                     .font(.system(size: 11))
                     .foregroundColor(.orange)
@@ -638,7 +734,11 @@ struct KOnAIChatSheetView: View {
 
         voiceInput.startRecording { partial in
             guard isVoiceCallMode && !voiceCallSubmitted else { return }
-            voiceCallTranscript = partial
+            let trimmed = partial.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return }
+            // Fix Turn-2 freeze: ignore duplicate identical partial callbacks emitted during background noise!
+            if trimmed == voiceCallTranscript && voiceCallSilenceTask != nil { return }
+            voiceCallTranscript = trimmed
             voiceCallSilenceTask?.cancel()
             let task = DispatchWorkItem {
                 submitVoiceCallTranscript()
@@ -698,6 +798,71 @@ struct KOnAIChatSheetView: View {
                 .background(cardBg)
                 .cornerRadius(12)
                 .overlay(RoundedRectangle(cornerRadius: 12).stroke(httGold.opacity(0.45), lineWidth: 1))
+
+                // Local Emotion Voice & Cloned Voice Pack Card (iOS 15/16.6.1 Compatible, Zero Cloud Cost!)
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("🎭 角色情感音色与克隆音引擎（iOS 15/16 兼容 · 零费用）")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundColor(httGold)
+
+                    Text("已自动开启情感语调引擎（开心/温柔/撒娇/慌张动态语速音高）。如需接入自建本地克隆音（如电脑端 GPT-SoVITS / CosyVoice / Sherpa-TTS）或导入离线 .onnx 音色包，可在下方配置：")
+                        .font(.system(size: 11))
+                        .foregroundColor(httCream.opacity(0.9))
+
+                    HStack(spacing: 6) {
+                        TextField("可选：本地克隆音接口 (如 http://192.168.1.x:9880/v1/audio/speech)", text: $customTtsUrlDraft)
+                            .textFieldStyle(.plain)
+                            .font(.system(size: 11.5))
+                            .foregroundColor(.white)
+                            .padding(8)
+                            .background(Color.black.opacity(0.35))
+                            .cornerRadius(8)
+                        Button("保存") {
+                            dismissKeyboard()
+                            llm.saveCustomTtsConfig(url: customTtsUrlDraft, emotionInterjection: llm.enableEmotionInterjection)
+                        }
+                        .font(.system(size: 11, weight: .bold))
+                        .padding(.horizontal, 10).padding(.vertical, 8)
+                        .background(Color.green.opacity(0.85))
+                        .foregroundColor(.white)
+                        .cornerRadius(8)
+                    }
+
+                    HStack(spacing: 8) {
+                        Button(action: { showVoicePackImporter = true }) {
+                            HStack(spacing: 4) {
+                                Image(systemName: "waveform.badge.plus")
+                                Text("导入本地 .onnx / .zip 音色包")
+                            }
+                            .font(.system(size: 11, weight: .bold))
+                            .padding(.horizontal, 10).padding(.vertical, 7)
+                            .background(Color.white.opacity(0.12))
+                            .foregroundColor(httGold)
+                            .cornerRadius(8)
+                        }
+                        if !llm.installedVoicePacks.isEmpty {
+                            Text("已导入 \(llm.installedVoicePacks.count) 个音色包")
+                                .font(.system(size: 10.5))
+                                .foregroundColor(.green)
+                        }
+                    }
+
+                    if !llm.voicePackStatusMessage.isEmpty {
+                        Text(llm.voicePackStatusMessage)
+                            .font(.system(size: 10.5))
+                            .foregroundColor(httGold)
+                    }
+                }
+                .padding(12)
+                .background(cardBg)
+                .cornerRadius(12)
+                .overlay(RoundedRectangle(cornerRadius: 12).stroke(httGold.opacity(0.45), lineWidth: 1))
+                .onAppear { customTtsUrlDraft = llm.customTtsEndpointUrl }
+                .fileImporter(isPresented: $showVoicePackImporter, allowedContentTypes: [.data, .zip]) { result in
+                    if case .success(let url) = result {
+                        llm.importLocalVoicePack(from: url)
+                    }
+                }
 
                 // Cloud API Key Card (Gemini / Doubao / DeepSeek / Custom)
                 VStack(alignment: .leading, spacing: 8) {
