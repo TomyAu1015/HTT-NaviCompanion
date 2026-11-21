@@ -41,47 +41,88 @@ class VoiceInputManager(private val context: Context) {
 
     private var speechRecognizer: SpeechRecognizer? = null
     private var onTextCallback: ((String) -> Unit)? = null
+    private var onFallbackDialog: ((Intent) -> Unit)? = null
+    private var sessionStartMs: Long = 0L
 
     fun setLanguage(lang: VoiceInputLanguage) {
         _selectedLanguage.value = lang
         prefs.edit().putString("lang", lang.localeTag).apply()
     }
 
-    fun startRecording(onUpdate: (String) -> Unit) {
-        stopRecording()
+    fun buildRecognizerIntent(): Intent {
+        val langTag = _selectedLanguage.value.localeTag
+        return Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, langTag)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, langTag)
+            putExtra(RecognizerIntent.EXTRA_ONLY_RETURN_LANGUAGE_PREFERENCE, false)
+            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+            putExtra(RecognizerIntent.EXTRA_PROMPT, "请说话（${_selectedLanguage.value.shortLabel}）...")
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 3000L)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 5000L)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 4000L)
+        }
+    }
+
+    fun startRecording(
+        onUpdate: (String) -> Unit,
+        onFallbackToDialog: ((Intent) -> Unit)? = null
+    ) {
         onTextCallback = onUpdate
+        onFallbackDialog = onFallbackToDialog
         _statusMessage.value = ""
 
         mainHandler.post {
+            // Synchronously destroy any previous instance BEFORE creating the new one (prevents ERROR_CLIENT = 5 race!)
+            destroyRecognizerSync()
+
+            val intent = buildRecognizerIntent()
             if (!SpeechRecognizer.isRecognitionAvailable(context)) {
-                _statusMessage.value = "当前系统未启用语音识别服务，请在系统设置中开启语音识别或安装离线语言包"
+                _statusMessage.value = "正在唤起系统内嵌语音浮窗..."
+                onFallbackDialog?.invoke(intent)
                 return@post
             }
+
             try {
                 val sr = SpeechRecognizer.createSpeechRecognizer(context)
                 speechRecognizer = sr
+                sessionStartMs = System.currentTimeMillis()
                 sr.setRecognitionListener(object : RecognitionListener {
                     override fun onReadyForSpeech(params: Bundle?) {
                         _isRecording.value = true
+                        _statusMessage.value = ""
                     }
                     override fun onBeginningOfSpeech() {}
                     override fun onRmsChanged(rmsdB: Float) {}
                     override fun onBufferReceived(buffer: ByteArray?) {}
                     override fun onEndOfSpeech() {}
                     override fun onError(error: Int) {
+                        val elapsed = System.currentTimeMillis() - sessionStartMs
+                        destroyRecognizerSync()
+                        // On MIUI/HyperOS/OPPO/vivo, headless SpeechRecognizer often rejects immediately with ERROR_CLIENT(5) or ERROR_RECOGNIZER_BUSY(8).
+                        // Seamlessly fall back to the lightweight in-app system speech overlay dialog!
+                        if ((error == SpeechRecognizer.ERROR_CLIENT ||
+                                error == SpeechRecognizer.ERROR_AUDIO ||
+                                error == SpeechRecognizer.ERROR_SERVER ||
+                                error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY) && elapsed < 1500L && onFallbackDialog != null
+                        ) {
+                            _statusMessage.value = "已自动切换系统语音浮窗（支持粤语/多语言）"
+                            onFallbackDialog?.invoke(buildRecognizerIntent())
+                            return
+                        }
                         _statusMessage.value = when (error) {
-                            SpeechRecognizer.ERROR_NO_MATCH -> "未听清内容，请再试一次"
+                            SpeechRecognizer.ERROR_NO_MATCH -> "未听清内容，请靠近麦克风重试"
                             SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "未检测到说话"
                             SpeechRecognizer.ERROR_NETWORK, SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "网络超时，可在系统语音设置下载离线语言包"
                             SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "请先授予麦克风权限"
                             else -> "语音识别结束 (代码 $error)"
                         }
-                        stopRecording()
                     }
                     override fun onResults(results: Bundle?) {
                         val best = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull().orEmpty()
                         if (best.isNotBlank()) onTextCallback?.invoke(best)
-                        stopRecording()
+                        destroyRecognizerSync()
                     }
                     override fun onPartialResults(partialResults: Bundle?) {
                         val partial = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull().orEmpty()
@@ -90,31 +131,41 @@ class VoiceInputManager(private val context: Context) {
                     override fun onEvent(eventType: Int, params: Bundle?) {}
                 })
 
-                val langTag = _selectedLanguage.value.localeTag
-                val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-                    putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                    putExtra(RecognizerIntent.EXTRA_LANGUAGE, langTag)
-                    putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, langTag)
-                    putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-                    putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
-                }
                 _isRecording.value = true
                 sr.startListening(intent)
             } catch (e: Exception) {
-                _statusMessage.value = "启动语音识别失败：${e.message}"
-                stopRecording()
+                destroyRecognizerSync()
+                if (onFallbackDialog != null) {
+                    onFallbackDialog?.invoke(intent)
+                } else {
+                    _statusMessage.value = "启动语音识别失败：${e.message}"
+                }
+            }
+        }
+    }
+
+    fun finishListeningGracefully() {
+        mainHandler.post {
+            try {
+                speechRecognizer?.stopListening()
+            } catch (_: Exception) {
+                destroyRecognizerSync()
             }
         }
     }
 
     fun stopRecording() {
         mainHandler.post {
-            try {
-                speechRecognizer?.stopListening()
-                speechRecognizer?.destroy()
-            } catch (_: Exception) {}
-            speechRecognizer = null
-            _isRecording.value = false
+            destroyRecognizerSync()
         }
+    }
+
+    private fun destroyRecognizerSync() {
+        try {
+            speechRecognizer?.cancel()
+            speechRecognizer?.destroy()
+        } catch (_: Exception) {}
+        speechRecognizer = null
+        _isRecording.value = false
     }
 }

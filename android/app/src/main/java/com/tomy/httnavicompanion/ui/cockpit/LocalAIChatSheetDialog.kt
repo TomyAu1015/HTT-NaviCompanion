@@ -21,6 +21,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import android.Manifest
+import android.app.Activity
+import android.speech.RecognizerIntent
 import android.content.pm.PackageManager
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Send
@@ -93,17 +95,33 @@ fun LocalAIChatSheetDialog(
     var selectedTab by remember { mutableIntStateOf(0) }
     var inputText by remember { mutableStateOf("") }
     val ctx = LocalContext.current
-    val voiceMgr = remember { VoiceInputManager(ctx.applicationContext) }
+    val voiceMgr = remember(ctx) { VoiceInputManager(ctx) }
+    var voiceBasePrefix by remember { mutableStateOf("") }
+    val speechOverlayLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { res ->
+        if (res.resultCode == Activity.RESULT_OK) {
+            val best = res.data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)?.firstOrNull().orEmpty()
+            if (best.isNotBlank()) {
+                inputText = if (voiceBasePrefix.isEmpty()) best else "$voiceBasePrefix $best"
+            }
+        }
+    }
     val isVoiceRecording by voiceMgr.isRecording.collectAsState()
     val voiceStatus by voiceMgr.statusMessage.collectAsState()
     val voiceLang by voiceMgr.selectedLanguage.collectAsState()
     var showLangMenu by remember { mutableStateOf(false) }
 
     val startVoiceNow: () -> Unit = {
-        val basePrefix = inputText.trim()
-        voiceMgr.startRecording { partial ->
-            inputText = if (basePrefix.isEmpty()) partial else "$basePrefix $partial"
-        }
+        voiceBasePrefix = inputText.trim()
+        voiceMgr.startRecording(
+            onUpdate = { partial ->
+                inputText = if (voiceBasePrefix.isEmpty()) partial else "$voiceBasePrefix $partial"
+            },
+            onFallbackToDialog = { intent ->
+                try { speechOverlayLauncher.launch(intent) } catch (_: Exception) {}
+            }
+        )
     }
     val micPermLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -437,14 +455,28 @@ fun LocalAIChatSheetDialog(
                                 .size(38.dp)
                                 .clip(CircleShape)
                                 .background(if (isVoiceRecording) Color(0xFFDC2626) else Color(0xFF2563EB))
-                                .clickable {
-                                    hideKb()
-                                    if (isVoiceRecording) {
-                                        voiceMgr.stopRecording()
-                                    } else {
-                                        val granted = ContextCompat.checkSelfPermission(ctx, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
-                                        if (granted) startVoiceNow() else micPermLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                                    }
+                                .pointerInput(isVoiceRecording) {
+                                    detectTapGestures(
+                                        onPress = {
+                                            hideKb()
+                                            val granted = ContextCompat.checkSelfPermission(ctx, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+                                            if (!granted) {
+                                                micPermLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                                return@detectTapGestures
+                                            }
+                                            if (isVoiceRecording) {
+                                                voiceMgr.finishListeningGracefully()
+                                                return@detectTapGestures
+                                            }
+                                            val downTime = System.currentTimeMillis()
+                                            startVoiceNow()
+                                            tryAwaitRelease()
+                                            // Long press (>= 350ms): release to finish; Quick tap (< 350ms): stay listening until tapped again!
+                                            if (System.currentTimeMillis() - downTime >= 350L) {
+                                                voiceMgr.finishListeningGracefully()
+                                            }
+                                        }
+                                    )
                                 },
                             contentAlignment = Alignment.Center
                         ) {

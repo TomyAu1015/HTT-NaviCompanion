@@ -547,6 +547,10 @@ object MapAndRouteEngine {
             val trDist = polylineMeters(trPts)
             val w2Dist = polylineMeters(w2Pts)
             val totalDist = w1Dist + trDist + w2Dist
+            // Detour guard: if nearest station lookup causes a >2.1x detour on a short (<4km) trip, skip stations and use clean local route
+            if (directMeters < 4000.0 && totalDist > directMeters * 2.1) {
+                // fall through to clean local short-distance routing below
+            } else {
 
             val walkSpeedMps = 1.28
             val transitSpeedMps = if (trDist > 12000.0) 11.5 else 7.8 // ~41 km/h metro/express vs ~28 km/h bus
@@ -572,6 +576,7 @@ object MapAndRouteEngine {
             )
             val label = if (isChina) "地铁/公交推荐 (最快)" else "Transit (Fastest)"
             return listOf(ComputedRoute(label, allPts, steps, totalDist, totalDur, segs))
+            }
         }
 
         // Short-distance or fallback transit: walk directly if < 900m, else split into walk + transit + walk
