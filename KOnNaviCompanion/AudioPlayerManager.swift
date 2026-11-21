@@ -3411,9 +3411,9 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             let rideMeters = max(400, directMeters - walkToStop * 2)
             let rideMins = max(3, busMins - walkToStopMin * 2)
             let shortBusSteps: [TransitStepItem] = [
-                TransitStepItem(kind: .walk, lineName: "步行前往站点", directionDesc: "前往附近公交站", fromStation: "我的位置", toStation: "附近公交站", passStations: [], durationMins: walkToStopMin, walkMeters: walkToStop, doorSideDesc: "", acNotice: "", exitDesc: "", colorHex: "#888888", startCoord: from, endCoord: nil),
-                TransitStepItem(kind: .bus, lineName: "当地直达公交", directionDesc: "往 \(destClean) 方向", fromStation: "附近公交站", toStation: "\(destClean) 附近站", passStations: [], durationMins: rideMins, walkMeters: rideMeters, doorSideDesc: "前门上车", acNotice: "❄️ 空调巴士", exitDesc: "", colorHex: "#2563EB", startCoord: nil, endCoord: nil),
-                TransitStepItem(kind: .walk, lineName: "下车步行", directionDesc: "前往 \(destClean)", fromStation: "\(destClean) 附近站", toStation: destClean, passStations: [], durationMins: walkToStopMin, walkMeters: walkToStop, doorSideDesc: "", acNotice: "", exitDesc: "", colorHex: "#888888", startCoord: nil, endCoord: to)
+                TransitStepItem(kind: .walk, lineName: "步行前往站点", directionDesc: "前往附近公交站", fromStation: "我的位置", toStation: "附近公交站", passStations: [], durationMins: walkToStopMin, walkMeters: walkToStop, doorSideDesc: "", acNotice: "", exitDesc: "", colorHex: "#888888", intervalDesc: "步行约 \(walkToStop) 米（\(walkToStopMin) 分钟）"),
+                TransitStepItem(kind: .bus, lineName: "当地直达公交", directionDesc: "往 \(destClean) 方向", fromStation: "附近公交站", toStation: "\(destClean) 附近站", passStations: [], durationMins: rideMins, walkMeters: rideMeters, doorSideDesc: "前门上车", acNotice: "❄️ 空调巴士", exitDesc: "", colorHex: "#2563EB", intervalDesc: "约 5-8 分钟一班"),
+                TransitStepItem(kind: .walk, lineName: "下车步行", directionDesc: "前往 \(destClean)", fromStation: "\(destClean) 附近站", toStation: destClean, passStations: [], durationMins: walkToStopMin, walkMeters: walkToStop, doorSideDesc: "", acNotice: "", exitDesc: "", colorHex: "#888888", intervalDesc: "步行约 \(walkToStop) 米到达")
             ]
             let shortPlan1 = TransitPlanOption(
                 title: "\(busMins)分鐘 · 當地直達公交",
@@ -3440,7 +3440,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                 warningNotice: "🚶 距離較近，直接步行即可到達 \(destClean)",
                 realtimeArrivalText: "無需等車 · 隨時出發",
                 steps: [
-                    TransitStepItem(kind: .walk, lineName: "步行直達", directionDesc: "前往 \(destClean)", fromStation: "我的位置", toStation: destClean, passStations: [], durationMins: walkMins, walkMeters: directMeters, doorSideDesc: "", acNotice: "", exitDesc: "", colorHex: "#16A34A", startCoord: from, endCoord: to)
+                    TransitStepItem(kind: .walk, lineName: "步行直達", directionDesc: "前往 \(destClean)", fromStation: "我的位置", toStation: destClean, passStations: [], durationMins: walkMins, walkMeters: directMeters, doorSideDesc: "", acNotice: "", exitDesc: "", colorHex: "#16A34A", intervalDesc: "全程步行约 \(directMeters) 米（\(walkMins) 分钟）")
                 ]
             )
             self.rawTransitPlans = [shortPlan1, directWalkPlan]
