@@ -200,9 +200,19 @@ struct KOnAIChatSheetView: View {
             // Voice Recognition Status Banner (when listening or error)
             if voiceInput.isRecording || !voiceInput.statusMessage.isEmpty {
                 HStack(spacing: 6) {
-                    Circle()
-                        .fill(voiceInput.isRecording ? Color.red : httGold)
-                        .frame(width: 7, height: 7)
+                    if voiceInput.isRecording {
+                        HStack(spacing: 2) {
+                            ForEach([0.45, 0.85, 1.0, 0.7, 0.5], id: \.self) { mult in
+                                RoundedRectangle(cornerRadius: 2)
+                                    .fill(httGold)
+                                    .frame(width: 3, height: 6 + 14 * voiceInput.rmsLevel * CGFloat(mult))
+                            }
+                        }
+                    } else {
+                        Circle()
+                            .fill(httGold)
+                            .frame(width: 7, height: 7)
+                    }
                     Text(voiceInput.isRecording
                          ? "🎙️ 正在聆听（\(voiceInput.selectedLanguage.shortLabel) · 软件内直录）..."
                          : voiceInput.statusMessage)
@@ -741,6 +751,7 @@ enum KOnVoiceInputLanguage: String, CaseIterable, Identifiable {
 
 final class KOnVoiceInputManager: NSObject, ObservableObject {
     @Published var isRecording: Bool = false
+    @Published var rmsLevel: CGFloat = 0.0
     @Published var statusMessage: String = ""
     @Published var selectedLanguage: KOnVoiceInputLanguage = .cantoneseHK
 
@@ -828,6 +839,16 @@ final class KOnVoiceInputManager: NSObject, ObservableObject {
             inputNode.removeTap(onBus: 0)
             inputNode.installTap(onBus: 0, bufferSize: 1024, format: tapFmt) { [weak self] buffer, _ in
                 self?.recognitionRequest?.append(buffer)
+                if let ch = buffer.floatChannelData?[0] {
+                    let frames = Int(buffer.frameLength)
+                    var sum: Float = 0
+                    for i in stride(from: 0, to: frames, by: 4) {
+                        sum += ch[i] * ch[i]
+                    }
+                    let rms = sqrt(sum / max(1, Float(frames / 4)))
+                    let norm = CGFloat(min(1.0, max(0.0, rms * 14.0)))
+                    DispatchQueue.main.async { self?.rmsLevel = norm }
+                }
             }
 
             engine.prepare()
@@ -863,6 +884,7 @@ final class KOnVoiceInputManager: NSObject, ObservableObject {
         audioEngine = nil
         recognitionRequest?.endAudio()
         isRecording = false
+        rmsLevel = 0.0
     }
 
     func stopRecording() {
@@ -876,6 +898,7 @@ final class KOnVoiceInputManager: NSObject, ObservableObject {
         recognitionTask?.cancel()
         recognitionTask = nil
         isRecording = false
+        rmsLevel = 0.0
         let session = AVAudioSession.sharedInstance()
         try? session.setActive(false, options: .notifyOthersOnDeactivation)
         try? session.setCategory(.playback, mode: .default, options: KOnMusicManager.shared.isPlaying ? [] : [.mixWithOthers])

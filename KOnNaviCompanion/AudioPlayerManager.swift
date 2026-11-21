@@ -7035,7 +7035,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
 
     // MARK: - Intelligent Intersections Traffic Light Engine (真实路口信号灯时序与一键校准算法)
     private func currentTrafficLightSeed() -> Int {
-        let lights = roadHazards.filter { $0.kind == .trafficLight }
+        let lights = routeHazards.filter { $0.kind == .trafficLight }
         let userLoc = CLLocation(latitude: userCoordinate.latitude, longitude: userCoordinate.longitude)
         if let nearest = lights.min(by: {
             userLoc.distance(from: CLLocation(latitude: $0.coordinate.latitude, longitude: $0.coordinate.longitude)) <
@@ -7069,7 +7069,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
 
         // Only count down when a real signalized intersection is within 380m ahead
         let userLoc = CLLocation(latitude: userCoordinate.latitude, longitude: userCoordinate.longitude)
-        let nearbyLight = roadHazards.filter { $0.kind == .trafficLight }.min { a, b in
+        let nearbyLight = routeHazards.filter { $0.kind == .trafficLight }.min { a, b in
             userLoc.distance(from: CLLocation(latitude: a.coordinate.latitude, longitude: a.coordinate.longitude)) <
             userLoc.distance(from: CLLocation(latitude: b.coordinate.latitude, longitude: b.coordinate.longitude))
         }
@@ -8625,8 +8625,8 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                         }
                         if !realLights.isEmpty {
                             DispatchQueue.main.async {
-                                self.roadHazards.removeAll { $0.kind == .trafficLight }
-                                self.roadHazards.append(contentsOf: realLights)
+                                self.routeHazards.removeAll { $0.kind == .trafficLight }
+                                self.routeHazards.append(contentsOf: realLights)
                             }
                         }
                     }.resume()
