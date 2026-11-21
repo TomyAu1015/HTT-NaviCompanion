@@ -1178,7 +1178,7 @@ ${personaRole}你们五人组成了“放课后茶会”(HTT)乐队。你正坐�
                         )
                     )
                     _messages.value = cur
-                    speakOfflineTTSOnly(reply)
+                    speakOfflineTTS(reply)
                 }
             }
         }.start()
