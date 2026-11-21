@@ -76,7 +76,7 @@ fun LocalAIChatSheetDialog(
     val messages by llm.messages.collectAsState()
     val isGenerating by llm.isGenerating.collectAsState()
     val isTtsSpeaking by llm.isTtsSpeaking.collectAsState()
-    val currentSprite by audioManager.currentSpriteFrame.collectAsState()
+    val currentSprite by manager.currentSpriteFrame.collectAsState()
     val installedModels by llm.installedModels.collectAsState()
     val activeModel by llm.activeModelFileName.collectAsState()
     val activeLoaded by llm.activeModelLoaded.collectAsState()
@@ -426,9 +426,10 @@ fun LocalAIChatSheetDialog(
                                         ),
                                     contentAlignment = Alignment.Center
                                 ) {
-                                    if (currentSprite != null) {
+                                    val spriteBmp = currentSprite
+                                    if (spriteBmp != null) {
                                         Image(
-                                            bitmap = currentSprite!!.asImageBitmap(),
+                                            bitmap = spriteBmp.asImageBitmap(),
                                             contentDescription = null,
                                             filterQuality = FilterQuality.None,
                                             modifier = Modifier.size(92.dp)
