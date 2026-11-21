@@ -67,7 +67,8 @@ android {
                     "-alias", kAlias,
                     "-keyalg", "RSA",
                     "-keysize", "2048",
-                    "-validity", "10000",
+                    "-storetype", "JKS",
+                    "-validity", "7300",
                     "-dname", "CN=HTT-NaviCompanion, OU=HoKagoTeaTime, O=HTT, L=Shenzhen, S=Guangdong, C=CN"
                 ).redirectErrorStream(true).start()
                 proc.inputStream.bufferedReader().readText()
@@ -80,7 +81,7 @@ android {
             // Force v1 (META-INF) + v2 + v3 signing for Mainland China OPPO / OnePlus ColorOS 14-16 compatibility!
             enableV1Signing = true
             enableV2Signing = true
-            enableV3Signing = true
+            enableV3Signing = false
             enableV4Signing = false
         }
     }

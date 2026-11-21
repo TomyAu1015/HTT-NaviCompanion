@@ -73,6 +73,7 @@ fun CockpitScreen(
     val isMapEnlarged by manager.isMapEnlarged.collectAsState()
     val isHUDMirrored by manager.isHUDMirrored.collectAsState()
     val themeBgBmp by manager.themeBackgroundBitmap.collectAsState()
+    val isDraggingMascot by manager.isDraggingMascot.collectAsState()
 
     var showMusicDialog by remember { mutableStateOf(false) }
     var showAlbumDialog by remember { mutableStateOf(false) }
@@ -114,7 +115,7 @@ fun CockpitScreen(
                 modifier = Modifier
                     .fillMaxSize()
                     .statusBarsPadding()
-                    .verticalScroll(rememberScrollState())
+                    .verticalScroll(rememberScrollState(), enabled = !isDraggingMascot)
                     .padding(horizontal = 10.dp, vertical = 6.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
@@ -189,7 +190,7 @@ fun CockpitScreen(
                         .fillMaxSize()
                         .statusBarsPadding()
                         .navigationBarsPadding()
-                        .verticalScroll(rememberScrollState())
+                        .verticalScroll(rememberScrollState(), enabled = !isDraggingMascot)
                         .padding(horizontal = 9.dp, vertical = 3.dp),
                     verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
@@ -716,7 +717,7 @@ fun ClubroomStageView(
                     Row(
                         modifier = Modifier
                             .height(teaSceneHeight)
-                            .fillMaxWidth(0.94f),
+                            .width((teaSceneHeight * 1.92f).coerceAtMost(290.dp)),
                         horizontalArrangement = Arrangement.SpaceEvenly,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
@@ -731,8 +732,7 @@ fun ClubroomStageView(
                                     .then(
                                         if (!isUnseated) {
                                             Modifier
-                                                .clickable { manager.triggerCharacterTap(member) }
-                                                .pointerInput(member.charId) {
+                                                .pointerInput(member.charId, "tea_seat") {
                                                     detectDragGestures(
                                                         onDragStart = {
                                                             dragDeltaX = 0f
@@ -759,6 +759,7 @@ fun ClubroomStageView(
                                                         }
                                                     )
                                                 }
+                                                .clickable { manager.triggerCharacterTap(member) }
                                         } else Modifier
                                     ),
                                 contentAlignment = Alignment.Center
