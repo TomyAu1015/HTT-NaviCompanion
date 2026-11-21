@@ -714,7 +714,7 @@ fun AboutAndFeedbackContent(manager: AudioPlayerManager) {
                     Spacer(Modifier.height(4.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(
-                            "版本 v${manager.appVersion}",
+                            "版本 ${manager.appShortVersion} (v${manager.appVersion})",
                             color = SheetGold,
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Bold,

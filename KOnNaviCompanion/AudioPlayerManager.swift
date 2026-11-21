@@ -868,7 +868,12 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     }
 
     // MARK: - App Metadata & Author Information (多语言制作作者与版本)
-    var appVersion: String { "17/11/2026" }
+    var appVersion: String {
+        (Bundle.main.object(forInfoDictionaryKey: "HTTBuildDate") as? String) ?? "21/11/2026"
+    }
+    var appShortVersion: String {
+        (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "1.0"
+    }
     
     var appAuthorName: String {
         switch language {

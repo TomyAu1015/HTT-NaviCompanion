@@ -7155,7 +7155,7 @@ struct AboutAndFeedbackContentView: View {
                     
                     HStack(spacing: 8) {
                         // Version 1.0 Badge
-                        Text(manager.language == .en ? "Version 1.0 (v\(manager.appVersion))" : "版本 1.0 (v\(manager.appVersion))")
+                        Text(manager.language == .en ? "Version \(manager.appShortVersion) (v\(manager.appVersion))" : "版本 \(manager.appShortVersion) (v\(manager.appVersion))")
                             .font(.system(size: 11, weight: .bold, design: .monospaced))
                             .padding(.horizontal, 8)
                             .padding(.vertical, 3)

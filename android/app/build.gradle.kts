@@ -12,8 +12,15 @@ android {
         applicationId = "com.tomy.httnavicompanion"
         minSdk = 26
         targetSdk = 34
-        versionCode = 3
-        versionName = "1.6.4"
+        val buildDateStr = System.getenv("APP_BUILD_DATE")
+            ?: java.time.LocalDate.now(java.time.ZoneId.of("Asia/Shanghai")).format(java.time.format.DateTimeFormatter.ofPattern("dd/MM/yyyy"))
+        val dailySeq = (System.getenv("APP_DAILY_SEQ")?.toIntOrNull() ?: 1).coerceAtLeast(1)
+        val computedCode = (System.getenv("APP_VERSION_CODE")?.toIntOrNull()
+            ?: (java.time.LocalDate.now(java.time.ZoneId.of("Asia/Shanghai")).format(java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd")).toInt() * 100 + (dailySeq % 100)))
+        versionCode = computedCode
+        versionName = "${dailySeq}.0 (v${buildDateStr})"
+        buildConfigField("String", "APP_BUILD_DATE", "\"${buildDateStr}\"")
+        buildConfigField("String", "APP_SHORT_VER", "\"${dailySeq}.0\"")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -95,6 +102,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 
     packaging {

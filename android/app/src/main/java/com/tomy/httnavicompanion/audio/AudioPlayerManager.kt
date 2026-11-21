@@ -680,7 +680,8 @@ class AudioPlayerManager(
             NotificationManagerCompat.from(HTTNaviApp.instance).cancel(20261)
         } catch (_: Throwable) {}
     }
-    val appVersion = "17/11/2026"
+    val appVersion: String = com.tomy.httnavicompanion.BuildConfig.APP_BUILD_DATE
+    val appShortVersion: String = com.tomy.httnavicompanion.BuildConfig.APP_SHORT_VER
 
     fun appAuthorLabel(): String = when (_language.value) {
         AppLanguage.ZH_HANS -> "制作作者: 君殇"
