@@ -1066,11 +1066,16 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
     }
 
     private func shouldSearchWeb(for lower: String) -> Bool {
+        // Explicit web search triggers
         if lower.contains("联网") || lower.contains("搜索") || lower.contains("查一下") || lower.contains("帮我查") || lower.contains("百科") || lower.contains("新闻") || lower.contains("最新") {
             return true
         }
-        let triggers = ["是什么", "是谁", "什么是", "介绍", "为什么", "怎么", "多少", "哪里", "哪个", "历史", "知道", "动画", "动漫", "电影", "游戏", "价格", "评分", "攻略"]
-        return triggers.contains { lower.contains($0) }
+        // Only trigger knowledge lookup when there is a real noun subject (>= 2 chars, not pronouns like "你/我/他/这/那")
+        let explicitFact = ["是什么", "是谁", "什么是", "介绍一下"].contains { lower.contains($0) }
+        if !explicitFact { return false }
+        let subject = cleanSearchQueryForLookup(from: lower).replacingOccurrences(of: " ", with: "")
+        let pronouns: Set<String> = ["你", "我", "他", "她", "它", "这", "那", "谁", "啥", "什么", "笨蛋"]
+        return subject.count >= 2 && !pronouns.contains(subject)
     }
 
     private func cleanSearchQuery(from text: String) -> String {
@@ -1484,9 +1489,24 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
 
             let finalOut = accumulated.trimmingCharacters(in: .whitespacesAndNewlines)
             DispatchQueue.main.async {
-                self.finishBubble(id: msgId, finalText: finalOut.isEmpty ? "嗯…我刚刚走神了一下，可以再问我一次吗？" : finalOut)
+                self.finishBubble(id: msgId, finalText: finalOut.isEmpty ? self.smartInCharacterFallback(for: userPrompt, persona: persona) : finalOut)
             }
         }
+    }
+
+    private func smartInCharacterFallback(for prompt: String, persona: AudioPlayerManager.CharacterFilter) -> String {
+        let p = prompt.lowercased()
+        let name = persona.displayName(.zhHans)
+        if p.contains("你是") || p.contains("你叫") || p.contains("谁") {
+            return "我是放课后茶会（HTT）的\(name)呀！现在正坐在副驾陪你一起出发呢，想听歌、查路线还是找好吃的都可以跟我说哦~"
+        }
+        if p.contains("笨蛋") || p.contains("傻") {
+            return "才、才不是笨蛋呢！\(name)只是刚才在想下午茶的草莓蛋糕啦，再跟我聊点别的嘛！"
+        }
+        if p.contains("你好") || p.contains("哈喽") || p.contains("在吗") {
+            return "嗨嗨！\(name)一直都在哦，随时准备陪你出发进行！"
+        }
+        return "收到啦！我是\(name)，刚才信号有一点点卡顿，不过我随时都在副驾陪着你，可以试试让我帮你「导航到某个地方」「切一首轻音」或「路况汇报」哦♪"
     }
 
     private func finishBubble(id: UUID, finalText: String) {

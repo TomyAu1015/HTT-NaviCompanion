@@ -744,7 +744,7 @@ final class KOnVoiceInputManager: NSObject, ObservableObject {
     @Published var statusMessage: String = ""
     @Published var selectedLanguage: KOnVoiceInputLanguage = .cantoneseHK
 
-    private let audioEngine = AVAudioEngine()
+    private var audioEngine: AVAudioEngine?
     private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
     private var recognitionTask: SFSpeechRecognitionTask?
     private var speechRecognizer: SFSpeechRecognizer?
@@ -806,9 +806,14 @@ final class KOnVoiceInputManager: NSObject, ObservableObject {
         self.speechRecognizer = recognizer
 
         do {
+            // Deactivate first to clear any stale .playback / CarPlay / Bluetooth A2DP route that causes -10868
             let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.playAndRecord, mode: .measurement, options: [.duckOthers, .defaultToSpeaker, .allowBluetooth])
+            try? session.setActive(false, options: .notifyOthersOnDeactivation)
+            try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetooth, .duckOthers])
             try session.setActive(true, options: .notifyOthersOnDeactivation)
+
+            let engine = AVAudioEngine()
+            self.audioEngine = engine
 
             let req = SFSpeechAudioBufferRecognitionRequest()
             req.shouldReportPartialResults = true
@@ -817,15 +822,16 @@ final class KOnVoiceInputManager: NSObject, ObservableObject {
             }
             self.recognitionRequest = req
 
-            let inputNode = audioEngine.inputNode
+            let inputNode = engine.inputNode
+            let hwFmt = inputNode.outputFormat(forBus: 0)
+            let tapFmt: AVAudioFormat? = (hwFmt.sampleRate > 0 && hwFmt.channelCount > 0) ? hwFmt : nil
             inputNode.removeTap(onBus: 0)
-            // Pass format: nil so AVAudioEngine automatically matches the live hardware bus format (prevents NSException crash on Bluetooth/CarPlay!)
-            inputNode.installTap(onBus: 0, bufferSize: 1024, format: nil) { [weak self] buffer, _ in
+            inputNode.installTap(onBus: 0, bufferSize: 1024, format: tapFmt) { [weak self] buffer, _ in
                 self?.recognitionRequest?.append(buffer)
             }
 
-            audioEngine.prepare()
-            try audioEngine.start()
+            engine.prepare()
+            try engine.start()
             isRecording = true
 
             recognitionTask = recognizer.recognitionTask(with: req) { [weak self] result, error in
@@ -850,24 +856,29 @@ final class KOnVoiceInputManager: NSObject, ObservableObject {
     }
 
     func finishRecordingGracefully() {
-        if audioEngine.isRunning {
-            audioEngine.stop()
+        if let engine = audioEngine {
+            if engine.isRunning { engine.stop() }
+            engine.inputNode.removeTap(onBus: 0)
         }
-        audioEngine.inputNode.removeTap(onBus: 0)
+        audioEngine = nil
         recognitionRequest?.endAudio()
         isRecording = false
     }
 
     func stopRecording() {
-        if audioEngine.isRunning {
-            audioEngine.stop()
+        if let engine = audioEngine {
+            if engine.isRunning { engine.stop() }
+            engine.inputNode.removeTap(onBus: 0)
         }
-        audioEngine.inputNode.removeTap(onBus: 0)
+        audioEngine = nil
         recognitionRequest?.endAudio()
         recognitionRequest = nil
         recognitionTask?.cancel()
         recognitionTask = nil
         isRecording = false
-        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [.mixWithOthers])
+        let session = AVAudioSession.sharedInstance()
+        try? session.setActive(false, options: .notifyOthersOnDeactivation)
+        try? session.setCategory(.playback, mode: .default, options: KOnMusicManager.shared.isPlaying ? [] : [.mixWithOthers])
+        try? session.setActive(true)
     }
 }

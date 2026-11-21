@@ -154,7 +154,7 @@ class KOnMusicManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
             let session = AVAudioSession.sharedInstance()
             // IMPORTANT: Do NOT include .allowBluetoothHFP or .duckOthers on the persistent session,
             // as .allowBluetoothHFP forces Bluetooth headphones to switch from A2DP stereo to HFP mono call profile when external notifications arrive!
-            try session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
+            try session.setCategory(.playback, mode: .default, options: [])
             try session.setActive(true)
         } catch {
             print("KOnMusicManager audio session init error: \(error)")
@@ -197,7 +197,7 @@ class KOnMusicManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
         // When an external notification banner finishes or route reconfigures, keep A2DP stream alive
         if reason == .categoryChange || reason == .override || reason == .wakeFromSleep {
             if self.isPlaying, let player = self.audioPlayer, !player.isPlaying {
-                try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [.mixWithOthers])
+                try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [])
                 try? AVAudioSession.sharedInstance().setActive(true)
                 player.play()
             }
@@ -206,6 +206,7 @@ class KOnMusicManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
 
     // MARK: - Lock Screen & Control Center Integration (锁屏/控制中心媒体控制 & 彻底杜绝后台被杀)
     private func setupRemoteCommandCenter() {
+        DispatchQueue.main.async { UIApplication.shared.beginReceivingRemoteControlEvents() }
         let commandCenter = MPRemoteCommandCenter.shared()
         commandCenter.playCommand.isEnabled = true
         commandCenter.playCommand.addTarget { [weak self] _ in
@@ -263,6 +264,14 @@ class KOnMusicManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
         ]
         if let appIcon = UIImage(named: "AppIcon60x60@2x") ?? UIImage(named: "AppIcon") {
             info[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: appIcon.size) { _ in appIcon }
+        }
+        if isPlaying {
+            let session = AVAudioSession.sharedInstance()
+            if !session.categoryOptions.isEmpty || session.category != .playback {
+                try? session.setCategory(.playback, mode: .default, options: [])
+                try? session.setActive(true)
+            }
+            DispatchQueue.main.async { UIApplication.shared.beginReceivingRemoteControlEvents() }
         }
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
     }

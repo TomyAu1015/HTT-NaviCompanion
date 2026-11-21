@@ -6882,7 +6882,8 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         do {
             let session = AVAudioSession.sharedInstance()
             // Pure .mixWithOthers prevents iOS from re-negotiating Bluetooth A2DP when system notifications arrive
-            try session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
+            let opts: AVAudioSession.CategoryOptions = KOnMusicManager.shared.isPlaying ? [] : [.mixWithOthers]
+            try session.setCategory(.playback, mode: .default, options: opts)
             try session.setActive(true)
         } catch {
             print("Failed to configure AVAudioSession: \(error)")
@@ -7033,41 +7034,62 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     }
 
     // MARK: - Intelligent Intersections Traffic Light Engine (真实路口信号灯时序与一键校准算法)
+    private func currentTrafficLightSeed() -> Int {
+        let lights = roadHazards.filter { $0.kind == .trafficLight }
+        let userLoc = CLLocation(latitude: userCoordinate.latitude, longitude: userCoordinate.longitude)
+        if let nearest = lights.min(by: {
+            userLoc.distance(from: CLLocation(latitude: $0.coordinate.latitude, longitude: $0.coordinate.longitude)) <
+            userLoc.distance(from: CLLocation(latitude: $1.coordinate.latitude, longitude: $1.coordinate.longitude))
+        }) {
+            return abs(Int((nearest.coordinate.latitude * 10000 + nearest.coordinate.longitude * 10000).rounded()))
+        }
+        if let route = activeRoute, currentStepIndex < route.steps.count {
+            let pt = route.steps[currentStepIndex].polyline.points().pointee.coordinate
+            return abs(Int((pt.latitude * 10000 + pt.longitude * 10000).rounded()))
+        }
+        return 0
+    }
+
     func updateTrafficLightSimulation() {
         guard hasActiveNavigation, let route = activeRoute, currentStepIndex < route.steps.count else {
-            let now = Int(Date().timeIntervalSince1970) + trafficLightCalibrationOffset
-            let secInCycle = now % 60
-            if secInCycle < 32 {
-                trafficLightPhase = .green
-                trafficLightSeconds = 32 - secInCycle
-            } else if secInCycle < 35 {
-                trafficLightPhase = .yellow
-                trafficLightSeconds = 35 - secInCycle
-            } else {
-                trafficLightPhase = .red
-                trafficLightSeconds = 60 - secInCycle
-            }
-            trafficLightIsHighwayNonStop = false
+            trafficLightIsHighwayNonStop = true
+            trafficLightPhase = .green
+            trafficLightSeconds = 99
             return
         }
-        
+
         let step = route.steps[currentStepIndex]
-        let isHighway = routeContainsHighway(route) && (step.instructions.contains("高速") || step.instructions.contains("快速") || step.instructions.contains("高架") || step.instructions.contains("匝道"))
-        
+        let isHighway = routeContainsHighway(route) && (step.instructions.contains("高速") || step.instructions.contains("快速") || step.instructions.contains("高架") || step.instructions.contains("匝道") || step.instructions.contains("Expressway"))
         if isHighway {
             trafficLightIsHighwayNonStop = true
             trafficLightPhase = .green
             trafficLightSeconds = 99
             return
         }
-        
+
+        // Only count down when a real signalized intersection is within 380m ahead
+        let userLoc = CLLocation(latitude: userCoordinate.latitude, longitude: userCoordinate.longitude)
+        let nearbyLight = roadHazards.filter { $0.kind == .trafficLight }.min { a, b in
+            userLoc.distance(from: CLLocation(latitude: a.coordinate.latitude, longitude: a.coordinate.longitude)) <
+            userLoc.distance(from: CLLocation(latitude: b.coordinate.latitude, longitude: b.coordinate.longitude))
+        }
+        let nearestDist = nearbyLight.map {
+            userLoc.distance(from: CLLocation(latitude: $0.coordinate.latitude, longitude: $0.coordinate.longitude))
+        } ?? 9999.0
+
+        if nearestDist > 380.0 && distanceToNextStepMeters > 380.0 {
+            trafficLightIsHighwayNonStop = true
+            trafficLightPhase = .green
+            trafficLightSeconds = 99
+            return
+        }
+
         trafficLightIsHighwayNonStop = false
-        let pt = step.polyline.points().pointee.coordinate
-        let intersectionSeed = abs(Int(pt.latitude * 10000 + pt.longitude * 10000))
-        let now = Int(Date().timeIntervalSince1970) + trafficLightCalibrationOffset + intersectionSeed
+        let intersectionSeed = currentTrafficLightSeed()
         let cycleSecs = 60
-        let secInCycle = now % cycleSecs
-        
+        let raw = Int(Date().timeIntervalSince1970) + trafficLightCalibrationOffset + intersectionSeed
+        let secInCycle = ((raw % cycleSecs) + cycleSecs) % cycleSecs
+
         if secInCycle < 32 {
             trafficLightPhase = .green
             trafficLightSeconds = 32 - secInCycle
@@ -7079,17 +7101,15 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             trafficLightSeconds = cycleSecs - secInCycle
         }
     }
-    
+
     func calibrateTrafficLight() {
-        if trafficLightPhase == .red {
-            trafficLightCalibrationOffset += (32 - trafficLightSeconds)
-            trafficLightPhase = .green
-            trafficLightSeconds = 30
-        } else {
-            trafficLightCalibrationOffset += (60 - trafficLightSeconds)
-            trafficLightPhase = .red
-            trafficLightSeconds = 25
-        }
+        let cycleSecs = 60
+        let intersectionSeed = currentTrafficLightSeed()
+        let baseNow = Int(Date().timeIntervalSince1970) + intersectionSeed
+        let targetSec = (trafficLightPhase == .red) ? 0 : 35
+        let currentMod = ((baseNow + trafficLightCalibrationOffset) % cycleSecs + cycleSecs) % cycleSecs
+        trafficLightCalibrationOffset += (targetSec - currentMod)
+        updateTrafficLightSimulation()
         let msg = "🚦 已为您校准当前路口红绿灯！已同步实况倒计时！"
         playVoice(id: activeBaseId() + 39, customQuote: msg, clearQueue: true)
     }
@@ -8084,6 +8104,11 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         }
         consecutiveOffRouteCount = 0
         isRecalculatingRoute = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 10.0) { [weak self] in
+            if self?.isRecalculatingRoute == true {
+                self?.isRecalculatingRoute = false
+            }
+        }
         isMapEnlarged = true
         showMapMode = true
         
@@ -8560,6 +8585,55 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             }
         }
         
+        // Fetch real-world OpenStreetMap traffic_signals along the route bounding box
+        if !hasHighway && ptCount >= 2 {
+            var minLat = 90.0, maxLat = -90.0, minLon = 180.0, maxLon = -180.0
+            for i in stride(from: 0, to: ptCount, by: max(1, ptCount / 20)) {
+                let c = pts[i].coordinate
+                minLat = min(minLat, c.latitude); maxLat = max(maxLat, c.latitude)
+                minLon = min(minLon, c.longitude); maxLon = max(maxLon, c.longitude)
+            }
+            if (maxLat - minLat) < 0.25 && (maxLon - minLon) < 0.25 {
+                let bbox = String(format: "%.5f,%.5f,%.5f,%.5f", minLat - 0.002, minLon - 0.002, maxLat + 0.002, maxLon + 0.002)
+                let q = "[out:json][timeout:4];node[\"highway\"=\"traffic_signals\"](\(bbox));out;"
+                if let enc = q.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
+                   let url = URL(string: "https://overpass-api.de/api/interpreter?data=\(enc)") {
+                    var req = URLRequest(url: url, timeoutInterval: 4.5)
+                    req.setValue("HTT-NaviCompanion/1.6", forHTTPHeaderField: "User-Agent")
+                    URLSession.shared.dataTask(with: req) { [weak self] data, _, _ in
+                        guard let self = self, let data = data,
+                              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                              let elems = json["elements"] as? [[String: Any]] else { return }
+                        var realLights: [RoadHazardAnnotation] = []
+                        for el in elems {
+                            guard let lat = el["lat"] as? Double, let lon = el["lon"] as? Double else { continue }
+                            let c = CLLocationCoordinate2D(latitude: lat, longitude: lon)
+                            // Keep only signals within 38m of the route polyline
+                            var nearRoute = false
+                            for j in stride(from: 0, to: ptCount, by: max(1, ptCount / 80)) {
+                                if self.metersBetween(c, pts[j].coordinate) <= 38 {
+                                    nearRoute = true; break
+                                }
+                            }
+                            if nearRoute {
+                                let anno = RoadHazardAnnotation()
+                                anno.coordinate = c
+                                anno.kind = .trafficLight
+                                anno.title = self.language == .en ? "Real Traffic Signal" : "实景红绿灯路口"
+                                realLights.append(anno)
+                            }
+                        }
+                        if !realLights.isEmpty {
+                            DispatchQueue.main.async {
+                                self.roadHazards.removeAll { $0.kind == .trafficLight }
+                                self.roadHazards.append(contentsOf: realLights)
+                            }
+                        }
+                    }.resume()
+                }
+            }
+        }
+
         // Fallback if route has a single merged polyline with few steps on surface streets: place intersection traffic lights at road nodes
         if lastLightCoord == nil && !hasHighway && ptCount > 6 && route.distance >= 400.0 {
             let lightCount = min(6, max(1, Int(route.distance / 550.0)))
@@ -8755,6 +8829,8 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         transitPlans.removeAll()
         showTransitPlanSheet = false
         announcedStepThresholds.removeAll()
+        isRecalculatingRoute = false
+        consecutiveOffRouteCount = 0
         // Stay on enlarged navigation map page (never shrink to cockpit automatically!)
         let base = activeBaseId()
         let modeOff = activeModeOffset()
@@ -8912,6 +8988,18 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         }
         if activeSeg > currentStepIndex {
             currentStepIndex = activeSeg
+            let newStep = steps[currentStepIndex]
+            let newInstr = newStep.instructions.trimmingCharacters(in: .whitespacesAndNewlines)
+            let enterKey = "\(currentStepIndex)_ENTER"
+            if !newInstr.isEmpty && !announcedStepThresholds.contains(enterKey) {
+                announcedStepThresholds.insert(enterKey)
+                let turnM = classifyTurnOffsetM(from: newInstr)
+                let base = activeBaseId()
+                let modeOff = activeModeOffset()
+                enqueueVoiceCombo([
+                    (base + modeOff + turnM, "↪️ \(newInstr)")
+                ])
+            }
         }
 
         let step = steps[currentStepIndex]
@@ -9013,8 +9101,8 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             return
         }
         
-        // 3. OFF-ROUTE DYNAMIC REROUTING (使用折线垂直距离 + 连续偏航确认，杜绝直路误判偏航!)
-        if isNavigatingFocused && !isRecalculatingRoute && travelMode != .transit, let dest = destinationCoord {
+        // 3. OFF-ROUTE DYNAMIC REROUTING (快速响应偏航重规划：支持48m连续2次或80m立即重规划，且放宽GPS精度到100m!)
+        if (hasActiveNavigation || isNavigatingFocused) && !isRecalculatingRoute && travelMode != .transit, let dest = destinationCoord {
             let rawMapCoord = CoordinateConverter.wgs84ToGCJ02(location.coordinate)
             let pts = route.polyline.points()
             let ptCount = route.polyline.pointCount
@@ -9028,33 +9116,34 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                 minSegDist = lastRoutePerpendicularDistance
             }
 
-            if location.horizontalAccuracy >= 0 && location.horizontalAccuracy <= 40.0 && minSegDist > 85.0 {
-                consecutiveOffRouteCount += 1
+            let offThreshold: Double = (travelMode == .walking) ? 32.0 : 48.0
+            if location.horizontalAccuracy >= 0 && location.horizontalAccuracy <= 100.0 && minSegDist > offThreshold {
+                consecutiveOffRouteCount += (minSegDist > 80.0 ? 2 : 1)
             } else {
                 consecutiveOffRouteCount = 0
             }
 
-            if consecutiveOffRouteCount >= 3 && Date().timeIntervalSince(lastRerouteTime) > 20.0 {
+            if consecutiveOffRouteCount >= 2 && Date().timeIntervalSince(lastRerouteTime) > 8.0 {
                 consecutiveOffRouteCount = 0
                 lastRerouteTime = Date()
                 let rerouteMsg = "🔄 你已偏离路线，正在为您重新规划路线..."
-                playVoice(id: activeBaseId() + 43, customQuote: rerouteMsg, clearQueue: false)
+                playVoice(id: activeBaseId() + 43, customQuote: rerouteMsg, clearQueue: true)
                 calculateAndStartRoute(to: dest, title: destinationName, isReroute: true)
                 return
             }
         }
         
-        let thresholds: [(limit: Double, tol: Double, distM: Int, label: String)] = [
-            (1000, 90, 5, "およそ1km先"),
-            (500, 60, 10, "およそ500m先"),
-            (300, 50, 12, "およそ300m先"),
-            (100, 35, 14, "およそ100m先"),
-            (35, 25, 15, "まもなく")
+        let thresholds: [(minD: Double, maxD: Double, distM: Int, label: String)] = [
+            (720, 1120, 5, "およそ1km先"),
+            (360, 580, 10, "およそ500m先"),
+            (170, 355, 12, "およそ300m先"),
+            (60, 165, 14, "およそ100m先"),
+            (0, 59, 15, "まもなく")
         ]
         
         for th in thresholds {
             let key = "\(currentStepIndex)_\(th.distM)"
-            if abs(dist - th.limit) <= th.tol && !announcedStepThresholds.contains(key) {
+            if dist >= th.minD && dist <= th.maxD && !announcedStepThresholds.contains(key) {
                 announcedStepThresholds.insert(key)
                 let voiceInstr = verifiedInstr.isEmpty ? step.instructions : verifiedInstr
                 let turnM = classifyTurnOffsetM(from: voiceInstr)

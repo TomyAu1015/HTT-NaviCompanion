@@ -1039,6 +1039,11 @@ struct HTTSmoothMapView: UIViewRepresentable {
                     renderer.mainFillColor = UIColor(red: 0.38, green: 0.68, blue: 0.98, alpha: 0.85)
                     renderer.outerBorderColor = UIColor(red: 0.18, green: 0.45, blue: 0.78, alpha: 0.85)
                     renderer.lineWidth = 9.0
+                } else if tag == "TRAVELED_GREEN" {
+                    renderer.mainFillColor = UIColor(red: 0.16, green: 0.78, blue: 0.36, alpha: 0.95)
+                    renderer.outerBorderColor = UIColor(red: 0.06, green: 0.45, blue: 0.18, alpha: 1.0)
+                    renderer.drawDirectionChevrons = false
+                    renderer.lineWidth = 10.0
                 } else if tag == "DRIVING_ACTIVE_BLUE" || tag == "EBIKE_CYAN_BLUE" {
                     // Driving & e-Bike Active Vehicle Guidance Line: Vivid GaoDe Cyan-Blue (#0099FF) with deep navy border & white chevrons!
                     renderer.mainFillColor = UIColor(red: 0.0, green: 0.62, blue: 1.0, alpha: 0.98)
