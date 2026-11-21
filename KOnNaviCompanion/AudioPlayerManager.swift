@@ -1223,6 +1223,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     private var trafficLightCalibrationOffset: Int = 0
     @Published var rawTransitPlans: [TransitPlanOption] = []
     @Published var transitPlans: [TransitPlanOption] = []
+    @Published var transitFirstLegUseBike: Bool = false
     @Published var selectedTransitPlanIndex: Int = 0
     @Published var showTransitPlanSheet: Bool = false
     
@@ -6502,14 +6503,32 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         }
     }
     
+    var directDistanceToDestinationMeters: Double {
+        guard let dest = destinationCoord else { return 0.0 }
+        return Double(metersBetween(userCoordinate, dest))
+    }
+
+    func switchTransitToDirectMode(_ mode: NavigationTravelMode) {
+        guard let dest = destinationCoord else { return }
+        let title = destinationName.isEmpty ? "目的地" : destinationName
+        showTransitPlanSheet = false
+        transitFirstLegUseBike = false
+        travelMode = mode
+        calculateAndStartRoute(to: dest, title: title)
+    }
+
     func startTransitWalkingNavigation() {
+        startTransitFirstLegNavigation(useBike: transitFirstLegUseBike)
+    }
+
+    func startTransitFirstLegNavigation(useBike: Bool) {
         guard selectedTransitPlanIndex < transitPlans.count else { return }
+        transitFirstLegUseBike = useBike
         let plan = transitPlans[selectedTransitPlanIndex]
         showTransitPlanSheet = false
         isNavigatingFocused = true
         isMapEnlarged = true
         
-        // Find first transit boarding step
         if let firstTransit = plan.steps.first(where: { $0.kind != .walk }) {
             self.activeDirectionsRequest?.cancel()
             self.customTransitPolyline = nil
@@ -6529,16 +6548,16 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                 let boardCoord = resolved ?? self.transitBoardingStationCoord ?? self.userCoordinate
                 self.transitBoardingStationCoord = boardCoord
 
-                let walkReq = MKDirections.Request()
-                // Use aligned userCoordinate + requestsAlternateRoutes + surface pedestrian filter (1:1 with normal walking mode, NEVER elevated highways!)
-                walkReq.source = MKMapItem(placemark: MKPlacemark(coordinate: self.userCoordinate))
-                walkReq.destination = MKMapItem(placemark: MKPlacemark(coordinate: boardCoord))
-                walkReq.transportType = .walking
-                walkReq.requestsAlternateRoutes = true
+                let legReq = MKDirections.Request()
+                legReq.source = MKMapItem(placemark: MKPlacemark(coordinate: self.userCoordinate))
+                legReq.destination = MKMapItem(placemark: MKPlacemark(coordinate: boardCoord))
+                legReq.transportType = useBike ? .automobile : .walking
+                legReq.requestsAlternateRoutes = true
 
-                MKDirections(request: walkReq).calculate { [weak self] resp, _ in
+                MKDirections(request: legReq).calculate { [weak self] resp, _ in
                     DispatchQueue.main.async {
                         guard let self = self else { return }
+                        let modePrefix = useBike ? "骑行至" : "步行至"
                         if let routes = resp?.routes, !routes.isEmpty {
                             let r = routes.min { a, b in
                                 let aOver = self.routeContainsOverpassOrHighway(a) ? 1 : 0
@@ -6546,20 +6565,25 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                                 if aOver != bOver { return aOver < bOver }
                                 return a.distance < b.distance
                             } ?? routes[0]
-                            r.polyline.title = "WALKING_BLUE"
+                            r.polyline.title = useBike ? "CYCLING_TEAL" : "WALKING_BLUE"
                             self.transitSegmentPolylines = []
                             self.customTransitPolyline = nil
                             self.activeRoute = r
                             self.currentStepIndex = 0
                             self.remainingRouteDistanceKm = r.distance / 1000.0
-                            self.remainingRouteMinutes = max(1, Int((r.expectedTravelTime / 60.0).rounded()))
+                            let estMins = useBike
+                                ? max(1, Int((r.distance / 250.0).rounded()))
+                                : max(1, Int((r.expectedTravelTime / 60.0).rounded()))
+                            self.remainingRouteMinutes = estMins
                             let stepText = r.steps.first(where: { !$0.instructions.isEmpty })?.instructions ?? "前往 \(self.transitBoardingStationName)"
-                            self.currentStepInstruction = "步行至 \(self.transitBoardingStationName) (\(stepText))"
+                            self.currentStepInstruction = "\(modePrefix) \(self.transitBoardingStationName) (\(stepText))"
                             self.distanceToNextStepMeters = r.steps.first?.distance ?? r.distance
                         } else {
-                            // Fallback straight route if directions offline
-                            self.currentStepInstruction = "步行前往 \(self.transitBoardingStationName)"
-                            self.distanceToNextStepMeters = Double(self.metersBetween(self.userCoordinate, boardCoord))
+                            let distM = Double(self.metersBetween(self.userCoordinate, boardCoord))
+                            self.currentStepInstruction = "\(useBike ? "骑行" : "步行")前往 \(self.transitBoardingStationName)"
+                            self.distanceToNextStepMeters = distM
+                            self.remainingRouteDistanceKm = distM / 1000.0
+                            self.remainingRouteMinutes = max(1, Int((distM / (useBike ? 250.0 : 76.0)).rounded()))
                         }
                     }
                 }
@@ -6567,10 +6591,18 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         }
         
         let charQuote: String
-        switch language {
-        case .zhHans: charQuote = "🚶 [步行实景导航] 请沿地面蓝色指引线步行前往 [\(transitBoardingStationName)] 乘车！"
-        case .zhHant: charQuote = "🚶 [步行實景導航] 請沿地面藍色指引綫步行前往 [\(transitBoardingStationName)] 乘車！"
-        case .en: charQuote = "🚶 Walking navigation: Head to [\(transitBoardingStationName)]!"
+        if useBike {
+            switch language {
+            case .zhHans: charQuote = "🚲 [骑行接驳导航] 第一步骑车前往 [\(transitBoardingStationName)] 乘车，注意安全！"
+            case .zhHant: charQuote = "🚲 [騎行接駁導航] 第一步騎車前往 [\(transitBoardingStationName)] 乘車，注意安全！"
+            case .en: charQuote = "🚲 First-mile cycling: Ride to [\(transitBoardingStationName)]!"
+            }
+        } else {
+            switch language {
+            case .zhHans: charQuote = "🚶 [步行实景导航] 请沿地面蓝色指引线步行前往 [\(transitBoardingStationName)] 乘车！"
+            case .zhHant: charQuote = "🚶 [步行實景導航] 請沿地面藍色指引綫步行前往 [\(transitBoardingStationName)] 乘車！"
+            case .en: charQuote = "🚶 Walking navigation: Head to [\(transitBoardingStationName)]!"
+            }
         }
         playVoice(id: activeBaseId() + 39, customQuote: charQuote, clearQueue: true)
     }

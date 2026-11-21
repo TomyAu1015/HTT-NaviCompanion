@@ -1,10 +1,13 @@
 import SwiftUI
 import UniformTypeIdentifiers
+import Speech
+import AVFoundation
 
 struct KOnAIChatSheetView: View {
     @ObservedObject var manager: AudioPlayerManager
     @ObservedObject var musicManager = KOnMusicManager.shared
     @ObservedObject var llm = KOnLocalLLMManager.shared
+    @StateObject private var voiceInput = KOnVoiceInputManager()
     @Environment(\.dismiss) private var dismiss
 
     var onOpenGameRoom: () -> Void
@@ -192,13 +195,83 @@ struct KOnAIChatSheetView: View {
                 }
             }
 
-            // Input Bar
-            HStack(spacing: 8) {
-                TextField("和轻音部聊点什么，或直接下达控车指令...", text: $inputText)
+            // Voice Recognition Status Banner (when listening or error)
+            if voiceInput.isRecording || !voiceInput.statusMessage.isEmpty {
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(voiceInput.isRecording ? Color.red : httGold)
+                        .frame(width: 7, height: 7)
+                    Text(voiceInput.isRecording
+                         ? "🎙️ 正在聆听（\(voiceInput.selectedLanguage.shortLabel) · 软件内直录）..."
+                         : voiceInput.statusMessage)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(voiceInput.isRecording ? Color(red: 1.0, green: 0.72, blue: 0.72) : httCream)
+                        .lineLimit(2)
+                    Spacer()
+                    if voiceInput.isRecording {
+                        Button("完成") { voiceInput.stopRecording() }
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundColor(httGold)
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 5)
+                .background(Color.white.opacity(0.08))
+                .cornerRadius(10)
+                .padding(.horizontal, 12)
+            }
+
+            // Input Bar with In-App Cantonese / Multi-Language Voice Input
+            HStack(spacing: 6) {
+                Menu {
+                    ForEach(KOnVoiceInputLanguage.allCases) { lang in
+                        Button(action: { voiceInput.setLanguage(lang) }) {
+                            HStack {
+                                Text(lang.displayName)
+                                if voiceInput.selectedLanguage == lang { Image(systemName: "checkmark") }
+                            }
+                        }
+                    }
+                } label: {
+                    Text(voiceInput.selectedLanguage.shortLabel)
+                        .font(.system(size: 11, weight: .black))
+                        .foregroundColor(httGold)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 9)
+                        .background(cardBg)
+                        .cornerRadius(14)
+                        .overlay(RoundedRectangle(cornerRadius: 14).stroke(httGold.opacity(0.45), lineWidth: 1))
+                }
+
+                Button(action: {
+                    dismissKeyboard()
+                    if voiceInput.isRecording {
+                        voiceInput.stopRecording()
+                    } else {
+                        let basePrefix = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
+                        voiceInput.startRecording { partial in
+                            if basePrefix.isEmpty {
+                                inputText = partial
+                            } else {
+                                inputText = basePrefix + " " + partial
+                            }
+                        }
+                    }
+                }) {
+                    Image(systemName: voiceInput.isRecording ? "stop.fill" : "mic.fill")
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundColor(.white)
+                        .frame(width: 36, height: 36)
+                        .background(voiceInput.isRecording ? Color.red : Color(red: 0.16, green: 0.48, blue: 0.88))
+                        .clipShape(Circle())
+                }
+
+                TextField("语音或打字提问，支持粤语/多语言...", text: $inputText)
                     .focused($isInputFocused)
                     .textFieldStyle(.plain)
                     .submitLabel(.send)
                     .onSubmit {
+                        voiceInput.stopRecording()
                         let q = inputText
                         inputText = ""
                         dismissKeyboard()
@@ -206,13 +279,14 @@ struct KOnAIChatSheetView: View {
                     }
                     .font(.system(size: 14))
                     .foregroundColor(.white)
-                    .padding(.horizontal, 12)
+                    .padding(.horizontal, 10)
                     .padding(.vertical, 9)
                     .background(cardBg)
                     .cornerRadius(18)
                     .overlay(RoundedRectangle(cornerRadius: 18).stroke(httGold.opacity(0.45), lineWidth: 1))
 
                 Button(action: {
+                    voiceInput.stopRecording()
                     let q = inputText
                     inputText = ""
                     dismissKeyboard()
@@ -221,13 +295,13 @@ struct KOnAIChatSheetView: View {
                     Image(systemName: llm.isGenerating ? "hourglass" : "paperplane.fill")
                         .font(.system(size: 15, weight: .bold))
                         .foregroundColor(.white)
-                        .frame(width: 38, height: 38)
+                        .frame(width: 36, height: 36)
                         .background(llm.isGenerating ? Color.gray : httCrimson)
                         .clipShape(Circle())
                 }
                 .disabled(llm.isGenerating || inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
-            .padding(.horizontal, 12)
+            .padding(.horizontal, 10)
             .padding(.bottom, 10)
         }
     }
@@ -327,6 +401,23 @@ struct KOnAIChatSheetView: View {
     private var modelManagerTabView: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
+                // In-App Zero-Cost System Voice Recognition Card
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("🎙️ 软件内语音录入（零成本 · 粤语/多语言）")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundColor(httGold)
+                    Text("当前语言：\(voiceInput.selectedLanguage.displayName)。全程嵌入本软件内实时转文字，不跳转外部应用、无需 API Key。")
+                        .font(.system(size: 11))
+                        .foregroundColor(httCream.opacity(0.9))
+                    Text("离线多语言包：前往 iPhone「设置 → 通用 → 键盘 → 听写语言」勾选粤语/英语/日语等即可自动下载对应语言包。")
+                        .font(.system(size: 10.5))
+                        .foregroundColor(.gray)
+                }
+                .padding(12)
+                .background(cardBg)
+                .cornerRadius(12)
+                .overlay(RoundedRectangle(cornerRadius: 12).stroke(httGold.opacity(0.45), lineWidth: 1))
+
                 // Cloud API Key Card (Gemini / Doubao / DeepSeek / Custom)
                 VStack(alignment: .leading, spacing: 8) {
                     Text("☁️ 云端大模型 API Key（Gemini / 豆包 / DeepSeek）")
@@ -601,5 +692,151 @@ struct KOnAIChatSheetView: View {
             }
             .padding(12)
         }
+    }
+}
+
+
+// MARK: - In-App Zero-Cost System Voice Recognition (Apple Speech Framework)
+enum KOnVoiceInputLanguage: String, CaseIterable, Identifiable {
+    case cantoneseHK = "zh-HK"
+    case mandarinCN = "zh-CN"
+    case traditionalTW = "zh-TW"
+    case englishUS = "en-US"
+    case japaneseJP = "ja-JP"
+
+    var id: String { rawValue }
+    var shortLabel: String {
+        switch self {
+        case .cantoneseHK: return "粤语"
+        case .mandarinCN: return "普通话"
+        case .traditionalTW: return "繁體"
+        case .englishUS: return "EN"
+        case .japaneseJP: return "日本語"
+        }
+    }
+    var displayName: String {
+        switch self {
+        case .cantoneseHK: return "粤语 / 广东话 (zh-HK)"
+        case .mandarinCN: return "普通话 (zh-CN)"
+        case .traditionalTW: return "繁體中文 (zh-TW)"
+        case .englishUS: return "English (en-US)"
+        case .japaneseJP: return "日本語 (ja-JP)"
+        }
+    }
+}
+
+final class KOnVoiceInputManager: NSObject, ObservableObject {
+    @Published var isRecording: Bool = false
+    @Published var statusMessage: String = ""
+    @Published var selectedLanguage: KOnVoiceInputLanguage = .cantoneseHK
+
+    private let audioEngine = AVAudioEngine()
+    private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
+    private var recognitionTask: SFSpeechRecognitionTask?
+    private var speechRecognizer: SFSpeechRecognizer?
+    private var onTextUpdate: ((String) -> Void)?
+
+    override init() {
+        super.init()
+        if let rawLang = UserDefaults.standard.string(forKey: "htt_voice_lang"),
+           let l = KOnVoiceInputLanguage(rawValue: rawLang) {
+            selectedLanguage = l
+        }
+    }
+
+    func setLanguage(_ lang: KOnVoiceInputLanguage) {
+        selectedLanguage = lang
+        UserDefaults.standard.set(lang.rawValue, forKey: "htt_voice_lang")
+    }
+
+    func startRecording(onUpdate: @escaping (String) -> Void) {
+        stopRecording()
+        self.onTextUpdate = onUpdate
+        self.statusMessage = ""
+
+        AVAudioSession.sharedInstance().requestRecordPermission { [weak self] micGranted in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                guard micGranted else {
+                    self.statusMessage = "请在系统设置中开启麦克风权限"
+                    return
+                }
+                SFSpeechRecognizer.requestAuthorization { authStatus in
+                    DispatchQueue.main.async {
+                        if authStatus == .authorized {
+                            self.startAppleSpeechSession()
+                        } else {
+                            self.statusMessage = "请在系统设置中开启语音识别权限"
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func startAppleSpeechSession() {
+        let locale = Locale(identifier: selectedLanguage.rawValue)
+        let recognizer = SFSpeechRecognizer(locale: locale) ?? SFSpeechRecognizer(locale: Locale(identifier: "zh-CN"))
+        guard let recognizer = recognizer, recognizer.isAvailable else {
+            statusMessage = "当前语音识别暂不可用，请检查网络或下载系统离线听写语言包"
+            return
+        }
+        self.speechRecognizer = recognizer
+
+        do {
+            let session = AVAudioSession.sharedInstance()
+            try session.setCategory(.playAndRecord, mode: .measurement, options: [.duckOthers, .defaultToSpeaker, .allowBluetooth])
+            try session.setActive(true, options: .notifyOthersOnDeactivation)
+
+            let req = SFSpeechAudioBufferRecognitionRequest()
+            req.shouldReportPartialResults = true
+            if #available(iOS 13.0, *) {
+                req.requiresOnDeviceRecognition = false
+            }
+            self.recognitionRequest = req
+
+            let inputNode = audioEngine.inputNode
+            inputNode.removeTap(onBus: 0)
+            let recordingFormat = inputNode.outputFormat(forBus: 0)
+            inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { [weak self] buffer, _ in
+                self?.recognitionRequest?.append(buffer)
+            }
+
+            audioEngine.prepare()
+            try audioEngine.start()
+            isRecording = true
+
+            recognitionTask = recognizer.recognitionTask(with: req) { [weak self] result, error in
+                DispatchQueue.main.async {
+                    guard let self = self else { return }
+                    if let res = result {
+                        self.onTextUpdate?(res.bestTranscription.formattedString)
+                        if res.isFinal {
+                            self.stopRecording()
+                        }
+                    }
+                    if let err = error, self.isRecording {
+                        self.statusMessage = "识别已结束：\(err.localizedDescription)"
+                        self.stopRecording()
+                    }
+                }
+            }
+        } catch {
+            statusMessage = "启动录音失败：\(error.localizedDescription)"
+            stopRecording()
+        }
+    }
+
+    func stopRecording() {
+        if audioEngine.isRunning {
+            audioEngine.stop()
+        }
+        audioEngine.inputNode.removeTap(onBus: 0)
+        recognitionRequest?.endAudio()
+        recognitionRequest = nil
+        recognitionTask?.cancel()
+        recognitionTask = nil
+        isRecording = false
+        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [.mixWithOthers])
     }
 }

@@ -2268,6 +2268,71 @@ struct ContentView: View {
                 }
             }
             
+            if manager.directDistanceToDestinationMeters > 0 && manager.directDistanceToDestinationMeters < 3500 {
+                let directM = manager.directDistanceToDestinationMeters
+                let walkMins = max(1, Int((directM / 76.0).rounded()))
+                let bikeMins = max(1, Int((directM / 250.0).rounded()))
+                HStack(spacing: 6) {
+                    Image(systemName: "sparkles")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundColor(httGold)
+                    Text(tr(String(format: "目的地较近(%.1fkm)", directM / 1000.0), String(format: "目的地較近(%.1fkm)", directM / 1000.0), String(format: "Nearby (%.1fkm)", directM / 1000.0)))
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundColor(httCream)
+                    Spacer(minLength: 2)
+                    Button(action: { manager.switchTransitToDirectMode(.walking) }) {
+                        Label(tr("步行 \(walkMins)分", "步行 \(walkMins)分", "Walk \(walkMins)m"), systemImage: "figure.walk")
+                            .font(.system(size: 10, weight: .black))
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 4)
+                            .background(Color.green.opacity(0.85))
+                            .foregroundColor(.white)
+                            .cornerRadius(6)
+                    }
+                    Button(action: { manager.switchTransitToDirectMode(.cycling) }) {
+                        Label(tr("骑行 \(bikeMins)分", "騎行 \(bikeMins)分", "Bike \(bikeMins)m"), systemImage: "bicycle")
+                            .font(.system(size: 10, weight: .black))
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 4)
+                            .background(Color.teal.opacity(0.9))
+                            .foregroundColor(.white)
+                            .cornerRadius(6)
+                    }
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 6)
+                .background(Color.orange.opacity(0.18))
+                .cornerRadius(8)
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold.opacity(0.55), lineWidth: 1))
+            }
+
+            HStack(spacing: 6) {
+                Text(tr("第一步去上车站：", "第一步去上車站：", "First leg:"))
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundColor(httCream.opacity(0.85))
+                Button(action: { manager.transitFirstLegUseBike = false }) {
+                    HStack(spacing: 3) {
+                        Image(systemName: "figure.walk").font(.system(size: 10, weight: .bold))
+                        Text(tr("步行前往", "步行前往", "Walk")).font(.system(size: 10, weight: .bold))
+                    }
+                    .padding(.horizontal, 8).padding(.vertical, 4)
+                    .background(!manager.transitFirstLegUseBike ? Color.blue : Color.white.opacity(0.12))
+                    .foregroundColor(.white)
+                    .cornerRadius(6)
+                }
+                Button(action: { manager.transitFirstLegUseBike = true }) {
+                    HStack(spacing: 3) {
+                        Image(systemName: "bicycle").font(.system(size: 10, weight: .bold))
+                        Text(tr("骑车前往", "騎車前往", "Bike")).font(.system(size: 10, weight: .bold))
+                    }
+                    .padding(.horizontal, 8).padding(.vertical, 4)
+                    .background(manager.transitFirstLegUseBike ? Color.teal : Color.white.opacity(0.12))
+                    .foregroundColor(.white)
+                    .cornerRadius(6)
+                }
+                Spacer()
+            }
+
             if !manager.transitPlans.isEmpty {
                 ScrollView(.vertical, showsIndicators: true) {
                     VStack(spacing: 7) {
@@ -5701,6 +5766,57 @@ struct InAppTransitPlanSheetView: View {
                     } else {
                         ScrollView(.vertical, showsIndicators: true) {
                             VStack(alignment: .leading, spacing: 12) {
+                                if manager.directDistanceToDestinationMeters > 0 && manager.directDistanceToDestinationMeters < 3500 {
+                                    let directM = manager.directDistanceToDestinationMeters
+                                    let walkMins = max(1, Int((directM / 76.0).rounded()))
+                                    let bikeMins = max(1, Int((directM / 250.0).rounded()))
+                                    VStack(alignment: .leading, spacing: 8) {
+                                        HStack(spacing: 6) {
+                                            Image(systemName: "location.circle.fill")
+                                                .foregroundColor(httGold)
+                                            Text(tr(String(format: "目的地较近（约 %.1f 公里），推荐步行或骑行直达", directM / 1000.0), String(format: "目的地較近（約 %.1f 公里），推薦步行或騎行直達", directM / 1000.0), String(format: "Destination is close (%.1f km) — Walk or Bike directly", directM / 1000.0)))
+                                                .font(.system(size: 12, weight: .bold))
+                                                .foregroundColor(httCream)
+                                        }
+                                        HStack(spacing: 10) {
+                                            Button(action: {
+                                                dismiss()
+                                                manager.switchTransitToDirectMode(.walking)
+                                            }) {
+                                                HStack(spacing: 5) {
+                                                    Image(systemName: "figure.walk")
+                                                    Text(tr("步行直达 · 约\(walkMins)分钟", "步行直達 · 約\(walkMins)分鐘", "Walk · ~\(walkMins)m"))
+                                                }
+                                                .font(.system(size: 12, weight: .black))
+                                                .frame(maxWidth: .infinity)
+                                                .padding(.vertical, 8)
+                                                .background(Color.green.opacity(0.85))
+                                                .foregroundColor(.white)
+                                                .cornerRadius(9)
+                                            }
+                                            Button(action: {
+                                                dismiss()
+                                                manager.switchTransitToDirectMode(.cycling)
+                                            }) {
+                                                HStack(spacing: 5) {
+                                                    Image(systemName: "bicycle")
+                                                    Text(tr("骑行直达 · 约\(bikeMins)分钟", "騎行直達 · 約\(bikeMins)分鐘", "Bike · ~\(bikeMins)m"))
+                                                }
+                                                .font(.system(size: 12, weight: .black))
+                                                .frame(maxWidth: .infinity)
+                                                .padding(.vertical, 8)
+                                                .background(Color.teal.opacity(0.9))
+                                                .foregroundColor(.white)
+                                                .cornerRadius(9)
+                                            }
+                                        }
+                                    }
+                                    .padding(10)
+                                    .background(Color.orange.opacity(0.16))
+                                    .cornerRadius(12)
+                                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(httGold.opacity(0.55), lineWidth: 1))
+                                }
+
                                 // Show Cross-City Flight / High-Speed Rail / Train overview banner if applicable
                                 if let firstPlan = manager.transitPlans.first, let ic = firstPlan.intercityBanner {
                                     intercityOverviewSection(ic: ic)
@@ -6064,22 +6180,42 @@ struct InAppTransitPlanSheetView: View {
                                 .foregroundColor(httCream.opacity(0.85))
                             
                             if stepIdx == 0 {
-                                Button(action: {
-                                    manager.selectedTransitPlanIndex = planIndex
-                                    dismiss()
-                                    manager.startTransitWalkingNavigation()
-                                }) {
-                                    HStack(spacing: 5) {
-                                        Image(systemName: "figure.walk.circle.fill")
-                                            .font(.system(size: 12, weight: .bold))
-                                        Text(tr("开启第一段步行实景导航 (前往 \(step.toStation))", "開啟第一段步行實景導航 (前往 \(step.toStation))", "Start Walking Guidance to \(step.toStation)"))
-                                            .font(.system(size: 11, weight: .bold))
+                                let bikeLegMins = max(1, Int((Double(max(step.walkMeters, step.durationMins * 75)) / 250.0).rounded()))
+                                HStack(spacing: 8) {
+                                    Button(action: {
+                                        manager.selectedTransitPlanIndex = planIndex
+                                        dismiss()
+                                        manager.startTransitFirstLegNavigation(useBike: false)
+                                    }) {
+                                        HStack(spacing: 4) {
+                                            Image(systemName: "figure.walk.circle.fill")
+                                                .font(.system(size: 12, weight: .bold))
+                                            Text(tr("步行去上车站(\(max(1, step.durationMins))分)", "步行去上車站(\(max(1, step.durationMins))分)", "Walk (\(max(1, step.durationMins))m)"))
+                                                .font(.system(size: 11, weight: .bold))
+                                        }
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 5)
+                                        .background(Color.green.opacity(0.22))
+                                        .foregroundColor(Color.green)
+                                        .cornerRadius(6)
                                     }
-                                    .padding(.horizontal, 8)
-                                    .padding(.vertical, 5)
-                                    .background(Color.green.opacity(0.2))
-                                    .foregroundColor(Color.green)
-                                    .cornerRadius(6)
+                                    Button(action: {
+                                        manager.selectedTransitPlanIndex = planIndex
+                                        dismiss()
+                                        manager.startTransitFirstLegNavigation(useBike: true)
+                                    }) {
+                                        HStack(spacing: 4) {
+                                            Image(systemName: "bicycle.circle.fill")
+                                                .font(.system(size: 12, weight: .bold))
+                                            Text(tr("骑车去上车站(\(bikeLegMins)分)", "騎車去上車站(\(bikeLegMins)分)", "Bike (\(bikeLegMins)m)"))
+                                                .font(.system(size: 11, weight: .bold))
+                                        }
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 5)
+                                        .background(Color.teal.opacity(0.25))
+                                        .foregroundColor(Color.teal)
+                                        .cornerRadius(6)
+                                    }
                                 }
                             }
                         }

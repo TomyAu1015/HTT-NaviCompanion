@@ -920,8 +920,25 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
             }
         }
 
+        // 2.5 Direct Real-Time Tool: Direct Destination Navigation ("帮我导航到丹竹头地铁站", "带我去...", "坐地铁去...", "骑车去...")
+        let isDirectNavIntent = (
+            lower.contains("导航到") || lower.contains("导航去") || lower.contains("帮我导航") ||
+            lower.contains("带我去") || lower.contains("带我到") || lower.contains("规划路线") ||
+            lower.contains("路线到") || lower.contains("开车去") || lower.contains("骑车去") ||
+            lower.contains("骑行去") || lower.contains("步行去") || lower.contains("走路去") ||
+            lower.contains("坐地铁去") || lower.contains("坐公交去") || lower.contains("navigate to")
+        ) && !lower.contains("附近") && !lower.contains("多久") && !lower.contains("多远")
+        if isDirectNavIntent {
+            let destName = extractDirectNavDestination(from: text)
+            if !destName.isEmpty {
+                applyRequestedTravelModeIfAny(from: lower, manager: mgr)
+                searchDirectDestinationAndNavigate(query: destName, persona: persona, manager: mgr)
+                return
+            }
+        }
+
         // 3. Direct Real-Time Tool: Nearby POI Search Sorted Strictly By Distance (3km -> 8km!)
-        if lower.contains("附近") || lower.contains("最近") || lower.contains("找一下") || lower.contains("找一个") || lower.contains("找个") || lower.contains("帮我找") || lower.contains("导航去") || lower.contains("有什么好吃") || lower.contains("好吃的") {
+        if lower.contains("附近") || lower.contains("最近") || lower.contains("找一下") || lower.contains("找一个") || lower.contains("找个") || lower.contains("帮我找") || lower.contains("有什么好吃") || lower.contains("好吃的") {
             let keyword = extractNearbyKeyword(from: text)
             searchNearestPOIAndNavigate(keyword: keyword, persona: persona, manager: mgr)
             return
@@ -1491,6 +1508,100 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
             return text.contains("咖啡") ? "咖啡" : "美食"
         }
         return kw
+    }
+
+    private func extractDirectNavDestination(from text: String) -> String {
+        var q = text
+        let triggers = [
+            "帮我导航到", "请帮我导航到", "给我导航到", "导航到",
+            "帮我导航去", "请帮我导航去", "给我导航去", "导航去",
+            "帮我规划路线到", "规划路线到", "路线到", "帮我导航",
+            "带我去", "带我到", "开车去", "骑车去", "骑行去",
+            "步行去", "走路去", "坐地铁去", "坐公交去", "navigate to"
+        ]
+        for t in triggers {
+            if let range = q.range(of: t, options: .caseInsensitive) {
+                q = String(q[range.upperBound...])
+                break
+            }
+        }
+        for noise in ["吧", "啊", "呀", "呢", "哦", "一下", "谢谢", "。", "！", "!", "?", "？"] {
+            q = q.replacingOccurrences(of: noise, with: "")
+        }
+        return q.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func applyRequestedTravelModeIfAny(from lower: String, manager: AudioPlayerManager) {
+        if lower.contains("步行") || lower.contains("走路") {
+            manager.travelMode = .walking
+        } else if lower.contains("骑车") || lower.contains("骑行") || lower.contains("单车") {
+            manager.travelMode = .cycling
+        } else if lower.contains("地铁") || lower.contains("公交") || lower.contains("巴士") {
+            if lower.contains("坐地铁") || lower.contains("坐公交") || lower.contains("坐巴士") || lower.contains("乘地铁") || lower.contains("乘公交") {
+                manager.travelMode = .transit
+            }
+        } else if lower.contains("开车") || lower.contains("驾车") {
+            manager.travelMode = .driving
+        }
+    }
+
+    private func searchDirectDestinationAndNavigate(query: String, persona: AudioPlayerManager.CharacterFilter, manager: AudioPlayerManager) {
+        let userCoord = manager.userCoordinate
+        let userLoc = CLLocation(latitude: userCoord.latitude, longitude: userCoord.longitude)
+        let req = MKLocalSearch.Request()
+        req.naturalLanguageQuery = query
+        req.resultTypes = [.pointOfInterest, .address]
+        req.region = MKCoordinateRegion(center: userCoord, latitudinalMeters: 60000, longitudinalMeters: 60000)
+
+        MKLocalSearch(request: req).start { [weak self] resp, _ in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                let items = resp?.mapItems ?? []
+                let places: [KOnAINearbyPlace] = items.prefix(5).map { item in
+                    let c = item.placemark.coordinate
+                    let d = CLLocation(latitude: c.latitude, longitude: c.longitude).distance(from: userLoc)
+                    let addr = [item.placemark.locality, item.placemark.subLocality, item.placemark.thoroughfare]
+                        .compactMap { $0 }
+                        .joined(separator: " ")
+                    return KOnAINearbyPlace(
+                        name: item.name ?? query,
+                        address: addr.isEmpty ? (item.placemark.title ?? "地图定位地点") : addr,
+                        distanceMeters: d,
+                        latitude: c.latitude,
+                        longitude: c.longitude
+                    )
+                }
+
+                guard let best = places.first else {
+                    self.emitStreamedReply(
+                        speaker: persona.displayName(.zhHans),
+                        charId: max(1, persona.charId),
+                        emotion: "委屈",
+                        text: "呜呜，地图里暂时没搜到「\(query)」，要不要加上城市或区名再跟我说一次（比如「深圳丹竹头地铁站」）？",
+                        actionHint: "未找到：\(query)"
+                    )
+                    return
+                }
+
+                // Immediately launch route planning to the top match!
+                self.navigateToNearbyPlace(best)
+                let distStr = best.distanceMeters < 1000 ? "\(Int(best.distanceMeters))米" : String(format: "%.1f公里", best.distanceMeters / 1000.0)
+                let replyText = "好耶！已经为你规划好前往「\(best.name)」（距你约 \(distStr)）的路线啦！点击下方「一键导航」或点右上角「完成」即可直接查看导航地图哦！"
+                self.messages.append(
+                    KOnAIChatMessage(
+                        isUser: false,
+                        speakerName: persona.displayName(.zhHans),
+                        speakerCharId: max(1, persona.charId),
+                        emotionTag: "元气",
+                        text: replyText,
+                        actionHint: "🧭 已规划路线：\(best.name)（\(distStr)）",
+                        nearbyPlaces: places
+                    )
+                )
+                self.isGenerating = false
+                self.speakOfflineTTSOnly(replyText)
+            }
+        }
     }
 
     func navigateToNearbyPlace(_ place: KOnAINearbyPlace) {
