@@ -2151,7 +2151,7 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
                     2 -> hints.add(arr)
                     3 -> {
                         val kickerR = uniqueRanks.firstOrNull { it != r && (byRank[it]?.isNotEmpty() == true) }
-                        if (kickerR != null) hints.add(arr + byRank[kickerR]?.firstOrNull() ?: return@forEach) else hints.add(arr)
+                        val k = kickerR?.let { byRank[it]?.firstOrNull() }; if (k != null) hints.add(arr + k) else hints.add(arr)
                     }
                 }
             }
@@ -2186,7 +2186,7 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
                     val arr = byRank[r] ?: continue
                     if (r > target.mainRank && arr.size >= 3) {
                         val kickerR = uniqueRanks.firstOrNull { it != r }
-                        if (kickerR != null) hints.add(arr.take(3) + byRank[kickerR]?.firstOrNull() ?: return@forEach)
+                        val k = kickerR?.let { byRank[it]?.firstOrNull() }; if (k != null) hints.add(arr.take(3) + k)
                     }
                 }
             }
@@ -2206,7 +2206,7 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
                     for (startIdx in 0..(validSingleRanks.size - len)) {
                         val slice = validSingleRanks.subList(startIdx, startIdx + len)
                         if (slice.last() - slice.first() == len - 1 && slice.last() > target.mainRank) {
-                            hints.add(slice.map { (byRank[it]?.firstOrNull() ?: arr.first()) })
+                            val straight = slice.mapNotNull { byRank[it]?.firstOrNull() }; if (straight.size == len) hints.add(straight)
                         }
                     }
                 }

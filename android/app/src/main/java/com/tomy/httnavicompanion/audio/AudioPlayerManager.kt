@@ -1059,6 +1059,25 @@ class AudioPlayerManager(
         _distanceToNextStepMeters.value = activeStep?.distanceMeters?.toInt() ?: r.totalDistanceMeters.toInt()
     }
 
+    fun calibrateTrafficLight() {
+        val cycleSecs = 60
+        val userPt = _userCoordinate.value
+        val nearestSig = routeTrafficSignals.minByOrNull { CoordinateConverter.distanceMeters(userPt, it) }
+        val seed = nearestSig?.let { kotlin.math.abs((it.latitude * 10000 + it.longitude * 10000).toInt()) } ?: 0
+        val baseNow = (System.currentTimeMillis() / 1000L).toInt() + seed
+        val targetSec = if (_trafficLightColor.value == 0) 0 else 35
+        val currentMod = ((baseNow + trafficLightCalibrationOffset) % cycleSecs + cycleSecs) % cycleSecs
+        trafficLightCalibrationOffset += (targetSec - currentMod)
+        if (targetSec == 0) {
+            _trafficLightColor.value = 2
+            _trafficLightCountdown.value = 32
+        } else {
+            _trafficLightColor.value = 0
+            _trafficLightCountdown.value = 25
+        }
+        playVoice(id = activeBaseId() + 39, customQuote = "🚦 已为您校准当前路口红绿灯倒计时！", clearQueue = true)
+    }
+
     fun setTouchingMap(touching: Boolean) {
         _isTouchingMap.value = touching
     }

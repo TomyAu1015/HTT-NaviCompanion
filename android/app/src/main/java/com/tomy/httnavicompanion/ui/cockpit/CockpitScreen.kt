@@ -1128,6 +1128,9 @@ fun InteractiveMapBoxView(
     onOpenSearch: () -> Unit
 ) {
     val destName by manager.destinationName.collectAsState()
+    val tlCountdown by manager.trafficLightCountdown.collectAsState()
+    val tlColor by manager.trafficLightColor.collectAsState()
+    val tlNoStop by manager.trafficLightIsHighwayNonStop.collectAsState()
     val isSimulating by manager.isDemoSimulating.collectAsState()
     val camMode by manager.cameraMode.collectAsState()
     val lang by manager.language.collectAsState()
@@ -1957,6 +1960,81 @@ fun EnlargedNavigationHUDView(
                                 }
                             }
                         }
+                    }
+                }
+            }
+
+            // Lane Guidance Strip + Traffic Light Countdown Pill (1:1 iOS Parity during active navigation)
+            if (hasNav && !isRoutePreviewing) {
+                val isLeftTurn = stepInstruction.contains("左") && !stepInstruction.contains("右")
+                val isRightTurn = stepInstruction.contains("右") && !stepInstruction.contains("左")
+                val isStraight = !isLeftTurn && !isRightTurn
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(Color(0xFF141824).copy(alpha = 0.92f))
+                            .border(1.dp, HTTGold.copy(alpha = 0.55f), RoundedCornerShape(10.dp))
+                            .padding(horizontal = 6.dp, vertical = 4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        listOf(
+                            Triple(Icons.Default.TurnLeft, "左转", isLeftTurn),
+                            Triple(Icons.Default.ArrowUpward, "直行", isStraight),
+                            Triple(Icons.Default.TurnRight, "右转", isRightTurn)
+                        ).forEach { (ic, lbl, active) ->
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Icon(
+                                    ic,
+                                    contentDescription = null,
+                                    tint = if (active) Color(0xFF4ADE80) else Color.Gray.copy(alpha = 0.65f),
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Text(
+                                    lbl,
+                                    color = if (active) Color.White else Color.Gray,
+                                    fontSize = 8.5.sp,
+                                    fontWeight = if (active) FontWeight.Black else FontWeight.Normal
+                                )
+                            }
+                        }
+                    }
+
+                    val tlBg = when {
+                        tlNoStop -> Color(0xFF0F291E)
+                        tlColor == 0 -> Color(0xFF450A0A)
+                        tlColor == 1 -> Color(0xFF422006)
+                        else -> Color(0xFF0F291E)
+                    }
+                    val tlDot = when {
+                        tlNoStop -> Color(0xFF4ADE80)
+                        tlColor == 0 -> Color(0xFFEF4444)
+                        tlColor == 1 -> Color(0xFFFACC15)
+                        else -> Color(0xFF4ADE80)
+                    }
+                    val tlLabel = when {
+                        tlNoStop -> "前方无信号灯 · 畅行"
+                        tlColor == 0 -> "红灯 ${tlCountdown}s · 点按校准"
+                        tlColor == 1 -> "黄灯 ${tlCountdown}s · 点按校准"
+                        else -> "绿灯 ${tlCountdown}s · 点按校准"
+                    }
+                    Row(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(tlBg.copy(alpha = 0.92f))
+                            .border(1.dp, tlDot.copy(alpha = 0.7f), RoundedCornerShape(10.dp))
+                            .clickable { manager.calibrateTrafficLight() }
+                            .padding(horizontal = 9.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(5.dp)
+                    ) {
+                        Box(modifier = Modifier.size(8.dp).clip(CircleShape).background(tlDot))
+                        Text(tlLabel, color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
                     }
                 }
             }
