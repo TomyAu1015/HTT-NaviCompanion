@@ -6,6 +6,8 @@ import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.speech.tts.TextToSpeech
+import android.media.AudioAttributes
+import android.media.MediaPlayer
 import android.speech.tts.UtteranceProgressListener
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -170,6 +172,14 @@ class LocalLLMManager(
 
     private val _isTtsSpeaking = MutableStateFlow(false)
     val isTtsSpeaking: StateFlow<Boolean> = _isTtsSpeaking
+
+    private val _customTtsEndpointUrl = MutableStateFlow(prefs.getString("custom_tts_url", "") ?: "")
+    val customTtsEndpointUrl: StateFlow<String> = _customTtsEndpointUrl
+
+    private val _voicePackStatus = MutableStateFlow("")
+    val voicePackStatus: StateFlow<String> = _voicePackStatus
+
+    private var clonedMediaPlayer: MediaPlayer? = null
 
     private val _installedModels = MutableStateFlow<List<String>>(emptyList())
     val installedModels: StateFlow<List<String>> = _installedModels
@@ -773,11 +783,11 @@ class LocalLLMManager(
         lower.contains("天气") || lower.contains("气温") || lower.contains("温度") || lower.contains("下雨") || lower.contains("多少度") || lower.contains("天气预报")
 
     private fun shouldSearchWeb(lower: String): Boolean {
-        if (lower.contains("联网") || lower.contains("搜索") || lower.contains("查一下") || lower.contains("帮我查") || lower.contains("百科") || lower.contains("新闻") || lower.contains("最新")) return true
-        val explicitFact = listOf("是什么", "是谁", "什么是", "介绍一下").any { lower.contains(it) }
+        if (lower.contains("联网") || lower.contains("搜索") || lower.contains("查一下") || lower.contains("帮我查") || lower.contains("百科") || lower.contains("新闻") || lower.contains("最新") || lower.contains("新出")) return true
+        val explicitFact = listOf("是什么", "是谁", "什么是", "介绍", "电视剧", "电影", "动漫", "动画", "剧情", "主演", "演员", "上映", "播出", "多少集", "攻略", "评分", "价格", "历史").any { lower.contains(it) }
         if (!explicitFact) return false
         val subject = cleanSearchQueryForLookup(lower).replace(" ", "")
-        val pronouns = setOf("你", "我", "他", "她", "它", "这", "那", "谁", "啥", "什么", "笨蛋")
+        val pronouns = setOf("你", "我", "他", "她", "它", "这", "那", "谁", "啥", "什么", "笨蛋", "自己")
         return subject.length >= 2 && subject !in pronouns
     }
 
@@ -837,7 +847,7 @@ class LocalLLMManager(
 
     private fun cleanSearchQueryForLookup(text: String): String {
         var q = cleanSearchQuery(text)
-        listOf("是什么", "是谁", "什么是", "位于哪里", "在哪里", "在哪", "介绍一下", "介绍", "怎么去", "有什么").forEach {
+        listOf("帮我介绍一下", "帮我介绍", "请介绍", "介绍一下", "介绍", "是什么", "是谁", "什么是", "位于哪里", "在哪里", "在哪", "怎么去", "有什么", "帮我", "请问").forEach {
             q = q.replace(it, " ")
         }
         return q.trim().ifEmpty { text }
@@ -917,6 +927,29 @@ class LocalLLMManager(
                                 snippets.add("【百度搜索】${clean.take(260)}")
                                 if (snippets.size >= 2) break
                             }
+                        }
+                    }
+                } catch (_: Throwable) {}
+            }
+
+            // 2.5 Bing China Search (works in Mainland China & HK without Baidu captcha!)
+            if (snippets.size < 2) {
+                try {
+                    val conn = (URL("https://cn.bing.com/search?q=$enc").openConnection() as HttpURLConnection).apply {
+                        connectTimeout = 3200
+                        readTimeout = 3200
+                        instanceFollowRedirects = true
+                        setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 Chrome/126.0.0.0 Mobile Safari/537.36")
+                        setRequestProperty("Accept-Language", "zh-CN,zh;q=0.9")
+                    }
+                    val html = conn.inputStream.bufferedReader(Charsets.UTF_8).readText()
+                    conn.disconnect()
+                    val matches = Regex("<p[^>]*>([\\s\\S]*?)</p>", RegexOption.IGNORE_CASE).findAll(html)
+                    for (m in matches) {
+                        val clean = cleanHtmlText(m.groupValues[1])
+                        if (clean.length in 24..380 && isRelevantSnippet(query, query, clean)) {
+                            snippets.add("【必应实时检索】${clean.take(280)}")
+                            if (snippets.size >= 3) break
                         }
                     }
                 } catch (_: Throwable) {}
@@ -1120,7 +1153,16 @@ ${personaRole}你们五人组成了“放课后茶会”(HTT)乐队。你正坐�
         return "收到啦！我是${name}，随时都在副驾陪着你，可以让我帮你「导航到某个地方」「切一首轻音」或「路况汇报」哦♪"
     }
 
+    fun saveCustomTtsEndpoint(url: String) {
+        val cleaned = url.trim()
+        _customTtsEndpointUrl.value = cleaned
+        prefs.edit().putString("custom_tts_url", cleaned).apply()
+        _voicePackStatus.value = if (cleaned.isEmpty()) "已切换为本地零成本情感语音" else "已保存本地克隆音服务地址，对讲时优先使用"
+    }
+
     fun stopAllSpeech() {
+        try { clonedMediaPlayer?.stop(); clonedMediaPlayer?.release() } catch (_: Throwable) {}
+        clonedMediaPlayer = null
         try { tts?.stop() } catch (_: Throwable) {}
         _isTtsSpeaking.value = false
     }
@@ -1132,17 +1174,107 @@ ${personaRole}你们五人组成了“放课后茶会”(HTT)乐队。你正坐�
     }
 
     private fun speakOfflineTTS(text: String) {
-        if (!_enableVoiceBroadcast.value || !ttsReady) return
+        if (!_enableVoiceBroadcast.value) return
         val clean = text.replace(Regex("\\[[^\\]]+]"), "").replace(Regex("【[^】]+】"), "").replace("（本地 GGUF 已加速）", "").trim()
         if (clean.isEmpty()) return
+        val emotion = when {
+            text.contains("温柔") || text.contains("安慰") || text.contains("关心") -> "温柔"
+            text.contains("撒娇") || text.contains("委屈") || text.contains("呜") -> "撒娇"
+            text.contains("慌张") || text.contains("吐槽") || text.contains("急") -> "慌张"
+            text.contains("元气") || text.contains("兴奋") || text.contains("耶") -> "元气"
+            else -> "开心"
+        }
+        val endpoint = _customTtsEndpointUrl.value.trim()
+        if (endpoint.isNotEmpty()) {
+            _isTtsSpeaking.value = true
+            Thread {
+                try {
+                    val conn = (URL(endpoint).openConnection() as HttpURLConnection).apply {
+                        requestMethod = "POST"
+                        connectTimeout = 6000
+                        readTimeout = 8000
+                        doOutput = true
+                        setRequestProperty("Content-Type", "application/json")
+                    }
+                    val charName = audioManager.selectedCharacter.value.displayName(AppLanguage.ZH_HANS)
+                    val bodyJson = JSONObject()
+                        .put("input", clean)
+                        .put("text", clean)
+                        .put("voice", charName)
+                        .put("character", charName)
+                        .put("emotion", emotion)
+                        .put("response_format", "wav")
+                        .toString()
+                    conn.outputStream.use { it.write(bodyJson.toByteArray(Charsets.UTF_8)) }
+                    if (conn.responseCode == 200) {
+                        val bytes = conn.inputStream.readBytes()
+                        conn.disconnect()
+                        if (bytes.size > 512) {
+                            val tmp = File(context.cacheDir, "htt_cloned_tts.wav")
+                            tmp.writeBytes(bytes)
+                            mainHandler.post {
+                                try {
+                                    clonedMediaPlayer?.release()
+                                    val mp = MediaPlayer().apply {
+                                        setAudioAttributes(
+                                            AudioAttributes.Builder()
+                                                .setUsage(AudioAttributes.USAGE_MEDIA)
+                                                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                                                .build()
+                                        )
+                                        setDataSource(tmp.absolutePath)
+                                        setOnCompletionListener { _isTtsSpeaking.value = false }
+                                        setOnErrorListener { _, _, _ -> _isTtsSpeaking.value = false; true }
+                                        prepare()
+                                        start()
+                                    }
+                                    clonedMediaPlayer = mp
+                                } catch (_: Throwable) {
+                                    speakAndroidEmotionProsody(clean, emotion)
+                                }
+                            }
+                            return@Thread
+                        }
+                    } else {
+                        conn.disconnect()
+                    }
+                } catch (_: Throwable) {}
+                mainHandler.post { speakAndroidEmotionProsody(clean, emotion) }
+            }.start()
+            return
+        }
+        speakAndroidEmotionProsody(clean, emotion)
+    }
+
+    private fun speakAndroidEmotionProsody(clean: String, emotion: String) {
+        if (!ttsReady) {
+            _isTtsSpeaking.value = false
+            return
+        }
+        val (pitch, rate) = when (emotion) {
+            "温柔" -> 1.04f to 0.94f
+            "撒娇" -> 1.24f to 0.98f
+            "慌张" -> 1.20f to 1.15f
+            "元气" -> 1.18f to 1.08f
+            else -> 1.12f to 1.04f
+        }
         mainHandler.postDelayed({
             try {
+                tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                    override fun onStart(utteranceId: String?) { _isTtsSpeaking.value = true }
+                    override fun onDone(utteranceId: String?) { _isTtsSpeaking.value = false }
+                    @Deprecated("Deprecated in Java")
+                    override fun onError(utteranceId: String?) { _isTtsSpeaking.value = false }
+                })
+                _isTtsSpeaking.value = true
                 tts?.language = _ttsAccent.value.locale
-                tts?.setPitch(1.12f)
-                tts?.setSpeechRate(1.05f)
+                tts?.setPitch(pitch)
+                tts?.setSpeechRate(rate)
                 tts?.speak(clean, TextToSpeech.QUEUE_FLUSH, null, "htt_ai_${System.currentTimeMillis()}")
-            } catch (_: Throwable) {}
-        }, 550L)
+            } catch (_: Throwable) {
+                _isTtsSpeaking.value = false
+            }
+        }, 350L)
     }
 
     private fun extractDirectNavDestination(text: String): String {
@@ -1296,7 +1428,7 @@ ${personaRole}你们五人组成了“放课后茶会”(HTT)乐队。你正坐�
             if (musicManager.isPlaying.value) musicManager.togglePlayPause()
             return Triple("音乐先帮你暂停啦，安静吹会儿风也不错呢。", "开心", "已触发：暂停轻音音乐")
         }
-        if (lower.contains("放一首") || lower.contains("播放") || lower.contains("想听") || (lower.contains("轻音") && lower.contains("歌"))) {
+        if (lower.contains("放一首") || lower.contains("播放") || lower.contains("放点音乐") || lower.contains("来点音乐") || lower.contains("轻柔一点的音乐") || lower.contains("想听") || (lower.contains("轻音") && lower.contains("歌"))) {
             val matched = musicManager.playlist.value.firstOrNull { lower.contains(it.title.lowercase()) }
             if (matched != null) {
                 musicManager.playSong(matched)

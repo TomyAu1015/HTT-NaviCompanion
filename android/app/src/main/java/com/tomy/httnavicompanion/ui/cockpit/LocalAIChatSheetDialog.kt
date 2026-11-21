@@ -2,7 +2,11 @@ package com.tomy.httnavicompanion.ui.cockpit
 
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.FilterQuality
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -72,6 +76,7 @@ fun LocalAIChatSheetDialog(
     val messages by llm.messages.collectAsState()
     val isGenerating by llm.isGenerating.collectAsState()
     val isTtsSpeaking by llm.isTtsSpeaking.collectAsState()
+    val currentSprite by audioManager.currentSpriteFrame.collectAsState()
     val installedModels by llm.installedModels.collectAsState()
     val activeModel by llm.activeModelFileName.collectAsState()
     val activeLoaded by llm.activeModelLoaded.collectAsState()
@@ -122,6 +127,9 @@ fun LocalAIChatSheetDialog(
     val isVoiceRecording by voiceMgr.isRecording.collectAsState()
     val voiceRms by voiceMgr.rmsLevel.collectAsState()
     val voiceStatus by voiceMgr.statusMessage.collectAsState()
+    val customTtsUrlState by llm.customTtsEndpointUrl.collectAsState()
+    val voicePackStatus by llm.voicePackStatus.collectAsState()
+    var customTtsUrlDraft by remember(customTtsUrlState) { mutableStateOf(customTtsUrlState) }
     val voiceLang by voiceMgr.selectedLanguage.collectAsState()
     var showLangMenu by remember { mutableStateOf(false) }
     val callHandler = remember { android.os.Handler(android.os.Looper.getMainLooper()) }
@@ -156,8 +164,10 @@ fun LocalAIChatSheetDialog(
         voiceCallSubmitted = false
         voiceMgr.startRecording(
             onUpdate = { partial ->
-                if (isVoiceCallMode && !voiceCallSubmitted) {
-                    voiceCallTranscript = partial
+                val trimmed = partial.trim()
+                if (isVoiceCallMode && !voiceCallSubmitted && trimmed.isNotEmpty()) {
+                    if (trimmed == voiceCallTranscript && silenceRunnable != null) return@startRecording
+                    voiceCallTranscript = trimmed
                     silenceRunnable?.let { callHandler.removeCallbacks(it) }
                     val r = Runnable { submitVoiceCallNow() }
                     silenceRunnable = r
@@ -378,57 +388,91 @@ fun LocalAIChatSheetDialog(
                         Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
                             Box(
                                 modifier = Modifier
-                                    .size((126f + 16f * voiceRms).dp)
-                                    .clip(CircleShape)
-                                    .background(
-                                        when {
-                                            isVoiceRecording -> Color(0xFF2563EB).copy(alpha = 0.28f)
-                                            isTtsSpeaking -> Color(0xFF16A34A).copy(alpha = 0.28f)
-                                            else -> AiGold.copy(alpha = 0.20f)
-                                        }
-                                    )
-                                    .border(2.5.dp, if (isVoiceRecording) Color(0xFF38BDF8) else if (isTtsSpeaking) Color(0xFF4ADE80) else AiGold, CircleShape)
+                                    .size(168.dp)
                                     .clickable {
                                         if (isGenerating || isTtsSpeaking) {
                                             llm.cancelCurrentGeneration()
                                             beginCallListeningTurn()
                                         } else if (isVoiceRecording && voiceCallTranscript.isNotBlank()) {
                                             submitVoiceCallNow()
+                                        } else if (!isVoiceRecording && !isGenerating) {
+                                            beginCallListeningTurn()
                                         }
                                     },
                                 contentAlignment = Alignment.Center
                             ) {
-                                Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                    Icon(
-                                        if (isVoiceRecording) Icons.Default.Mic else Icons.Default.VolumeUp,
-                                        contentDescription = null,
-                                        tint = Color.White,
-                                        modifier = Modifier.size(34.dp)
-                                    )
-                                    if (isVoiceRecording) {
-                                        Row(horizontalArrangement = Arrangement.spacedBy(3.dp), verticalAlignment = Alignment.CenterVertically) {
-                                            listOf(0.45f, 0.85f, 1.0f, 0.75f, 0.5f).forEach { mult ->
-                                                Box(
-                                                    modifier = Modifier
-                                                        .width(4.dp)
-                                                        .height((6f + 18f * voiceRms * mult).dp)
-                                                        .clip(RoundedCornerShape(2.dp))
-                                                        .background(AiGold)
+                                Box(
+                                    modifier = Modifier
+                                        .size((142f + 22f * voiceRms).dp)
+                                        .clip(CircleShape)
+                                        .background(
+                                            Brush.radialGradient(
+                                                colors = listOf(
+                                                    (if (isVoiceRecording) Color(0xFF38BDF8) else if (isTtsSpeaking) Color(0xFF4ADE80) else AiGold).copy(alpha = 0.35f),
+                                                    Color.Transparent
                                                 )
-                                            }
-                                        }
+                                            )
+                                        )
+                                )
+                                Box(
+                                    modifier = Modifier
+                                        .size(132.dp)
+                                        .clip(CircleShape)
+                                        .background(Color(0xFF1A1626))
+                                        .border(
+                                            2.8.dp,
+                                            Brush.sweepGradient(listOf(AiGold, AiCrimson, Color(0xFF38BDF8), AiGold)),
+                                            CircleShape
+                                        ),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    if (currentSprite != null) {
+                                        Image(
+                                            bitmap = currentSprite!!.asImageBitmap(),
+                                            contentDescription = null,
+                                            filterQuality = FilterQuality.None,
+                                            modifier = Modifier.size(92.dp)
+                                        )
+                                    } else {
+                                        Icon(
+                                            if (isVoiceRecording) Icons.Default.Mic else Icons.Default.VolumeUp,
+                                            contentDescription = null,
+                                            tint = AiGold,
+                                            modifier = Modifier.size(36.dp)
+                                        )
+                                    }
+                                }
+                                Row(
+                                    modifier = Modifier
+                                        .align(Alignment.BottomCenter)
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .background(Color.Black.copy(alpha = 0.78f))
+                                        .border(1.dp, AiGold.copy(alpha = 0.6f), RoundedCornerShape(12.dp))
+                                        .padding(horizontal = 10.dp, vertical = 4.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(3.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    listOf(0.35f, 0.75f, 1.0f, 0.85f, 0.55f, 0.9f, 0.4f).forEach { mult ->
+                                        val h = if (isVoiceRecording) (5f + 16f * voiceRms * mult).dp else if (isTtsSpeaking) (7f + 8f * mult).dp else 5.dp
+                                        Box(
+                                            modifier = Modifier
+                                                .width(3.5.dp)
+                                                .height(h)
+                                                .clip(RoundedCornerShape(2.dp))
+                                                .background(if (isVoiceRecording) Color(0xFF38BDF8) else if (isTtsSpeaking) Color(0xFF4ADE80) else AiGold)
+                                        )
                                     }
                                 }
                             }
                             Text(
                                 when {
-                                    isVoiceRecording -> "🎙️ 正在听你说话…（停顿1.4秒自动发送）"
-                                    isGenerating -> "💭 轻音部思考中…（点圆环可打断）"
-                                    isTtsSpeaking -> "🔊 正在语音回复…（点圆环可抢话打断）"
+                                    isVoiceRecording -> "🎙️ 正在听你说话…（停顿1.4秒自动发送，点头像可立刻发送）"
+                                    isGenerating -> "💭 轻音部思考中…（点头像可打断）"
+                                    isTtsSpeaking -> "🔊 正在语音回复…（点头像可抢话打断）"
                                     else -> "🎧 准备聆听下一句…"
                                 },
                                 color = AiGold,
-                                fontSize = 12.5.sp,
+                                fontSize = 11.5.sp,
                                 fontWeight = FontWeight.Bold
                             )
                         }
@@ -812,6 +856,44 @@ fun LocalAIChatSheetDialog(
                                 color = Color.LightGray,
                                 fontSize = 10.sp
                             )
+                        }
+
+                        // Local Emotion Voice & Cloned Voice Engine Card (Zero Cloud Cost!)
+                        Column(
+                            modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(AiCardBg).border(1.dp, AiGold.copy(alpha = 0.4f), RoundedCornerShape(12.dp)).padding(10.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Text("🎭 角色情感音色与克隆音引擎（零费用）", color = AiGold, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            Text(
+                                "已默认启用情绪动态语调（按开心/温柔/撒娇/慌张自动调节语速音高）。如需接入自建本地克隆音（GPT-SoVITS / CosyVoice / Sherpa-TTS），填入局域网地址保存即可：",
+                                color = AiCream,
+                                fontSize = 10.5.sp
+                            )
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                                OutlinedTextField(
+                                    value = customTtsUrlDraft,
+                                    onValueChange = { customTtsUrlDraft = it },
+                                    placeholder = { Text("http://192.168.1.x:9880/v1/audio/speech", color = Color.Gray, fontSize = 10.5.sp) },
+                                    singleLine = true,
+                                    modifier = Modifier.weight(1f),
+                                    colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Color.White, unfocusedTextColor = Color.White, focusedBorderColor = AiGold, unfocusedBorderColor = Color.Gray)
+                                )
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(Color(0xFF2E7D32))
+                                        .clickable {
+                                            hideKb()
+                                            llm.saveCustomTtsEndpoint(customTtsUrlDraft)
+                                        }
+                                        .padding(horizontal = 12.dp, vertical = 12.dp)
+                                ) {
+                                    Text("保存", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                            if (voicePackStatus.isNotBlank()) {
+                                Text(voicePackStatus, color = AiGold, fontSize = 10.5.sp)
+                            }
                         }
 
                         // Cloud API Key Card (Gemini / Doubao / DeepSeek / Custom)
