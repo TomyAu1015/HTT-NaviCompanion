@@ -3400,8 +3400,59 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         let isHuizhou = destClean.contains("惠州") || destClean.contains("惠阳") || destClean.contains("大亚湾") || (to.latitude >= 22.65 && to.latitude <= 23.35 && to.longitude > 114.32 && to.longitude <= 114.95)
         let isFoshanOrZhuhai = destClean.contains("佛山") || destClean.contains("顺德") || destClean.contains("珠海") || destClean.contains("中山") || (to.latitude >= 22.10 && to.latitude <= 23.20 && to.longitude >= 112.80 && to.longitude < 113.45)
         
-        let isPearlRiverDelta = isGuangzhou || isDongguan || isHuizhou || isFoshanOrZhuhai || (directMeters > 38000 && directMeters <= 185000)
-        let isLongDistanceNational = directMeters > 185000 && !isGuangzhou && !isDongguan && !isHuizhou && !isFoshanOrZhuhai
+        let isOriginInShenzhen = (from.latitude >= 22.44 && from.latitude <= 22.87 && from.longitude >= 113.75 && from.longitude <= 114.62)
+        // Fix: NEVER hijack local or short-distance (< 38km) trips inside Guangzhou/Dongguan/Huizhou/Foshan with Shenzhen North HSR templates!
+        if directMeters > 0 && directMeters < 3500 {
+            let walkMins = max(2, Int((Double(directMeters) / 76.0).rounded()))
+            let bikeMins = max(1, Int((Double(directMeters) / 250.0).rounded()))
+            let busMins = max(6, Int((Double(directMeters) / 220.0).rounded()) + 5)
+            let walkToStop = min(350, max(120, directMeters / 5))
+            let walkToStopMin = max(2, Int((Double(walkToStop) / 76.0).rounded()))
+            let rideMeters = max(400, directMeters - walkToStop * 2)
+            let rideMins = max(3, busMins - walkToStopMin * 2)
+            let shortBusSteps: [TransitStepItem] = [
+                TransitStepItem(kind: .walk, lineName: "步行前往站点", directionDesc: "前往附近公交站", fromStation: "我的位置", toStation: "附近公交站", passStations: [], durationMins: walkToStopMin, walkMeters: walkToStop, doorSideDesc: "", acNotice: "", exitDesc: "", colorHex: "#888888", startCoord: from, endCoord: nil),
+                TransitStepItem(kind: .bus, lineName: "当地直达公交", directionDesc: "往 \(destClean) 方向", fromStation: "附近公交站", toStation: "\(destClean) 附近站", passStations: [], durationMins: rideMins, walkMeters: rideMeters, doorSideDesc: "前门上车", acNotice: "❄️ 空调巴士", exitDesc: "", colorHex: "#2563EB", startCoord: nil, endCoord: nil),
+                TransitStepItem(kind: .walk, lineName: "下车步行", directionDesc: "前往 \(destClean)", fromStation: "\(destClean) 附近站", toStation: destClean, passStations: [], durationMins: walkToStopMin, walkMeters: walkToStop, doorSideDesc: "", acNotice: "", exitDesc: "", colorHex: "#888888", startCoord: nil, endCoord: to)
+            ]
+            let shortPlan1 = TransitPlanOption(
+                title: "\(busMins)分鐘 · 當地直達公交",
+                badge: "同城短途直達",
+                totalMinutes: busMins,
+                totalStations: max(1, rideMeters / 550),
+                transferCount: 0,
+                walkMeters: walkToStop * 2,
+                priceYuan: "2",
+                startExitDesc: "附近公交站上車",
+                warningNotice: "💡 距離僅約 \(String(format: "%.1f", Double(directMeters)/1000.0)) 公里，也可點上方一鍵切換步行(\(walkMins)分)或騎行(\(bikeMins)分)",
+                realtimeArrivalText: "當地直達公交 · 約 5 分鐘一班",
+                steps: shortBusSteps
+            )
+            let directWalkPlan = TransitPlanOption(
+                title: "\(walkMins)分鐘 · 直接步行前往",
+                badge: "近距離推薦 · 0元",
+                totalMinutes: walkMins,
+                totalStations: 0,
+                transferCount: 0,
+                walkMeters: directMeters,
+                priceYuan: "0",
+                startExitDesc: "直接步行出發",
+                warningNotice: "🚶 距離較近，直接步行即可到達 \(destClean)",
+                realtimeArrivalText: "無需等車 · 隨時出發",
+                steps: [
+                    TransitStepItem(kind: .walk, lineName: "步行直達", directionDesc: "前往 \(destClean)", fromStation: "我的位置", toStation: destClean, passStations: [], durationMins: walkMins, walkMeters: directMeters, doorSideDesc: "", acNotice: "", exitDesc: "", colorHex: "#16A34A", startCoord: from, endCoord: to)
+                ]
+            )
+            self.rawTransitPlans = [shortPlan1, directWalkPlan]
+            self.applyTransitFiltersAndSort()
+            self.selectedTransitPlanIndex = 0
+            self.remainingRouteMinutes = shortPlan1.totalMinutes
+            self.currentStepInstruction = "距離較近（約 \(String(format: "%.1f", Double(directMeters)/1000.0)) 公里），可搭短途公交或直接步行/騎行前往 \(destClean)"
+            self.distanceToNextStepMeters = Double(walkToStop)
+            return
+        }
+        let isPearlRiverDelta = isOriginInShenzhen && directMeters > 38000 && directMeters <= 185000 && (isGuangzhou || isDongguan || isHuizhou || isFoshanOrZhuhai || directMeters > 38000)
+        let isLongDistanceNational = isOriginInShenzhen && directMeters > 185000 && !isGuangzhou && !isDongguan && !isHuizhou && !isFoshanOrZhuhai
         
         if isLongDistanceNational {
             // =========================================================================
@@ -4129,7 +4180,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         // =========================================================================
         let isLuohuCustomsOrStation = destClean.contains("罗湖口岸") || destClean.contains("羅湖口岸") || destClean.contains("罗湖商业城") || destClean.contains("羅湖商業城") || (destClean.contains("罗湖") && (destClean.contains("车站") || destClean.contains("火车站") || destClean.contains("站"))) || (to.latitude > 22.525 && to.latitude < 22.536 && to.longitude > 114.110 && to.longitude < 114.125)
         
-        if isLuohuCustomsOrStation && !fromHK {
+        if isLuohuCustomsOrStation && !fromHK && isOriginInShenzhen {
             let isFromShawan = (from.latitude >= 22.58 && from.latitude <= 22.64 && from.longitude >= 114.14 && from.longitude <= 114.19)
             let isNearLuohu = directMeters <= 3800
             

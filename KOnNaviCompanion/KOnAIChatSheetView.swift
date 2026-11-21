@@ -18,6 +18,7 @@ struct KOnAIChatSheetView: View {
     @State private var baseUrlDraft: String = ""
     @State private var modelNameDraft: String = ""
     @State private var showFileImporter: Bool = false
+    @State private var micPressStartDate: Date? = nil
     @FocusState private var isInputFocused: Bool
 
     private func dismissKeyboard() {
@@ -53,6 +54,7 @@ struct KOnAIChatSheetView: View {
             }
             .navigationTitle("放课后茶会 · AI 副驾")
             .navigationBarTitleDisplayMode(.inline)
+            .preferredColorScheme(.dark)
             .toolbar {
                 ToolbarItemGroup(placement: .keyboard) {
                     Spacer()
@@ -243,28 +245,40 @@ struct KOnAIChatSheetView: View {
                         .overlay(RoundedRectangle(cornerRadius: 14).stroke(httGold.opacity(0.45), lineWidth: 1))
                 }
 
-                Button(action: {
-                    dismissKeyboard()
-                    if voiceInput.isRecording {
-                        voiceInput.stopRecording()
-                    } else {
-                        let basePrefix = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
-                        voiceInput.startRecording { partial in
-                            if basePrefix.isEmpty {
-                                inputText = partial
-                            } else {
-                                inputText = basePrefix + " " + partial
+                Image(systemName: voiceInput.isRecording ? "stop.fill" : "mic.fill")
+                    .font(.system(size: 15, weight: .bold))
+                    .foregroundColor(.white)
+                    .frame(width: 36, height: 36)
+                    .background(voiceInput.isRecording ? Color.red : Color(red: 0.16, green: 0.48, blue: 0.88))
+                    .clipShape(Circle())
+                    .scaleEffect(voiceInput.isRecording ? 1.1 : 1.0)
+                    .animation(.easeInOut(duration: 0.15), value: voiceInput.isRecording)
+                    .gesture(
+                        DragGesture(minimumDistance: 0)
+                            .onChanged { _ in
+                                if micPressStartDate == nil {
+                                    micPressStartDate = Date()
+                                    dismissKeyboard()
+                                    if !voiceInput.isRecording {
+                                        let basePrefix = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
+                                        voiceInput.startRecording { partial in
+                                            inputText = basePrefix.isEmpty ? partial : (basePrefix + " " + partial)
+                                        }
+                                    } else {
+                                        voiceInput.stopRecording()
+                                        micPressStartDate = Date.distantPast
+                                    }
+                                }
                             }
-                        }
-                    }
-                }) {
-                    Image(systemName: voiceInput.isRecording ? "stop.fill" : "mic.fill")
-                        .font(.system(size: 15, weight: .bold))
-                        .foregroundColor(.white)
-                        .frame(width: 36, height: 36)
-                        .background(voiceInput.isRecording ? Color.red : Color(red: 0.16, green: 0.48, blue: 0.88))
-                        .clipShape(Circle())
-                }
+                            .onEnded { _ in
+                                let started = micPressStartDate ?? Date()
+                                micPressStartDate = nil
+                                // Long press (>= 0.35s): stop on release; Quick tap (< 0.35s): stay recording until tapped again!
+                                if started != Date.distantPast && Date().timeIntervalSince(started) >= 0.35 && voiceInput.isRecording {
+                                    voiceInput.finishRecordingGracefully()
+                                }
+                            }
+                    )
 
                 TextField("语音或打字提问，支持粤语/多语言...", text: $inputText)
                     .focused($isInputFocused)
@@ -754,6 +768,14 @@ final class KOnVoiceInputManager: NSObject, ObservableObject {
         self.onTextUpdate = onUpdate
         self.statusMessage = ""
 
+        // Crash Guard: verify Info.plist contains both privacy keys before touching TCC audio/speech APIs
+        let hasMicDesc = Bundle.main.object(forInfoDictionaryKey: "NSMicrophoneUsageDescription") != nil
+        let hasSpeechDesc = Bundle.main.object(forInfoDictionaryKey: "NSSpeechRecognitionUsageDescription") != nil
+        guard hasMicDesc && hasSpeechDesc else {
+            self.statusMessage = "安装包缺少麦克风/语音权限声明，请用最新构建的 IPA 覆盖安装即可正常使用"
+            return
+        }
+
         AVAudioSession.sharedInstance().requestRecordPermission { [weak self] micGranted in
             DispatchQueue.main.async {
                 guard let self = self else { return }
@@ -797,8 +819,8 @@ final class KOnVoiceInputManager: NSObject, ObservableObject {
 
             let inputNode = audioEngine.inputNode
             inputNode.removeTap(onBus: 0)
-            let recordingFormat = inputNode.outputFormat(forBus: 0)
-            inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { [weak self] buffer, _ in
+            // Pass format: nil so AVAudioEngine automatically matches the live hardware bus format (prevents NSException crash on Bluetooth/CarPlay!)
+            inputNode.installTap(onBus: 0, bufferSize: 1024, format: nil) { [weak self] buffer, _ in
                 self?.recognitionRequest?.append(buffer)
             }
 
@@ -825,6 +847,15 @@ final class KOnVoiceInputManager: NSObject, ObservableObject {
             statusMessage = "启动录音失败：\(error.localizedDescription)"
             stopRecording()
         }
+    }
+
+    func finishRecordingGracefully() {
+        if audioEngine.isRunning {
+            audioEngine.stop()
+        }
+        audioEngine.inputNode.removeTap(onBus: 0)
+        recognitionRequest?.endAudio()
+        isRecording = false
     }
 
     func stopRecording() {
