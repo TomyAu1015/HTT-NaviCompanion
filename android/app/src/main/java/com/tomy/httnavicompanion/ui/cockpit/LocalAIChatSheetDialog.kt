@@ -24,6 +24,8 @@ import android.Manifest
 import android.app.Activity
 import android.speech.RecognizerIntent
 import android.content.pm.PackageManager
+import androidx.compose.material.icons.filled.Call
+import androidx.compose.material.icons.filled.CallEnd
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Stop
@@ -69,6 +71,7 @@ fun LocalAIChatSheetDialog(
 
     val messages by llm.messages.collectAsState()
     val isGenerating by llm.isGenerating.collectAsState()
+    val isTtsSpeaking by llm.isTtsSpeaking.collectAsState()
     val installedModels by llm.installedModels.collectAsState()
     val activeModel by llm.activeModelFileName.collectAsState()
     val activeLoaded by llm.activeModelLoaded.collectAsState()
@@ -103,7 +106,13 @@ fun LocalAIChatSheetDialog(
         if (res.resultCode == Activity.RESULT_OK) {
             val best = res.data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)?.firstOrNull().orEmpty()
             if (best.isNotBlank()) {
-                inputText = if (voiceBasePrefix.isEmpty()) best else "$voiceBasePrefix $best"
+                if (isVoiceCallMode) {
+                    voiceCallTranscript = best
+                    voiceCallSubmitted = true
+                    llm.sendUserMessage(best)
+                } else {
+                    inputText = if (voiceBasePrefix.isEmpty()) best else "$voiceBasePrefix $best"
+                }
             }
         }
     }
@@ -112,6 +121,71 @@ fun LocalAIChatSheetDialog(
     val voiceStatus by voiceMgr.statusMessage.collectAsState()
     val voiceLang by voiceMgr.selectedLanguage.collectAsState()
     var showLangMenu by remember { mutableStateOf(false) }
+    var isVoiceCallMode by remember { mutableStateOf(false) }
+    var voiceCallTranscript by remember { mutableStateOf("") }
+    var voiceCallSubmitted by remember { mutableStateOf(false) }
+    val callHandler = remember { android.os.Handler(android.os.Looper.getMainLooper()) }
+    var silenceRunnable by remember { mutableStateOf<Runnable?>(null) }
+
+    fun submitVoiceCallNow() {
+        if (!isVoiceCallMode || voiceCallSubmitted) return
+        val q = voiceCallTranscript.trim()
+        silenceRunnable?.let { callHandler.removeCallbacks(it) }
+        silenceRunnable = null
+        voiceMgr.stopRecording()
+        if (q.isEmpty()) {
+            callHandler.postDelayed({
+                if (isVoiceCallMode && !llm.isGenerating.value && !llm.isTtsSpeaking.value && !voiceMgr.isRecording.value) {
+                    voiceCallSubmitted = false
+                    voiceMgr.startRecording(
+                        onUpdate = { p -> voiceCallTranscript = p },
+                        onFallbackToDialog = { intent -> try { speechOverlayLauncher.launch(intent) } catch (_: Exception) {} }
+                    )
+                }
+            }, 450L)
+            return
+        }
+        voiceCallSubmitted = true
+        llm.sendUserMessage(q)
+    }
+
+    fun beginCallListeningTurn() {
+        if (!isVoiceCallMode) return
+        silenceRunnable?.let { callHandler.removeCallbacks(it) }
+        voiceCallTranscript = ""
+        voiceCallSubmitted = false
+        voiceMgr.startRecording(
+            onUpdate = { partial ->
+                if (isVoiceCallMode && !voiceCallSubmitted) {
+                    voiceCallTranscript = partial
+                    silenceRunnable?.let { callHandler.removeCallbacks(it) }
+                    val r = Runnable { submitVoiceCallNow() }
+                    silenceRunnable = r
+                    callHandler.postDelayed(r, 1400L)
+                }
+            },
+            onFallbackToDialog = { intent ->
+                try { speechOverlayLauncher.launch(intent) } catch (_: Exception) {}
+            }
+        )
+    }
+
+    fun endVoiceCall() {
+        isVoiceCallMode = false
+        silenceRunnable?.let { callHandler.removeCallbacks(it) }
+        silenceRunnable = null
+        voiceMgr.stopRecording()
+        llm.stopAllSpeech()
+    }
+
+    LaunchedEffect(isVoiceCallMode, isGenerating, isTtsSpeaking) {
+        if (isVoiceCallMode && !isGenerating && !isTtsSpeaking && !isVoiceRecording) {
+            kotlinx.coroutines.delay(450L)
+            if (isVoiceCallMode && !llm.isGenerating.value && !llm.isTtsSpeaking.value && !voiceMgr.isRecording.value) {
+                beginCallListeningTurn()
+            }
+        }
+    }
 
     val startVoiceNow: () -> Unit = {
         voiceBasePrefix = inputText.trim()
@@ -130,7 +204,7 @@ fun LocalAIChatSheetDialog(
         if (granted) startVoiceNow()
     }
     DisposableEffect(Unit) {
-        onDispose { voiceMgr.stopRecording() }
+        onDispose { endVoiceCall() }
     }
     val listState = rememberLazyListState()
     val focusManager = LocalFocusManager.current
@@ -205,28 +279,211 @@ fun LocalAIChatSheetDialog(
                     }
                 }
 
-                // Tab Switcher
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf("🍵 茶会副驾对话", "⚙️ 本地模型与记忆").forEachIndexed { idx, title ->
-                        val sel = selectedTab == idx
+                // Tab Switcher + Doubao-Style Hands-Free Voice Call Toggle
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    listOf("🍵 茶会对话", "⚙️ 模型与记忆").forEachIndexed { idx, title ->
+                        val sel = !isVoiceCallMode && selectedTab == idx
                         Box(
                             modifier = Modifier
                                 .weight(1f)
                                 .clip(RoundedCornerShape(10.dp))
                                 .background(if (sel) AiCrimson else AiCardBg)
                                 .border(1.dp, if (sel) AiGold else Color.White.copy(alpha = 0.12f), RoundedCornerShape(10.dp))
-                                .clickable { hideKb(); selectedTab = idx }
+                                .clickable { hideKb(); if (isVoiceCallMode) endVoiceCall(); selectedTab = idx }
                                 .padding(vertical = 8.dp),
                             contentAlignment = Alignment.Center
                         ) {
-                            Text(title, color = if (sel) Color.White else AiCream.copy(alpha = 0.8f), fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            Text(title, color = if (sel) Color.White else AiCream.copy(alpha = 0.8f), fontSize = 11.5.sp, fontWeight = FontWeight.Bold)
                         }
+                    }
+                    Row(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(if (isVoiceCallMode) Color(0xFFDC2626) else Color(0xFF15803D))
+                            .clickable {
+                                hideKb()
+                                if (isVoiceCallMode) {
+                                    endVoiceCall()
+                                } else {
+                                    val granted = ContextCompat.checkSelfPermission(ctx, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+                                    if (granted) {
+                                        if (!voiceOn) llm.toggleVoiceBroadcast()
+                                        isVoiceCallMode = true
+                                        beginCallListeningTurn()
+                                    } else {
+                                        micPermLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                    }
+                                }
+                            }
+                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Icon(if (isVoiceCallMode) Icons.Default.CallEnd else Icons.Default.Call, contentDescription = null, tint = Color.White, modifier = Modifier.size(13.dp))
+                        Text(if (isVoiceCallMode) "挂断" else "语音对讲", color = Color.White, fontSize = 11.5.sp, fontWeight = FontWeight.Black)
                     }
                 }
 
                 Spacer(Modifier.height(8.dp))
 
-                if (selectedTab == 0) {
+                if (isVoiceCallMode) {
+                    Column(
+                        modifier = Modifier.weight(1f).fillMaxWidth(),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box {
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(14.dp))
+                                        .background(AiCardBg)
+                                        .border(1.dp, AiGold.copy(alpha = 0.5f), RoundedCornerShape(14.dp))
+                                        .clickable { showLangMenu = true }
+                                        .padding(horizontal = 10.dp, vertical = 6.dp)
+                                ) {
+                                    Text("🌐 语言：${voiceLang.shortLabel}", color = AiGold, fontSize = 11.5.sp, fontWeight = FontWeight.Bold)
+                                }
+                                DropdownMenu(expanded = showLangMenu, onDismissRequest = { showLangMenu = false }) {
+                                    VoiceInputLanguage.values().forEach { lang ->
+                                        DropdownMenuItem(
+                                            text = { Text(lang.displayName, fontSize = 12.sp) },
+                                            onClick = {
+                                                voiceMgr.setLanguage(lang)
+                                                showLangMenu = false
+                                                if (isVoiceRecording) beginCallListeningTurn()
+                                            }
+                                        )
+                                    }
+                                }
+                            }
+                            Text(
+                                if (cloudProvider != CloudAIProvider.LOCAL && cloudApiKey.isNotBlank()) "☁️ ${cloudProvider.label}" else "📱 本地 Qwen2.5",
+                                color = AiCream,
+                                fontSize = 11.sp,
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(14.dp))
+                                    .background(Color.White.copy(alpha = 0.08f))
+                                    .padding(horizontal = 10.dp, vertical = 6.dp)
+                            )
+                        }
+
+                        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Box(
+                                modifier = Modifier
+                                    .size((126f + 16f * voiceRms).dp)
+                                    .clip(CircleShape)
+                                    .background(
+                                        when {
+                                            isVoiceRecording -> Color(0xFF2563EB).copy(alpha = 0.28f)
+                                            isTtsSpeaking -> Color(0xFF16A34A).copy(alpha = 0.28f)
+                                            else -> AiGold.copy(alpha = 0.20f)
+                                        }
+                                    )
+                                    .border(2.5.dp, if (isVoiceRecording) Color(0xFF38BDF8) else if (isTtsSpeaking) Color(0xFF4ADE80) else AiGold, CircleShape)
+                                    .clickable {
+                                        if (isGenerating || isTtsSpeaking) {
+                                            llm.cancelCurrentGeneration()
+                                            beginCallListeningTurn()
+                                        } else if (isVoiceRecording && voiceCallTranscript.isNotBlank()) {
+                                            submitVoiceCallNow()
+                                        }
+                                    },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    Icon(
+                                        if (isVoiceRecording) Icons.Default.Mic else Icons.Default.VolumeUp,
+                                        contentDescription = null,
+                                        tint = Color.White,
+                                        modifier = Modifier.size(34.dp)
+                                    )
+                                    if (isVoiceRecording) {
+                                        Row(horizontalArrangement = Arrangement.spacedBy(3.dp), verticalAlignment = Alignment.CenterVertically) {
+                                            listOf(0.45f, 0.85f, 1.0f, 0.75f, 0.5f).forEach { mult ->
+                                                Box(
+                                                    modifier = Modifier
+                                                        .width(4.dp)
+                                                        .height((6f + 18f * voiceRms * mult).dp)
+                                                        .clip(RoundedCornerShape(2.dp))
+                                                        .background(AiGold)
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            Text(
+                                when {
+                                    isVoiceRecording -> "🎙️ 正在听你说话…（停顿1.4秒自动发送）"
+                                    isGenerating -> "💭 轻音部思考中…（点圆环可打断）"
+                                    isTtsSpeaking -> "🔊 正在语音回复…（点圆环可抢话打断）"
+                                    else -> "🎧 准备聆听下一句…"
+                                },
+                                color = AiGold,
+                                fontSize = 12.5.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+
+                        Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            if (voiceCallTranscript.isNotBlank()) {
+                                Text(
+                                    "你说：$voiceCallTranscript",
+                                    color = Color.White,
+                                    fontSize = 12.5.sp,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(AiCrimson.copy(alpha = 0.7f))
+                                        .padding(9.dp)
+                                )
+                            }
+                            val lastAi = messages.lastOrNull { !it.isUser }
+                            if (lastAi != null) {
+                                Text(
+                                    "${lastAi.speakerName}：${lastAi.text.ifEmpty { "思考中..." }}",
+                                    color = AiCream,
+                                    fontSize = 12.5.sp,
+                                    maxLines = 4,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(AiCardBg)
+                                        .padding(9.dp)
+                                )
+                            }
+                        }
+
+                        Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.padding(bottom = 8.dp)) {
+                            Button(
+                                onClick = {
+                                    llm.cancelCurrentGeneration()
+                                    beginCallListeningTurn()
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2563EB)),
+                                shape = RoundedCornerShape(20.dp)
+                            ) {
+                                Text("打断重说", color = Color.White, fontSize = 12.5.sp, fontWeight = FontWeight.Bold)
+                            }
+                            Button(
+                                onClick = { endVoiceCall() },
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626)),
+                                shape = RoundedCornerShape(20.dp)
+                            ) {
+                                Text("结束对讲", color = Color.White, fontSize = 12.5.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+                } else if (selectedTab == 0) {
                     // Live Context Strip
                     Row(
                         modifier = Modifier

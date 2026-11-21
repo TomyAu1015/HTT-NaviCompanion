@@ -227,6 +227,7 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
 
     @Published var messages: [KOnAIChatMessage] = []
     @Published var isGenerating: Bool = false
+    @Published var isTtsSpeaking: Bool = false
     @Published var isLoadingModel: Bool = false
     @Published var activeModelFileName: String = ""
     @Published var activeModelLoaded: Bool = false
@@ -300,6 +301,7 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
 
     private override init() {
         super.init()
+        speechSynthesizer.delegate = self
         loadPersistedMemories()
         activeModelFileName = UserDefaults.standard.string(forKey: activeModelKey) ?? ""
         let savedProv = CloudAIProvider(rawValue: UserDefaults.standard.string(forKey: "htt_cloud_provider") ?? "local") ?? .local
@@ -1790,8 +1792,32 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
         }
     }
 
+    func stopAllSpeech() {
+        if speechSynthesizer.isSpeaking {
+            speechSynthesizer.stopSpeaking(at: .immediate)
+        }
+        DispatchQueue.main.async { self.isTtsSpeaking = false }
+    }
+
+    func cancelCurrentGeneration() {
+        cancelGenerationFlag = true
+        isGenerating = false
+        stopAllSpeech()
+    }
+
+    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
+        DispatchQueue.main.async { self.isTtsSpeaking = false }
+    }
+
+    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
+        DispatchQueue.main.async { self.isTtsSpeaking = false }
+    }
+
     private func speakOfflineTTSOnly(_ text: String) {
-        guard enableVoiceBroadcast else { return }
+        guard enableVoiceBroadcast else {
+            DispatchQueue.main.async { self.isTtsSpeaking = false }
+            return
+        }
         // Strip bracket tags and emojis so TTS speaks natural clean Mandarin/Cantonese only!
         var clean = text.replacingOccurrences(of: #"\[[^\]]+\]"#, with: "", options: .regularExpression)
         clean = clean.replacingOccurrences(of: #"【[^】]+】"#, with: "", options: .regularExpression)
@@ -1806,6 +1832,7 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
         utt.voice = AVSpeechSynthesisVoice(language: ttsAccent.rawValue)
         utt.rate = 0.51
         utt.pitchMultiplier = 1.12
+        DispatchQueue.main.async { self.isTtsSpeaking = true }
         speechSynthesizer.speak(utt)
     }
 

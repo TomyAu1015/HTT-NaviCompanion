@@ -19,6 +19,11 @@ struct KOnAIChatSheetView: View {
     @State private var modelNameDraft: String = ""
     @State private var showFileImporter: Bool = false
     @State private var micPressStartDate: Date? = nil
+    @State private var isVoiceCallMode: Bool = false
+    @State private var voiceCallTranscript: String = ""
+    @State private var voiceCallSilenceTask: DispatchWorkItem? = nil
+    @State private var voiceCallSubmitted: Bool = false
+    @State private var voiceCallPendingResume: Bool = false
     @FocusState private var isInputFocused: Bool
 
     private func dismissKeyboard() {
@@ -37,20 +42,54 @@ struct KOnAIChatSheetView: View {
             ZStack {
                 darkBg.ignoresSafeArea()
                 VStack(spacing: 8) {
-                    // Top Tab Switcher
-                    HStack(spacing: 8) {
-                        tabButton(title: "🍵 茶会副驾对话", idx: 0)
-                        tabButton(title: "⚙️ 本地模型与记忆", idx: 1)
+                    // Top Tab Switcher + Doubao-Style Hands-Free Voice Call Button
+                    HStack(spacing: 6) {
+                        tabButton(title: "🍵 茶会对话", idx: 0)
+                        tabButton(title: "⚙️ 模型与记忆", idx: 1)
+                        Button(action: {
+                            if isVoiceCallMode {
+                                endVoiceCallMode()
+                            } else {
+                                startVoiceCallMode()
+                            }
+                        }) {
+                            HStack(spacing: 4) {
+                                Image(systemName: isVoiceCallMode ? "phone.down.fill" : "phone.fill")
+                                    .font(.system(size: 11, weight: .bold))
+                                Text(isVoiceCallMode ? "挂断" : "语音对讲")
+                                    .font(.system(size: 11.5, weight: .black))
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 8)
+                            .background(isVoiceCallMode ? Color.red : Color(red: 0.14, green: 0.56, blue: 0.34))
+                            .foregroundColor(.white)
+                            .cornerRadius(10)
+                        }
                     }
                     .padding(.horizontal, 12)
                     .padding(.top, 6)
 
-                    if selectedTab == 0 {
+                    if isVoiceCallMode {
+                        voiceCallOverlayView
+                    } else if selectedTab == 0 {
                         chatTabView
                     } else {
                         modelManagerTabView
                     }
                 }
+            }
+            .onChange(of: llm.isGenerating) { gen in
+                if isVoiceCallMode && !gen && !llm.isTtsSpeaking {
+                    scheduleVoiceCallNextTurn()
+                }
+            }
+            .onChange(of: llm.isTtsSpeaking) { speaking in
+                if isVoiceCallMode && !speaking && !llm.isGenerating {
+                    scheduleVoiceCallNextTurn()
+                }
+            }
+            .onDisappear {
+                endVoiceCallMode()
             }
             .navigationTitle("放课后茶会 · AI 副驾")
             .navigationBarTitleDisplayMode(.inline)
@@ -418,6 +457,224 @@ struct KOnAIChatSheetView: View {
                 }
             }
             if !msg.isUser { Spacer(minLength: 36) }
+        }
+    }
+
+    // MARK: - Doubao-Style Hands-Free Continuous Voice Call Mode
+    private var voiceCallOverlayView: some View {
+        VStack(spacing: 14) {
+            Spacer(minLength: 8)
+
+            // Language & Model Badge Row
+            HStack(spacing: 8) {
+                Menu {
+                    ForEach(KOnVoiceInputLanguage.allCases) { lang in
+                        Button(action: {
+                            voiceInput.setLanguage(lang)
+                            if voiceInput.isRecording {
+                                beginVoiceCallListeningTurn()
+                            }
+                        }) {
+                            HStack {
+                                Text(lang.displayName)
+                                if voiceInput.selectedLanguage == lang { Image(systemName: "checkmark") }
+                            }
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "globe")
+                        Text("语言：\(voiceInput.selectedLanguage.shortLabel)")
+                    }
+                    .font(.system(size: 12, weight: .bold))
+                    .padding(.horizontal, 10).padding(.vertical, 6)
+                    .background(cardBg)
+                    .foregroundColor(httGold)
+                    .cornerRadius(14)
+                    .overlay(RoundedRectangle(cornerRadius: 14).stroke(httGold.opacity(0.45), lineWidth: 1))
+                }
+
+                Text(llm.cloudProvider != .local && !llm.cloudApiKey.isEmpty ? "☁️ \(llm.cloudProvider.label)" : "📱 本地 Qwen2.5")
+                    .font(.system(size: 11, weight: .bold))
+                    .padding(.horizontal, 10).padding(.vertical, 6)
+                    .background(Color.white.opacity(0.08))
+                    .foregroundColor(httCream)
+                    .cornerRadius(14)
+            }
+
+            // Glowing Center Avatar & Animated Waveform
+            ZStack {
+                Circle()
+                    .fill(
+                        voiceInput.isRecording
+                        ? Color.blue.opacity(0.22 + Double(voiceInput.rmsLevel) * 0.25)
+                        : (llm.isTtsSpeaking ? Color.green.opacity(0.24) : httGold.opacity(0.18))
+                    )
+                    .frame(width: 156, height: 156)
+                    .scaleEffect(voiceInput.isRecording ? (1.0 + voiceInput.rmsLevel * 0.16) : 1.0)
+                    .animation(.easeOut(duration: 0.12), value: voiceInput.rmsLevel)
+
+                Circle()
+                    .stroke(voiceInput.isRecording ? Color.cyan : (llm.isTtsSpeaking ? Color.green : httGold), lineWidth: 2.5)
+                    .frame(width: 128, height: 128)
+
+                VStack(spacing: 6) {
+                    Image(systemName: voiceInput.isRecording ? "mic.fill" : (llm.isGenerating ? "sparkles" : "speaker.wave.3.fill"))
+                        .font(.system(size: 36, weight: .bold))
+                        .foregroundColor(.white)
+                    if voiceInput.isRecording {
+                        HStack(spacing: 3) {
+                            ForEach([0.45, 0.85, 1.0, 0.75, 0.5], id: \.self) { mult in
+                                RoundedRectangle(cornerRadius: 2)
+                                    .fill(httGold)
+                                    .frame(width: 4, height: 6 + 18 * voiceInput.rmsLevel * CGFloat(mult))
+                            }
+                        }
+                    }
+                }
+            }
+            .onTapGesture {
+                if llm.isGenerating || llm.isTtsSpeaking {
+                    // Barge-in: interrupt AI and start listening immediately
+                    llm.cancelCurrentGeneration()
+                    beginVoiceCallListeningTurn()
+                } else if voiceInput.isRecording && !voiceCallTranscript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    submitVoiceCallTranscript()
+                }
+            }
+
+            Text(
+                voiceInput.isRecording
+                ? "🎙️ 正在听你说话…（说完停顿1.4秒自动发送）"
+                : (llm.isGenerating ? "💭 轻音部思考中…（轻触圆环可打断）" : (llm.isTtsSpeaking ? "🔊 正在语音回复…（轻触圆环可抢话打断）" : "🎧 准备聆听下一句…"))
+            )
+            .font(.system(size: 13, weight: .bold))
+            .foregroundColor(httGold)
+
+            // Live Transcript & Latest AI Reply Preview
+            VStack(alignment: .leading, spacing: 8) {
+                if !voiceCallTranscript.isEmpty {
+                    Text("你说：\(voiceCallTranscript)")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(.white)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(10)
+                        .background(httCrimson.opacity(0.65))
+                        .cornerRadius(10)
+                }
+                if let lastReply = llm.messages.last(where: { !$0.isUser }) {
+                    ScrollView {
+                        Text("\(lastReply.speakerName)：\(lastReply.text.isEmpty ? "思考中..." : lastReply.text)")
+                            .font(.system(size: 13))
+                            .foregroundColor(httCream)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(maxHeight: 130)
+                    .padding(10)
+                    .background(cardBg)
+                    .cornerRadius(10)
+                }
+            }
+            .padding(.horizontal, 16)
+
+            if !voiceInput.statusMessage.isEmpty {
+                Text(voiceInput.statusMessage)
+                    .font(.system(size: 11))
+                    .foregroundColor(.orange)
+                    .padding(.horizontal, 16)
+            }
+
+            Spacer(minLength: 8)
+
+            // Bottom Call Controls: Interrupt / Send Now / Hang Up
+            HStack(spacing: 14) {
+                Button(action: {
+                    llm.cancelCurrentGeneration()
+                    beginVoiceCallListeningTurn()
+                }) {
+                    Label("打断重说", systemImage: "hand.raised.fill")
+                        .font(.system(size: 13, weight: .bold))
+                        .padding(.horizontal, 14).padding(.vertical, 10)
+                        .background(Color.blue.opacity(0.85))
+                        .foregroundColor(.white)
+                        .cornerRadius(20)
+                }
+
+                Button(action: { endVoiceCallMode() }) {
+                    Label("结束对讲", systemImage: "phone.down.fill")
+                        .font(.system(size: 13, weight: .bold))
+                        .padding(.horizontal, 18).padding(.vertical, 10)
+                        .background(Color.red)
+                        .foregroundColor(.white)
+                        .cornerRadius(20)
+                }
+            }
+            .padding(.bottom, 18)
+        }
+    }
+
+    private func startVoiceCallMode() {
+        dismissKeyboard()
+        llm.enableVoiceBroadcast = true
+        isVoiceCallMode = true
+        beginVoiceCallListeningTurn()
+    }
+
+    private func endVoiceCallMode() {
+        isVoiceCallMode = false
+        voiceCallPendingResume = false
+        voiceCallSilenceTask?.cancel()
+        voiceCallSilenceTask = nil
+        voiceInput.stopRecording()
+        llm.stopAllSpeech()
+    }
+
+    private func beginVoiceCallListeningTurn() {
+        guard isVoiceCallMode else { return }
+        voiceCallPendingResume = false
+        voiceCallSilenceTask?.cancel()
+        voiceCallTranscript = ""
+        voiceCallSubmitted = false
+
+        voiceInput.startRecording { partial in
+            guard isVoiceCallMode && !voiceCallSubmitted else { return }
+            voiceCallTranscript = partial
+            voiceCallSilenceTask?.cancel()
+            let task = DispatchWorkItem {
+                submitVoiceCallTranscript()
+            }
+            voiceCallSilenceTask = task
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.4, execute: task)
+        }
+    }
+
+    private func submitVoiceCallTranscript() {
+        guard isVoiceCallMode, !voiceCallSubmitted else { return }
+        let q = voiceCallTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+        voiceCallSilenceTask?.cancel()
+        voiceCallSilenceTask = nil
+        voiceInput.stopRecording()
+        guard !q.isEmpty else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                if isVoiceCallMode && !llm.isGenerating && !llm.isTtsSpeaking {
+                    beginVoiceCallListeningTurn()
+                }
+            }
+            return
+        }
+        voiceCallSubmitted = true
+        llm.sendUserMessage(q)
+    }
+
+    private func scheduleVoiceCallNextTurn() {
+        guard isVoiceCallMode, !voiceCallPendingResume else { return }
+        voiceCallPendingResume = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
+            guard isVoiceCallMode, !llm.isGenerating, !llm.isTtsSpeaking, !voiceInput.isRecording else {
+                voiceCallPendingResume = false
+                return
+            }
+            beginVoiceCallListeningTurn()
         }
     }
 

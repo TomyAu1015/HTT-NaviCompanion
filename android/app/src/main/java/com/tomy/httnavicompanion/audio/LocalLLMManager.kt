@@ -6,6 +6,7 @@ import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import org.json.JSONArray
@@ -167,6 +168,9 @@ class LocalLLMManager(
     private val _isGenerating = MutableStateFlow(false)
     val isGenerating: StateFlow<Boolean> = _isGenerating
 
+    private val _isTtsSpeaking = MutableStateFlow(false)
+    val isTtsSpeaking: StateFlow<Boolean> = _isTtsSpeaking
+
     private val _installedModels = MutableStateFlow<List<String>>(emptyList())
     val installedModels: StateFlow<List<String>> = _installedModels
 
@@ -302,7 +306,14 @@ class LocalLLMManager(
             tts = TextToSpeech(context) { status ->
                 ttsReady = (status == TextToSpeech.SUCCESS)
                 if (ttsReady) {
-                    tts?.language = _ttsAccent.value.locale
+                    tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                    override fun onStart(utteranceId: String?) { _isTtsSpeaking.value = true }
+                    override fun onDone(utteranceId: String?) { _isTtsSpeaking.value = false }
+                    @Deprecated("Deprecated in Java")
+                    override fun onError(utteranceId: String?) { _isTtsSpeaking.value = false }
+                })
+                _isTtsSpeaking.value = true
+                tts?.language = _ttsAccent.value.locale
                 }
             }
         } catch (_: Throwable) {}
@@ -1107,6 +1118,17 @@ ${personaRole}你们五人组成了“放课后茶会”(HTT)乐队。你正坐�
             return "嗨嗨！${name}一直都在哦，随时准备陪你出发进行！"
         }
         return "收到啦！我是${name}，随时都在副驾陪着你，可以让我帮你「导航到某个地方」「切一首轻音」或「路况汇报」哦♪"
+    }
+
+    fun stopAllSpeech() {
+        try { tts?.stop() } catch (_: Throwable) {}
+        _isTtsSpeaking.value = false
+    }
+
+    fun cancelCurrentGeneration() {
+        try { LlamaNativeBridge.nativeCancel() } catch (_: Throwable) {}
+        _isGenerating.value = false
+        stopAllSpeech()
     }
 
     private fun speakOfflineTTS(text: String) {
