@@ -173,6 +173,14 @@ fun OsmMapView(
                     outlinePaint.color = AndroidColor.rgb(18, 92, 168)
                     outlinePaint.strokeWidth = 20f
                 }
+                val traveledLine = Polyline(this).apply {
+                    outlinePaint.color = AndroidColor.rgb(34, 197, 94)
+                    outlinePaint.strokeWidth = 13f
+                    outlinePaint.strokeCap = android.graphics.Paint.Cap.ROUND
+                    outlinePaint.strokeJoin = android.graphics.Paint.Join.ROUND
+                }
+                overlays.add(traveledLine)
+
                 val innerLine = Polyline(this).apply {
                     outlinePaint.color = AndroidColor.rgb(0, 229, 255)
                     outlinePaint.strokeWidth = 11f

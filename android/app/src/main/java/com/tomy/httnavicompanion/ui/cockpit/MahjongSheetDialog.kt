@@ -2293,7 +2293,7 @@ fun KOnRummikubContent() {
                                                                     rmk.setLiftedSlot(null)
                                                                 }
                                                             } else if (liftedIdx != null) {
-                                                                rmk.moveRackSlot(liftedIdx!!, slotIdx)
+                                                                liftedIdx?.let { rmk.moveRackSlot(it, slotIdx) }
                                                             }
                                                         }
                                                     ),
@@ -2524,7 +2524,7 @@ fun KOnRummikubContent() {
                         }
                 ) {
                     RmkTileCard(
-                        tile = dragTableTileObj!!,
+                        tile = dragTableTileObj ?: return@Box,
                         selected = true,
                         highlighted = true,
                         compact = false,
@@ -2548,7 +2548,7 @@ fun KOnRummikubContent() {
                             y = (-54f + (targetY + 54f) * drawAnimProg - kotlin.math.sin(drawAnimProg * Math.PI.toFloat()) * 42f).dp
                         )
                 ) {
-                    RmkTileCard(tile = drawAnimTile!!, selected = true, compact = false)
+                    drawAnimTile?.let { RmkTileCard(tile = it, selected = true, compact = false) }
                 }
             }
 
@@ -2586,7 +2586,7 @@ fun KOnRummikubContent() {
                         )
                 ) {
                     RmkTileCard(
-                        tile = oppPlayTile!!,
+                        tile = oppPlayTile ?: return@Box,
                         selected = true,
                         highlighted = true,
                         compact = true,

@@ -480,6 +480,14 @@ class AudioPlayerManager(
     private val _trafficLightColor = MutableStateFlow(2) // 0=Red, 1=Yellow, 2=Green
     val trafficLightColor: StateFlow<Int> = _trafficLightColor
 
+    private val _trafficLightIsHighwayNonStop = MutableStateFlow(true)
+    val trafficLightIsHighwayNonStop: StateFlow<Boolean> = _trafficLightIsHighwayNonStop
+
+    private var routeTrafficSignals: List<LatLng> = emptyList()
+    private var trafficLightCalibrationOffset: Int = 0
+    private val announcedStepThresholds = HashSet<String>()
+    @Volatile private var isRecalculatingRoute = false
+
     private val _upcomingCameraDistance = MutableStateFlow(350)
     val upcomingCameraDistance: StateFlow<Int> = _upcomingCameraDistance
 
@@ -859,13 +867,15 @@ class AudioPlayerManager(
             minSegDist = CoordinateConverter.distanceMeters(coord, pts[0])
         }
 
-        if (minSegDist > 90.0) {
-            offRouteStrikeCount += 1
+        val offLimit = if (_travelMode.value == NavigationTravelMode.WALKING) 32.0 else 48.0
+        if (minSegDist > offLimit && !_isRoutePreviewing.value && !isRecalculatingRoute) {
+            offRouteStrikeCount += if (minSegDist > 80.0) 2 else 1
             val now = System.currentTimeMillis()
-            if (offRouteStrikeCount >= 3 && dest != null && now - lastRerouteMillis > 20000L) {
+            if (offRouteStrikeCount >= 2 && dest != null && now - lastRerouteMillis > 8000L) {
                 offRouteStrikeCount = 0
                 lastRerouteMillis = now
-                startRouteToPlace(_destinationName.value, dest)
+                playVoice(id = activeBaseId() + 43, customQuote = "🔄 你已偏离路线，正在为您重新规划路线...", clearQueue = true)
+                startRouteToPlace(_destinationName.value, dest, isReroute = true)
                 return
             }
         } else {
@@ -887,8 +897,44 @@ class AudioPlayerManager(
             _remainingRouteDistanceKm.value = (futureDist / 1000.0).coerceAtLeast(0.01)
             val ratio = if (route.totalDistanceMeters > 1.0) (futureDist / route.totalDistanceMeters).coerceIn(0.02, 1.0) else 1.0
             _remainingRouteMinutes.value = ((route.durationSeconds * ratio) / 60.0).toInt().coerceAtLeast(1)
-            if (distToManeuver <= 20 && currentRouteStepIdx < steps.lastIndex) {
+
+            // Turn-by-Turn Junction Voice Announcements (500m / 300m / 100m / 35m + Arrival!)
+            val thresholds = listOf(
+                Triple(360, 580, "500米"),
+                Triple(170, 355, "300米"),
+                Triple(60, 165, "100米"),
+                Triple(0, 59, "前方路口")
+            )
+            for ((minD, maxD, label) in thresholds) {
+                val key = "${currentRouteStepIdx}_$label"
+                if (distToManeuver in minD..maxD && !announcedStepThresholds.contains(key)) {
+                    announcedStepThresholds.add(key)
+                    val instrText = step.instruction
+                    val quote = if (label == "前方路口") "↪️ 即将到达路口：$instrText" else "📍 前方约${label}：${instrText}"
+                    val turnOffset = when {
+                        instrText.contains("调头") || instrText.contains("掉头") -> 21
+                        instrText.contains("左") -> 32
+                        instrText.contains("右") -> 33
+                        else -> 34
+                    }
+                    playVoice(id = activeBaseId() + turnOffset, customQuote = quote, clearQueue = false)
+                    break
+                }
+            }
+
+            if (currentRouteStepIdx == steps.lastIndex && distToManeuver <= 40 && !announcedStepThresholds.contains("ARRIVED")) {
+                announcedStepThresholds.add("ARRIVED")
+                playVoice(id = activeBaseId() + 38, customQuote = "🎉 已到达目的地 ${_destinationName.value} 附近，本次导航结束！", clearQueue = true)
+            }
+
+            if (distToManeuver <= 32 && currentRouteStepIdx < steps.lastIndex) {
                 currentRouteStepIdx += 1
+                val nextStep = steps[currentRouteStepIdx]
+                val enterKey = "${currentRouteStepIdx}_ENTER"
+                if (!announcedStepThresholds.contains(enterKey) && nextStep.instruction.isNotBlank()) {
+                    announcedStepThresholds.add(enterKey)
+                    playVoice(id = activeBaseId() + 34, customQuote = "↪️ ${nextStep.instruction}", clearQueue = false)
+                }
             }
         }
     }
@@ -942,7 +988,10 @@ class AudioPlayerManager(
         }.start()
     }
 
-    fun startRouteToPlace(destName: String, destCoord: LatLng) {
+    fun startRouteToPlace(destName: String, destCoord: LatLng, isReroute: Boolean = false) {
+        if (isReroute && isRecalculatingRoute) return
+        isRecalculatingRoute = true
+        mainHandler.postDelayed({ isRecalculatingRoute = false }, 12000L)
         val recAddr = if (_tappedTitle.value == destName && _tappedAddress.value.isNotBlank()) _tappedAddress.value else String.format("%.4f, %.4f", destCoord.latitude, destCoord.longitude)
         recordRecentDestination(destName, recAddr, destCoord)
         _tappedCoord.value = null
@@ -969,9 +1018,12 @@ class AudioPlayerManager(
                 transitFirstLegUseBike = _transitFirstLegUseBike.value
             )
             mainHandler.post {
+                isRecalculatingRoute = false
                 _candidateRoutes.value = routes
                 selectRoute(0)
-                _isRoutePreviewing.value = true
+                if (!isReroute) {
+                    _isRoutePreviewing.value = true
+                }
             }
         }.start()
     }
@@ -987,6 +1039,20 @@ class AudioPlayerManager(
         _remainingRouteMinutes.value = (r.durationSeconds / 60.0).toInt().coerceAtLeast(1)
         offRouteStrikeCount = 0
         lastRerouteMillis = 0L
+        announcedStepThresholds.clear()
+        val ptsCopy = r.points.toList()
+        Thread {
+            val realSignals = MapAndRouteEngine.fetchTrafficSignalsAlongRoute(ptsCopy)
+            mainHandler.post {
+                if (realSignals.isNotEmpty()) {
+                    routeTrafficSignals = realSignals
+                } else {
+                    routeTrafficSignals = r.steps.drop(1).dropLast(1)
+                        .filter { !it.instruction.contains("高速") && !it.instruction.contains("高架") }
+                        .map { it.maneuverLocation }
+                }
+            }
+        }.start()
         currentRouteStepIdx = if (r.steps.size > 1 && (r.steps[0].instruction.contains("出发"))) 1 else 0
         val activeStep = r.steps.getOrNull(currentRouteStepIdx) ?: r.steps.firstOrNull()
         _currentStepInstruction.value = activeStep?.instruction ?: "沿规划路线前往 ${_destinationName.value}"
@@ -999,6 +1065,9 @@ class AudioPlayerManager(
 
     fun confirmStartNavigation() {
         _isRoutePreviewing.value = false
+        isRecalculatingRoute = false
+        routeTrafficSignals = emptyList()
+        announcedStepThresholds.clear()
         triggerDepartureGreeting()
     }
 
@@ -1086,14 +1155,33 @@ class AudioPlayerManager(
                     _drivingSeconds.value += 1
                 }
 
-                if (_trafficLightCountdown.value > 1) {
-                    _trafficLightCountdown.value -= 1
+                val userPt = _userCoordinate.value
+                val nearestSig = routeTrafficSignals.minByOrNull { CoordinateConverter.distanceMeters(userPt, it) }
+                val sigDist = nearestSig?.let { CoordinateConverter.distanceMeters(userPt, it) } ?: 9999.0
+                val curInstr = _currentStepInstruction.value
+                val isHwy = curInstr.contains("高速") || curInstr.contains("高架") || curInstr.contains("匝道")
+                if (!_hasActiveNavigation.value || isHwy || (sigDist > 380.0 && _distanceToNextStepMeters.value > 380)) {
+                    _trafficLightIsHighwayNonStop.value = true
+                    _trafficLightColor.value = 2
+                    _trafficLightCountdown.value = 99
                 } else {
-                    _trafficLightColor.value = (_trafficLightColor.value + 1) % 3
-                    _trafficLightCountdown.value = when (_trafficLightColor.value) {
-                        0 -> 22
-                        1 -> 4
-                        else -> 26
+                    _trafficLightIsHighwayNonStop.value = false
+                    val seed = nearestSig?.let { kotlin.math.abs((it.latitude * 10000 + it.longitude * 10000).toInt()) } ?: 0
+                    val nowSec = (System.currentTimeMillis() / 1000L).toInt() + trafficLightCalibrationOffset + seed
+                    val secInCycle = ((nowSec % 60) + 60) % 60
+                    when {
+                        secInCycle < 32 -> {
+                            _trafficLightColor.value = 2
+                            _trafficLightCountdown.value = 32 - secInCycle
+                        }
+                        secInCycle < 35 -> {
+                            _trafficLightColor.value = 1
+                            _trafficLightCountdown.value = 35 - secInCycle
+                        }
+                        else -> {
+                            _trafficLightColor.value = 0
+                            _trafficLightCountdown.value = 60 - secInCycle
+                        }
                     }
                 }
 

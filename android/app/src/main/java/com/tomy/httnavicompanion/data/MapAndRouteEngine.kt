@@ -611,6 +611,56 @@ object MapAndRouteEngine {
         return listOf(ComputedRoute(if (isChina) "公交/地铁推荐" else "Transit Route", basePts, steps, totalDist, dur, segs))
     }
 
+    fun fetchTrafficSignalsAlongRoute(routePts: List<LatLng>): List<LatLng> {
+        if (routePts.size < 2) return emptyList()
+        var minLat = 90.0; var maxLat = -90.0; var minLon = 180.0; var maxLon = -180.0
+        val stride = (routePts.size / 20).coerceAtLeast(1)
+        for (i in routePts.indices step stride) {
+            val c = routePts[i]
+            if (c.latitude < minLat) minLat = c.latitude
+            if (c.latitude > maxLat) maxLat = c.latitude
+            if (c.longitude < minLon) minLon = c.longitude
+            if (c.longitude > maxLon) maxLon = c.longitude
+        }
+        if ((maxLat - minLat) > 0.25 || (maxLon - minLon) > 0.25) return emptyList()
+        val bbox = String.format(Locale.US, "%.5f,%.5f,%.5f,%.5f", minLat - 0.002, minLon - 0.002, maxLat + 0.002, maxLon + 0.002)
+        val q = URLEncoder.encode("[out:json][timeout:4];node[\"highway\"=\"traffic_signals\"]($bbox);out;", "UTF-8")
+        return try {
+            val conn = (URL("https://overpass-api.de/api/interpreter?data=$q").openConnection() as HttpURLConnection).apply {
+                connectTimeout = 3500
+                readTimeout = 3500
+                setRequestProperty("User-Agent", "HTT-NaviCompanion-Android/1.6.5")
+            }
+            val res = mutableListOf<LatLng>()
+            if (conn.responseCode == 200) {
+                val body = BufferedReader(InputStreamReader(conn.inputStream)).use { it.readText() }
+                val elems = JSONObject(body).optJSONArray("elements")
+                if (elems != null) {
+                    val checkStride = (routePts.size / 80).coerceAtLeast(1)
+                    for (i in 0 until elems.length()) {
+                        val el = elems.getJSONObject(i)
+                        val lat = el.optDouble("lat", Double.NaN)
+                        val lon = el.optDouble("lon", Double.NaN)
+                        if (!lat.isNaN() && !lon.isNaN()) {
+                            val cand = LatLng(lat, lon)
+                            var near = false
+                            for (j in routePts.indices step checkStride) {
+                                if (CoordinateConverter.distanceMeters(cand, routePts[j]) <= 38.0) {
+                                    near = true; break
+                                }
+                            }
+                            if (near) res.add(cand)
+                        }
+                    }
+                }
+            }
+            conn.disconnect()
+            res
+        } catch (_: Throwable) {
+            emptyList()
+        }
+    }
+
     private fun polylineMeters(pts: List<LatLng>): Double {
         if (pts.size < 2) return 0.0
         var sum = 0.0

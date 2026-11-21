@@ -763,8 +763,11 @@ class LocalLLMManager(
 
     private fun shouldSearchWeb(lower: String): Boolean {
         if (lower.contains("联网") || lower.contains("搜索") || lower.contains("查一下") || lower.contains("帮我查") || lower.contains("百科") || lower.contains("新闻") || lower.contains("最新")) return true
-        val triggers = listOf("是什么", "是谁", "什么是", "介绍", "为什么", "怎么", "多少", "哪里", "哪个", "历史", "知道", "动画", "动漫", "电影", "游戏", "价格", "评分", "攻略")
-        return triggers.any { lower.contains(it) }
+        val explicitFact = listOf("是什么", "是谁", "什么是", "介绍一下").any { lower.contains(it) }
+        if (!explicitFact) return false
+        val subject = cleanSearchQueryForLookup(lower).replace(" ", "")
+        val pronouns = setOf("你", "我", "他", "她", "它", "这", "那", "谁", "啥", "什么", "笨蛋")
+        return subject.length >= 2 && subject !in pronouns
     }
 
     private fun cleanSearchQuery(text: String): String {
@@ -1081,7 +1084,7 @@ ${personaRole}你们五人组成了“放课后茶会”(HTT)乐队。你正坐�
             } catch (t: Throwable) {
                 ""
             }
-            val finalText = out.ifEmpty { "嗯…我刚刚走神了一下，前辈可以再说一次吗？" }
+            val finalText = out.ifEmpty { smartInCharacterFallback(userPrompt, persona) }
             mainHandler.removeCallbacks(watchdog)
             mainHandler.post {
                 _messages.value = _messages.value.map { if (it.id == msgId) it.copy(text = finalText) else it }
@@ -1089,6 +1092,21 @@ ${personaRole}你们五人组成了“放课后茶会”(HTT)乐队。你正坐�
                 speakOfflineTTS(finalText)
             }
         }
+    }
+
+    private fun smartInCharacterFallback(prompt: String, persona: CharacterFilter): String {
+        val p = prompt.lowercase()
+        val name = persona.displayName(AppLanguage.ZH_HANS)
+        if (p.contains("你是") || p.contains("你叫") || p.contains("谁")) {
+            return "我是放课后茶会（HTT）的${name}呀！现在正坐在副驾陪你一起出发呢，想听歌、查路线还是找好吃的都可以跟我说哦~"
+        }
+        if (p.contains("笨蛋") || p.contains("傻")) {
+            return "才、才不是笨蛋呢！${name}只是刚才在想下午茶的草莓蛋糕啦，再跟我聊点别的嘛！"
+        }
+        if (p.contains("你好") || p.contains("哈喽") || p.contains("在吗")) {
+            return "嗨嗨！${name}一直都在哦，随时准备陪你出发进行！"
+        }
+        return "收到啦！我是${name}，随时都在副驾陪着你，可以让我帮你「导航到某个地方」「切一首轻音」或「路况汇报」哦♪"
     }
 
     private fun speakOfflineTTS(text: String) {

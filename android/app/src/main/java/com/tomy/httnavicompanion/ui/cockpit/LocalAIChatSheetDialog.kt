@@ -108,6 +108,7 @@ fun LocalAIChatSheetDialog(
         }
     }
     val isVoiceRecording by voiceMgr.isRecording.collectAsState()
+    val voiceRms by voiceMgr.rmsLevel.collectAsState()
     val voiceStatus by voiceMgr.statusMessage.collectAsState()
     val voiceLang by voiceMgr.selectedLanguage.collectAsState()
     var showLangMenu by remember { mutableStateOf(false) }
@@ -397,8 +398,22 @@ fun LocalAIChatSheetDialog(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
+                            if (isVoiceRecording) {
+                                Row(horizontalArrangement = Arrangement.spacedBy(2.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    listOf(0.45f, 0.85f, 1.0f, 0.7f, 0.5f).forEach { mult ->
+                                        val h = (6f + 14f * voiceRms * mult).dp
+                                        Box(
+                                            modifier = Modifier
+                                                .width(3.dp)
+                                                .height(h)
+                                                .clip(RoundedCornerShape(2.dp))
+                                                .background(AiGold)
+                                        )
+                                    }
+                                }
+                            }
                             Text(
-                                if (isVoiceRecording) "🎙️ 正在聆听（${voiceLang.shortLabel} · 软件内直录）..." else voiceStatus,
+                                if (isVoiceRecording) "🎙️ 正在聆听（${voiceLang.shortLabel} · 软件内直录，说完可点完成）" else voiceStatus,
                                 color = if (isVoiceRecording) Color(0xFFFCA5A5) else AiCream,
                                 fontSize = 11.sp,
                                 modifier = Modifier.weight(1f),

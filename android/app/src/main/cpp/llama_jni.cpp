@@ -153,8 +153,9 @@ Java_com_tomy_httnavicompanion_audio_LlamaNativeBridge_nativeGenerateBytes(
 
     int max_prompt = std::max(128, g_ctx_len - 128);
     if (n_tokens > max_prompt) {
-        int drop = n_tokens - max_prompt;
-        std::copy(tokens.begin() + drop, tokens.begin() + n_tokens, tokens.begin());
+        int keep_head = std::min(96, max_prompt / 3);
+        int keep_tail = max_prompt - keep_head;
+        std::copy(tokens.begin() + (n_tokens - keep_tail), tokens.begin() + n_tokens, tokens.begin() + keep_head);
         n_tokens = max_prompt;
     }
     int total_prompt = n_tokens;

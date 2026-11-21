@@ -1,11 +1,13 @@
 package com.tomy.httnavicompanion.audio
 
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.speech.RecognitionListener
+import android.speech.RecognitionService
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -30,6 +32,9 @@ class VoiceInputManager(private val context: Context) {
     private val _isRecording = MutableStateFlow(false)
     val isRecording: StateFlow<Boolean> = _isRecording
 
+    private val _rmsLevel = MutableStateFlow(0f)
+    val rmsLevel: StateFlow<Float> = _rmsLevel
+
     private val _statusMessage = MutableStateFlow("")
     val statusMessage: StateFlow<String> = _statusMessage
 
@@ -53,6 +58,7 @@ class VoiceInputManager(private val context: Context) {
         val langTag = _selectedLanguage.value.localeTag
         return Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, context.packageName)
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, langTag)
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, langTag)
             putExtra(RecognizerIntent.EXTRA_ONLY_RETURN_LANGUAGE_PREFERENCE, false)
@@ -65,6 +71,27 @@ class VoiceInputManager(private val context: Context) {
         }
     }
 
+    private fun resolveBestRecognitionServices(): List<ComponentName?> {
+        val candidates = mutableListOf<ComponentName?>()
+        try {
+            val services = context.packageManager.queryIntentServices(
+                Intent(RecognitionService.SERVICE_INTERFACE),
+                0
+            )
+            // Prefer Google / standard RecognitionService first if present, then any non-default, then default (null)
+            val google = services.firstOrNull { it.serviceInfo.packageName.contains("google") }
+            if (google != null) {
+                candidates.add(ComponentName(google.serviceInfo.packageName, google.serviceInfo.name))
+            }
+            services.forEach { ri ->
+                val cn = ComponentName(ri.serviceInfo.packageName, ri.serviceInfo.name)
+                if (cn !in candidates) candidates.add(cn)
+            }
+        } catch (_: Exception) {}
+        candidates.add(null)
+        return candidates
+    }
+
     fun startRecording(
         onUpdate: (String) -> Unit,
         onFallbackToDialog: ((Intent) -> Unit)? = null
@@ -74,73 +101,87 @@ class VoiceInputManager(private val context: Context) {
         _statusMessage.value = ""
 
         mainHandler.post {
-            // Synchronously destroy any previous instance BEFORE creating the new one (prevents ERROR_CLIENT = 5 race!)
-            destroyRecognizerSync()
+            val queue = resolveBestRecognitionServices().toMutableList()
+            tryStartWithQueue(queue)
+        }
+    }
 
-            val intent = buildRecognizerIntent()
-            if (!SpeechRecognizer.isRecognitionAvailable(context)) {
-                _statusMessage.value = "正在唤起系统内嵌语音浮窗..."
+    private fun tryStartWithQueue(queue: MutableList<ComponentName?>) {
+        destroyRecognizerSync()
+        val intent = buildRecognizerIntent()
+
+        if (queue.isEmpty()) {
+            if (onFallbackDialog != null) {
+                _statusMessage.value = "已调用系统语音录入（支持粤语/多语言）"
                 onFallbackDialog?.invoke(intent)
-                return@post
+            } else {
+                _statusMessage.value = "当前设备暂不支持后台语音识别服务"
             }
+            return
+        }
 
-            try {
-                val sr = SpeechRecognizer.createSpeechRecognizer(context)
-                speechRecognizer = sr
-                sessionStartMs = System.currentTimeMillis()
-                sr.setRecognitionListener(object : RecognitionListener {
-                    override fun onReadyForSpeech(params: Bundle?) {
-                        _isRecording.value = true
-                        _statusMessage.value = ""
-                    }
-                    override fun onBeginningOfSpeech() {}
-                    override fun onRmsChanged(rmsdB: Float) {}
-                    override fun onBufferReceived(buffer: ByteArray?) {}
-                    override fun onEndOfSpeech() {}
-                    override fun onError(error: Int) {
-                        val elapsed = System.currentTimeMillis() - sessionStartMs
-                        destroyRecognizerSync()
-                        // On MIUI/HyperOS/OPPO/vivo, headless SpeechRecognizer often rejects immediately with ERROR_CLIENT(5) or ERROR_RECOGNIZER_BUSY(8).
-                        // Seamlessly fall back to the lightweight in-app system speech overlay dialog!
-                        if ((error == SpeechRecognizer.ERROR_CLIENT ||
-                                error == SpeechRecognizer.ERROR_AUDIO ||
-                                error == SpeechRecognizer.ERROR_SERVER ||
-                                error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY) && elapsed < 1500L && onFallbackDialog != null
-                        ) {
-                            _statusMessage.value = "已自动切换系统语音浮窗（支持粤语/多语言）"
+        val serviceComp = queue.removeAt(0)
+        try {
+            val sr = if (serviceComp != null) {
+                SpeechRecognizer.createSpeechRecognizer(context, serviceComp)
+            } else {
+                SpeechRecognizer.createSpeechRecognizer(context)
+            }
+            speechRecognizer = sr
+            sessionStartMs = System.currentTimeMillis()
+            sr.setRecognitionListener(object : RecognitionListener {
+                override fun onReadyForSpeech(params: Bundle?) {
+                    _isRecording.value = true
+                    _statusMessage.value = ""
+                }
+                override fun onBeginningOfSpeech() {}
+                override fun onRmsChanged(rmsdB: Float) {
+                    _rmsLevel.value = ((rmsdB + 2f) / 12f).coerceIn(0f, 1f)
+                }
+                override fun onBufferReceived(buffer: ByteArray?) {}
+                override fun onEndOfSpeech() {}
+                override fun onError(error: Int) {
+                    val elapsed = System.currentTimeMillis() - sessionStartMs
+                    destroyRecognizerSync()
+                    if ((error == SpeechRecognizer.ERROR_CLIENT ||
+                            error == SpeechRecognizer.ERROR_AUDIO ||
+                            error == SpeechRecognizer.ERROR_SERVER ||
+                            error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY) && elapsed < 1500L
+                    ) {
+                        if (queue.isNotEmpty()) {
+                            tryStartWithQueue(queue)
+                            return
+                        }
+                        if (onFallbackDialog != null) {
+                            _statusMessage.value = "已调用系统语音录入（支持粤语/多语言）"
                             onFallbackDialog?.invoke(buildRecognizerIntent())
                             return
                         }
-                        _statusMessage.value = when (error) {
-                            SpeechRecognizer.ERROR_NO_MATCH -> "未听清内容，请靠近麦克风重试"
-                            SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "未检测到说话"
-                            SpeechRecognizer.ERROR_NETWORK, SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "网络超时，可在系统语音设置下载离线语言包"
-                            SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "请先授予麦克风权限"
-                            else -> "语音识别结束 (代码 $error)"
-                        }
                     }
-                    override fun onResults(results: Bundle?) {
-                        val best = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull().orEmpty()
-                        if (best.isNotBlank()) onTextCallback?.invoke(best)
-                        destroyRecognizerSync()
+                    _statusMessage.value = when (error) {
+                        SpeechRecognizer.ERROR_NO_MATCH -> "未听清内容，请靠近麦克风重试"
+                        SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "未检测到说话"
+                        SpeechRecognizer.ERROR_NETWORK, SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "网络超时，可在系统语音设置下载离线语言包"
+                        SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "请先授予麦克风权限"
+                        else -> "语音识别结束 (代码 $error)"
                     }
-                    override fun onPartialResults(partialResults: Bundle?) {
-                        val partial = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull().orEmpty()
-                        if (partial.isNotBlank()) onTextCallback?.invoke(partial)
-                    }
-                    override fun onEvent(eventType: Int, params: Bundle?) {}
-                })
-
-                _isRecording.value = true
-                sr.startListening(intent)
-            } catch (e: Exception) {
-                destroyRecognizerSync()
-                if (onFallbackDialog != null) {
-                    onFallbackDialog?.invoke(intent)
-                } else {
-                    _statusMessage.value = "启动语音识别失败：${e.message}"
                 }
-            }
+                override fun onResults(results: Bundle?) {
+                    val best = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull().orEmpty()
+                    if (best.isNotBlank()) onTextCallback?.invoke(best)
+                    destroyRecognizerSync()
+                }
+                override fun onPartialResults(partialResults: Bundle?) {
+                    val partial = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull().orEmpty()
+                    if (partial.isNotBlank()) onTextCallback?.invoke(partial)
+                }
+                override fun onEvent(eventType: Int, params: Bundle?) {}
+            })
+
+            _isRecording.value = true
+            sr.startListening(intent)
+        } catch (_: Exception) {
+            tryStartWithQueue(queue)
         }
     }
 
@@ -167,5 +208,6 @@ class VoiceInputManager(private val context: Context) {
         } catch (_: Exception) {}
         speechRecognizer = null
         _isRecording.value = false
+        _rmsLevel.value = 0f
     }
 }

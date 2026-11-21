@@ -1852,6 +1852,7 @@ fun EnlargedNavigationHUDView(
                 .padding(horizontal = 10.dp, vertical = 6.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
+            if (!hasNav || isRoutePreviewing) {
             // Row 1: 4 Travel Mode Pills (开车 / 骑车 / 步行 / 公交/地铁) matching iOS
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -1879,6 +1880,83 @@ fun EnlargedNavigationHUDView(
                         Icon(icon, contentDescription = null, tint = Color.White, modifier = Modifier.size(14.dp))
                         Spacer(Modifier.width(3.dp))
                         Text(title, color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
+                    }
+                }
+            }
+
+            }
+
+            // Active Turn-by-Turn Banner at VERY TOP (1:1 iOS Layout — never blocks center map!)
+            if (hasNav && !isRoutePreviewing) {
+                val etaCal = java.util.Calendar.getInstance().apply { add(java.util.Calendar.MINUTE, remMins.coerceAtLeast(1)) }
+                val etaStr = String.format("%02d:%02d", etaCal.get(java.util.Calendar.HOUR_OF_DAY), etaCal.get(java.util.Calendar.MINUTE))
+                Surface(
+                    color = Color(0xFF0F141E).copy(alpha = 0.94f),
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .border(1.2.dp, HTTGold.copy(alpha = 0.85f), RoundedCornerShape(14.dp))
+                ) {
+                    Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            val turnIcon = when {
+                                travelMode == NavigationTravelMode.TRANSIT -> Icons.Default.DirectionsTransit
+                                travelMode == NavigationTravelMode.WALKING -> Icons.Default.DirectionsWalk
+                                travelMode == NavigationTravelMode.EBIKE -> Icons.Default.DirectionsBike
+                                stepInstruction.contains("调头") || stepInstruction.contains("掉头") -> Icons.Default.UTurnLeft
+                                stepInstruction.contains("左") && !stepInstruction.contains("右") -> Icons.Default.TurnLeft
+                                stepInstruction.contains("右") && !stepInstruction.contains("左") -> Icons.Default.TurnRight
+                                else -> Icons.Default.ArrowUpward
+                            }
+                            Box(
+                                modifier = Modifier
+                                    .size(34.dp)
+                                    .clip(CircleShape)
+                                    .background(HTTCrimson),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(turnIcon, contentDescription = null, tint = Color.White, modifier = Modifier.size(20.dp))
+                            }
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(stepInstruction, color = Color.White, fontSize = 12.5.sp, fontWeight = FontWeight.Black, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    Text(distLabel, color = Color(0xFF4ADE80), fontSize = 12.sp, fontWeight = FontWeight.Black, fontFamily = FontFamily.Monospace)
+                                    if (remKm > 0.05) {
+                                        Text(String.format("· 余 %.1fkm · %d分 · 预计 %s 到达", remKm, remMins.coerceAtLeast(1), etaStr), color = HTTGold, fontSize = 10.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    }
+                                }
+                            }
+                            Box(
+                                modifier = Modifier
+                                    .size(26.dp)
+                                    .clip(CircleShape)
+                                    .background(Color(0xFF8B1A24))
+                                    .clickable { manager.stopNavigation() },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(Icons.Default.Close, contentDescription = null, tint = Color.White, modifier = Modifier.size(14.dp))
+                            }
+                        }
+                        if (candidateRoutes.size > 1) {
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                                candidateRoutes.forEachIndexed { idx, r ->
+                                    val sel = idx == selectedRouteIdx
+                                    val durMins = (r.durationSeconds / 60).toInt().coerceAtLeast(1)
+                                    Box(
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .clip(RoundedCornerShape(7.dp))
+                                            .background(if (sel) HTTCrimson else Color.White.copy(alpha = 0.08f))
+                                            .border(1.dp, if (sel) HTTGold else Color.Transparent, RoundedCornerShape(7.dp))
+                                            .clickable { manager.selectRoute(idx) }
+                                            .padding(vertical = 3.dp, horizontal = 4.dp),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Text("${r.name} · ${durMins}分", color = Color.White, fontSize = 9.5.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -2062,126 +2140,6 @@ fun EnlargedNavigationHUDView(
                 }
             }
 
-            // Active Turn-by-Turn Card (when actively navigating, not in route preview)
-            if (hasNav && !isRoutePreviewing) {
-                Surface(
-                    color = Color(0xFF0F211C).copy(alpha = 0.94f),
-                    shape = RoundedCornerShape(14.dp),
-                    modifier = Modifier
-                        .then(if (isLandscape) Modifier.width(360.dp) else Modifier.fillMaxWidth(0.82f))
-                        .border(1.dp, HTTGold.copy(alpha = 0.7f), RoundedCornerShape(14.dp))
-                ) {
-                    Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            val turnIcon = when {
-                                travelMode == NavigationTravelMode.TRANSIT -> Icons.Default.DirectionsTransit
-                                travelMode == NavigationTravelMode.WALKING -> Icons.Default.DirectionsWalk
-                                travelMode == NavigationTravelMode.EBIKE -> Icons.Default.DirectionsBike
-                                stepInstruction.contains("调头") || stepInstruction.contains("掉头") -> Icons.Default.UTurnLeft
-                                stepInstruction.contains("左") && !stepInstruction.contains("右") -> Icons.Default.TurnLeft
-                                stepInstruction.contains("右") && !stepInstruction.contains("左") -> Icons.Default.TurnRight
-                                else -> Icons.Default.ArrowUpward
-                            }
-                            Icon(turnIcon, contentDescription = null, tint = Color(0xFF4ADE80), modifier = Modifier.size(22.dp))
-                            Column(modifier = Modifier.weight(1f)) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Text(distLabel, color = Color(0xFF4ADE80), fontSize = 15.sp, fontWeight = FontWeight.Black, fontFamily = FontFamily.Monospace)
-                                    if (remKm > 0.05) {
-                                        Text(String.format("余 %.1fkm · %d分", remKm, remMins), color = HTTGold, fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                                    }
-                                }
-                                Text(stepInstruction, color = Color.White, fontSize = 11.5.sp, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                            }
-                            Box(
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(6.dp))
-                                    .background(Color(0xFF8B1A24))
-                                    .clickable { manager.stopNavigation() }
-                                    .padding(horizontal = 8.dp, vertical = 4.dp)
-                            ) {
-                                Text("结束", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                            }
-                        }
-
-                        if (candidateRoutes.size > 1) {
-                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-                                candidateRoutes.forEachIndexed { idx, r ->
-                                    val sel = idx == selectedRouteIdx
-                                    val durMins = (r.durationSeconds / 60).toInt().coerceAtLeast(1)
-                                    Box(
-                                        modifier = Modifier
-                                            .weight(1f)
-                                            .clip(RoundedCornerShape(7.dp))
-                                            .background(if (sel) HTTCrimson else Color.White.copy(alpha = 0.08f))
-                                            .border(1.dp, if (sel) HTTGold else Color.Transparent, RoundedCornerShape(7.dp))
-                                            .clickable { manager.selectRoute(idx) }
-                                            .padding(vertical = 4.dp, horizontal = 4.dp),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        Text("${r.name} · ${durMins}分", color = Color.White, fontSize = 9.5.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                    }
-                                }
-                            }
-                        }
-
-                        if (travelMode == NavigationTravelMode.TRANSIT) {
-                            val activeRoute = candidateRoutes.getOrNull(selectedRouteIdx)
-                            if (activeRoute != null && activeRoute.steps.isNotEmpty()) {
-                                activeRoute.steps.take(3).forEachIndexed { idx, st ->
-                                    Text(
-                                        "${idx + 1}. ${st.instruction}",
-                                        color = if (idx == 1) Color(0xFF7DD3FC) else Color(0xFFD1D5DB),
-                                        fontSize = 10.sp,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Tapped Map Point POI Detail Card
-        if (tappedCoord != null) {
-            Card(
-                colors = CardDefaults.cardColors(containerColor = Color(0xFF141824).copy(alpha = 0.94f)),
-                shape = RoundedCornerShape(14.dp),
-                modifier = Modifier
-                    .width(260.dp)
-                    .align(Alignment.BottomEnd)
-                    .navigationBarsPadding()
-                    .padding(end = 12.dp, bottom = 148.dp)
-                    .border(1.dp, HTTGold.copy(alpha = 0.7f), RoundedCornerShape(14.dp))
-            ) {
-                Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(tappedTitle, color = HTTGold, fontSize = 12.5.sp, fontWeight = FontWeight.Black, modifier = Modifier.weight(1f))
-                        IconButton(onClick = { manager.clearTappedPOI() }, modifier = Modifier.size(20.dp)) {
-                            Icon(Icons.Default.Close, contentDescription = null, tint = Color.White, modifier = Modifier.size(14.dp))
-                        }
-                    }
-                    Text(tappedAddress, color = Color.LightGray, fontSize = 10.sp, maxLines = 2)
-                    Button(
-                        onClick = { manager.startRouteToPlace(tappedTitle, tappedCoord!!) },
-                        colors = ButtonDefaults.buttonColors(containerColor = HTTCrimson),
-                        shape = RoundedCornerShape(8.dp),
-                        modifier = Modifier.fillMaxWidth().height(32.dp),
-                        contentPadding = PaddingValues(0.dp)
-                    ) {
-                        Text("导航到这里", color = Color.White, fontSize = 11.5.sp, fontWeight = FontWeight.Bold)
-                    }
-                }
-            }
         }
 
         // Amap-Style Interactive Route Preview Sheet (Preserves K-ON! Outline: Top Pills, Right Controls, Bottom Music + Speed + Bubble + Mascot)
