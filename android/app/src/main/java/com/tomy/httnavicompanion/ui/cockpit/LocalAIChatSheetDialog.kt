@@ -100,6 +100,9 @@ fun LocalAIChatSheetDialog(
     val ctx = LocalContext.current
     val voiceMgr = remember(ctx) { VoiceInputManager(ctx) }
     var voiceBasePrefix by remember { mutableStateOf("") }
+    var isVoiceCallMode by remember { mutableStateOf(false) }
+    var voiceCallTranscript by remember { mutableStateOf("") }
+    var voiceCallSubmitted by remember { mutableStateOf(false) }
     val speechOverlayLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { res ->
@@ -121,9 +124,6 @@ fun LocalAIChatSheetDialog(
     val voiceStatus by voiceMgr.statusMessage.collectAsState()
     val voiceLang by voiceMgr.selectedLanguage.collectAsState()
     var showLangMenu by remember { mutableStateOf(false) }
-    var isVoiceCallMode by remember { mutableStateOf(false) }
-    var voiceCallTranscript by remember { mutableStateOf("") }
-    var voiceCallSubmitted by remember { mutableStateOf(false) }
     val callHandler = remember { android.os.Handler(android.os.Looper.getMainLooper()) }
     var silenceRunnable by remember { mutableStateOf<Runnable?>(null) }
 

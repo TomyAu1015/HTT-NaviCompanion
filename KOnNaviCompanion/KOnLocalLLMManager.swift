@@ -179,7 +179,7 @@ enum CloudAIProvider: String, CaseIterable, Identifiable {
     }
 }
 
-final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDelegate {
+final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDelegate, AVSpeechSynthesizerDelegate {
     static let shared = KOnLocalLLMManager()
 
     static let modelCatalog: [LocalGGUFModelSpec] = [
