@@ -1128,9 +1128,6 @@ fun InteractiveMapBoxView(
     onOpenSearch: () -> Unit
 ) {
     val destName by manager.destinationName.collectAsState()
-    val tlCountdown by manager.trafficLightCountdown.collectAsState()
-    val tlColor by manager.trafficLightColor.collectAsState()
-    val tlNoStop by manager.trafficLightIsHighwayNonStop.collectAsState()
     val isSimulating by manager.isDemoSimulating.collectAsState()
     val camMode by manager.cameraMode.collectAsState()
     val lang by manager.language.collectAsState()
@@ -1814,6 +1811,9 @@ fun EnlargedNavigationHUDView(
     val transitFirstLegUseBike by manager.transitFirstLegUseBike.collectAsState()
     val drivingAvoids by manager.drivingAvoidOptions.collectAsState()
     val destName by manager.destinationName.collectAsState()
+    val tlCountdown by manager.trafficLightCountdown.collectAsState()
+    val tlColor by manager.trafficLightColor.collectAsState()
+    val tlNoStop by manager.trafficLightIsHighwayNonStop.collectAsState()
     val selectedRouteIdx by manager.selectedRouteIndex.collectAsState()
     val tappedCoord by manager.tappedCoord.collectAsState()
     val tappedTitle by manager.tappedTitle.collectAsState()
