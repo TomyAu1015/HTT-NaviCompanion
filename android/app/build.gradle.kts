@@ -142,9 +142,12 @@ android {
 val sherpaAar = file("libs/sherpa-onnx-2.0.2.aar")
 if (!sherpaAar.exists()) {
     sherpaAar.parentFile.mkdirs()
-    java.net.URL("https://github.com/k2-fsa/sherpa-onnx/releases/download/v2.0.2/sherpa-onnx-2.0.2.aar").openStream().use { inp ->
-        sherpaAar.outputStream().use { out -> inp.copyTo(out) }
-    }
+    val dlProc = ProcessBuilder(
+        "curl", "-fSL", "-o", sherpaAar.absolutePath,
+        "https://github.com/k2-fsa/sherpa-onnx/releases/download/v2.0.2/sherpa-onnx-2.0.2.aar"
+    ).inheritIO().start()
+    val rc = dlProc.waitFor()
+    if (rc != 0) throw GradleException("Failed to download sherpa-onnx-2.0.2.aar (exit $rc)")
 }
 
 dependencies {
