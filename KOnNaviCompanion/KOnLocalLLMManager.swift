@@ -2132,10 +2132,9 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
     /// 针对 VITS 中文音素模型清洗文本：转换数字/时间、过滤引号与 OOV 符号，防止杂音/喘气崩坏
     private func sanitizeForChineseVITS(_ raw: String) -> String {
         var s = raw
-        // 去掉说话人前缀（如 "律：" "我："）和括号/引号/星号
+        // 去掉说话人前缀和括号/引号/星号
         s = s.replacingOccurrences(of: #"[“”‘’"「」『』《》【】\[\]\(\)（）\*\#\`~_]+"#, with: "", options: .regularExpression)
-        s = s.replacingOccurrences(of: #"[
-]+"#, with: "。", options: .regularExpression)
+        s = s.replacingOccurrences(of: #"[\r\n]+"#, with: "。", options: .regularExpression)
         s = s.replacingOccurrences(of: #"[：:;；]+"#, with: "，", options: .regularExpression)
         s = s.replacingOccurrences(of: #"\.{2,}|…+"#, with: "，", options: .regularExpression)
         // 把时间 HH:mm 转成中文读法
