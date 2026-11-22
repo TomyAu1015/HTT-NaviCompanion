@@ -1989,6 +1989,7 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
         case .ritsu: charPrefix = "03_Ritsu"
         case .mugi: charPrefix = "04_Mugi"
         case .azusa: charPrefix = "05_Azusa"
+        case .all: charPrefix = ["01_Yui", "02_Mio", "03_Ritsu", "04_Mugi", "05_Azusa"].randomElement() ?? "01_Yui"
         }
         let folders = (try? FileManager.default.contentsOfDirectory(atPath: extractDir.path)) ?? []
         guard let charFolder = folders.first(where: { $0.hasPrefix(charPrefix) }) else { return nil }
