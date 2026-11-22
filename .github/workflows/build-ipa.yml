@@ -17,6 +17,8 @@ jobs:
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 50
 
       - name: Show Xcode Version
         run: xcodebuild -version
@@ -36,7 +38,7 @@ jobs:
 
       - name: Auto-Sync Root Source Uploads Safeguard
         run: |
-          for f in AudioPlayerManager.swift ContentView.swift KOnMusicManager.swift KOnLocalLLMManager.swift KOnAIChatSheetView.swift Entitlements.plist Info.plist; do
+          for f in AudioPlayerManager.swift CarPlaySceneDelegate.swift ContentView.swift KOnMusicManager.swift KOnLocalLLMManager.swift KOnAIChatSheetView.swift KOnNaviCompanionApp.swift KeyConfig.swift Entitlements.plist Info.plist; do
             if [ -f "$f" ]; then
               echo "Found root $f, syncing to KOnNaviCompanion/..."
               cp -f "$f" "KOnNaviCompanion/"
@@ -74,9 +76,96 @@ jobs:
           printf 'framework module llama {\n  umbrella header "llama.h"\n  export *\n  module * { export * }\n}\n' > build-llama/llama.framework/Modules/module.modulemap
           ls -lh build-llama/llama.framework/llama
 
+      - name: Build iOS 15-Compatible sherpa-onnx + htt_sherpa Static Framework (v2.0.2)
+        run: |
+          rm -rf sherpa-src
+          git clone --depth 1 --branch v2.0.2 https://github.com/k2-fsa/sherpa-onnx.git sherpa-src
+          pushd sherpa-src
+          sed -i '' 's/13.0/15.0/g' build-ios.sh 2>/dev/null || true
+          bash build-ios.sh
+          popd
+          # Copy any built ios-arm64 frameworks (excluding simulator) into build-llama/ search path
+          find sherpa-src/build-ios -maxdepth 5 -name "*.framework" -path "*ios-arm64*" ! -path "*simulator*" -exec cp -R {} build-llama/ \; || true
+          # Build tiny C bridge htt_sherpa.framework (zero struct-version sensitivity)
+          mkdir -p build-llama/htt_sherpa.framework/Headers build-llama/htt_sherpa.framework/Modules
+          cat << 'EOF' > build-llama/htt_sherpa.framework/Headers/htt_sherpa_bridge.h
+          #ifndef HTT_SHERPA_BRIDGE_H
+          #define HTT_SHERPA_BRIDGE_H
+          #ifdef __cplusplus
+          extern "C" {
+          #endif
+          void* htt_tts_create(const char* model, const char* lexicon, const char* tokens, const char* dict_dir);
+          int htt_tts_sample_rate(void* tts);
+          int htt_tts_generate_wav(void* tts, const char* text, int sid, float speed, const char* out_wav_path);
+          void htt_tts_destroy(void* tts);
+          #ifdef __cplusplus
+          }
+          #endif
+          #endif
+          EOF
+          cat << 'EOF' > /tmp/htt_sherpa_bridge.c
+          #include <stdlib.h>
+          #include <string.h>
+          #include "sherpa-onnx/c-api/c-api.h"
+          #include "htt_sherpa_bridge.h"
+
+          void* htt_tts_create(const char* model, const char* lexicon, const char* tokens, const char* dict_dir) {
+              SherpaOnnxOfflineTtsConfig cfg;
+              memset(&cfg, 0, sizeof(cfg));
+              cfg.model.vits.model = model;
+              cfg.model.vits.lexicon = (lexicon && lexicon[0]) ? lexicon : "";
+              cfg.model.vits.tokens = tokens;
+              cfg.model.vits.dict_dir = (dict_dir && dict_dir[0]) ? dict_dir : "";
+              cfg.model.vits.noise_scale = 0.667f;
+              cfg.model.vits.noise_scale_w = 0.8f;
+              cfg.model.vits.length_scale = 1.0f;
+              cfg.model.num_threads = 2;
+              cfg.model.provider = "cpu";
+              cfg.max_num_sentences = 1;
+              return (void*)SherpaOnnxCreateOfflineTts(&cfg);
+          }
+
+          int htt_tts_sample_rate(void* tts) {
+              if (!tts) return 0;
+              return SherpaOnnxOfflineTtsSampleRate((const SherpaOnnxOfflineTts*)tts);
+          }
+
+          int htt_tts_generate_wav(void* tts, const char* text, int sid, float speed, const char* out_wav_path) {
+              if (!tts || !text || !out_wav_path) return 0;
+              const SherpaOnnxOfflineTts* handle = (const SherpaOnnxOfflineTts*)tts;
+              const SherpaOnnxGeneratedAudio* audio = SherpaOnnxOfflineTtsGenerate(handle, text, sid, speed);
+              if (!audio || !audio->samples || audio->n <= 0) {
+                  if (audio) SherpaOnnxDestroyOfflineTtsGeneratedAudio(audio);
+                  return 0;
+              }
+              int ok = SherpaOnnxWriteWave(audio->samples, audio->n, audio->sample_rate, out_wav_path);
+              SherpaOnnxDestroyOfflineTtsGeneratedAudio(audio);
+              return ok ? 1 : 0;
+          }
+
+          void htt_tts_destroy(void* tts) {
+              if (tts) SherpaOnnxDestroyOfflineTts((const SherpaOnnxOfflineTts*)tts);
+          }
+          EOF
+          xcrun --sdk iphoneos clang -arch arm64 -miphoneos-version-min=15.0 -O2             -Isherpa-src             -Ibuild-llama/htt_sherpa.framework/Headers             -c /tmp/htt_sherpa_bridge.c -o /tmp/htt_sherpa_bridge.o
+          SHERPA_STATIC_LIBS=$(find sherpa-src/build-ios -path "*ios-arm64/*" ! -path "*simulator*" -name "*.a" | tr '\n' ' ')
+          echo "Merging sherpa static archives into htt_sherpa.framework: $SHERPA_STATIC_LIBS"
+          libtool -static -o build-llama/htt_sherpa.framework/htt_sherpa /tmp/htt_sherpa_bridge.o $SHERPA_STATIC_LIBS
+          ls -lh build-llama/htt_sherpa.framework/htt_sherpa
+          printf 'framework module htt_sherpa {\n  header "htt_sherpa_bridge.h"\n  export *\n}\n' > build-llama/htt_sherpa.framework/Modules/module.modulemap
+          ls -la build-llama/
+
       - name: Build iOS App (with Native llama.cpp Engine)
         run: |
           LLAMA_DIR="$(pwd)/build-llama"
+          SHERPA_FLAGS=""
+          for fw in "$LLAMA_DIR"/*.framework; do
+            fwname=$(basename "$fw" .framework)
+            if [ "$fwname" != "llama" ]; then
+              SHERPA_FLAGS="$SHERPA_FLAGS -framework $fwname"
+            fi
+          done
+          echo "Linking frameworks: -framework llama $SHERPA_FLAGS"
           xcodebuild clean build \
             -project KOnNaviCompanion.xcodeproj \
             -target KOnNaviCompanion \
@@ -85,7 +174,7 @@ jobs:
             SYMROOT=build \
             FRAMEWORK_SEARCH_PATHS="$LLAMA_DIR" \
             OTHER_SWIFT_FLAGS="-F $LLAMA_DIR" \
-            OTHER_LDFLAGS="-F $LLAMA_DIR -framework llama -framework Metal -framework MetalKit -framework Accelerate -lc++" \
+            OTHER_LDFLAGS="-F $LLAMA_DIR -framework llama $SHERPA_FLAGS -framework CoreML -framework Metal -framework MetalKit -framework Accelerate -lc++" \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO
@@ -129,7 +218,15 @@ jobs:
           fi
 
           # 2.9 Ensure Info.plist always contains CarPlay & Multi-Scene manifest (even if repo Info.plist was stale)
-          python3 -c 'import plistlib; p="build/Release-iphoneos/KOnNaviCompanion.app/Info.plist"; d=plistlib.load(open(p,"rb")); d["UISupportsCarPlay"]=True; d["UIApplicationSceneManifest"]={"UIApplicationSupportsMultipleScenes":True,"UISceneConfigurations":{"CPTemplateApplicationSceneSessionRoleApplication":[{"UISceneClassName":"CPTemplateApplicationScene","UISceneConfigurationName":"CarPlayConfiguration","UISceneDelegateClassName":"CarPlaySceneDelegate"}],"UIWindowSceneSessionRoleApplication":[{"UISceneClassName":"UIWindowScene","UISceneConfigurationName":"Default Configuration","UISceneDelegateClassName":"PhoneSceneDelegate"}]}}; plistlib.dump(d,open(p,"wb"),fmt=plistlib.FMT_BINARY); print("Injected CarPlay + Multi-Scene manifest into", p)'
+          BUILD_DATE=$(TZ=Asia/Shanghai date +"%d/%m/%Y")
+          TODAY_ISO=$(TZ=Asia/Shanghai date +"%Y-%m-%d")
+          YMD=$(TZ=Asia/Shanghai date +"%Y%m%d")
+          DAILY_SEQ=$(git log --since="${TODAY_ISO} 00:00:00 +0800" --oneline -- KOnNaviCompanion/ KOnNaviCompanion.xcodeproj/ .github/workflows/build-ipa.yml 2>/dev/null | wc -l | tr -d ' ')
+          if [ -z "$DAILY_SEQ" ] || [ "$DAILY_SEQ" -lt 1 ]; then DAILY_SEQ=1; fi
+          if [ "$TODAY_ISO" = "2026-11-22" ] && [ "$DAILY_SEQ" -lt 2 ]; then DAILY_SEQ=2; fi
+          export HTT_BUILD_DATE="$BUILD_DATE" HTT_SHORT_VER="${DAILY_SEQ}.0" HTT_BUNDLE_VER="${YMD}.${DAILY_SEQ}"
+          echo "iOS Version: ${HTT_SHORT_VER} (v${HTT_BUILD_DATE}), build=${HTT_BUNDLE_VER}"
+          python3 -c 'import os, plistlib; p="build/Release-iphoneos/KOnNaviCompanion.app/Info.plist"; d=plistlib.load(open(p,"rb")); d["HTTBuildDate"]=os.environ["HTT_BUILD_DATE"]; d["CFBundleShortVersionString"]=os.environ["HTT_SHORT_VER"]; d["CFBundleVersion"]=os.environ["HTT_BUNDLE_VER"]; d["UISupportsCarPlay"]=True; d["NSAppTransportSecurity"]={"NSAllowsArbitraryLoads":True}; d["NSMicrophoneUsageDescription"]="用于轻音部 AI 语音录入提问（支持粤语/普通话/多语言，全程在软件内完成）"; d["NSSpeechRecognitionUsageDescription"]="用于将您的语音实时转换为文字发送给轻音部 AI 助手（支持粤语及多语言）"; d["UIApplicationSceneManifest"]={"UIApplicationSupportsMultipleScenes":True,"UISceneConfigurations":{"CPTemplateApplicationSceneSessionRoleApplication":[{"UISceneClassName":"CPTemplateApplicationScene","UISceneConfigurationName":"CarPlayConfiguration","UISceneDelegateClassName":"CarPlaySceneDelegate"}],"CPTemplateApplicationDashboardSceneSessionRoleApplication":[{"UISceneClassName":"CPTemplateApplicationDashboardScene","UISceneConfigurationName":"CarPlayDashboardConfiguration","UISceneDelegateClassName":"CarPlayDashboardSceneDelegate"}],"UIWindowSceneSessionRoleApplication":[{"UISceneClassName":"UIWindowScene","UISceneConfigurationName":"Default Configuration","UISceneDelegateClassName":"PhoneSceneDelegate"}]}}; plistlib.dump(d,open(p,"wb"),fmt=plistlib.FMT_BINARY); print("Injected CarPlay + Multi-Scene manifest into", p)'
           otool -l build/Release-iphoneos/KOnNaviCompanion.app/Frameworks/llama.framework/llama 2>/dev/null | grep -A 5 "LC_BUILD_VERSION\|LC_VERSION_MIN" || true
 
           # 3. Ad-Hoc sign with entitlements (DO NOT strip binary after codesign, so both TrollStore and Sideloaders get an intact signature!)
