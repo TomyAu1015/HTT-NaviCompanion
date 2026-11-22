@@ -1920,7 +1920,14 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
                 let extractDir = voicePacksDirectoryURL.appendingPathComponent(name + "_extracted", isDirectory: true)
                 try? FileManager.default.removeItem(at: extractDir)
                 let count = extractVoicePackZip(fromZip: dest, to: extractDir)
-                if count > 0 {
+                let hasOnnx = FileManager.default.fileExists(atPath: extractDir.appendingPathComponent("model.onnx").path)
+                if hasOnnx {
+                    #if canImport(htt_sherpa)
+                    extraNote = "（已提取 \(count) 个离线模型文件，5人本地引擎就绪）"
+                    #else
+                    extraNote = "（已提取 \(count) 个模型文件，但安装包未包含离线引擎，请更新 .github/workflows/build-ipa.yml 重编）"
+                    #endif
+                } else if count > 0 {
                     extraNote = "（已提取 \(count) 条角色原声语气词）"
                 }
             }

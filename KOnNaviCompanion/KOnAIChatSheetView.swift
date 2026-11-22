@@ -810,7 +810,7 @@ struct KOnAIChatSheetView: View {
                         .foregroundColor(httCream.opacity(0.9))
 
                     HStack(spacing: 6) {
-                        TextField("可选：本地克隆音接口 (如 http://192.168.1.x:9880/v1/audio/speech)", text: $customTtsUrlDraft)
+                        TextField("留空则用手机本地语音，或填远程语音接口", text: $customTtsUrlDraft)
                             .textFieldStyle(.plain)
                             .font(.system(size: 11.5))
                             .foregroundColor(.white)
@@ -826,6 +826,18 @@ struct KOnAIChatSheetView: View {
                         .background(Color.green.opacity(0.85))
                         .foregroundColor(.white)
                         .cornerRadius(8)
+                        if !customTtsUrlDraft.isEmpty {
+                            Button("清空") {
+                                dismissKeyboard()
+                                customTtsUrlDraft = ""
+                                llm.saveCustomTtsConfig(url: "", emotionInterjection: llm.enableEmotionInterjection)
+                            }
+                            .font(.system(size: 11, weight: .bold))
+                            .padding(.horizontal, 8).padding(.vertical, 8)
+                            .background(Color.gray.opacity(0.6))
+                            .foregroundColor(.white)
+                            .cornerRadius(8)
+                        }
                         Button("测试") {
                             dismissKeyboard()
                             llm.saveCustomTtsConfig(url: customTtsUrlDraft, emotionInterjection: llm.enableEmotionInterjection)

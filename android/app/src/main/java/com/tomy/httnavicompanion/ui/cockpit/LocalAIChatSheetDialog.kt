@@ -879,7 +879,7 @@ fun LocalAIChatSheetDialog(
                                 OutlinedTextField(
                                     value = customTtsUrlDraft,
                                     onValueChange = { customTtsUrlDraft = it },
-                                    placeholder = { Text("http://192.168.1.x:9880/v1/audio/speech", color = Color.Gray, fontSize = 10.5.sp) },
+                                    placeholder = { Text("留空则用手机本地语音，或填远程语音接口", color = Color.Gray, fontSize = 10.5.sp) },
                                     singleLine = true,
                                     modifier = Modifier.weight(1f),
                                     colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Color.White, unfocusedTextColor = Color.White, focusedBorderColor = AiGold, unfocusedBorderColor = Color.Gray)
@@ -895,6 +895,21 @@ fun LocalAIChatSheetDialog(
                                         .padding(horizontal = 12.dp, vertical = 12.dp)
                                 ) {
                                     Text("保存", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                }
+                                if (customTtsUrlDraft.isNotBlank()) {
+                                    Box(
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(Color.Gray.copy(alpha = 0.6f))
+                                            .clickable {
+                                                hideKb()
+                                                customTtsUrlDraft = ""
+                                                llm.saveCustomTtsEndpoint("")
+                                            }
+                                            .padding(horizontal = 10.dp, vertical = 12.dp)
+                                    ) {
+                                        Text("清空", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                    }
                                 }
                             }
                             Row(
