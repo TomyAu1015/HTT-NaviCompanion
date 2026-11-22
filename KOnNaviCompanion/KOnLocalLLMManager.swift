@@ -2057,7 +2057,7 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
         let endpoint = customTtsEndpointUrl.trimmingCharacters(in: .whitespacesAndNewlines)
         if !endpoint.isEmpty, let ttsUrl = URL(string: endpoint) {
             DispatchQueue.main.async { self.isTtsSpeaking = true }
-            var req = URLRequest(url: ttsUrl, timeoutInterval: 3.5)
+            var req = URLRequest(url: ttsUrl, timeoutInterval: 12.0)
             req.httpMethod = "POST"
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")
             let charName = AudioPlayerManager.shared.selectedCharacter.displayName(.zhHans)
