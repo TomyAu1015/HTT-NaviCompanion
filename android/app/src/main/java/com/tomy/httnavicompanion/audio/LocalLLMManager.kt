@@ -1257,9 +1257,13 @@ ${personaRole}你们五人组成了“放课后茶会”(HTT)乐队。你正坐�
         val dir = File(voicePacksDir(), pack)
         val modelFile = File(dir, "model.onnx")
         val tokensFile = File(dir, "tokens.txt")
-        if (!modelFile.exists() || !tokensFile.exists()) return null
         val lexiconFile = File(dir, "lexicon.txt")
         val dictDir = File(dir, "dict")
+        val jiebaDict = File(dictDir, "jieba.dict.utf8")
+        if (!modelFile.exists() || !tokensFile.exists() || !lexiconFile.exists() || !jiebaDict.exists()) {
+            _voicePackStatus.value = "⚠️ 离线包缺少 lexicon.txt 或 dict 分词字典，已拦截防杂音并切回系统语音"
+            return null
+        }
         try { sherpaOfflineTts?.release() } catch (_: Throwable) {}
         sherpaOfflineTts = null
         loadedSherpaPackName = ""
@@ -1268,9 +1272,12 @@ ${personaRole}你们五人组成了“放课后茶会”(HTT)乐队。你正坐�
                 model = OfflineTtsModelConfig(
                     vits = OfflineTtsVitsModelConfig(
                         model = modelFile.absolutePath,
-                        lexicon = if (lexiconFile.exists()) lexiconFile.absolutePath else "",
+                        lexicon = lexiconFile.absolutePath,
                         tokens = tokensFile.absolutePath,
-                        dictDir = if (dictDir.isDirectory) dictDir.absolutePath else ""
+                        dictDir = dictDir.absolutePath,
+                        noiseScale = 0.50f,
+                        noiseScaleW = 0.60f,
+                        lengthScale = 1.0f
                     ),
                     numThreads = 2,
                     provider = "cpu"
@@ -1330,6 +1337,7 @@ ${personaRole}你们五人组成了“放课后茶会”(HTT)乐队。你正坐�
     }
 
     fun stopAllSpeech() {
+        ttsSessionToken++
         try { clonedMediaPlayer?.stop(); clonedMediaPlayer?.release() } catch (_: Throwable) {}
         clonedMediaPlayer = null
         try { tts?.stop() } catch (_: Throwable) {}
@@ -1340,6 +1348,54 @@ ${personaRole}你们五人组成了“放课后茶会”(HTT)乐队。你正坐�
         try { LlamaNativeBridge.nativeCancel() } catch (_: Throwable) {}
         _isGenerating.value = false
         stopAllSpeech()
+    }
+
+    @Volatile private var ttsSessionToken: Int = 0
+
+    private fun sanitizeForChineseVITS(raw: String): String {
+        var s = raw
+            .replace(Regex("[“”‘’\"「」『』《》【】\\[\\]()（）*#`~_]+"), "")
+            .replace(Regex("[\\r\\n]+"), "。")
+            .replace(Regex("[：:;；]+"), "，")
+            .replace(Regex("\\.{2,}|…+"), "，")
+        s = Regex("(\\d{1,2}):(\\d{2})").replace(s) { m -> "${m.groupValues[1]}点${m.groupValues[2]}分" }
+        val digitMap = mapOf('0' to '零','1' to '一','2' to '二','3' to '三','4' to '四','5' to '五','6' to '六','7' to '七','8' to '八','9' to '九')
+        val sb = StringBuilder()
+        for (ch in s) {
+            when {
+                digitMap.containsKey(ch) -> sb.append(digitMap[ch])
+                ch in '\u4E00'..'\u9FFF' || ch in charArrayOf('，','。','！','？',',','.','!','?') -> sb.append(ch)
+            }
+        }
+        return sb.toString().replace(Regex("[，,。\\.！？!?]{2,}"), "，").trim('，',',','。','！','？','!','?',' ')
+    }
+
+    private fun splitIntoShortChunks(text: String, maxLen: Int = 22): List<String> {
+        val norm = sanitizeForChineseVITS(text)
+        if (norm.isEmpty()) return emptyList()
+        val rawParts = norm.split(Regex("[。！？!?，,]")).map { it.trim() }.filter { it.length >= 2 }
+        val chunks = mutableListOf<String>()
+        var cur = ""
+        for (part in rawParts) {
+            if (part.length > maxLen) {
+                if (cur.isNotEmpty()) { chunks.add(cur); cur = "" }
+                var idx = 0
+                while (idx < part.length) {
+                    val sub = part.substring(idx, minOf(idx + maxLen, part.length))
+                    if (sub.length >= 2) chunks.add(sub)
+                    idx += maxLen
+                }
+            } else if (cur.isEmpty()) {
+                cur = part
+            } else if (cur.length + part.length + 1 <= maxLen) {
+                cur = "$cur，$part"
+            } else {
+                chunks.add(cur)
+                cur = part
+            }
+        }
+        if (cur.isNotEmpty()) chunks.add(cur)
+        return chunks
     }
 
     private fun speakOfflineTTS(text: String) {
@@ -1354,21 +1410,42 @@ ${personaRole}你们五人组成了“放课后茶会”(HTT)乐队。你正坐�
             else -> "开心"
         }
         val endpoint = _customTtsEndpointUrl.value.trim()
-        if (endpoint.isNotEmpty()) {
+        val pack = _activeVoicePackName.value
+        if (endpoint.isNotEmpty() || pack.isNotBlank()) {
+            val chunks = splitIntoShortChunks(clean, 22)
+            if (chunks.isEmpty()) {
+                speakAndroidEmotionProsody(clean, emotion)
+                return
+            }
+            val token = ++ttsSessionToken
             _isTtsSpeaking.value = true
+            speakChunkQueue(chunks, 0, emotion, endpoint, token, clean)
+            return
+        }
+        speakAndroidEmotionProsody(clean, emotion)
+    }
+
+    private fun speakChunkQueue(chunks: List<String>, index: Int, emotion: String, endpoint: String, token: Int, fullFallback: String) {
+        if (token != ttsSessionToken) return
+        if (index >= chunks.size) {
+            mainHandler.post { if (token == ttsSessionToken) _isTtsSpeaking.value = false }
+            return
+        }
+        val chunk = chunks[index]
+        if (endpoint.isNotEmpty()) {
             Thread {
                 try {
                     val conn = (URL(endpoint).openConnection() as HttpURLConnection).apply {
                         requestMethod = "POST"
-                        connectTimeout = 6000
-                        readTimeout = 12000
+                        connectTimeout = 5000
+                        readTimeout = 10000
                         doOutput = true
                         setRequestProperty("Content-Type", "application/json")
                     }
                     val charName = audioManager.selectedCharacter.value.displayName(AppLanguage.ZH_HANS)
                     val bodyJson = JSONObject()
-                        .put("input", clean)
-                        .put("text", clean)
+                        .put("input", chunk)
+                        .put("text", chunk)
                         .put("voice", charName)
                         .put("character", charName)
                         .put("emotion", emotion)
@@ -1378,47 +1455,31 @@ ${personaRole}你们五人组成了“放课后茶会”(HTT)乐队。你正坐�
                     if (conn.responseCode == 200) {
                         val bytes = conn.inputStream.readBytes()
                         conn.disconnect()
-                        if (bytes.size > 512) {
+                        if (bytes.size > 512 && token == ttsSessionToken) {
                             val tmp = File(context.cacheDir, "htt_cloned_tts.wav")
                             tmp.writeBytes(bytes)
-                            mainHandler.post {
-                                try {
-                                    clonedMediaPlayer?.release()
-                                    val mp = MediaPlayer().apply {
-                                        setAudioAttributes(
-                                            AudioAttributes.Builder()
-                                                .setUsage(AudioAttributes.USAGE_MEDIA)
-                                                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                                                .build()
-                                        )
-                                        setDataSource(tmp.absolutePath)
-                                        setOnCompletionListener { _isTtsSpeaking.value = false }
-                                        setOnErrorListener { _, _, _ -> _isTtsSpeaking.value = false; true }
-                                        prepare()
-                                        start()
-                                    }
-                                    clonedMediaPlayer = mp
-                                } catch (_: Throwable) {
-                                    speakAndroidEmotionProsody(clean, emotion)
-                                }
-                            }
+                            playWavThenNext(tmp, chunks, index, emotion, endpoint, token, fullFallback)
                             return@Thread
                         }
                     } else {
                         conn.disconnect()
                     }
                 } catch (_: Throwable) {}
-                mainHandler.post { _voicePackStatus.value = "⚠️ 克隆音服务未连通，已切回本地语音"; speakLocalOfflineSherpaOrSystem(clean, emotion) }
+                if (token == ttsSessionToken) {
+                    mainHandler.post { _voicePackStatus.value = "⚠️ 克隆音服务未连通，已切回本地语音" }
+                    speakLocalChunkQueue(chunks, index, emotion, token, fullFallback)
+                }
             }.start()
             return
         }
-        speakLocalOfflineSherpaOrSystem(clean, emotion)
+        speakLocalChunkQueue(chunks, index, emotion, token, fullFallback)
     }
 
-    private fun speakLocalOfflineSherpaOrSystem(clean: String, emotion: String) {
+    private fun speakLocalChunkQueue(chunks: List<String>, index: Int, emotion: String, token: Int, fullFallback: String) {
+        if (token != ttsSessionToken) return
         val pack = _activeVoicePackName.value
         if (pack.isNotBlank()) {
-            _isTtsSpeaking.value = true
+            val chunk = chunks[index]
             Thread {
                 try {
                     val wavFile = File(context.cacheDir, "htt_offline_tts.wav")
@@ -1426,47 +1487,61 @@ ${personaRole}你们五人组成了“放课后茶会”(HTT)乐队。你正坐�
                         val tts = ensureSherpaOfflineTts()
                         if (tts != null) {
                             val speed = when (emotion) {
-                                "元气", "慌张" -> 1.08f
-                                "温柔", "撒娇" -> 0.94f
+                                "元气", "慌张" -> 1.05f
+                                "温柔", "撒娇" -> 0.95f
                                 else -> 1.0f
                             }
-                            val audio = tts.generate(text = clean, sid = currentSpeakerSid(), speed = speed)
+                            val audio = tts.generate(text = chunk, sid = currentSpeakerSid(), speed = speed)
                             if (audio.samples.isNotEmpty()) {
                                 writeWavFile(audio.samples, audio.sampleRate, wavFile)
                                 true
                             } else false
                         } else false
                     }
-                    if (generatedOk) {
-                            mainHandler.post {
-                                try {
-                                    clonedMediaPlayer?.release()
-                                    val mp = MediaPlayer().apply {
-                                        setAudioAttributes(
-                                            AudioAttributes.Builder()
-                                                .setUsage(AudioAttributes.USAGE_MEDIA)
-                                                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                                                .build()
-                                        )
-                                        setDataSource(wavFile.absolutePath)
-                                        setOnCompletionListener { _isTtsSpeaking.value = false }
-                                        setOnErrorListener { _, _, _ -> _isTtsSpeaking.value = false; true }
-                                        prepare()
-                                        start()
-                                    }
-                                    clonedMediaPlayer = mp
-                                } catch (_: Throwable) {
-                                    speakAndroidEmotionProsody(clean, emotion)
-                                }
-                            }
+                    if (generatedOk && token == ttsSessionToken) {
+                        playWavThenNext(wavFile, chunks, index, emotion, "", token, fullFallback)
                         return@Thread
                     }
                 } catch (_: Throwable) {}
-                mainHandler.post { speakAndroidEmotionProsody(clean, emotion) }
+                if (token == ttsSessionToken) {
+                    mainHandler.post { speakAndroidEmotionProsody(fullFallback, emotion) }
+                }
             }.start()
             return
         }
-        speakAndroidEmotionProsody(clean, emotion)
+        mainHandler.post { speakAndroidEmotionProsody(fullFallback, emotion) }
+    }
+
+    private fun playWavThenNext(wavFile: File, chunks: List<String>, index: Int, emotion: String, endpoint: String, token: Int, fullFallback: String) {
+        mainHandler.post {
+            if (token != ttsSessionToken) return@post
+            try {
+                clonedMediaPlayer?.release()
+                val mp = MediaPlayer().apply {
+                    setAudioAttributes(
+                        AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_MEDIA)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                            .build()
+                    )
+                    setDataSource(wavFile.absolutePath)
+                    setOnCompletionListener {
+                        if (token == ttsSessionToken) {
+                            speakChunkQueue(chunks, index + 1, emotion, endpoint, token, fullFallback)
+                        }
+                    }
+                    setOnErrorListener { _, _, _ ->
+                        if (token == ttsSessionToken) _isTtsSpeaking.value = false
+                        true
+                    }
+                    prepare()
+                    start()
+                }
+                clonedMediaPlayer = mp
+            } catch (_: Throwable) {
+                speakAndroidEmotionProsody(fullFallback, emotion)
+            }
+        }
     }
 
     private fun speakAndroidEmotionProsody(clean: String, emotion: String) {
