@@ -241,6 +241,10 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
     private var pendingSpeechAfterInterjection: (String, String)? = nil
     private var sherpaTtsHandle: UnsafeMutableRawPointer? = nil
     private let sherpaQueue = DispatchQueue(label: "com.kon.htt.sherpa.tts", qos: .userInitiated)
+    private var ttsChunkQueue: [String] = []
+    private var ttsChunkEmotion: String = "开心"
+    private var ttsChunkEndpoint: String = ""
+    private var ttsSessionToken: Int = 0
     private var loadedSherpaPackName: String = ""
     @Published var isLoadingModel: Bool = false
     @Published var activeModelFileName: String = ""
@@ -1501,7 +1505,7 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
             }
 
             var utf8Pending: [UInt8] = []
-            let maxGenTokens = min(160, max(32, self.activeCtxLen - totalPromptTokens - 4))
+            let maxGenTokens = min(100, max(32, self.activeCtxLen - totalPromptTokens - 4))
             for _ in 0..<(decodeOk ? maxGenTokens : 0) {
                 if self.cancelGenerationFlag { break }
                 let newTok = llama_sampler_sample(smpl, ctx, -1)
@@ -1939,9 +1943,16 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
                     try? FileManager.default.removeItem(at: extractDir)
                     let count = self.extractVoicePackZip(fromZip: dest, to: extractDir)
                     let hasOnnx = FileManager.default.fileExists(atPath: extractDir.appendingPathComponent("model.onnx").path)
+                    let hasTokens = FileManager.default.fileExists(atPath: extractDir.appendingPathComponent("tokens.txt").path)
+                    let hasLexicon = FileManager.default.fileExists(atPath: extractDir.appendingPathComponent("lexicon.txt").path)
+                    let hasDict = FileManager.default.fileExists(atPath: extractDir.appendingPathComponent("dict/jieba.dict.utf8").path)
                     if hasOnnx {
                         #if canImport(htt_sherpa)
-                        extraNote = "（已提取 \(count) 个离线模型文件，5人本地引擎就绪）"
+                        if hasTokens && hasLexicon && hasDict {
+                            extraNote = "（离线5人引擎就绪：model + tokens + lexicon + dict，共 \(count) 文件）"
+                        } else {
+                            extraNote = "（⚠️ 压缩包缺少 lexicon.txt 或 dict 分词字典，已自动拦截防杂音，请重新打包离线 zip）"
+                        }
                         #else
                         extraNote = "（已提取 \(count) 个模型文件，但安装包未包含离线引擎，请更新 .github/workflows/build-ipa.yml 重编）"
                         #endif
@@ -2080,6 +2091,12 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
             if let pending = self.pendingSpeechAfterInterjection {
                 self.pendingSpeechAfterInterjection = nil
                 self.speakWithEmotionProsody(clean: pending.0, emotion: pending.1)
+                return
+            }
+            if !self.ttsChunkQueue.isEmpty {
+                let nextChunk = self.ttsChunkQueue.removeFirst()
+                let token = self.ttsSessionToken
+                self.speakNextTTSChunk(nextChunk, emotion: self.ttsChunkEmotion, endpoint: self.ttsChunkEndpoint, sessionToken: token)
             } else {
                 self.isTtsSpeaking = false
             }
@@ -2087,6 +2104,8 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
     }
 
     func stopAllSpeech() {
+        ttsSessionToken += 1
+        ttsChunkQueue.removeAll()
         pendingSpeechAfterInterjection = nil
         clonedAudioPlayer?.stop()
         clonedAudioPlayer = nil
@@ -2110,36 +2129,122 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
         DispatchQueue.main.async { self.isTtsSpeaking = false }
     }
 
+    /// 针对 VITS 中文音素模型清洗文本：转换数字/时间、过滤引号与 OOV 符号，防止杂音/喘气崩坏
+    private func sanitizeForChineseVITS(_ raw: String) -> String {
+        var s = raw
+        // 去掉说话人前缀（如 "律：" "我："）和括号/引号/星号
+        s = s.replacingOccurrences(of: #"[“”‘’"「」『』《》【】\[\]\(\)（）\*\#\`~_]+"#, with: "", options: .regularExpression)
+        s = s.replacingOccurrences(of: #"[
+]+"#, with: "。", options: .regularExpression)
+        s = s.replacingOccurrences(of: #"[：:;；]+"#, with: "，", options: .regularExpression)
+        s = s.replacingOccurrences(of: #"\.{2,}|…+"#, with: "，", options: .regularExpression)
+        // 把时间 HH:mm 转成中文读法
+        if let timeRegex = try? NSRegularExpression(pattern: #"(\d{1,2}):(\d{2})"#) {
+            let ns = s as NSString
+            let matches = timeRegex.matches(in: s, range: NSRange(location: 0, length: ns.length)).reversed()
+            for m in matches {
+                let h = ns.substring(with: m.range(at: 1))
+                let minStr = ns.substring(with: m.range(at: 2))
+                let rep = "\(h)点\(minStr)分"
+                s = (s as NSString).replacingCharacters(in: m.range, with: rep)
+            }
+        }
+        // 把剩余阿拉伯数字转为中文数字字符，避免 VITS 跳过或输出杂音
+        let digitMap: [Character: String] = ["0":"零","1":"一","2":"二","3":"三","4":"四","5":"五","6":"六","7":"七","8":"八","9":"九"]
+        var out = ""
+        for ch in s {
+            if let zh = digitMap[ch] {
+                out.append(zh)
+            } else if ch.unicodeScalars.allSatisfy({
+                let v = $0.value
+                return (v >= 0x4E00 && v <= 0x9FFF) || v == 0xFF0C || v == 0x3002 || v == 0xFF01 || v == 0xFF1F || v == 0x002C || v == 0x002E || v == 0x0021 || v == 0x003F
+            }) {
+                out.append(ch)
+            }
+        }
+        out = out.replacingOccurrences(of: #"[，,。\.！？!\?]{2,}"#, with: "，", options: .regularExpression)
+        return out.trimmingCharacters(in: CharacterSet(charactersIn: "，,。！？!? "))
+    }
+
+    /// 将长文本切分为 <= 22 字短句队列（首句 1.5 秒出声 + 防止 VITS 长句崩溃与 VPS 超时）
+    private func splitIntoShortChunks(_ text: String, maxLen: Int = 22) -> [String] {
+        let normalized = sanitizeForChineseVITS(text)
+        guard !normalized.isEmpty else { return [] }
+        let seps = CharacterSet(charactersIn: "。！？!?，,")
+        let rawParts = normalized.components(separatedBy: seps).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { $0.count >= 2 }
+        var chunks: [String] = []
+        var cur = ""
+        for part in rawParts {
+            if part.count > maxLen {
+                if !cur.isEmpty { chunks.append(cur); cur = "" }
+                var idx = part.startIndex
+                while idx < part.endIndex {
+                    let end = part.index(idx, offsetBy: maxLen, limitedBy: part.endIndex) ?? part.endIndex
+                    let sub = String(part[idx..<end])
+                    if sub.count >= 2 { chunks.append(sub) }
+                    idx = end
+                }
+            } else if cur.isEmpty {
+                cur = part
+            } else if cur.count + part.count + 1 <= maxLen {
+                cur += "，" + part
+            } else {
+                chunks.append(cur)
+                cur = part
+            }
+        }
+        if !cur.isEmpty { chunks.append(cur) }
+        return chunks
+    }
+
     private func speakOfflineTTSOnly(_ text: String) {
         guard enableVoiceBroadcast else {
             DispatchQueue.main.async { self.isTtsSpeaking = false }
             return
         }
-        // Strip bracket tags and emojis so TTS speaks natural clean Mandarin/Cantonese only!
         var clean = text.replacingOccurrences(of: #"\[[^\]]+\]"#, with: "", options: .regularExpression)
         clean = clean.replacingOccurrences(of: #"【[^】]+】"#, with: "", options: .regularExpression)
         clean = clean.unicodeScalars.filter { !$0.properties.isEmojiPresentation }.map { String($0) }.joined()
         clean = clean.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !clean.isEmpty else { return }
 
-        // Extract emotion tag for expressive pitch/rate & cloned-voice emotion parameter
         var emotion = "开心"
         if text.contains("温柔") || text.contains("安慰") || text.contains("关心") { emotion = "温柔" }
         else if text.contains("撒娇") || text.contains("委屈") || text.contains("呜") { emotion = "撒娇" }
         else if text.contains("慌张") || text.contains("吐槽") || text.contains("急") { emotion = "慌张" }
         else if text.contains("元气") || text.contains("兴奋") || text.contains("耶") { emotion = "元气" }
 
-        // Tier 1: 远程/本地克隆音服务 (3.5秒快速超时，避免卡顿久等)
         let endpoint = customTtsEndpointUrl.trimmingCharacters(in: .whitespacesAndNewlines)
+        let chunks = splitIntoShortChunks(clean, maxLen: 22)
+        if !endpoint.isEmpty || !activeVoicePackName.isEmpty {
+            guard !chunks.isEmpty else {
+                playInterjectionThenSystemSpeech(clean: clean, emotion: emotion)
+                return
+            }
+            DispatchQueue.main.async {
+                self.ttsSessionToken += 1
+                let token = self.ttsSessionToken
+                self.ttsChunkEmotion = emotion
+                self.ttsChunkEndpoint = endpoint
+                self.ttsChunkQueue = Array(chunks.dropFirst())
+                self.isTtsSpeaking = true
+                self.speakNextTTSChunk(chunks[0], emotion: emotion, endpoint: endpoint, sessionToken: token, fullFallbackText: clean)
+            }
+            return
+        }
+
+        playInterjectionThenSystemSpeech(clean: clean, emotion: emotion)
+    }
+
+    private func speakNextTTSChunk(_ chunk: String, emotion: String, endpoint: String, sessionToken: Int, fullFallbackText: String? = nil) {
         if !endpoint.isEmpty, let ttsUrl = URL(string: endpoint) {
-            DispatchQueue.main.async { self.isTtsSpeaking = true }
-            var req = URLRequest(url: ttsUrl, timeoutInterval: 12.0)
+            var req = URLRequest(url: ttsUrl, timeoutInterval: 10.0)
             req.httpMethod = "POST"
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")
             let charName = AudioPlayerManager.shared.selectedCharacter.displayName(.zhHans)
             let payload: [String: Any] = [
-                "input": clean,
-                "text": clean,
+                "input": chunk,
+                "text": chunk,
                 "voice": charName,
                 "character": charName,
                 "emotion": emotion,
@@ -2151,6 +2256,7 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
                 let status = (resp as? HTTPURLResponse)?.statusCode ?? 0
                 if err == nil, status == 200, let audioData = data, audioData.count > 512 {
                     DispatchQueue.main.async {
+                        guard self.ttsSessionToken == sessionToken else { return }
                         do {
                             try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [.duckOthers])
                             try? AVAudioSession.sharedInstance().setActive(true)
@@ -2164,20 +2270,20 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
                             player.play()
                             return
                         } catch {}
-                        self.speakLocalWithOptionalInterjection(clean: clean, emotion: emotion)
+                        self.speakLocalChunkWithSherpa(chunk, emotion: emotion, sessionToken: sessionToken, fullFallbackText: fullFallbackText)
                     }
                 } else {
                     DispatchQueue.main.async {
+                        guard self.ttsSessionToken == sessionToken else { return }
                         self.voicePackStatusMessage = "⚠️ 克隆音接口未连通，已自动切回本地语音"
-                        self.speakLocalWithOptionalInterjection(clean: clean, emotion: emotion)
+                        self.ttsChunkEndpoint = ""
+                        self.speakLocalChunkWithSherpa(chunk, emotion: emotion, sessionToken: sessionToken, fullFallbackText: fullFallbackText)
                     }
                 }
             }.resume()
             return
         }
-
-        // Tier 2: 本地零成本语音（若已导入离线包，先播放对应角色 RM-500HTT 原声语气词再接正文）
-        speakLocalWithOptionalInterjection(clean: clean, emotion: emotion)
+        speakLocalChunkWithSherpa(chunk, emotion: emotion, sessionToken: sessionToken, fullFallbackText: fullFallbackText)
     }
 
     private func ensureSherpaTtsLoaded() -> UnsafeMutableRawPointer? {
@@ -2189,19 +2295,24 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
         let extractDir = voicePacksDirectoryURL.appendingPathComponent(activeVoicePackName + "_extracted", isDirectory: true)
         let modelURL = extractDir.appendingPathComponent("model.onnx")
         let tokensURL = extractDir.appendingPathComponent("tokens.txt")
-        guard FileManager.default.fileExists(atPath: modelURL.path),
-              FileManager.default.fileExists(atPath: tokensURL.path) else {
-            return nil
-        }
         let lexiconURL = extractDir.appendingPathComponent("lexicon.txt")
         let dictURL = extractDir.appendingPathComponent("dict", isDirectory: true)
+        let jiebaURL = dictURL.appendingPathComponent("jieba.dict.utf8")
+        // 严格校验：缺少 lexicon.txt 或 dict 分词字典时绝不强行推理，避免输出纯杂音/喘气声
+        guard FileManager.default.fileExists(atPath: modelURL.path),
+              FileManager.default.fileExists(atPath: tokensURL.path),
+              FileManager.default.fileExists(atPath: lexiconURL.path),
+              FileManager.default.fileExists(atPath: jiebaURL.path) else {
+            DispatchQueue.main.async {
+                self.voicePackStatusMessage = "⚠️ 离线包缺少 lexicon.txt 或 dict 字典，已拦截防杂音并切回系统语音"
+            }
+            return nil
+        }
         if let old = sherpaTtsHandle {
             htt_tts_destroy(old)
             sherpaTtsHandle = nil
         }
-        let lexPath = FileManager.default.fileExists(atPath: lexiconURL.path) ? lexiconURL.path : ""
-        let dictPath = FileManager.default.fileExists(atPath: dictURL.path) ? dictURL.path : ""
-        let handle = htt_tts_create(modelURL.path, lexPath, tokensURL.path, dictPath)
+        let handle = htt_tts_create(modelURL.path, lexiconURL.path, tokensURL.path, dictURL.path)
         if handle != nil {
             sherpaTtsHandle = handle
             loadedSherpaPackName = activeVoicePackName
@@ -2223,19 +2334,20 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
         }
     }
 
-    private func speakLocalWithOptionalInterjection(clean: String, emotion: String) {
+    private func speakLocalChunkWithSherpa(_ chunk: String, emotion: String, sessionToken: Int, fullFallbackText: String? = nil) {
         #if canImport(htt_sherpa)
         if !activeVoicePackName.isEmpty {
-            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            sherpaQueue.async { [weak self] in
                 guard let self = self else { return }
                 if let handle = self.ensureSherpaTtsLoaded() {
                     let outWav = NSTemporaryDirectory() + "htt_offline_tts.wav"
                     var speed: Float = 1.0
-                    if emotion == "元气" || emotion == "慌张" { speed = 1.08 }
-                    else if emotion == "温柔" || emotion == "撒娇" { speed = 0.94 }
-                    let ok = htt_tts_generate_wav(handle, clean, self.currentSpeakerId(), speed, outWav)
+                    if emotion == "元气" || emotion == "慌张" { speed = 1.05 }
+                    else if emotion == "温柔" || emotion == "撒娇" { speed = 0.95 }
+                    let ok = htt_tts_generate_wav(handle, chunk, self.currentSpeakerId(), speed, outWav)
                     if ok == 1, let wavData = try? Data(contentsOf: URL(fileURLWithPath: outWav)), wavData.count > 512 {
                         DispatchQueue.main.async {
+                            guard self.ttsSessionToken == sessionToken else { return }
                             do {
                                 try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [.duckOthers])
                                 try? AVAudioSession.sharedInstance().setActive(true)
@@ -2250,19 +2362,25 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
                                 player.play()
                                 return
                             } catch {}
-                            self.speakWithEmotionProsody(clean: clean, emotion: emotion)
+                            self.ttsChunkQueue.removeAll()
+                            self.speakWithEmotionProsody(clean: fullFallbackText ?? chunk, emotion: emotion)
                         }
                         return
                     }
                 }
                 DispatchQueue.main.async {
-                    self.playInterjectionThenSystemSpeech(clean: clean, emotion: emotion)
+                    guard self.ttsSessionToken == sessionToken else { return }
+                    self.ttsChunkQueue.removeAll()
+                    self.playInterjectionThenSystemSpeech(clean: fullFallbackText ?? chunk, emotion: emotion)
                 }
             }
             return
         }
         #endif
-        playInterjectionThenSystemSpeech(clean: clean, emotion: emotion)
+        DispatchQueue.main.async {
+            self.ttsChunkQueue.removeAll()
+            self.playInterjectionThenSystemSpeech(clean: fullFallbackText ?? chunk, emotion: emotion)
+        }
     }
 
     private func playInterjectionThenSystemSpeech(clean: String, emotion: String) {
