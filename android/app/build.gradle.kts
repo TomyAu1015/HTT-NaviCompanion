@@ -29,7 +29,8 @@ android {
             proc.waitFor()
             lines.coerceAtLeast(1)
         } catch (_: Throwable) { 1 }
-        val dailySeq = (System.getenv("APP_DAILY_SEQ")?.toIntOrNull() ?: gitDailySeq).coerceAtLeast(1)
+        val minSeqForDate = if (todayIso == "2026-11-22") 2 else 1
+        val dailySeq = (System.getenv("APP_DAILY_SEQ")?.toIntOrNull() ?: gitDailySeq).coerceAtLeast(minSeqForDate)
         val computedCode = (System.getenv("APP_VERSION_CODE")?.toIntOrNull()
             ?: (shanghaiNow.format(DateTimeFormatter.ofPattern("yyyyMMdd")).toInt() * 100 + (dailySeq % 100)))
         versionCode = computedCode

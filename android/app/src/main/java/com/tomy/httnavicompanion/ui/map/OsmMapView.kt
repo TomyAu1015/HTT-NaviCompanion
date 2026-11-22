@@ -286,8 +286,9 @@ fun OsmMapView(
             val dMarker = destMarkerHolder[0]
             if (destCoord != lastDestMarkerKey[0]) {
                 lastDestMarkerKey[0] = destCoord
-                if (destCoord != null && dMarker != null) {
-                    val dc = if (useAmapTiles) CoordinateConverter.wgs84ToGCJ02(destCoord!!) else destCoord!!
+                val dCoord = destCoord
+                if (dCoord != null && dMarker != null) {
+                    val dc = if (useAmapTiles) CoordinateConverter.wgs84ToGCJ02(dCoord) else dCoord
                     dMarker.position = GeoPoint(dc.latitude, dc.longitude)
                     dMarker.setVisible(true)
                 } else {
@@ -300,8 +301,9 @@ fun OsmMapView(
             val tMarker = tappedMarkerHolder[0]
             if (tappedCoord != lastTappedMarkerKey[0]) {
                 lastTappedMarkerKey[0] = tappedCoord
-                if (tappedCoord != null && tMarker != null) {
-                    val tc = if (useAmapTiles) CoordinateConverter.wgs84ToGCJ02(tappedCoord!!) else tappedCoord!!
+                val tCoord = tappedCoord
+                if (tCoord != null && tMarker != null) {
+                    val tc = if (useAmapTiles) CoordinateConverter.wgs84ToGCJ02(tCoord) else tCoord
                     tMarker.position = GeoPoint(tc.latitude, tc.longitude)
                     tMarker.setVisible(true)
                 } else {

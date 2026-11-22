@@ -191,6 +191,7 @@ class LocalLLMManager(
     val activeVoicePackName: StateFlow<String> = _activeVoicePackName
 
     private var sherpaOfflineTts: OfflineTts? = null
+    private val sherpaLock = Any()
     private var loadedSherpaPackName: String = "" 
 
     private var clonedMediaPlayer: MediaPlayer? = null
@@ -1190,9 +1191,11 @@ ${personaRole}你们五人组成了“放课后茶会”(HTT)乐队。你正坐�
         if (_activeVoicePackName.value == name) {
             _activeVoicePackName.value = ""
             prefs.edit().putString("active_voice_pack", "").apply()
-            try { sherpaOfflineTts?.release() } catch (_: Throwable) {}
-            sherpaOfflineTts = null
-            loadedSherpaPackName = ""
+            synchronized(sherpaLock) {
+                try { sherpaOfflineTts?.release() } catch (_: Throwable) {}
+                sherpaOfflineTts = null
+                loadedSherpaPackName = ""
+            }
         }
         refreshInstalledVoicePacks()
         _voicePackStatus.value = "已删除音色包：$name"
@@ -1258,23 +1261,29 @@ ${personaRole}你们五人组成了“放课后茶会”(HTT)乐队。你正坐�
         val lexiconFile = File(dir, "lexicon.txt")
         val dictDir = File(dir, "dict")
         try { sherpaOfflineTts?.release() } catch (_: Throwable) {}
-        val config = OfflineTtsConfig(
-            model = OfflineTtsModelConfig(
-                vits = OfflineTtsVitsModelConfig(
-                    model = modelFile.absolutePath,
-                    lexicon = if (lexiconFile.exists()) lexiconFile.absolutePath else "",
-                    tokens = tokensFile.absolutePath,
-                    dictDir = if (dictDir.isDirectory) dictDir.absolutePath else ""
+        sherpaOfflineTts = null
+        loadedSherpaPackName = ""
+        return try {
+            val config = OfflineTtsConfig(
+                model = OfflineTtsModelConfig(
+                    vits = OfflineTtsVitsModelConfig(
+                        model = modelFile.absolutePath,
+                        lexicon = if (lexiconFile.exists()) lexiconFile.absolutePath else "",
+                        tokens = tokensFile.absolutePath,
+                        dictDir = if (dictDir.isDirectory) dictDir.absolutePath else ""
+                    ),
+                    numThreads = 2,
+                    provider = "cpu"
                 ),
-                numThreads = 2,
-                provider = "cpu"
-            ),
-            maxNumSentences = 1
-        )
-        val tts = OfflineTts(config = config)
-        sherpaOfflineTts = tts
-        loadedSherpaPackName = pack
-        return tts
+                maxNumSentences = 1
+            )
+            val tts = OfflineTts(config = config)
+            sherpaOfflineTts = tts
+            loadedSherpaPackName = pack
+            tts
+        } catch (_: Throwable) {
+            null
+        }
     }
 
     private fun currentSpeakerSid(): Int {
@@ -1412,17 +1421,23 @@ ${personaRole}你们五人组成了“放课后茶会”(HTT)乐队。你正坐�
             _isTtsSpeaking.value = true
             Thread {
                 try {
-                    val tts = ensureSherpaOfflineTts()
-                    if (tts != null) {
-                        val speed = when (emotion) {
-                            "元气", "慌张" -> 1.08f
-                            "温柔", "撒娇" -> 0.94f
-                            else -> 1.0f
-                        }
-                        val audio = tts.generate(text = clean, sid = currentSpeakerSid(), speed = speed)
-                        if (audio.samples.isNotEmpty()) {
-                            val wavFile = File(context.cacheDir, "htt_offline_tts.wav")
-                            writeWavFile(audio.samples, audio.sampleRate, wavFile)
+                    val wavFile = File(context.cacheDir, "htt_offline_tts.wav")
+                    val generatedOk = synchronized(sherpaLock) {
+                        val tts = ensureSherpaOfflineTts()
+                        if (tts != null) {
+                            val speed = when (emotion) {
+                                "元气", "慌张" -> 1.08f
+                                "温柔", "撒娇" -> 0.94f
+                                else -> 1.0f
+                            }
+                            val audio = tts.generate(text = clean, sid = currentSpeakerSid(), speed = speed)
+                            if (audio.samples.isNotEmpty()) {
+                                writeWavFile(audio.samples, audio.sampleRate, wavFile)
+                                true
+                            } else false
+                        } else false
+                    }
+                    if (generatedOk) {
                             mainHandler.post {
                                 try {
                                     clonedMediaPlayer?.release()
@@ -1444,8 +1459,7 @@ ${personaRole}你们五人组成了“放课后茶会”(HTT)乐队。你正坐�
                                     speakAndroidEmotionProsody(clean, emotion)
                                 }
                             }
-                            return@Thread
-                        }
+                        return@Thread
                     }
                 } catch (_: Throwable) {}
                 mainHandler.post { speakAndroidEmotionProsody(clean, emotion) }

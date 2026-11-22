@@ -454,9 +454,10 @@ fun RM500AlbumAndOutfitSheetDialog(
                                         horizontalArrangement = Arrangement.spacedBy(24.dp),
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
-                                        if (navArrowBmp != null) {
+                                        val arrowBmp = navArrowBmp
+                                        if (arrowBmp != null) {
                                             Image(
-                                                bitmap = navArrowBmp!!.asImageBitmap(),
+                                                bitmap = arrowBmp.asImageBitmap(),
                                                 contentDescription = null,
                                                 filterQuality = FilterQuality.None,
                                                 modifier = Modifier.size(90.dp, 115.dp)
@@ -821,8 +822,9 @@ fun AboutAndFeedbackContent(manager: AudioPlayerManager) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text(previewTitle, color = SheetGold, fontWeight = FontWeight.Black, fontSize = 14.sp)
                     Spacer(Modifier.height(10.dp))
-                    Image(
-                        bitmap = previewBitmap!!.asImageBitmap(),
+                    val prevBmp = previewBitmap
+                    if (prevBmp != null) Image(
+                        bitmap = prevBmp.asImageBitmap(),
                         contentDescription = null,
                         contentScale = ContentScale.Fit,
                         modifier = Modifier

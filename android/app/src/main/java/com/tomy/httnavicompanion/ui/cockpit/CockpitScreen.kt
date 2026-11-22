@@ -92,9 +92,10 @@ fun CockpitScreen(
             .scale(scaleX = if (isHUDMirrored) -1f else 1f, scaleY = 1f)
     ) {
         // RM-500HTT Official Background Wallpaper Layer (matches iOS 0.38 opacity)
-        if (themeBgBmp != null && !isMapEnlarged) {
+        val bgBmp = themeBgBmp
+        if (bgBmp != null && !isMapEnlarged) {
             Image(
-                bitmap = themeBgBmp!!.asImageBitmap(),
+                bitmap = bgBmp.asImageBitmap(),
                 contentDescription = null,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize(),
@@ -704,7 +705,7 @@ fun ClubroomStageView(
                 contentAlignment = Alignment.BottomCenter
             ) {
                 Image(
-                    bitmap = teaPartyBmp!!.asImageBitmap(),
+                    bitmap = requireNotNull(teaPartyBmp).asImageBitmap(),
                     contentDescription = "放课后茶会下午茶",
                     filterQuality = FilterQuality.None,
                     contentScale = ContentScale.Fit,
@@ -882,9 +883,10 @@ fun ClubroomStageView(
                             },
                         contentAlignment = Alignment.Center
                     ) {
-                        if (isDragging && currentSprite != null) {
+                        val dragSprite = currentSprite
+                        if (isDragging && dragSprite != null) {
                             Image(
-                                bitmap = currentSprite!!.asImageBitmap(),
+                                bitmap = dragSprite.asImageBitmap(),
                                 contentDescription = selectedChar.displayName(lang),
                                 filterQuality = FilterQuality.None,
                                 contentScale = ContentScale.Fit,
@@ -1044,9 +1046,10 @@ fun ClubroomStageView(
                         )
                     }
             ) {
-                if (currentSprite != null) {
+                val activeSprite = currentSprite
+                if (activeSprite != null) {
                     Image(
-                        bitmap = currentSprite!!.asImageBitmap(),
+                        bitmap = activeSprite.asImageBitmap(),
                         contentDescription = selectedChar.displayName(lang),
                         filterQuality = FilterQuality.None,
                         contentScale = ContentScale.Fit,
@@ -1249,7 +1252,7 @@ fun InteractiveMapBoxView(
                         modifier = Modifier
                             .clip(RoundedCornerShape(6.dp))
                             .background(HTTCrimson)
-                            .clickable { manager.startRouteToPlace(tappedTitle, tappedCoord!!) }
+                            .clickable { tappedCoord?.let { tc -> manager.startRouteToPlace(tappedTitle, tc) } }
                             .padding(horizontal = 8.dp, vertical = 4.dp)
                     ) {
                         Text("去这里", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
@@ -1268,9 +1271,10 @@ fun InteractiveMapBoxView(
         }
 
         // Bottom-left Mascot Companion + Bottom-right Traffic Light & Step
-        if (currentSprite != null) {
+        val miniSprite = currentSprite
+        if (miniSprite != null) {
             Image(
-                bitmap = currentSprite!!.asImageBitmap(),
+                bitmap = miniSprite.asImageBitmap(),
                 contentDescription = null,
                 filterQuality = FilterQuality.None,
                 modifier = Modifier
@@ -2465,9 +2469,10 @@ fun EnlargedNavigationHUDView(
                 }
 
                 // Right Mascot Sprite (matching iOS!)
-                if (currentSprite != null) {
+                val hudSprite = currentSprite
+                if (hudSprite != null) {
                     Image(
-                        bitmap = currentSprite!!.asImageBitmap(),
+                        bitmap = hudSprite.asImageBitmap(),
                         contentDescription = null,
                         filterQuality = FilterQuality.None,
                         modifier = Modifier
