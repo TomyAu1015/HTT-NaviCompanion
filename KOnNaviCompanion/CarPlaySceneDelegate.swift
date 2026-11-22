@@ -27,6 +27,12 @@ class CarPlayMapViewController: UIViewController, MKMapViewDelegate {
 
     private var cancellables = Set<AnyCancellable>()
     private var lastSplitUpdateCoord: CLLocationCoordinate2D? = nil
+    private var destAnnotation: MKPointAnnotation? = nil
+    private static let etaDateFormatter: DateFormatter = {
+        let df = DateFormatter()
+        df.dateFormat = "HH:mm"
+        return df
+    }()
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -254,9 +260,7 @@ class CarPlayMapViewController: UIViewController, MKMapViewDelegate {
                     self.topNavBanner.isHidden = false
                     self.turnDistLabel.text = distM >= 1000 ? String(format: "%.1f km", distM / 1000.0) : "\(Int(distM)) m"
                     self.turnInstrLabel.text = instr.isEmpty ? "沿规划路线行驶" : instr
-                    let etaDf = DateFormatter()
-                    etaDf.dateFormat = "HH:mm"
-                    let etaTime = etaDf.string(from: Date().addingTimeInterval(Double(max(1, remMins)) * 60.0))
+                    let etaTime = CarPlayMapViewController.etaDateFormatter.string(from: Date().addingTimeInterval(Double(max(1, remMins)) * 60.0))
                     let remKmStr = String(format: "%.1f km", mgr.remainingRouteDistanceKm)
                     self.etaSummaryLabel.text = "\(mgr.destinationName) · 余 \(remKmStr) · \(max(1, remMins))分钟 · 预计 \(etaTime) 到达"
 
@@ -305,8 +309,21 @@ class CarPlayMapViewController: UIViewController, MKMapViewDelegate {
             .sink { [weak self] route in
                 guard let self = self else { return }
                 self.lastSplitUpdateCoord = nil
+                if let oldPin = self.destAnnotation {
+                    self.mapView.removeAnnotation(oldPin)
+                    self.destAnnotation = nil
+                }
                 if let route = route {
                     self.renderSplitRouteOverlays(route: route, userCoord: mgr.userCoordinate)
+                    let pts = route.polyline.points()
+                    if route.polyline.pointCount > 0 {
+                        let endCoord = pts[route.polyline.pointCount - 1].coordinate
+                        let pin = MKPointAnnotation()
+                        pin.coordinate = endCoord
+                        pin.title = mgr.destinationName.isEmpty ? "目的地" : mgr.destinationName
+                        self.destAnnotation = pin
+                        self.mapView.addAnnotation(pin)
+                    }
                 } else {
                     self.mapView.removeOverlays(self.mapView.overlays)
                 }
@@ -360,12 +377,19 @@ class CarPlayMapViewController: UIViewController, MKMapViewDelegate {
         isUserPanning = true
         let span = mapView.region.span
         var center = mapView.centerCoordinate
-        let deltaLat = span.latitudeDelta * 0.25
-        let deltaLon = span.longitudeDelta * 0.25
-        if direction.contains(.up) { center.latitude += deltaLat }
-        if direction.contains(.down) { center.latitude -= deltaLat }
-        if direction.contains(.left) { center.longitude -= deltaLon }
-        if direction.contains(.right) { center.longitude += deltaLon }
+        let stepLat = span.latitudeDelta * 0.25
+        let stepLon = span.longitudeDelta * 0.25
+        var sx: Double = 0
+        var sy: Double = 0
+        if direction.contains(.up) { sy += 1 }
+        if direction.contains(.down) { sy -= 1 }
+        if direction.contains(.right) { sx += 1 }
+        if direction.contains(.left) { sx -= 1 }
+        let rad = mapView.camera.heading * .pi / 180.0
+        let dLat = (sy * cos(rad) - sx * sin(rad)) * stepLat
+        let dLon = (sy * sin(rad) + sx * cos(rad)) * stepLon
+        center.latitude = max(-85.0, min(85.0, center.latitude + dLat))
+        center.longitude = max(-180.0, min(180.0, center.longitude + dLon))
         mapView.setCenter(center, animated: true)
     }
 
@@ -382,8 +406,8 @@ class CarPlayMapViewController: UIViewController, MKMapViewDelegate {
         let coord = mapView.userLocation.location?.coordinate ?? mgr.userCoordinate
         let cam = MKMapCamera(
             lookingAtCenter: coord,
-            fromDistance: 480,
-            pitch: 48,
+            fromDistance: mgr.travelMode == .walking ? 380 : 520,
+            pitch: 45,
             heading: mgr.headingDegrees
         )
         mapView.setCamera(cam, animated: false)
@@ -485,6 +509,7 @@ class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegate, CPM
     func templateApplicationScene(_ templateApplicationScene: CPTemplateApplicationScene,
                                   didDisconnect interfaceController: CPInterfaceController,
                                   from window: CPWindow) {
+        window.rootViewController = nil
         self.interfaceController = nil
         self.carWindow = nil
         self.mapViewController = nil
@@ -633,7 +658,15 @@ class CarPlayDashboardSceneDelegate: UIResponder, CPTemplateApplicationDashboard
             subtitleVariants: ["放课后茶会"],
             image: UIImage(systemName: "person.2.fill") ?? UIImage()
         ) { _ in
-            AudioPlayerManager.shared.playRandomCharacterGreeting()
+            let mgr = AudioPlayerManager.shared
+            let allChars = AudioPlayerManager.CharacterFilter.allCases
+            if let idx = allChars.firstIndex(of: mgr.selectedCharacter) {
+                let nextChar = allChars[(idx + 1) % allChars.count]
+                mgr.selectedCharacter = nextChar
+                mgr.triggerCharacterTap(member: nextChar)
+            } else {
+                mgr.playRandomCharacterGreeting()
+            }
         }
         let btn2 = CPDashboardButton(
             titleVariants: ["回中跟车"],
@@ -649,6 +682,7 @@ class CarPlayDashboardSceneDelegate: UIResponder, CPTemplateApplicationDashboard
     func templateApplicationDashboardScene(_ templateApplicationDashboardScene: CPTemplateApplicationDashboardScene,
                                            didDisconnect dashboardController: CPDashboardController,
                                            from window: UIWindow) {
+        window.rootViewController = nil
         self.dashboardController = nil
         self.dashboardWindow = nil
         self.mapVC = nil

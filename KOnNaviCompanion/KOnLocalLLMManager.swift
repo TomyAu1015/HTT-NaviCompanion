@@ -240,6 +240,7 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
     private var clonedAudioPlayer: AVAudioPlayer? = nil
     private var pendingSpeechAfterInterjection: (String, String)? = nil
     private var sherpaTtsHandle: UnsafeMutableRawPointer? = nil
+    private let sherpaQueue = DispatchQueue(label: "com.kon.htt.sherpa.tts", qos: .userInitiated)
     private var loadedSherpaPackName: String = ""
     @Published var isLoadingModel: Bool = false
     @Published var activeModelFileName: String = ""
@@ -1040,7 +1041,7 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
             if !isLoadingModel {
                 autoMountIfNeeded()
             }
-            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            sherpaQueue.async { [weak self] in
                 guard let self = self else { return }
                 var waitedMs = 0
                 while waitedMs < 6000 && !self.activeModelLoaded {
@@ -1895,108 +1896,160 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
     func deleteVoicePack(_ name: String) {
         let fileURL = voicePacksDirectoryURL.appendingPathComponent(name)
         let extractedDir = voicePacksDirectoryURL.appendingPathComponent(name + "_extracted", isDirectory: true)
-        try? FileManager.default.removeItem(at: fileURL)
-        try? FileManager.default.removeItem(at: extractedDir)
         if activeVoicePackName == name {
             activeVoicePackName = ""
             UserDefaults.standard.set("", forKey: "htt_active_voice_pack")
         }
-        refreshInstalledVoicePacks()
-        voicePackStatusMessage = "已删除音色包：\(name)"
-    }
-
-    func importLocalVoicePack(from sourceURL: URL) {
-        let access = sourceURL.startAccessingSecurityScopedResource()
-        defer { if access { sourceURL.stopAccessingSecurityScopedResource() } }
-        let name = sourceURL.lastPathComponent
-        let dest = voicePacksDirectoryURL.appendingPathComponent(name)
-        do {
-            if FileManager.default.fileExists(atPath: dest.path) {
-                try FileManager.default.removeItem(at: dest)
+        sherpaQueue.async { [weak self] in
+            guard let self = self else { return }
+            #if canImport(htt_sherpa)
+            if self.loadedSherpaPackName == name, let old = self.sherpaTtsHandle {
+                htt_tts_destroy(old)
+                self.sherpaTtsHandle = nil
+                self.loadedSherpaPackName = ""
             }
-            try FileManager.default.copyItem(at: sourceURL, to: dest)
-            var extraNote = ""
-            if name.lowercased().hasSuffix(".zip") {
-                let extractDir = voicePacksDirectoryURL.appendingPathComponent(name + "_extracted", isDirectory: true)
-                try? FileManager.default.removeItem(at: extractDir)
-                let count = extractVoicePackZip(fromZip: dest, to: extractDir)
-                let hasOnnx = FileManager.default.fileExists(atPath: extractDir.appendingPathComponent("model.onnx").path)
-                if hasOnnx {
-                    #if canImport(htt_sherpa)
-                    extraNote = "（已提取 \(count) 个离线模型文件，5人本地引擎就绪）"
-                    #else
-                    extraNote = "（已提取 \(count) 个模型文件，但安装包未包含离线引擎，请更新 .github/workflows/build-ipa.yml 重编）"
-                    #endif
-                } else if count > 0 {
-                    extraNote = "（已提取 \(count) 条角色原声语气词）"
-                }
+            #endif
+            try? FileManager.default.removeItem(at: fileURL)
+            try? FileManager.default.removeItem(at: extractedDir)
+            DispatchQueue.main.async {
+                self.refreshInstalledVoicePacks()
+                self.voicePackStatusMessage = "已删除音色包：\(name)"
             }
-            refreshInstalledVoicePacks()
-            selectVoicePack(name)
-            voicePackStatusMessage = "已导入音色包：\(name)\(extraNote)"
-        } catch {
-            voicePackStatusMessage = "导入音色包失败：\(error.localizedDescription)"
         }
     }
 
-    /// 零依赖纯 Swift 解压 .zip 里的 interjections/*.wav 到本地目录
+    func importLocalVoicePack(from sourceURL: URL) {
+        let name = sourceURL.lastPathComponent
+        DispatchQueue.main.async {
+            self.voicePackStatusMessage = "正在导入并解压音色包：\(name)..."
+        }
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else { return }
+            let access = sourceURL.startAccessingSecurityScopedResource()
+            defer { if access { sourceURL.stopAccessingSecurityScopedResource() } }
+            let dest = self.voicePacksDirectoryURL.appendingPathComponent(name)
+            do {
+                if FileManager.default.fileExists(atPath: dest.path) {
+                    try FileManager.default.removeItem(at: dest)
+                }
+                try FileManager.default.copyItem(at: sourceURL, to: dest)
+                var extraNote = ""
+                if name.lowercased().hasSuffix(".zip") {
+                    let extractDir = self.voicePacksDirectoryURL.appendingPathComponent(name + "_extracted", isDirectory: true)
+                    try? FileManager.default.removeItem(at: extractDir)
+                    let count = self.extractVoicePackZip(fromZip: dest, to: extractDir)
+                    let hasOnnx = FileManager.default.fileExists(atPath: extractDir.appendingPathComponent("model.onnx").path)
+                    if hasOnnx {
+                        #if canImport(htt_sherpa)
+                        extraNote = "（已提取 \(count) 个离线模型文件，5人本地引擎就绪）"
+                        #else
+                        extraNote = "（已提取 \(count) 个模型文件，但安装包未包含离线引擎，请更新 .github/workflows/build-ipa.yml 重编）"
+                        #endif
+                    } else if count > 0 {
+                        extraNote = "（已提取 \(count) 条角色原声语气词）"
+                    }
+                }
+                DispatchQueue.main.async {
+                    self.refreshInstalledVoicePacks()
+                    self.selectVoicePack(name)
+                    self.voicePackStatusMessage = "已导入音色包：\(name)\(extraNote)"
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    self.voicePackStatusMessage = "导入音色包失败：\(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
+    /// 零依赖纯 Swift ZIP 解压（优先解析 Central Directory，兼容 data descriptor 与大文件 model.onnx / dict / interjections）
     private func extractVoicePackZip(fromZip zipURL: URL, to destDir: URL) -> Int {
         guard let data = try? Data(contentsOf: zipURL) else { return 0 }
         try? FileManager.default.createDirectory(at: destDir, withIntermediateDirectories: true)
-        var extracted = 0
-        var offset = 0
         let total = data.count
-        while offset + 30 <= total {
-            // Local file header signature 0x04034b50
-            let sig = data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: offset, as: UInt32.self) }
-            if sig != 0x04034b50 { break }
-            let method = data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: offset + 8, as: UInt16.self) }
-            let compSize = Int(data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: offset + 18, as: UInt32.self) })
-            let uncompSize = Int(data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: offset + 22, as: UInt32.self) })
-            let nameLen = Int(data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: offset + 26, as: UInt16.self) })
-            let extraLen = Int(data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: offset + 28, as: UInt16.self) })
-            let nameStart = offset + 30
-            let dataStart = nameStart + nameLen + extraLen
-            let nextOffset = dataStart + compSize
-            if nextOffset > total || compSize < 0 { break }
+        guard total >= 22 else { return 0 }
 
-            let entryName = String(data: data[nameStart..<nameStart + nameLen], encoding: .utf8) ?? ""
+        var extracted = 0
+        func writeEntry(entryName: String, method: UInt16, compSize: Int, uncompSize: Int, dataStart: Int) {
+            let dataEnd = dataStart + compSize
+            guard dataStart >= 0, compSize >= 0, dataEnd <= total else { return }
             let lower = entryName.lowercased()
+            if entryName.hasSuffix("/") || entryName.contains("__MACOSX") { return }
             let isModelAsset = lower.hasSuffix(".onnx") || lower.hasSuffix("tokens.txt") || lower.hasSuffix("lexicon.txt") || entryName.contains("/dict/") || lower.hasPrefix("dict/")
             let isInterj = entryName.contains("interjections/") && lower.hasSuffix(".wav")
-            if (isModelAsset || isInterj) && uncompSize > 0 && uncompSize < 400_000_000 {
-                let compData = data[dataStart..<nextOffset]
-                var outData: Data? = nil
-                if method == 0 {
-                    outData = Data(compData)
-                } else if method == 8 {
-                    let dstBuf = UnsafeMutablePointer<UInt8>.allocate(capacity: uncompSize + 64)
-                    defer { dstBuf.deallocate() }
-                    let decodedCount = compData.withUnsafeBytes { srcPtr -> Int in
-                        guard let base = srcPtr.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return 0 }
-                        return compression_decode_buffer(dstBuf, uncompSize + 64, base, compSize, nil, COMPRESSION_ZLIB)
-                    }
-                    if decodedCount > 0 {
-                        outData = Data(bytes: dstBuf, count: decodedCount)
-                    }
+            guard (isModelAsset || isInterj), uncompSize > 0, uncompSize < 450_000_000 else { return }
+
+            let compData = data[dataStart..<dataEnd]
+            var outData: Data? = nil
+            if method == 0 {
+                outData = Data(compData)
+            } else if method == 8 {
+                let cap = uncompSize + 1024
+                let dstBuf = UnsafeMutablePointer<UInt8>.allocate(capacity: cap)
+                defer { dstBuf.deallocate() }
+                let decodedCount = compData.withUnsafeBytes { srcPtr -> Int in
+                    guard let base = srcPtr.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return 0 }
+                    return compression_decode_buffer(dstBuf, cap, base, compSize, nil, COMPRESSION_ZLIB)
                 }
-                if let wavData = outData {
-                    let rel: String
-                    if isModelAsset && !entryName.contains("dict/") {
-                        rel = URL(fileURLWithPath: entryName).lastPathComponent
-                    } else if entryName.contains("dict/") {
-                        let parts = entryName.components(separatedBy: "dict/")
-                        rel = "dict/" + (parts.last ?? URL(fileURLWithPath: entryName).lastPathComponent)
-                    } else {
-                        rel = entryName.components(separatedBy: "/").suffix(3).joined(separator: "/")
-                    }
-                    let outFile = destDir.appendingPathComponent(rel)
-                    try? FileManager.default.createDirectory(at: outFile.deletingLastPathComponent(), withIntermediateDirectories: true)
-                    try? wavData.write(to: outFile)
-                    extracted += 1
+                if decodedCount > 0 {
+                    outData = Data(bytes: dstBuf, count: decodedCount)
                 }
             }
-            offset = nextOffset
+            if let raw = outData {
+                let rel: String
+                if isModelAsset && !entryName.contains("dict/") {
+                    rel = URL(fileURLWithPath: entryName).lastPathComponent
+                } else if entryName.contains("dict/") {
+                    let parts = entryName.components(separatedBy: "dict/")
+                    rel = "dict/" + (parts.last ?? URL(fileURLWithPath: entryName).lastPathComponent)
+                } else {
+                    rel = entryName.components(separatedBy: "/").suffix(3).joined(separator: "/")
+                }
+                let outFile = destDir.appendingPathComponent(rel)
+                try? FileManager.default.createDirectory(at: outFile.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try? raw.write(to: outFile)
+                extracted += 1
+            }
+        }
+
+        // Locate End of Central Directory (0x06054b50) from end of file
+        var eocdOffset = -1
+        let searchMin = max(0, total - 65557)
+        var pos = total - 22
+        while pos >= searchMin {
+            let sig = data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: pos, as: UInt32.self) }
+            if sig == 0x06054b50 {
+                eocdOffset = pos
+                break
+            }
+            pos -= 1
+        }
+
+        if eocdOffset >= 0 {
+            let cdSize = Int(data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: eocdOffset + 12, as: UInt32.self) })
+            let cdOffset = Int(data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: eocdOffset + 16, as: UInt32.self) })
+            var cur = cdOffset
+            let cdEnd = min(total, cdOffset + cdSize)
+            while cur + 46 <= cdEnd {
+                let sig = data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: cur, as: UInt32.self) }
+                if sig != 0x02014b50 { break }
+                let method = data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: cur + 10, as: UInt16.self) }
+                let compSize = Int(data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: cur + 20, as: UInt32.self) })
+                let uncompSize = Int(data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: cur + 24, as: UInt32.self) })
+                let nameLen = Int(data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: cur + 28, as: UInt16.self) })
+                let extraLen = Int(data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: cur + 30, as: UInt16.self) })
+                let commentLen = Int(data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: cur + 32, as: UInt16.self) })
+                let localHeaderOffset = Int(data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: cur + 42, as: UInt32.self) })
+                let nameStart = cur + 46
+                if nameStart + nameLen <= cdEnd && localHeaderOffset + 30 <= total {
+                    let entryName = String(data: data[nameStart..<nameStart + nameLen], encoding: .utf8) ?? ""
+                    let lhNameLen = Int(data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: localHeaderOffset + 26, as: UInt16.self) })
+                    let lhExtraLen = Int(data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: localHeaderOffset + 28, as: UInt16.self) })
+                    let dataStart = localHeaderOffset + 30 + lhNameLen + lhExtraLen
+                    writeEntry(entryName: entryName, method: method, compSize: compSize, uncompSize: uncompSize, dataStart: dataStart)
+                }
+                cur += 46 + nameLen + extraLen + commentLen
+            }
         }
         return extracted
     }

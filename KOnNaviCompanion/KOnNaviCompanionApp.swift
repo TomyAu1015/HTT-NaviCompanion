@@ -110,6 +110,11 @@ class AppDelegate: UIResponder, UIApplicationDelegate, UNUserNotificationCenterD
             config.delegateClass = CarPlaySceneDelegate.self
             return config
         }
+        if connectingSceneSession.role.rawValue == "CPTemplateApplicationDashboardSceneSessionRoleApplication" {
+            let config = UISceneConfiguration(name: "CarPlayDashboardConfiguration", sessionRole: connectingSceneSession.role)
+            config.delegateClass = CarPlayDashboardSceneDelegate.self
+            return config
+        }
         let config = UISceneConfiguration(name: "Default Configuration", sessionRole: connectingSceneSession.role)
         config.delegateClass = PhoneSceneDelegate.self
         return config
