@@ -129,6 +129,11 @@ fun LocalAIChatSheetDialog(
     val voiceStatus by voiceMgr.statusMessage.collectAsState()
     val customTtsUrlState by llm.customTtsEndpointUrl.collectAsState()
     val voicePackStatus by llm.voicePackStatus.collectAsState()
+    val installedVoicePacks by llm.installedVoicePacks.collectAsState()
+    val activeVoicePack by llm.activeVoicePackName.collectAsState()
+    val voicePackPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) llm.importVoicePackFromUri(uri)
+    }
     var customTtsUrlDraft by remember(customTtsUrlState) { mutableStateOf(customTtsUrlState) }
     val voiceLang by voiceMgr.selectedLanguage.collectAsState()
     var showLangMenu by remember { mutableStateOf(false) }
@@ -890,6 +895,46 @@ fun LocalAIChatSheetDialog(
                                         .padding(horizontal = 12.dp, vertical = 12.dp)
                                 ) {
                                     Text("保存", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Button(
+                                    onClick = { voicePackPicker.launch(arrayOf("application/zip", "application/octet-stream", "*/*")) },
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color.White.copy(alpha = 0.12f)),
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+                                ) {
+                                    Text("导入本地 .zip 音色包", color = AiGold, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                }
+                                if (installedVoicePacks.isNotEmpty()) {
+                                    Text("已导入 ${installedVoicePacks.size} 个", color = Color(0xFF4ADE80), fontSize = 10.5.sp)
+                                }
+                            }
+                            installedVoicePacks.forEach { pack ->
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(Color.Black.copy(alpha = 0.28f))
+                                        .padding(horizontal = 8.dp, vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = (if (activeVoicePack == pack) "● " else "○ ") + pack,
+                                        color = if (activeVoicePack == pack) Color(0xFF4ADE80) else Color.White,
+                                        fontSize = 11.sp,
+                                        modifier = Modifier.weight(1f).clickable { llm.selectVoicePack(pack) }
+                                    )
+                                    Text(
+                                        text = "删除",
+                                        color = Color(0xFFFF6B6B),
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier.clickable { llm.deleteVoicePack(pack) }.padding(horizontal = 6.dp, vertical = 2.dp)
+                                    )
                                 }
                             }
                             if (voicePackStatus.isNotBlank()) {

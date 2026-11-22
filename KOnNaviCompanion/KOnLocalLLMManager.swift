@@ -9,6 +9,9 @@ import CoreLocation
 #if canImport(llama)
 import llama
 #endif
+#if canImport(htt_sherpa)
+import htt_sherpa
+#endif
 
 // MARK: - Local GGUF Model Spec & Metadata
 struct LocalGGUFModelSpec: Identifiable, Codable, Equatable {
@@ -236,6 +239,8 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
     @Published var voicePackStatusMessage: String = ""
     private var clonedAudioPlayer: AVAudioPlayer? = nil
     private var pendingSpeechAfterInterjection: (String, String)? = nil
+    private var sherpaTtsHandle: UnsafeMutableRawPointer? = nil
+    private var loadedSherpaPackName: String = ""
     @Published var isLoadingModel: Bool = false
     @Published var activeModelFileName: String = ""
     @Published var activeModelLoaded: Bool = false
@@ -1914,7 +1919,7 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
             if name.lowercased().hasSuffix(".zip") {
                 let extractDir = voicePacksDirectoryURL.appendingPathComponent(name + "_extracted", isDirectory: true)
                 try? FileManager.default.removeItem(at: extractDir)
-                let count = extractInterjectionWavs(fromZip: dest, to: extractDir)
+                let count = extractVoicePackZip(fromZip: dest, to: extractDir)
                 if count > 0 {
                     extraNote = "（已提取 \(count) 条角色原声语气词）"
                 }
@@ -1928,7 +1933,7 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
     }
 
     /// 零依赖纯 Swift 解压 .zip 里的 interjections/*.wav 到本地目录
-    private func extractInterjectionWavs(fromZip zipURL: URL, to destDir: URL) -> Int {
+    private func extractVoicePackZip(fromZip zipURL: URL, to destDir: URL) -> Int {
         guard let data = try? Data(contentsOf: zipURL) else { return 0 }
         try? FileManager.default.createDirectory(at: destDir, withIntermediateDirectories: true)
         var extracted = 0
@@ -1949,7 +1954,10 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
             if nextOffset > total || compSize < 0 { break }
 
             let entryName = String(data: data[nameStart..<nameStart + nameLen], encoding: .utf8) ?? ""
-            if entryName.contains("interjections/") && entryName.lowercased().hasSuffix(".wav") && uncompSize > 0 && uncompSize < 2_000_000 {
+            let lower = entryName.lowercased()
+            let isModelAsset = lower.hasSuffix(".onnx") || lower.hasSuffix("tokens.txt") || lower.hasSuffix("lexicon.txt") || entryName.contains("/dict/") || lower.hasPrefix("dict/")
+            let isInterj = entryName.contains("interjections/") && lower.hasSuffix(".wav")
+            if (isModelAsset || isInterj) && uncompSize > 0 && uncompSize < 400_000_000 {
                 let compData = data[dataStart..<nextOffset]
                 var outData: Data? = nil
                 if method == 0 {
@@ -1966,7 +1974,15 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
                     }
                 }
                 if let wavData = outData {
-                    let rel = entryName.components(separatedBy: "/").suffix(3).joined(separator: "/")
+                    let rel: String
+                    if isModelAsset && !entryName.contains("dict/") {
+                        rel = URL(fileURLWithPath: entryName).lastPathComponent
+                    } else if entryName.contains("dict/") {
+                        let parts = entryName.components(separatedBy: "dict/")
+                        rel = "dict/" + (parts.last ?? URL(fileURLWithPath: entryName).lastPathComponent)
+                    } else {
+                        rel = entryName.components(separatedBy: "/").suffix(3).joined(separator: "/")
+                    }
                     let outFile = destDir.appendingPathComponent(rel)
                     try? FileManager.default.createDirectory(at: outFile.deletingLastPathComponent(), withIntermediateDirectories: true)
                     try? wavData.write(to: outFile)
@@ -2104,7 +2120,92 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
         speakLocalWithOptionalInterjection(clean: clean, emotion: emotion)
     }
 
+    private func ensureSherpaTtsLoaded() -> UnsafeMutableRawPointer? {
+        #if canImport(htt_sherpa)
+        guard !activeVoicePackName.isEmpty else { return nil }
+        if loadedSherpaPackName == activeVoicePackName, let handle = sherpaTtsHandle {
+            return handle
+        }
+        let extractDir = voicePacksDirectoryURL.appendingPathComponent(activeVoicePackName + "_extracted", isDirectory: true)
+        let modelURL = extractDir.appendingPathComponent("model.onnx")
+        let tokensURL = extractDir.appendingPathComponent("tokens.txt")
+        guard FileManager.default.fileExists(atPath: modelURL.path),
+              FileManager.default.fileExists(atPath: tokensURL.path) else {
+            return nil
+        }
+        let lexiconURL = extractDir.appendingPathComponent("lexicon.txt")
+        let dictURL = extractDir.appendingPathComponent("dict", isDirectory: true)
+        if let old = sherpaTtsHandle {
+            htt_tts_destroy(old)
+            sherpaTtsHandle = nil
+        }
+        let lexPath = FileManager.default.fileExists(atPath: lexiconURL.path) ? lexiconURL.path : ""
+        let dictPath = FileManager.default.fileExists(atPath: dictURL.path) ? dictURL.path : ""
+        let handle = htt_tts_create(modelURL.path, lexPath, tokensURL.path, dictPath)
+        if handle != nil {
+            sherpaTtsHandle = handle
+            loadedSherpaPackName = activeVoicePackName
+        }
+        return handle
+        #else
+        return nil
+        #endif
+    }
+
+    private func currentSpeakerId() -> Int32 {
+        switch AudioPlayerManager.shared.selectedCharacter {
+        case .yui: return 0
+        case .mio: return 1
+        case .ritsu: return 2
+        case .mugi: return 3
+        case .azusa: return 4
+        case .all: return 0
+        }
+    }
+
     private func speakLocalWithOptionalInterjection(clean: String, emotion: String) {
+        #if canImport(htt_sherpa)
+        if !activeVoicePackName.isEmpty {
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                guard let self = self else { return }
+                if let handle = self.ensureSherpaTtsLoaded() {
+                    let outWav = NSTemporaryDirectory() + "htt_offline_tts.wav"
+                    var speed: Float = 1.0
+                    if emotion == "元气" || emotion == "慌张" { speed = 1.08 }
+                    else if emotion == "温柔" || emotion == "撒娇" { speed = 0.94 }
+                    let ok = htt_tts_generate_wav(handle, clean, self.currentSpeakerId(), speed, outWav)
+                    if ok == 1, let wavData = try? Data(contentsOf: URL(fileURLWithPath: outWav)), wavData.count > 512 {
+                        DispatchQueue.main.async {
+                            do {
+                                try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [.duckOthers])
+                                try? AVAudioSession.sharedInstance().setActive(true)
+                                self.pendingSpeechAfterInterjection = nil
+                                self.clonedAudioPlayer?.stop()
+                                let player = try AVAudioPlayer(data: wavData)
+                                player.delegate = self
+                                player.volume = 1.0
+                                player.prepareToPlay()
+                                self.clonedAudioPlayer = player
+                                self.isTtsSpeaking = true
+                                player.play()
+                                return
+                            } catch {}
+                            self.speakWithEmotionProsody(clean: clean, emotion: emotion)
+                        }
+                        return
+                    }
+                }
+                DispatchQueue.main.async {
+                    self.playInterjectionThenSystemSpeech(clean: clean, emotion: emotion)
+                }
+            }
+            return
+        }
+        #endif
+        playInterjectionThenSystemSpeech(clean: clean, emotion: emotion)
+    }
+
+    private func playInterjectionThenSystemSpeech(clean: String, emotion: String) {
         if enableEmotionInterjection, let wavURL = pickCharacterInterjectionURL() {
             do {
                 try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [.duckOthers])

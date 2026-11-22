@@ -8,6 +8,12 @@ import android.os.Looper
 import android.speech.tts.TextToSpeech
 import android.media.AudioAttributes
 import android.media.MediaPlayer
+import android.net.Uri
+import java.util.zip.ZipInputStream
+import com.k2fsa.sherpa.onnx.OfflineTts
+import com.k2fsa.sherpa.onnx.OfflineTtsConfig
+import com.k2fsa.sherpa.onnx.OfflineTtsModelConfig
+import com.k2fsa.sherpa.onnx.OfflineTtsVitsModelConfig
 import android.speech.tts.UtteranceProgressListener
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -179,6 +185,15 @@ class LocalLLMManager(
     private val _voicePackStatus = MutableStateFlow("")
     val voicePackStatus: StateFlow<String> = _voicePackStatus
 
+    private val _installedVoicePacks = MutableStateFlow<List<String>>(emptyList())
+    val installedVoicePacks: StateFlow<List<String>> = _installedVoicePacks
+
+    private val _activeVoicePackName = MutableStateFlow(prefs.getString("active_voice_pack", "") ?: "")
+    val activeVoicePackName: StateFlow<String> = _activeVoicePackName
+
+    private var sherpaOfflineTts: OfflineTts? = null
+    private var loadedSherpaPackName: String = "" 
+
     private var clonedMediaPlayer: MediaPlayer? = null
 
     private val _installedModels = MutableStateFlow<List<String>>(emptyList())
@@ -288,6 +303,7 @@ class LocalLLMManager(
         get() = File(context.filesDir, "local_models").apply { if (!exists()) mkdirs() }
 
     init {
+        refreshInstalledVoicePacks()
         val savedProv = CloudAIProvider.fromId(prefs.getString("cloud_provider", "local"))
         _cloudProvider.value = savedProv
         _cloudApiKey.value = prefs.getString("cloud_api_key", "") ?: ""
@@ -1153,6 +1169,151 @@ ${personaRole}你们五人组成了“放课后茶会”(HTT)乐队。你正坐�
         return "收到啦！我是${name}，随时都在副驾陪着你，可以让我帮你「导航到某个地方」「切一首轻音」或「路况汇报」哦♪"
     }
 
+    private fun voicePacksDir(): File {
+        val d = File(context.filesDir, "VoicePacks")
+        if (!d.exists()) d.mkdirs()
+        return d
+    }
+
+    fun refreshInstalledVoicePacks() {
+        val list = voicePacksDir().listFiles()?.filter { it.isDirectory && File(it, "model.onnx").exists() }?.map { it.name }?.sorted() ?: emptyList()
+        _installedVoicePacks.value = list
+    }
+
+    fun selectVoicePack(name: String) {
+        _activeVoicePackName.value = name
+        prefs.edit().putString("active_voice_pack", name).apply()
+        _voicePackStatus.value = if (name.isEmpty()) "已切回系统情感语音" else "已激活离线音色包：$name"
+    }
+
+    fun deleteVoicePack(name: String) {
+        try { File(voicePacksDir(), name).deleteRecursively() } catch (_: Throwable) {}
+        if (_activeVoicePackName.value == name) {
+            _activeVoicePackName.value = ""
+            prefs.edit().putString("active_voice_pack", "").apply()
+            try { sherpaOfflineTts?.release() } catch (_: Throwable) {}
+            sherpaOfflineTts = null
+            loadedSherpaPackName = ""
+        }
+        refreshInstalledVoicePacks()
+        _voicePackStatus.value = "已删除音色包：$name"
+    }
+
+    fun importVoicePackFromUri(uri: Uri) {
+        Thread {
+            try {
+                _voicePackStatus.value = "正在导入并解压离线音色包..."
+                val packName = "htt_5chars_" + (System.currentTimeMillis() % 10000)
+                val destDir = File(voicePacksDir(), packName)
+                if (destDir.exists()) destDir.deleteRecursively()
+                destDir.mkdirs()
+                context.contentResolver.openInputStream(uri)?.use { rawIn ->
+                    ZipInputStream(rawIn).use { zis ->
+                        var entry = zis.nextEntry
+                        val buf = ByteArray(8192)
+                        while (entry != null) {
+                            val name = entry.name
+                            val lower = name.lowercase()
+                            if (!entry.isDirectory && (lower.endsWith(".onnx") || lower.endsWith("tokens.txt") || lower.endsWith("lexicon.txt") || name.contains("dict/"))) {
+                                val outFile = if (name.contains("dict/")) {
+                                    val sub = name.substringAfter("dict/")
+                                    File(File(destDir, "dict"), sub)
+                                } else {
+                                    File(destDir, File(name).name)
+                                }
+                                outFile.parentFile?.mkdirs()
+                                outFile.outputStream().use { fos ->
+                                    var r = zis.read(buf)
+                                    while (r > 0) {
+                                        fos.write(buf, 0, r)
+                                        r = zis.read(buf)
+                                    }
+                                }
+                            }
+                            zis.closeEntry()
+                            entry = zis.nextEntry
+                        }
+                    }
+                }
+                if (!File(destDir, "model.onnx").exists() || !File(destDir, "tokens.txt").exists()) {
+                    destDir.deleteRecursively()
+                    _voicePackStatus.value = "导入失败：压缩包内缺少 model.onnx 或 tokens.txt"
+                    return@Thread
+                }
+                refreshInstalledVoicePacks()
+                selectVoicePack(packName)
+            } catch (e: Throwable) {
+                _voicePackStatus.value = "导入失败：${e.message}"
+            }
+        }.start()
+    }
+
+    private fun ensureSherpaOfflineTts(): OfflineTts? {
+        val pack = _activeVoicePackName.value
+        if (pack.isBlank()) return null
+        if (loadedSherpaPackName == pack && sherpaOfflineTts != null) return sherpaOfflineTts
+        val dir = File(voicePacksDir(), pack)
+        val modelFile = File(dir, "model.onnx")
+        val tokensFile = File(dir, "tokens.txt")
+        if (!modelFile.exists() || !tokensFile.exists()) return null
+        val lexiconFile = File(dir, "lexicon.txt")
+        val dictDir = File(dir, "dict")
+        try { sherpaOfflineTts?.release() } catch (_: Throwable) {}
+        val config = OfflineTtsConfig(
+            model = OfflineTtsModelConfig(
+                vits = OfflineTtsVitsModelConfig(
+                    model = modelFile.absolutePath,
+                    lexicon = if (lexiconFile.exists()) lexiconFile.absolutePath else "",
+                    tokens = tokensFile.absolutePath,
+                    dictDir = if (dictDir.isDirectory) dictDir.absolutePath else ""
+                ),
+                numThreads = 2,
+                provider = "cpu"
+            ),
+            maxNumSentences = 1
+        )
+        val tts = OfflineTts(config = config)
+        sherpaOfflineTts = tts
+        loadedSherpaPackName = pack
+        return tts
+    }
+
+    private fun currentSpeakerSid(): Int {
+        return when (audioManager.selectedCharacter.value.name.uppercase()) {
+            "YUI" -> 0
+            "MIO" -> 1
+            "RITSU" -> 2
+            "MUGI" -> 3
+            "AZUSA" -> 4
+            else -> 0
+        }
+    }
+
+    private fun writeWavFile(samples: FloatArray, sampleRate: Int, outFile: File) {
+        val dataSize = samples.size * 2
+        val totalSize = 36 + dataSize
+        outFile.outputStream().use { os ->
+            fun writeStr(s: String) = os.write(s.toByteArray(Charsets.US_ASCII))
+            fun writeIntLE(v: Int) {
+                os.write(v and 0xff); os.write((v shr 8) and 0xff); os.write((v shr 16) and 0xff); os.write((v shr 24) and 0xff)
+            }
+            fun writeShortLE(v: Int) {
+                os.write(v and 0xff); os.write((v shr 8) and 0xff)
+            }
+            writeStr("RIFF"); writeIntLE(totalSize); writeStr("WAVE")
+            writeStr("fmt "); writeIntLE(16); writeShortLE(1); writeShortLE(1)
+            writeIntLE(sampleRate); writeIntLE(sampleRate * 2); writeShortLE(2); writeShortLE(16)
+            writeStr("data"); writeIntLE(dataSize)
+            val pcmBuf = ByteArray(dataSize)
+            for (i in samples.indices) {
+                val clamped = (samples[i] * 32767.0f).toInt().coerceIn(-32768, 32767)
+                pcmBuf[i * 2] = (clamped and 0xff).toByte()
+                pcmBuf[i * 2 + 1] = ((clamped shr 8) and 0xff).toByte()
+            }
+            os.write(pcmBuf)
+        }
+    }
+
     fun saveCustomTtsEndpoint(url: String) {
         val cleaned = url.trim()
         _customTtsEndpointUrl.value = cleaned
@@ -1192,7 +1353,7 @@ ${personaRole}你们五人组成了“放课后茶会”(HTT)乐队。你正坐�
                     val conn = (URL(endpoint).openConnection() as HttpURLConnection).apply {
                         requestMethod = "POST"
                         connectTimeout = 6000
-                        readTimeout = 8000
+                        readTimeout = 12000
                         doOutput = true
                         setRequestProperty("Content-Type", "application/json")
                     }
@@ -1237,6 +1398,55 @@ ${personaRole}你们五人组成了“放课后茶会”(HTT)乐队。你正坐�
                         }
                     } else {
                         conn.disconnect()
+                    }
+                } catch (_: Throwable) {}
+                mainHandler.post { _voicePackStatus.value = "⚠️ 克隆音服务未连通，已切回本地语音"; speakLocalOfflineSherpaOrSystem(clean, emotion) }
+            }.start()
+            return
+        }
+        speakLocalOfflineSherpaOrSystem(clean, emotion)
+    }
+
+    private fun speakLocalOfflineSherpaOrSystem(clean: String, emotion: String) {
+        val pack = _activeVoicePackName.value
+        if (pack.isNotBlank()) {
+            _isTtsSpeaking.value = true
+            Thread {
+                try {
+                    val tts = ensureSherpaOfflineTts()
+                    if (tts != null) {
+                        val speed = when (emotion) {
+                            "元气", "慌张" -> 1.08f
+                            "温柔", "撒娇" -> 0.94f
+                            else -> 1.0f
+                        }
+                        val audio = tts.generate(text = clean, sid = currentSpeakerSid(), speed = speed)
+                        if (audio.samples.isNotEmpty()) {
+                            val wavFile = File(context.cacheDir, "htt_offline_tts.wav")
+                            writeWavFile(audio.samples, audio.sampleRate, wavFile)
+                            mainHandler.post {
+                                try {
+                                    clonedMediaPlayer?.release()
+                                    val mp = MediaPlayer().apply {
+                                        setAudioAttributes(
+                                            AudioAttributes.Builder()
+                                                .setUsage(AudioAttributes.USAGE_MEDIA)
+                                                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                                                .build()
+                                        )
+                                        setDataSource(wavFile.absolutePath)
+                                        setOnCompletionListener { _isTtsSpeaking.value = false }
+                                        setOnErrorListener { _, _, _ -> _isTtsSpeaking.value = false; true }
+                                        prepare()
+                                        start()
+                                    }
+                                    clonedMediaPlayer = mp
+                                } catch (_: Throwable) {
+                                    speakAndroidEmotionProsody(clean, emotion)
+                                }
+                            }
+                            return@Thread
+                        }
                     }
                 } catch (_: Throwable) {}
                 mainHandler.post { speakAndroidEmotionProsody(clean, emotion) }
