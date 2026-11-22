@@ -826,6 +826,16 @@ struct KOnAIChatSheetView: View {
                         .background(Color.green.opacity(0.85))
                         .foregroundColor(.white)
                         .cornerRadius(8)
+                        Button("测试") {
+                            dismissKeyboard()
+                            llm.saveCustomTtsConfig(url: customTtsUrlDraft, emotionInterjection: llm.enableEmotionInterjection)
+                            llm.testCustomTtsServer()
+                        }
+                        .font(.system(size: 11, weight: .bold))
+                        .padding(.horizontal, 10).padding(.vertical, 8)
+                        .background(Color.blue.opacity(0.8))
+                        .foregroundColor(.white)
+                        .cornerRadius(8)
                     }
 
                     HStack(spacing: 8) {
@@ -841,9 +851,43 @@ struct KOnAIChatSheetView: View {
                             .cornerRadius(8)
                         }
                         if !llm.installedVoicePacks.isEmpty {
-                            Text("已导入 \(llm.installedVoicePacks.count) 个音色包")
+                            Text("已导入 \(llm.installedVoicePacks.count) 个")
                                 .font(.system(size: 10.5))
                                 .foregroundColor(.green)
+                        }
+                    }
+
+                    if !llm.installedVoicePacks.isEmpty {
+                        VStack(spacing: 6) {
+                            ForEach(llm.installedVoicePacks, id: \.self) { pack in
+                                HStack(spacing: 8) {
+                                    Button(action: { llm.selectVoicePack(pack) }) {
+                                        HStack(spacing: 6) {
+                                            Image(systemName: llm.activeVoicePackName == pack ? "checkmark.circle.fill" : "circle")
+                                                .foregroundColor(llm.activeVoicePackName == pack ? .green : .gray)
+                                            Text(pack)
+                                                .font(.system(size: 11))
+                                                .foregroundColor(.white)
+                                                .lineLimit(1)
+                                        }
+                                    }
+                                    Spacer()
+                                    Button(action: { llm.deleteVoicePack(pack) }) {
+                                        HStack(spacing: 3) {
+                                            Image(systemName: "trash")
+                                            Text("删除")
+                                        }
+                                        .font(.system(size: 10.5, weight: .semibold))
+                                        .padding(.horizontal, 8).padding(.vertical, 4)
+                                        .background(Color.red.opacity(0.75))
+                                        .foregroundColor(.white)
+                                        .cornerRadius(6)
+                                    }
+                                }
+                                .padding(.horizontal, 8).padding(.vertical, 6)
+                                .background(Color.black.opacity(0.28))
+                                .cornerRadius(8)
+                            }
                         }
                     }
 

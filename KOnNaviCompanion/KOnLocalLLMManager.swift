@@ -3,6 +3,7 @@ import Darwin
 import SwiftUI
 import UIKit
 import AVFoundation
+import Compression
 import MapKit
 import CoreLocation
 #if canImport(llama)
@@ -234,6 +235,7 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
     @Published var installedVoicePacks: [String] = []
     @Published var voicePackStatusMessage: String = ""
     private var clonedAudioPlayer: AVAudioPlayer? = nil
+    private var pendingSpeechAfterInterjection: (String, String)? = nil
     @Published var isLoadingModel: Bool = false
     @Published var activeModelFileName: String = ""
     @Published var activeModelLoaded: Bool = false
@@ -1851,7 +1853,32 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
         UserDefaults.standard.set(enableEmotionInterjection, forKey: "htt_emotion_interj")
         voicePackStatusMessage = customTtsEndpointUrl.isEmpty
             ? "已切换为本地零成本情感语音（轻音原声引子 + 情绪语调）"
-            : "已保存本地克隆音服务地址，对讲时将优先使用克隆音"
+            : "已保存远程克隆音地址，对讲时将优先使用"
+    }
+
+    func testCustomTtsServer() {
+        let endpoint = customTtsEndpointUrl.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !endpoint.isEmpty, let url = URL(string: endpoint) else {
+            voicePackStatusMessage = "请先填写有效的克隆音接口地址"
+            return
+        }
+        voicePackStatusMessage = "正在测试连接..."
+        var req = URLRequest(url: url, timeoutInterval: 4.0)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: ["text": "测试", "character": "平泽唯", "emotion": "开心"])
+        URLSession.shared.dataTask(with: req) { [weak self] data, resp, err in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+                if err == nil, code == 200, let d = data, d.count > 512 {
+                    self.voicePackStatusMessage = "✅ 克隆音服务连接成功！（收到 \(d.count / 1024) KB 音频）"
+                } else {
+                    let msg = err?.localizedDescription ?? "HTTP \(code)"
+                    self.voicePackStatusMessage = "⚠️ 连接失败（\(msg)），请检查端口 9890 是否放行"
+                }
+            }
+        }.resume()
     }
 
     func selectVoicePack(_ name: String) {
@@ -1860,28 +1887,130 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
         voicePackStatusMessage = name.isEmpty ? "已切回内置情感语音" : "已选中本地音色包：\(name)"
     }
 
+    func deleteVoicePack(_ name: String) {
+        let fileURL = voicePacksDirectoryURL.appendingPathComponent(name)
+        let extractedDir = voicePacksDirectoryURL.appendingPathComponent(name + "_extracted", isDirectory: true)
+        try? FileManager.default.removeItem(at: fileURL)
+        try? FileManager.default.removeItem(at: extractedDir)
+        if activeVoicePackName == name {
+            activeVoicePackName = ""
+            UserDefaults.standard.set("", forKey: "htt_active_voice_pack")
+        }
+        refreshInstalledVoicePacks()
+        voicePackStatusMessage = "已删除音色包：\(name)"
+    }
+
     func importLocalVoicePack(from sourceURL: URL) {
         let access = sourceURL.startAccessingSecurityScopedResource()
         defer { if access { sourceURL.stopAccessingSecurityScopedResource() } }
-        let dest = voicePacksDirectoryURL.appendingPathComponent(sourceURL.lastPathComponent)
+        let name = sourceURL.lastPathComponent
+        let dest = voicePacksDirectoryURL.appendingPathComponent(name)
         do {
             if FileManager.default.fileExists(atPath: dest.path) {
                 try FileManager.default.removeItem(at: dest)
             }
             try FileManager.default.copyItem(at: sourceURL, to: dest)
+            var extraNote = ""
+            if name.lowercased().hasSuffix(".zip") {
+                let extractDir = voicePacksDirectoryURL.appendingPathComponent(name + "_extracted", isDirectory: true)
+                try? FileManager.default.removeItem(at: extractDir)
+                let count = extractInterjectionWavs(fromZip: dest, to: extractDir)
+                if count > 0 {
+                    extraNote = "（已提取 \(count) 条角色原声语气词）"
+                }
+            }
             refreshInstalledVoicePacks()
-            selectVoicePack(sourceURL.lastPathComponent)
-            voicePackStatusMessage = "已导入本地音色包：\(sourceURL.lastPathComponent)"
+            selectVoicePack(name)
+            voicePackStatusMessage = "已导入音色包：\(name)\(extraNote)"
         } catch {
             voicePackStatusMessage = "导入音色包失败：\(error.localizedDescription)"
         }
     }
 
+    /// 零依赖纯 Swift 解压 .zip 里的 interjections/*.wav 到本地目录
+    private func extractInterjectionWavs(fromZip zipURL: URL, to destDir: URL) -> Int {
+        guard let data = try? Data(contentsOf: zipURL) else { return 0 }
+        try? FileManager.default.createDirectory(at: destDir, withIntermediateDirectories: true)
+        var extracted = 0
+        var offset = 0
+        let total = data.count
+        while offset + 30 <= total {
+            // Local file header signature 0x04034b50
+            let sig = data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: offset, as: UInt32.self) }
+            if sig != 0x04034b50 { break }
+            let method = data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: offset + 8, as: UInt16.self) }
+            let compSize = Int(data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: offset + 18, as: UInt32.self) })
+            let uncompSize = Int(data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: offset + 22, as: UInt32.self) })
+            let nameLen = Int(data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: offset + 26, as: UInt16.self) })
+            let extraLen = Int(data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: offset + 28, as: UInt16.self) })
+            let nameStart = offset + 30
+            let dataStart = nameStart + nameLen + extraLen
+            let nextOffset = dataStart + compSize
+            if nextOffset > total || compSize < 0 { break }
+
+            let entryName = String(data: data[nameStart..<nameStart + nameLen], encoding: .utf8) ?? ""
+            if entryName.contains("interjections/") && entryName.lowercased().hasSuffix(".wav") && uncompSize > 0 && uncompSize < 2_000_000 {
+                let compData = data[dataStart..<nextOffset]
+                var outData: Data? = nil
+                if method == 0 {
+                    outData = Data(compData)
+                } else if method == 8 {
+                    let dstBuf = UnsafeMutablePointer<UInt8>.allocate(capacity: uncompSize + 64)
+                    defer { dstBuf.deallocate() }
+                    let decodedCount = compData.withUnsafeBytes { srcPtr -> Int in
+                        guard let base = srcPtr.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return 0 }
+                        return compression_decode_buffer(dstBuf, uncompSize + 64, base, compSize, nil, COMPRESSION_ZLIB)
+                    }
+                    if decodedCount > 0 {
+                        outData = Data(bytes: dstBuf, count: decodedCount)
+                    }
+                }
+                if let wavData = outData {
+                    let rel = entryName.components(separatedBy: "/").suffix(3).joined(separator: "/")
+                    let outFile = destDir.appendingPathComponent(rel)
+                    try? FileManager.default.createDirectory(at: outFile.deletingLastPathComponent(), withIntermediateDirectories: true)
+                    try? wavData.write(to: outFile)
+                    extracted += 1
+                }
+            }
+            offset = nextOffset
+        }
+        return extracted
+    }
+
+    private func pickCharacterInterjectionURL() -> URL? {
+        guard !activeVoicePackName.isEmpty else { return nil }
+        let extractDir = voicePacksDirectoryURL.appendingPathComponent(activeVoicePackName + "_extracted", isDirectory: true)
+        guard FileManager.default.fileExists(atPath: extractDir.path) else { return nil }
+        let charPrefix: String
+        switch AudioPlayerManager.shared.selectedCharacter {
+        case .yui: charPrefix = "01_Yui"
+        case .mio: charPrefix = "02_Mio"
+        case .ritsu: charPrefix = "03_Ritsu"
+        case .mugi: charPrefix = "04_Mugi"
+        case .azusa: charPrefix = "05_Azusa"
+        }
+        let folders = (try? FileManager.default.contentsOfDirectory(atPath: extractDir.path)) ?? []
+        guard let charFolder = folders.first(where: { $0.hasPrefix(charPrefix) }) else { return nil }
+        let interjDir = extractDir.appendingPathComponent(charFolder).appendingPathComponent("interjections", isDirectory: true)
+        let wavs = ((try? FileManager.default.contentsOfDirectory(atPath: interjDir.path)) ?? []).filter { $0.hasSuffix(".wav") }
+        guard let pick = wavs.randomElement() else { return nil }
+        return interjDir.appendingPathComponent(pick)
+    }
+
     func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
-        DispatchQueue.main.async { self.isTtsSpeaking = false }
+        DispatchQueue.main.async {
+            if let pending = self.pendingSpeechAfterInterjection {
+                self.pendingSpeechAfterInterjection = nil
+                self.speakWithEmotionProsody(clean: pending.0, emotion: pending.1)
+            } else {
+                self.isTtsSpeaking = false
+            }
+        }
     }
 
     func stopAllSpeech() {
+        pendingSpeechAfterInterjection = nil
         clonedAudioPlayer?.stop()
         clonedAudioPlayer = nil
         if speechSynthesizer.isSpeaking {
@@ -1923,11 +2052,11 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
         else if text.contains("慌张") || text.contains("吐槽") || text.contains("急") { emotion = "慌张" }
         else if text.contains("元气") || text.contains("兴奋") || text.contains("耶") { emotion = "元气" }
 
-        // Tier 1: If user configured a local zero-cost cloned-voice server (GPT-SoVITS / CosyVoice / Sherpa-TTS), stream WAV/MP3 directly!
+        // Tier 1: 远程/本地克隆音服务 (3.5秒快速超时，避免卡顿久等)
         let endpoint = customTtsEndpointUrl.trimmingCharacters(in: .whitespacesAndNewlines)
         if !endpoint.isEmpty, let ttsUrl = URL(string: endpoint) {
             DispatchQueue.main.async { self.isTtsSpeaking = true }
-            var req = URLRequest(url: ttsUrl, timeoutInterval: 8.0)
+            var req = URLRequest(url: ttsUrl, timeoutInterval: 3.5)
             req.httpMethod = "POST"
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")
             let charName = AudioPlayerManager.shared.selectedCharacter.displayName(.zhHans)
@@ -1946,6 +2075,9 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
                 if err == nil, status == 200, let audioData = data, audioData.count > 512 {
                     DispatchQueue.main.async {
                         do {
+                            try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [.duckOthers])
+                            try? AVAudioSession.sharedInstance().setActive(true)
+                            self.pendingSpeechAfterInterjection = nil
                             self.clonedAudioPlayer?.stop()
                             let player = try AVAudioPlayer(data: audioData)
                             player.delegate = self
@@ -1955,18 +2087,41 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
                             player.play()
                             return
                         } catch {}
-                        self.speakWithEmotionProsody(clean: clean, emotion: emotion)
+                        self.speakLocalWithOptionalInterjection(clean: clean, emotion: emotion)
                     }
                 } else {
                     DispatchQueue.main.async {
-                        self.speakWithEmotionProsody(clean: clean, emotion: emotion)
+                        self.voicePackStatusMessage = "⚠️ 克隆音接口未连通，已自动切回本地语音"
+                        self.speakLocalWithOptionalInterjection(clean: clean, emotion: emotion)
                     }
                 }
             }.resume()
             return
         }
 
-        // Tier 2: Built-in Zero-Cost Emotional Voice (Optional K-ON! Original Emotional Interjection + Emotion-Adaptive Prosody!)
+        // Tier 2: 本地零成本语音（若已导入离线包，先播放对应角色 RM-500HTT 原声语气词再接正文）
+        speakLocalWithOptionalInterjection(clean: clean, emotion: emotion)
+    }
+
+    private func speakLocalWithOptionalInterjection(clean: String, emotion: String) {
+        if enableEmotionInterjection, let wavURL = pickCharacterInterjectionURL() {
+            do {
+                try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [.duckOthers])
+                try? AVAudioSession.sharedInstance().setActive(true)
+                self.clonedAudioPlayer?.stop()
+                let player = try AVAudioPlayer(contentsOf: wavURL)
+                player.delegate = self
+                player.volume = 1.0
+                player.prepareToPlay()
+                self.pendingSpeechAfterInterjection = (clean, emotion)
+                self.clonedAudioPlayer = player
+                DispatchQueue.main.async { self.isTtsSpeaking = true }
+                player.play()
+                return
+            } catch {
+                self.pendingSpeechAfterInterjection = nil
+            }
+        }
         speakWithEmotionProsody(clean: clean, emotion: emotion)
     }
 
