@@ -8,7 +8,6 @@ import android.os.Looper
 import android.speech.tts.TextToSpeech
 import android.media.AudioAttributes
 import android.media.MediaPlayer
-import android.net.Uri
 import java.util.zip.ZipInputStream
 import com.k2fsa.sherpa.onnx.OfflineTts
 import com.k2fsa.sherpa.onnx.OfflineTtsConfig

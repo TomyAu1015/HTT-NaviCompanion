@@ -139,6 +139,14 @@ android {
     }
 }
 
+val sherpaAar = file("libs/sherpa-onnx-2.0.2.aar")
+if (!sherpaAar.exists()) {
+    sherpaAar.parentFile.mkdirs()
+    java.net.URL("https://github.com/k2-fsa/sherpa-onnx/releases/download/v2.0.2/sherpa-onnx-2.0.2.aar").openStream().use { inp ->
+        sherpaAar.outputStream().use { out -> inp.copyTo(out) }
+    }
+}
+
 dependencies {
     val composeBom = platform("androidx.compose:compose-bom:2024.09.00")
     implementation(composeBom)
