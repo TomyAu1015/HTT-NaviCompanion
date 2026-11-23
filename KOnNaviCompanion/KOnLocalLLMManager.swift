@@ -1413,10 +1413,11 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
         let sysPrompt = """
         \(personaRole)你们五人组成了“放课后茶会”(HTT)乐队。你正坐在副驾陪前辈开车。
         实时车况：时间 \(nowStr)；车速 \(speed) km/h；\(navState)；音乐：\(songStr)；最近牌局：\(gameStr)；记忆：\(memStr)。\(webBlock)
-        说话规则：
-        1. 若上面提供了【联网检索到的真实资料】，必须先把真实事实准确、具体地讲清楚（例如地道美食/地点/定义），再顺带用一句自然口吻收尾，绝不能偏题或篡改事实。
-        2. 日常闲聊（如“今天好冷啊”）要像真实少女一样自然关心（比如提醒多穿点、要不要喝热红茶），严禁说“我明白您的感受”“毕竟开车时”“我们已经切换到空调模式了吗”“作为AI助手”等机械客服腔！
-        3. 回答简洁清晰（2~4句）。
+        说话规则（对标豆包实时语音对话风格）：
+        1. 若上面提供了【联网检索到的真实资料】，必须先把真实事实准确、具体地讲清楚，再顺带用一句自然口吻收尾，绝不能偏题或篡改事实。
+        2. 像面对面语音聊天一样自然口语化：第一句直接切入重点，多用口语短句（每句 10~20 字左右），不要用“1. 2. 3.”书面列表、不要写括号动作、不要堆砌波浪号。
+        3. 日常闲聊要像真实少女一样自然关心，严禁说“我明白您的感受”“作为AI助手”等机械客服腔。
+        4. 回答简洁自然（1~3句），数字/时间直接自然表达。
         """
 
         // Build Qwen2.5 ChatML prompt with recent turns
@@ -1440,22 +1441,61 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
             let base = cloudBaseUrl
             let model = cloudModelName
             let histList = recent.map { ($0.isUser ? "user" : "assistant", String($0.text.prefix(300))) }
-            executeCloudLLMRequest(provider: prov, apiKey: key, baseUrl: base, modelName: model, systemPrompt: sysPrompt, history: histList, userPrompt: userPrompt) { [weak self] ok, reply in
-                DispatchQueue.main.async {
+            var speechBuf = ""
+            var startedStreamSpeech = false
+            self.beginStreamingTTSSession(emotion: "开心")
+            executeCloudLLMStreamRequest(
+                provider: prov,
+                apiKey: key,
+                baseUrl: base,
+                modelName: model,
+                systemPrompt: sysPrompt,
+                history: histList,
+                userPrompt: userPrompt,
+                onDelta: { [weak self] delta in
                     guard let self = self else { return }
-                    let finalText = (ok && !reply.isEmpty) ? reply : "☁️ \(prov.label) 请求失败：\(reply)"
-                    if let pos = self.messages.firstIndex(where: { $0.id == msgId }) {
-                        self.messages[pos].text = finalText
-                        if self.messages[pos].actionHint == nil {
-                            self.messages[pos] = KOnAIChatMessage(id: msgId, isUser: false, speakerName: spk, speakerCharId: max(1, persona.charId), emotionTag: "开心", text: finalText, actionHint: "☁️ \(prov.label) (\(model))")
+                    DispatchQueue.main.async {
+                        if let pos = self.messages.firstIndex(where: { $0.id == msgId }) {
+                            self.messages[pos].text += delta
+                        }
+                        speechBuf += delta
+                        let endsClause = speechBuf.contains("。") || speechBuf.contains("！") || speechBuf.contains("？") || speechBuf.contains("!") || speechBuf.contains("?") || speechBuf.contains("\n") || ((speechBuf.contains("，") || speechBuf.contains(",")) && speechBuf.count >= 10)
+                        if endsClause {
+                            self.enqueueStreamingTTSFragment(speechBuf, isFirst: !startedStreamSpeech)
+                            startedStreamSpeech = true
+                            speechBuf = ""
                         }
                     }
-                    self.isGenerating = false
-                    if ok && !reply.isEmpty {
-                        self.speakOfflineTTSOnly(finalText)
+                },
+                completion: { [weak self] ok, reply in
+                    DispatchQueue.main.async {
+                        guard let self = self else { return }
+                        if ok && !reply.isEmpty {
+                            if let pos = self.messages.firstIndex(where: { $0.id == msgId }) {
+                                if self.messages[pos].text.isEmpty {
+                                    self.messages[pos].text = reply
+                                }
+                                if self.messages[pos].actionHint == nil {
+                                    self.messages[pos] = KOnAIChatMessage(id: msgId, isUser: false, speakerName: spk, speakerCharId: max(1, persona.charId), emotionTag: "开心", text: self.messages[pos].text, actionHint: "☁️ \(prov.label) (\(model))")
+                                }
+                            }
+                            let rem = speechBuf.trimmingCharacters(in: .whitespacesAndNewlines)
+                            if !rem.isEmpty {
+                                self.enqueueStreamingTTSFragment(rem, isFirst: !startedStreamSpeech)
+                                startedStreamSpeech = true
+                            } else if !startedStreamSpeech {
+                                self.speakOfflineTTSOnly(reply)
+                            }
+                        } else {
+                            let errText = "☁️ \(prov.label) 请求失败：\(reply)"
+                            if let pos = self.messages.firstIndex(where: { $0.id == msgId }) {
+                                self.messages[pos].text = errText
+                            }
+                        }
+                        self.isGenerating = false
                     }
                 }
-            }
+            )
             return
         }
 
@@ -1815,16 +1855,16 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
         messages.append(KOnAIChatMessage(id: msgId, isUser: false, speakerName: speaker, speakerCharId: charId, emotionTag: emotion, text: "", actionHint: actionHint))
         currentEmotionTag = emotion
 
+        self.speakOfflineTTSOnly(text)
         let chars = Array(text)
         var idx = 0
         streamTimer?.invalidate()
-        streamTimer = Timer.scheduledTimer(withTimeInterval: 0.025, repeats: true) { [weak self] t in
+        streamTimer = Timer.scheduledTimer(withTimeInterval: 0.022, repeats: true) { [weak self] t in
             guard let self = self else { t.invalidate(); return }
             let step = min(2, chars.count - idx)
             if step <= 0 {
                 t.invalidate()
                 self.isGenerating = false
-                self.speakOfflineTTSOnly(text)
                 return
             }
             let chunk = String(chars[idx..<(idx + step)])
@@ -2129,27 +2169,76 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
         DispatchQueue.main.async { self.isTtsSpeaking = false }
     }
 
-    /// 针对 VITS 中文音素模型清洗文本：转换数字/时间、过滤引号与 OOV 符号，防止杂音/喘气崩坏
+    private func intToChineseSpoken(_ n: Int) -> String {
+        let digits = ["零","一","二","三","四","五","六","七","八","九"]
+        if n < 0 { return "负" + intToChineseSpoken(-n) }
+        if n < 10 { return digits[n] }
+        if n < 20 { return "十" + (n % 10 == 0 ? "" : digits[n % 10]) }
+        if n < 100 {
+            let t = n / 10, u = n % 10
+            return digits[t] + "十" + (u == 0 ? "" : digits[u])
+        }
+        if n < 1000 {
+            let h = n / 100, rem = n % 100
+            if rem == 0 { return digits[h] + "百" }
+            if rem < 10 { return digits[h] + "百零" + digits[rem] }
+            if rem < 20 { return digits[h] + "百一十" + (rem % 10 == 0 ? "" : digits[rem % 10]) }
+            return digits[h] + "百" + intToChineseSpoken(rem)
+        }
+        if n < 10000 {
+            let th = n / 1000, rem = n % 1000
+            if rem == 0 { return digits[th] + "千" }
+            if rem < 100 { return digits[th] + "千零" + intToChineseSpoken(rem) }
+            return digits[th] + "千" + intToChineseSpoken(rem)
+        }
+        return String(n).map { digits[Int(String($0)) ?? 0] }.joined()
+    }
+
+    /// 针对 VITS 中文音素模型清洗文本：先转换时间/日期/数字，再过滤符号，防止漏读数字与喘气
     private func sanitizeForChineseVITS(_ raw: String) -> String {
         var s = raw
-        // 去掉说话人前缀和括号/引号/星号
+        // 1. 优先把时间 HH:mm 转成口语（必须在替换冒号之前！）
+        if let timeRegex = try? NSRegularExpression(pattern: #"(\d{1,2}):(\d{2})"#) {
+            let ns = s as NSString
+            for m in timeRegex.matches(in: s, range: NSRange(location: 0, length: ns.length)).reversed() {
+                let h = Int(ns.substring(with: m.range(at: 1))) ?? 0
+                let minVal = Int(ns.substring(with: m.range(at: 2))) ?? 0
+                let hStr = (h == 2) ? "两" : intToChineseSpoken(h)
+                let minPart = minVal == 0 ? "整" : (minVal < 10 ? "零" + intToChineseSpoken(minVal) + "分" : intToChineseSpoken(minVal) + "分")
+                s = (s as NSString).replacingCharacters(in: m.range, with: "\(hStr)点\(minPart)")
+            }
+        }
+        // 2. 把 4 位年份逐位读出（2026年 -> 二零二六年）
+        let digitMap: [Character: String] = ["0":"零","1":"一","2":"二","3":"三","4":"四","5":"五","6":"六","7":"七","8":"八","9":"九"]
+        if let yearRegex = try? NSRegularExpression(pattern: #"(\d{4})年"#) {
+            let ns = s as NSString
+            for m in yearRegex.matches(in: s, range: NSRange(location: 0, length: ns.length)).reversed() {
+                let y = ns.substring(with: m.range(at: 1)).map { digitMap[$0] ?? "" }.joined()
+                s = (s as NSString).replacingCharacters(in: m.range, with: "\(y)年")
+            }
+        }
+        // 3. 把小数（如 3.5）和整数（如 11月24日、100米）转为自然中文读法
+        if let decRegex = try? NSRegularExpression(pattern: #"(\d+)\.(\d+)"#) {
+            let ns = s as NSString
+            for m in decRegex.matches(in: s, range: NSRange(location: 0, length: ns.length)).reversed() {
+                let left = Int(ns.substring(with: m.range(at: 1))) ?? 0
+                let right = ns.substring(with: m.range(at: 2)).map { digitMap[$0] ?? "" }.joined()
+                s = (s as NSString).replacingCharacters(in: m.range, with: "\(intToChineseSpoken(left))点\(right)")
+            }
+        }
+        if let intRegex = try? NSRegularExpression(pattern: #"\d+"#) {
+            let ns = s as NSString
+            for m in intRegex.matches(in: s, range: NSRange(location: 0, length: ns.length)).reversed() {
+                let rawNum = ns.substring(with: m.range)
+                let rep = rawNum.count <= 4 ? intToChineseSpoken(Int(rawNum) ?? 0) : rawNum.map { digitMap[$0] ?? "" }.joined()
+                s = (s as NSString).replacingCharacters(in: m.range, with: rep)
+            }
+        }
+        // 4. 再去掉括号/引号/星号与标点归一化
         s = s.replacingOccurrences(of: #"[“”‘’"「」『』《》【】\[\]\(\)（）\*\#\`~_]+"#, with: "", options: .regularExpression)
         s = s.replacingOccurrences(of: #"[\r\n]+"#, with: "。", options: .regularExpression)
         s = s.replacingOccurrences(of: #"[：:;；]+"#, with: "，", options: .regularExpression)
         s = s.replacingOccurrences(of: #"\.{2,}|…+"#, with: "，", options: .regularExpression)
-        // 把时间 HH:mm 转成中文读法
-        if let timeRegex = try? NSRegularExpression(pattern: #"(\d{1,2}):(\d{2})"#) {
-            let ns = s as NSString
-            let matches = timeRegex.matches(in: s, range: NSRange(location: 0, length: ns.length)).reversed()
-            for m in matches {
-                let h = ns.substring(with: m.range(at: 1))
-                let minStr = ns.substring(with: m.range(at: 2))
-                let rep = "\(h)点\(minStr)分"
-                s = (s as NSString).replacingCharacters(in: m.range, with: rep)
-            }
-        }
-        // 把剩余阿拉伯数字转为中文数字字符，避免 VITS 跳过或输出杂音
-        let digitMap: [Character: String] = ["0":"零","1":"一","2":"二","3":"三","4":"四","5":"五","6":"六","7":"七","8":"八","9":"九"]
         var out = ""
         for ch in s {
             if let zh = digitMap[ch] {
@@ -2340,9 +2429,9 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
                 guard let self = self else { return }
                 if let handle = self.ensureSherpaTtsLoaded() {
                     let outWav = NSTemporaryDirectory() + "htt_offline_tts.wav"
-                    var speed: Float = 1.0
-                    if emotion == "元气" || emotion == "慌张" { speed = 1.05 }
-                    else if emotion == "温柔" || emotion == "撒娇" { speed = 0.95 }
+                    var speed: Float = 0.86
+                    if emotion == "元气" || emotion == "慌张" { speed = 0.89 }
+                    else if emotion == "温柔" || emotion == "撒娇" { speed = 0.82 }
                     let ok = htt_tts_generate_wav(handle, chunk, self.currentSpeakerId(), speed, outWav)
                     if ok == 1, let wavData = try? Data(contentsOf: URL(fileURLWithPath: outWav)), wavData.count > 512 {
                         DispatchQueue.main.async {
@@ -2430,6 +2519,161 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
         utt.postUtteranceDelay = 0.12
         DispatchQueue.main.async { self.isTtsSpeaking = true }
         speechSynthesizer.speak(utt)
+    }
+
+    private func beginStreamingTTSSession(emotion: String) {
+        DispatchQueue.main.async {
+            self.ttsSessionToken += 1
+            self.ttsChunkEmotion = emotion
+            self.ttsChunkEndpoint = self.customTtsEndpointUrl.trimmingCharacters(in: .whitespacesAndNewlines)
+            self.ttsChunkQueue.removeAll()
+            self.clonedAudioPlayer?.stop()
+            self.isTtsSpeaking = false
+        }
+    }
+
+    private func enqueueStreamingTTSFragment(_ rawFragment: String, isFirst: Bool) {
+        guard enableVoiceBroadcast else { return }
+        var clean = rawFragment.replacingOccurrences(of: #"\[[^\]]+\]"#, with: "", options: .regularExpression)
+        clean = clean.replacingOccurrences(of: #"【[^】]+】"#, with: "", options: .regularExpression)
+        clean = clean.unicodeScalars.filter { !$0.properties.isEmojiPresentation }.map { String($0) }.joined()
+        let chunks = splitIntoShortChunks(clean, maxLen: 20)
+        guard !chunks.isEmpty else { return }
+        let token = self.ttsSessionToken
+        let emotion = self.ttsChunkEmotion
+        let endpoint = self.ttsChunkEndpoint
+        if !self.isTtsSpeaking && (self.clonedAudioPlayer?.isPlaying != true) {
+            self.ttsChunkQueue.append(contentsOf: chunks.dropFirst())
+            self.isTtsSpeaking = true
+            self.speakNextTTSChunk(chunks[0], emotion: emotion, endpoint: endpoint, sessionToken: token, fullFallbackText: clean)
+        } else {
+            self.ttsChunkQueue.append(contentsOf: chunks)
+        }
+    }
+
+    private func executeCloudLLMStreamRequest(
+        provider: CloudAIProvider,
+        apiKey: String,
+        baseUrl: String,
+        modelName: String,
+        systemPrompt: String,
+        history: [(String, String)],
+        userPrompt: String,
+        onDelta: @escaping (String) -> Void,
+        completion: @escaping (Bool, String) -> Void
+    ) {
+        let model = modelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? provider.defaultModel : modelName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if provider == .gemini || provider == .vertexai {
+            let base = baseUrl.trimmingCharacters(in: .whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            let finalBase = base.isEmpty ? provider.defaultBaseUrl : base
+            let encKey = apiKey.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? apiKey
+            guard let url = URL(string: "\(finalBase)/models/\(model):streamGenerateContent?alt=sse&key=\(encKey)") else {
+                completion(false, "无效的 Gemini URL")
+                return
+            }
+            var contents: [[String: Any]] = history.map { (role, text) in
+                ["role": role == "user" ? "user" : "model", "parts": [["text": text]]]
+            }
+            contents.append(["role": "user", "parts": [["text": userPrompt]]])
+            let payload: [String: Any] = [
+                "systemInstruction": ["parts": [["text": systemPrompt]]],
+                "contents": contents,
+                "generationConfig": ["temperature": 0.6, "maxOutputTokens": 512]
+            ]
+            var req = URLRequest(url: url, timeoutInterval: 30.0)
+            req.httpMethod = "POST"
+            req.setValue("application/json; charset=UTF-8", forHTTPHeaderField: "Content-Type")
+            req.httpBody = try? JSONSerialization.data(withJSONObject: payload)
+            Task {
+                do {
+                    let (bytes, resp) = try await URLSession.shared.bytes(for: req)
+                    let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+                    if code < 200 || code >= 300 {
+                        var errData = Data()
+                        for try await b in bytes { errData.append(b); if errData.count > 2048 { break } }
+                        let errStr = String(data: errData, encoding: .utf8) ?? "HTTP \(code)"
+                        completion(false, errStr)
+                        return
+                    }
+                    var full = ""
+                    for try await line in bytes.lines {
+                        guard line.hasPrefix("data:") else { continue }
+                        let jsonStr = String(line.dropFirst(5)).trimmingCharacters(in: .whitespaces)
+                        if jsonStr.isEmpty || jsonStr == "[DONE]" { continue }
+                        if let d = jsonStr.data(using: .utf8),
+                           let obj = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
+                           let cands = obj["candidates"] as? [[String: Any]],
+                           let parts = (cands.first?["content"] as? [String: Any])?["parts"] as? [[String: Any]],
+                           let delta = parts.first?["text"] as? String, !delta.isEmpty {
+                            full += delta
+                            onDelta(delta)
+                        }
+                    }
+                    completion(!full.isEmpty, full.isEmpty ? "Gemini 返回为空" : full)
+                } catch {
+                    completion(false, error.localizedDescription)
+                }
+            }
+        } else {
+            var endpoint = baseUrl.trimmingCharacters(in: .whitespacesAndNewlines)
+            if endpoint.isEmpty { endpoint = provider.defaultBaseUrl }
+            if !endpoint.hasSuffix("/chat/completions") {
+                endpoint = endpoint.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + "/chat/completions"
+            }
+            guard let url = URL(string: endpoint) else {
+                completion(false, "无效的 API URL")
+                return
+            }
+            var msgs: [[String: Any]] = [["role": "system", "content": systemPrompt]]
+            for (role, text) in history {
+                msgs.append(["role": role, "content": text])
+            }
+            msgs.append(["role": "user", "content": userPrompt])
+            let payload: [String: Any] = [
+                "model": model,
+                "messages": msgs,
+                "temperature": 0.6,
+                "max_tokens": 512,
+                "stream": true
+            ]
+            var req = URLRequest(url: url, timeoutInterval: 30.0)
+            req.httpMethod = "POST"
+            req.setValue("application/json; charset=UTF-8", forHTTPHeaderField: "Content-Type")
+            req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+            if endpoint.lowercased().contains("googleapis.com") || endpoint.lowercased().contains("gemini") {
+                req.setValue(apiKey, forHTTPHeaderField: "x-goog-api-key")
+            }
+            req.httpBody = try? JSONSerialization.data(withJSONObject: payload)
+            Task {
+                do {
+                    let (bytes, resp) = try await URLSession.shared.bytes(for: req)
+                    let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+                    if code < 200 || code >= 300 {
+                        var errData = Data()
+                        for try await b in bytes { errData.append(b); if errData.count > 2048 { break } }
+                        let errMsg = (try? JSONSerialization.jsonObject(with: errData) as? [String: Any]).flatMap { ($0["error"] as? [String: Any])?["message"] as? String } ?? "HTTP \(code)"
+                        completion(false, errMsg)
+                        return
+                    }
+                    var full = ""
+                    for try await line in bytes.lines {
+                        guard line.hasPrefix("data:") else { continue }
+                        let jsonStr = String(line.dropFirst(5)).trimmingCharacters(in: .whitespaces)
+                        if jsonStr == "[DONE]" { break }
+                        if let d = jsonStr.data(using: .utf8),
+                           let obj = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
+                           let choices = obj["choices"] as? [[String: Any]],
+                           let delta = (choices.first?["delta"] as? [String: Any])?["content"] as? String, !delta.isEmpty {
+                            full += delta
+                            onDelta(delta)
+                        }
+                    }
+                    completion(!full.isEmpty, full.isEmpty ? "云端返回为空" : full)
+                } catch {
+                    completion(false, error.localizedDescription)
+                }
+            }
+        }
     }
 
     private func executeCloudLLMRequest(
