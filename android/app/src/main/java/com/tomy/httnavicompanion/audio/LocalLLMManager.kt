@@ -790,9 +790,9 @@ class LocalLLMManager(
             }
             mainHandler.post {
                 _isGenerating.value = false
-                speakOfflineTTS(reply)
             }
         }.start()
+        mainHandler.post { speakOfflineTTS(reply) }
     }
 
     private fun isWeatherQuery(lower: String): Boolean =
@@ -1070,10 +1070,11 @@ class LocalLLMManager(
         val sysPrompt = """
 ${personaRole}你们五人组成了“放课后茶会”(HTT)乐队。你正坐在副驾陪前辈开车。
 实时车况：时间 $nowStr；车速 $speed km/h；$navState；音乐：$songStr；最近牌局：$gameStr；记忆：$memStr。$webBlock
-说话规则：
-1. 若上面提供了【联网检索到的真实资料】，必须先把真实事实准确、具体地讲清楚（例如地道美食/地点/定义），再顺带用一句自然口吻收尾，绝不能偏题或篡改事实。
-2. 日常闲聊（如“今天好冷啊”）要像真实少女一样自然关心（比如提醒多穿点、要不要喝热红茶），严禁说“我明白您的感受”“毕竟开车时”“我们已经切换到空调模式了吗”“作为AI助手”等机械客服腔！
-3. 回答简洁清晰（2~4句）。
+说话规则（对标豆包实时语音对话风格）：
+1. 若上面提供了【联网检索到的真实资料】，必须先把真实事实准确、具体地讲清楚，再顺带用一句自然口吻收尾，绝不能偏题或篡改事实。
+2. 像面对面语音聊天一样自然口语化：第一句直接切入重点，多用口语短句（每句 10~20 字左右），不要用“1. 2. 3.”书面列表、不要写括号动作、不要堆砌波浪号。
+3. 日常闲聊要像真实少女一样自然关心，严禁说“我明白您的感受”“作为AI助手”等机械客服腔。
+4. 回答简洁自然（1~3句），数字/时间直接自然表达。
 """.trimIndent()
 
         val sb = StringBuilder()
@@ -1103,18 +1104,50 @@ ${personaRole}你们五人组成了“放课后茶会”(HTT)乐队。你正坐�
             val base = _cloudBaseUrl.value
             val model = _cloudModelName.value
             val histList = history.map { (if (it.isUser) "user" else "assistant") to it.text.take(300) }
+            val speechBuf = StringBuilder()
+            var startedStreamSpeech = false
+            val streamToken = beginStreamingTTSSession("开心")
             Thread {
-                val (ok, reply) = executeCloudLLMRequest(prov, key, base, model, sysPrompt, histList, userPrompt)
+                val (ok, reply) = executeCloudLLMStreamRequest(
+                    prov, key, base, model, sysPrompt, histList, userPrompt,
+                    onDelta = { delta ->
+                        mainHandler.post {
+                            _messages.value = _messages.value.map {
+                                if (it.id == msgId) it.copy(text = it.text + delta) else it
+                            }
+                            speechBuf.append(delta)
+                            val curBuf = speechBuf.toString()
+                            val endsClause = curBuf.contains("。") || curBuf.contains("！") || curBuf.contains("？") || curBuf.contains("!") || curBuf.contains("?") || curBuf.contains("\n") || ((curBuf.contains("，") || curBuf.contains(",")) && curBuf.length >= 10)
+                            if (endsClause) {
+                                enqueueStreamingTTSFragment(curBuf, streamToken)
+                                startedStreamSpeech = true
+                                speechBuf.clear()
+                            }
+                        }
+                    }
+                )
                 mainHandler.post {
-                    val finalText = if (ok && reply.isNotBlank()) reply else "☁️ ${prov.label} 请求失败：$reply"
-                    _messages.value = _messages.value.map { it ->
-                        if (it.id == msgId) it.copy(
-                            text = finalText,
-                            actionHint = it.actionHint ?: "☁️ ${prov.label} ($model)"
-                        ) else it
+                    if (ok && reply.isNotBlank()) {
+                        _messages.value = _messages.value.map { it ->
+                            if (it.id == msgId) it.copy(
+                                text = it.text.ifBlank { reply },
+                                actionHint = it.actionHint ?: "☁️ ${prov.label} ($model)"
+                            ) else it
+                        }
+                        val rem = speechBuf.toString().trim()
+                        if (rem.isNotEmpty()) {
+                            enqueueStreamingTTSFragment(rem, streamToken)
+                            startedStreamSpeech = true
+                        } else if (!startedStreamSpeech) {
+                            speakOfflineTTS(reply)
+                        }
+                        finishStreamingTTSSession(streamToken)
+                    } else {
+                        val finalText = "☁️ ${prov.label} 请求失败：$reply"
+                        _messages.value = _messages.value.map { if (it.id == msgId) it.copy(text = finalText) else it }
+                        finishStreamingTTSSession(streamToken)
                     }
                     _isGenerating.value = false
-                    if (ok && reply.isNotBlank()) speakOfflineTTS(reply)
                 }
             }.start()
             return
@@ -1352,14 +1385,62 @@ ${personaRole}你们五人组成了“放课后茶会”(HTT)乐队。你正坐�
 
     @Volatile private var ttsSessionToken: Int = 0
 
+    private fun intToChineseSpoken(n: Int): String {
+        val digits = arrayOf("零","一","二","三","四","五","六","七","八","九")
+        if (n < 0) return "负" + intToChineseSpoken(-n)
+        if (n < 10) return digits[n]
+        if (n < 20) return "十" + if (n % 10 == 0) "" else digits[n % 10]
+        if (n < 100) {
+            val t = n / 10; val u = n % 10
+            return digits[t] + "十" + if (u == 0) "" else digits[u]
+        }
+        if (n < 1000) {
+            val h = n / 100; val rem = n % 100
+            if (rem == 0) return digits[h] + "百"
+            if (rem < 10) return digits[h] + "百零" + digits[rem]
+            if (rem < 20) return digits[h] + "百一十" + if (rem % 10 == 0) "" else digits[rem % 10]
+            return digits[h] + "百" + intToChineseSpoken(rem)
+        }
+        if (n < 10000) {
+            val th = n / 1000; val rem = n % 1000
+            if (rem == 0) return digits[th] + "千"
+            if (rem < 100) return digits[th] + "千零" + intToChineseSpoken(rem)
+            return digits[th] + "千" + intToChineseSpoken(rem)
+        }
+        return n.toString().map { digits[it.digitToIntOrNull() ?: 0] }.joinToString("")
+    }
+
     private fun sanitizeForChineseVITS(raw: String): String {
+        val digitMap = mapOf('0' to '零','1' to '一','2' to '二','3' to '三','4' to '四','5' to '五','6' to '六','7' to '七','8' to '八','9' to '九')
         var s = raw
+        s = Regex("(\\d{1,2}):(\\d{2})").replace(s) { m ->
+            val h = m.groupValues[1].toIntOrNull() ?: 0
+            val minVal = m.groupValues[2].toIntOrNull() ?: 0
+            val hStr = if (h == 2) "两" else intToChineseSpoken(h)
+            val minPart = when {
+                minVal == 0 -> "整"
+                minVal < 10 -> "零" + intToChineseSpoken(minVal) + "分"
+                else -> intToChineseSpoken(minVal) + "分"
+            }
+            "${hStr}点${minPart}"
+        }
+        s = Regex("(\\d{4})年").replace(s) { m ->
+            m.groupValues[1].map { digitMap[it] ?: it }.joinToString("") + "年"
+        }
+        s = Regex("(\\d+)\\.(\\d+)").replace(s) { m ->
+            val left = m.groupValues[1].toIntOrNull() ?: 0
+            val right = m.groupValues[2].map { digitMap[it] ?: it }.joinToString("")
+            "${intToChineseSpoken(left)}点${right}"
+        }
+        s = Regex("\\d+").replace(s) { m ->
+            val v = m.value
+            if (v.length <= 4) intToChineseSpoken(v.toIntOrNull() ?: 0) else v.map { digitMap[it] ?: it }.joinToString("")
+        }
+        s = s
             .replace(Regex("[“”‘’\"「」『』《》【】\\[\\]()（）*#`~_]+"), "")
             .replace(Regex("[\\r\\n]+"), "。")
             .replace(Regex("[：:;；]+"), "，")
             .replace(Regex("\\.{2,}|…+"), "，")
-        s = Regex("(\\d{1,2}):(\\d{2})").replace(s) { m -> "${m.groupValues[1]}点${m.groupValues[2]}分" }
-        val digitMap = mapOf('0' to '零','1' to '一','2' to '二','3' to '三','4' to '四','5' to '五','6' to '六','7' to '七','8' to '八','9' to '九')
         val sb = StringBuilder()
         for (ch in s) {
             when {
@@ -1487,9 +1568,9 @@ ${personaRole}你们五人组成了“放课后茶会”(HTT)乐队。你正坐�
                         val tts = ensureSherpaOfflineTts()
                         if (tts != null) {
                             val speed = when (emotion) {
-                                "元气", "慌张" -> 1.05f
-                                "温柔", "撒娇" -> 0.95f
-                                else -> 1.0f
+                                "元气", "慌张" -> 0.89f
+                                "温柔", "撒娇" -> 0.82f
+                                else -> 0.86f
                             }
                             val audio = tts.generate(text = chunk, sid = currentSpeakerSid(), speed = speed)
                             if (audio.samples.isNotEmpty()) {
@@ -1802,6 +1883,222 @@ ${personaRole}你们五人组成了“放课后茶会”(HTT)乐队。你正坐�
         }
 
         return null
+    }
+
+    private val streamTtsLock = Any()
+    private val streamTtsQueue = mutableListOf<String>()
+    @Volatile private var streamTtsPlaying = false
+    @Volatile private var streamTtsEmotion = "开心"
+    @Volatile private var streamTtsEndpoint = ""
+
+    private fun beginStreamingTTSSession(emotion: String): Int {
+        val tok = ++ttsSessionToken
+        synchronized(streamTtsLock) {
+            streamTtsQueue.clear()
+            streamTtsPlaying = false
+            streamTtsEmotion = emotion
+            streamTtsEndpoint = _customTtsEndpointUrl.value.trim()
+        }
+        mainHandler.post {
+            clonedMediaPlayer?.stop()
+            _isTtsSpeaking.value = false
+        }
+        return tok
+    }
+
+    private fun enqueueStreamingTTSFragment(rawFragment: String, token: Int) {
+        if (!_enableVoiceBroadcast.value || token != ttsSessionToken) return
+        val clean = rawFragment.replace(Regex("\\[[^\\]]+]"), "").replace(Regex("【[^】]+】"), "").trim()
+        val chunks = splitIntoShortChunks(clean, 20)
+        if (chunks.isEmpty()) return
+        var shouldStartNow = false
+        synchronized(streamTtsLock) {
+            if (token != ttsSessionToken) return
+            streamTtsQueue.addAll(chunks)
+            if (!streamTtsPlaying) {
+                streamTtsPlaying = true
+                shouldStartNow = true
+            }
+        }
+        if (shouldStartNow) {
+            _isTtsSpeaking.value = true
+            playNextStreamingTTSChunk(token)
+        }
+    }
+
+    private fun finishStreamingTTSSession(token: Int) {
+        // Nothing extra needed; queue drains naturally
+    }
+
+    private fun playNextStreamingTTSChunk(token: Int) {
+        if (token != ttsSessionToken) return
+        val nextChunk: String? = synchronized(streamTtsLock) {
+            if (streamTtsQueue.isEmpty()) {
+                streamTtsPlaying = false
+                null
+            } else {
+                streamTtsQueue.removeAt(0)
+            }
+        }
+        if (nextChunk == null) {
+            mainHandler.post { if (token == ttsSessionToken) _isTtsSpeaking.value = false }
+            return
+        }
+        val pack = _activeVoicePackName.value
+        val emotion = streamTtsEmotion
+        if (pack.isNotBlank()) {
+            Thread {
+                try {
+                    val wavFile = File(context.cacheDir, "htt_offline_tts.wav")
+                    val generatedOk = synchronized(sherpaLock) {
+                        val tts = ensureSherpaOfflineTts()
+                        if (tts != null) {
+                            val speed = when (emotion) {
+                                "元气", "慌张" -> 0.89f
+                                "温柔", "撒娇" -> 0.82f
+                                else -> 0.86f
+                            }
+                            val audio = tts.generate(text = nextChunk, sid = currentSpeakerSid(), speed = speed)
+                            if (audio.samples.isNotEmpty()) {
+                                writeWavFile(audio.samples, audio.sampleRate, wavFile)
+                                true
+                            } else false
+                        } else false
+                    }
+                    if (generatedOk && token == ttsSessionToken) {
+                        mainHandler.post {
+                            if (token != ttsSessionToken) return@post
+                            try {
+                                clonedMediaPlayer?.release()
+                                val mp = MediaPlayer().apply {
+                                    setAudioAttributes(
+                                        AudioAttributes.Builder()
+                                            .setUsage(AudioAttributes.USAGE_MEDIA)
+                                            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                                            .build()
+                                    )
+                                    setDataSource(wavFile.absolutePath)
+                                    setOnCompletionListener { playNextStreamingTTSChunk(token) }
+                                    setOnErrorListener { _, _, _ -> playNextStreamingTTSChunk(token); true }
+                                    prepare()
+                                    start()
+                                }
+                                clonedMediaPlayer = mp
+                            } catch (_: Throwable) {
+                                playNextStreamingTTSChunk(token)
+                            }
+                        }
+                        return@Thread
+                    }
+                } catch (_: Throwable) {}
+                playNextStreamingTTSChunk(token)
+            }.start()
+        } else {
+            mainHandler.post { speakAndroidEmotionProsody(nextChunk, emotion) }
+            synchronized(streamTtsLock) { streamTtsPlaying = false; streamTtsQueue.clear() }
+        }
+    }
+
+    private fun executeCloudLLMStreamRequest(
+        provider: CloudAIProvider,
+        apiKey: String,
+        baseUrl: String,
+        modelName: String,
+        systemPrompt: String,
+        history: List<Pair<String, String>>,
+        userPrompt: String,
+        onDelta: (String) -> Unit
+    ): Pair<Boolean, String> {
+        return try {
+            val model = modelName.trim().ifEmpty { provider.defaultModel }
+            val isGeminiNative = (provider == CloudAIProvider.GEMINI || provider == CloudAIProvider.VERTEXAI)
+            val endpoint = if (isGeminiNative) {
+                val base = baseUrl.trim().trimEnd('/').ifEmpty { provider.defaultBaseUrl }
+                "$base/models/$model:streamGenerateContent?alt=sse&key=${URLEncoder.encode(apiKey, "UTF-8")}"
+            } else {
+                var ep = baseUrl.trim().ifEmpty { provider.defaultBaseUrl }
+                if (!ep.endsWith("/chat/completions")) ep = ep.trimEnd('/') + "/chat/completions"
+                ep
+            }
+            val payload = if (isGeminiNative) {
+                val contents = org.json.JSONArray()
+                for ((role, content) in history) {
+                    val gRole = if (role == "user") "user" else "model"
+                    contents.put(JSONObject().put("role", gRole).put("parts", org.json.JSONArray().put(JSONObject().put("text", content))))
+                }
+                contents.put(JSONObject().put("role", "user").put("parts", org.json.JSONArray().put(JSONObject().put("text", userPrompt))))
+                JSONObject()
+                    .put("systemInstruction", JSONObject().put("parts", org.json.JSONArray().put(JSONObject().put("text", systemPrompt))))
+                    .put("contents", contents)
+                    .put("generationConfig", JSONObject().put("temperature", 0.6).put("maxOutputTokens", 512))
+            } else {
+                val msgs = org.json.JSONArray()
+                msgs.put(JSONObject().put("role", "system").put("content", systemPrompt))
+                for ((role, content) in history) msgs.put(JSONObject().put("role", role).put("content", content))
+                msgs.put(JSONObject().put("role", "user").put("content", userPrompt))
+                JSONObject()
+                    .put("model", model)
+                    .put("messages", msgs)
+                    .put("temperature", 0.6)
+                    .put("max_tokens", 512)
+                    .put("stream", true)
+            }
+            val conn = (URL(endpoint).openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                connectTimeout = 12000
+                readTimeout = 30000
+                doOutput = true
+                setRequestProperty("Content-Type", "application/json; charset=UTF-8")
+                if (!isGeminiNative) {
+                    setRequestProperty("Authorization", "Bearer $apiKey")
+                    if (endpoint.contains("googleapis.com", ignoreCase = true) || endpoint.contains("gemini", ignoreCase = true)) {
+                        setRequestProperty("x-goog-api-key", apiKey)
+                    }
+                }
+            }
+            conn.outputStream.use { it.write(payload.toString().toByteArray(Charsets.UTF_8)) }
+            val code = conn.responseCode
+            if (code !in 200..299) {
+                val resp = conn.errorStream?.bufferedReader(Charsets.UTF_8)?.readText() ?: ""
+                conn.disconnect()
+                val errMsg = try {
+                    val trimmed = resp.trim()
+                    val obj = if (trimmed.startsWith("[")) org.json.JSONArray(trimmed).optJSONObject(0) else JSONObject(trimmed)
+                    obj?.optJSONObject("error")?.optString("message")?.ifBlank { resp } ?: resp
+                } catch (_: Throwable) { resp }
+                return false to "HTTP $code: ${errMsg.take(180)}"
+            }
+            val full = StringBuilder()
+            conn.inputStream.bufferedReader(Charsets.UTF_8).use { reader ->
+                var line: String?
+                while (reader.readLine().also { line = it } != null) {
+                    val l = line ?: continue
+                    if (!l.startsWith("data:")) continue
+                    val js = l.removePrefix("data:").trim()
+                    if (js.isEmpty() || js == "[DONE]") continue
+                    try {
+                        val obj = JSONObject(js)
+                        val delta = if (isGeminiNative) {
+                            obj.optJSONArray("candidates")?.optJSONObject(0)
+                                ?.optJSONObject("content")?.optJSONArray("parts")?.optJSONObject(0)
+                                ?.optString("text", "") ?: ""
+                        } else {
+                            obj.optJSONArray("choices")?.optJSONObject(0)
+                                ?.optJSONObject("delta")?.optString("content", "") ?: ""
+                        }
+                        if (delta.isNotEmpty()) {
+                            full.append(delta)
+                            onDelta(delta)
+                        }
+                    } catch (_: Throwable) {}
+                }
+            }
+            conn.disconnect()
+            val out = full.toString().trim()
+            if (out.isNotEmpty()) true to out else false to "云端返回为空"
+        } catch (t: Throwable) {
+            false to (t.localizedMessage ?: "网络请求异常")
+        }
     }
 
     private fun executeCloudLLMRequest(
