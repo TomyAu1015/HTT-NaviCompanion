@@ -765,7 +765,7 @@ class AudioPlayerManager(
 
     private fun refreshRoadSpeedLimit(coord: LatLng, roadHint: String) {
         val mode = _travelMode.value
-        if (!mode.supportsSpeedLimit) {
+        if (mode != NavigationTravelMode.DRIVING && mode != NavigationTravelMode.EBIKE) {
             _speedLimitKmh.value = 0
             return
         }
@@ -790,6 +790,11 @@ class AudioPlayerManager(
     private var smoothedSpeedKmh: Double = 0.0
     private var consecutiveLowSpeedFixes: Int = 0
     private var lastValidSpeedMs: Long = 0L
+
+    fun triggerRecenter() {
+        _mapTrackingUser.value = true
+        _recenterTrigger.value += 1
+    }
 
     fun setMapTracking(enabled: Boolean) {
         _mapTrackingUser.value = enabled
