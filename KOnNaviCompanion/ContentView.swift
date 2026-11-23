@@ -240,9 +240,19 @@ struct HTTSmoothMapView: UIViewRepresentable {
                             (context.coordinator.lastTappedLon != manager.tappedMapCoord?.longitude)
         let selectionChanged = (context.coordinator.lastSelectionRenderTrigger != manager.routeSelectionRenderTrigger)
         let overviewFitChanged = (context.coordinator.lastOverviewFitTrigger != manager.routeOverviewFitTrigger)
+        let uLocSplit = CLLocation(latitude: manager.userCoordinate.latitude, longitude: manager.userCoordinate.longitude)
+        let movedForGraySplit: Bool = {
+            guard manager.hasActiveNavigation, manager.travelMode == .driving, manager.activeRoute != nil else { return false }
+            if let prev = context.coordinator.lastGraySplitCoord {
+                return uLocSplit.distance(from: CLLocation(latitude: prev.latitude, longitude: prev.longitude)) >= 15.0
+            }
+            return true
+        }()
+        if movedForGraySplit { context.coordinator.lastGraySplitCoord = manager.userCoordinate }
         let routeChanged = (context.coordinator.lastRoute !== manager.activeRoute) ||
                            (context.coordinator.lastCustomPolyline !== manager.customTransitPolyline) ||
                            (context.coordinator.lastCandidateCount != manager.candidateRoutes.count) ||
+                           movedForGraySplit ||
                            selectionChanged
         
         if routeChanged || tappedChanged {
@@ -326,36 +336,44 @@ struct HTTSmoothMapView: UIViewRepresentable {
             
             if let route = manager.activeRoute {
                 if manager.travelMode == .driving {
-                    // Driving Mode: Split route into realistic GaoDe Traffic Segments (Main Route + Smooth Green + Slow Yellow + Congested Red) & Active Vehicle Blue!
+                    // GaoDe 1:1 Route Coloring: Traveled = Gray, Remaining = Live Traffic (Green / Yellow / Red)
                     let pts = route.polyline.points()
                     let totalPts = route.polyline.pointCount
-                    if totalPts > 12 {
-                        let cut1 = max(2, Int(Double(totalPts) * 0.22))
-                        let cut2 = max(cut1 + 2, Int(Double(totalPts) * 0.65))
-                        let cut3 = max(cut2 + 2, Int(Double(totalPts) * 0.80))
-                        
-                        // Segment 1 (Immediate vehicle path ahead): GaoDe Bright Navigation Blue
-                        let polyBlue = MKPolyline(points: pts, count: cut1)
-                        polyBlue.title = "DRIVING_ACTIVE_BLUE"
-                        mapView.addOverlay(polyBlue, level: .aboveRoads)
-                        
-                        // Segment 2 (Main Arterial): GaoDe Smooth Traffic Green
-                        let polyGreen = MKPolyline(points: pts.advanced(by: cut1 - 1), count: cut2 - cut1 + 1)
-                        polyGreen.title = "TRAFFIC_GREEN"
-                        mapView.addOverlay(polyGreen, level: .aboveRoads)
-                        
-                        // Segment 3 (Intersection / Ramp): GaoDe Slow Traffic Yellow/Amber (or Red if congested)
-                        let polyYellow = MKPolyline(points: pts.advanced(by: cut2 - 1), count: cut3 - cut2 + 1)
-                        polyYellow.title = manager.isCongested ? "TRAFFIC_RED" : "TRAFFIC_YELLOW"
-                        mapView.addOverlay(polyYellow, level: .aboveRoads)
-                        
-                        // Segment 4 (Final Approach): GaoDe Smooth Traffic Green
-                        let polyEndGreen = MKPolyline(points: pts.advanced(by: cut3 - 1), count: totalPts - cut3 + 1)
-                        polyEndGreen.title = "TRAFFIC_GREEN"
-                        mapView.addOverlay(polyEndGreen, level: .aboveRoads)
-                    } else {
-                        route.polyline.title = "DRIVING_ACTIVE_BLUE"
-                        mapView.addOverlay(route.polyline, level: .aboveRoads)
+                    var closestIdx = 0
+                    var minDist = Double.greatestFiniteMagnitude
+                    let uLoc = CLLocation(latitude: manager.userCoordinate.latitude, longitude: manager.userCoordinate.longitude)
+                    for i in 0..<totalPts {
+                        let c = pts[i].coordinate
+                        let d = uLoc.distance(from: CLLocation(latitude: c.latitude, longitude: c.longitude))
+                        if d < minDist { minDist = d; closestIdx = i }
+                    }
+                    if manager.hasActiveNavigation && closestIdx >= 1 && minDist < 120.0 {
+                        let grayPoly = MKPolyline(points: pts, count: closestIdx + 1)
+                        grayPoly.title = "TRAVELED_GRAY"
+                        mapView.addOverlay(grayPoly, level: .aboveRoads)
+                    }
+                    let remStart = (manager.hasActiveNavigation && minDist < 120.0) ? closestIdx : 0
+                    let remCount = totalPts - remStart
+                    if remCount > 8 {
+                        let slowNow = manager.isCongested || (manager.hasActiveNavigation && manager.currentSpeedKmh > 3 && manager.speedLimitKmh > 0 && manager.currentSpeedKmh < manager.speedLimitKmh * 0.45)
+                        let cut1 = remStart + max(2, Int(Double(remCount) * 0.45))
+                        let cut2 = remStart + max(cut1 - remStart + 2, Int(Double(remCount) * 0.72))
+
+                        let p1 = MKPolyline(points: pts.advanced(by: remStart), count: cut1 - remStart + 1)
+                        p1.title = slowNow ? "TRAFFIC_RED" : "TRAFFIC_GREEN"
+                        mapView.addOverlay(p1, level: .aboveRoads)
+
+                        let p2 = MKPolyline(points: pts.advanced(by: cut1), count: cut2 - cut1 + 1)
+                        p2.title = manager.isCongested ? "TRAFFIC_RED" : "TRAFFIC_YELLOW"
+                        mapView.addOverlay(p2, level: .aboveRoads)
+
+                        let p3 = MKPolyline(points: pts.advanced(by: cut2), count: totalPts - cut2)
+                        p3.title = "TRAFFIC_GREEN"
+                        mapView.addOverlay(p3, level: .aboveRoads)
+                    } else if remCount >= 2 {
+                        let pAll = MKPolyline(points: pts.advanced(by: remStart), count: remCount)
+                        pAll.title = manager.isCongested ? "TRAFFIC_RED" : "TRAFFIC_GREEN"
+                        mapView.addOverlay(pAll, level: .aboveRoads)
                     }
                 } else if manager.travelMode == .ebike {
                     route.polyline.title = "EBIKE_CYAN_BLUE"
@@ -574,11 +592,12 @@ struct HTTSmoothMapView: UIViewRepresentable {
             let distDelta = camLoc.distance(from: usrLoc)
             
             let nowTime = CACurrentMediaTime()
-            if (distDelta > 2.2 || hDiff > 3.5) && (nowTime - context.coordinator.lastCameraFollowTime >= 0.45) {
+            let targetZoomDist = manager.hasActiveNavigation ? manager.recommendedNavigationZoomDistance() : manager.userZoomDistance
+            if (distDelta > 2.2 || hDiff > 3.5 || abs(mapView.camera.centerCoordinateDistance - targetZoomDist) > 45.0) && (nowTime - context.coordinator.lastCameraFollowTime >= 0.45) {
                 context.coordinator.lastCameraFollowTime = nowTime
                 let camera = MKMapCamera(
                     lookingAtCenter: targetCoord,
-                    fromDistance: manager.userZoomDistance,
+                    fromDistance: targetZoomDist,
                     pitch: camPitch,
                     heading: camHeading
                 )
@@ -608,6 +627,19 @@ struct HTTSmoothMapView: UIViewRepresentable {
         var lastOverviewFitTrigger: Int = 0
         var lastSelectionRenderTrigger: Int = 0
         var lastCameraFollowTime: CFTimeInterval = 0
+        var lastGraySplitCoord: CLLocationCoordinate2D? = nil
+        var autoRecenterWorkItem: DispatchWorkItem? = nil
+
+        func scheduleAutoRecenterIfNavigating() {
+            autoRecenterWorkItem?.cancel()
+            guard parent.manager.hasActiveNavigation && parent.manager.autoRecenterEnabled else { return }
+            let item = DispatchWorkItem { [weak self] in
+                guard let self = self, self.parent.manager.hasActiveNavigation, !self.isUserInteracting else { return }
+                self.parent.manager.triggerFastRecenter()
+            }
+            autoRecenterWorkItem = item
+            DispatchQueue.main.asyncAfter(deadline: .now() + 6.0, execute: item)
+        }
         
         let vehicleAnnotation = VehicleAvatarAnnotation()
         
@@ -650,6 +682,7 @@ struct HTTSmoothMapView: UIViewRepresentable {
                 }
             } else if gesture.state == .ended || gesture.state == .cancelled {
                 isUserInteracting = false
+                scheduleAutoRecenterIfNavigating()
             }
         }
         
@@ -664,6 +697,7 @@ struct HTTSmoothMapView: UIViewRepresentable {
                         self.parent.manager.userZoomDistance = currentAlt
                     }
                 }
+                scheduleAutoRecenterIfNavigating()
             }
         }
         
@@ -846,6 +880,12 @@ struct HTTSmoothMapView: UIViewRepresentable {
                 case .congestion:
                     hView?.markerTintColor = .systemYellow
                     hView?.glyphImage = UIImage(systemName: "exclamationmark.triangle.fill")
+                case .violationCam:
+                    hView?.markerTintColor = .systemPurple
+                    hView?.glyphImage = UIImage(systemName: "video.badge.checkmark") ?? UIImage(systemName: "camera.fill")
+                case .trafficRuleWarn:
+                    hView?.markerTintColor = .systemIndigo
+                    hView?.glyphImage = UIImage(systemName: "exclamationmark.shield.fill")
                 case .trafficLight:
                     break
                 }
@@ -1039,9 +1079,9 @@ struct HTTSmoothMapView: UIViewRepresentable {
                     renderer.mainFillColor = UIColor(red: 0.38, green: 0.68, blue: 0.98, alpha: 0.85)
                     renderer.outerBorderColor = UIColor(red: 0.18, green: 0.45, blue: 0.78, alpha: 0.85)
                     renderer.lineWidth = 9.0
-                } else if tag == "TRAVELED_GREEN" {
-                    renderer.mainFillColor = UIColor(red: 0.16, green: 0.78, blue: 0.36, alpha: 0.95)
-                    renderer.outerBorderColor = UIColor(red: 0.06, green: 0.45, blue: 0.18, alpha: 1.0)
+                } else if tag == "TRAVELED_GRAY" || tag == "TRAVELED_GREEN" {
+                    renderer.mainFillColor = UIColor(white: 0.62, alpha: 0.90)
+                    renderer.outerBorderColor = UIColor(white: 0.40, alpha: 1.0)
                     renderer.drawDirectionChevrons = false
                     renderer.lineWidth = 10.0
                 } else if tag == "DRIVING_ACTIVE_BLUE" || tag == "EBIKE_CYAN_BLUE" {

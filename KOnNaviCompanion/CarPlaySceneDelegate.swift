@@ -20,6 +20,10 @@ class CarPlayMapViewController: UIViewController, MKMapViewDelegate {
     private let speedLabel = UILabel()
     private let unitLabel = UILabel()
     private let limitLabel = UILabel()
+    private let speedLimitSignView = UIView()
+    private let speedLimitSignLabel = UILabel()
+    private var autoRecenterWorkItem: DispatchWorkItem? = nil
+    private var lastCameraFollowTime: CFTimeInterval = 0
     private let bubbleView = UIView()
     private let speakerLabel = UILabel()
     private let quoteLabel = UILabel()
@@ -47,13 +51,15 @@ class CarPlayMapViewController: UIViewController, MKMapViewDelegate {
         mapView.delegate = self
         mapView.showsUserLocation = true
         mapView.showsCompass = true
-        // Fix pink POI glyph squares on CarPlay: force clean Light day map matching Phone & disable CarPlay-buggy traffic tiles
+        // 彻底修复 CarPlay 粉色/橙色/绿色 POI 贴图方块：禁用异常的 CarPlay POI 图集并关闭自带路况块
         mapView.overrideUserInterfaceStyle = .light
         mapView.showsTraffic = false
         mapView.showsBuildings = true
+        mapView.pointOfInterestFilter = .excludingAll
         if #available(iOS 16.0, *) {
             let config = MKStandardMapConfiguration(elevationStyle: .realistic)
             config.showsTraffic = false
+            config.pointOfInterestFilter = .excludingAll
             mapView.preferredConfiguration = config
         }
         view.addSubview(mapView)
@@ -128,6 +134,25 @@ class CarPlayMapViewController: UIViewController, MKMapViewDelegate {
         limitLabel.translatesAutoresizingMaskIntoConstraints = false
         speedBadge.addSubview(limitLabel)
 
+        // 1.5 GaoDe-style Circular Road Speed Limit Sign (Red Ring + White Center)
+        speedLimitSignView.backgroundColor = .white
+        speedLimitSignView.layer.cornerRadius = 26
+        speedLimitSignView.layer.borderWidth = 4.5
+        speedLimitSignView.layer.borderColor = UIColor(red: 0.90, green: 0.14, blue: 0.14, alpha: 1.0).cgColor
+        speedLimitSignView.layer.shadowColor = UIColor.black.cgColor
+        speedLimitSignView.layer.shadowOpacity = 0.35
+        speedLimitSignView.layer.shadowRadius = 4
+        speedLimitSignView.layer.shadowOffset = CGSize(width: 0, height: 2)
+        speedLimitSignView.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(speedLimitSignView)
+
+        speedLimitSignLabel.font = UIFont.monospacedDigitSystemFont(ofSize: 20, weight: .black)
+        speedLimitSignLabel.textColor = .black
+        speedLimitSignLabel.textAlignment = .center
+        speedLimitSignLabel.text = "80"
+        speedLimitSignLabel.translatesAutoresizingMaskIntoConstraints = false
+        speedLimitSignView.addSubview(speedLimitSignLabel)
+
         // 2. Voice Bubble & Mascot (Bottom Center/Right)
         bubbleView.backgroundColor = UIColor(red: 0.99, green: 0.96, blue: 0.90, alpha: 0.95)
         bubbleView.layer.cornerRadius = 10
@@ -190,7 +215,15 @@ class CarPlayMapViewController: UIViewController, MKMapViewDelegate {
             limitLabel.bottomAnchor.constraint(equalTo: speedBadge.bottomAnchor, constant: -5),
             limitLabel.leadingAnchor.constraint(equalTo: speedBadge.leadingAnchor, constant: 10),
 
-            bubbleView.leadingAnchor.constraint(equalTo: speedBadge.trailingAnchor, constant: 10),
+            speedLimitSignView.leadingAnchor.constraint(equalTo: speedBadge.trailingAnchor, constant: 8),
+            speedLimitSignView.centerYAnchor.constraint(equalTo: speedBadge.centerYAnchor),
+            speedLimitSignView.widthAnchor.constraint(equalToConstant: 52),
+            speedLimitSignView.heightAnchor.constraint(equalToConstant: 52),
+
+            speedLimitSignLabel.centerXAnchor.constraint(equalTo: speedLimitSignView.centerXAnchor),
+            speedLimitSignLabel.centerYAnchor.constraint(equalTo: speedLimitSignView.centerYAnchor),
+
+            bubbleView.leadingAnchor.constraint(equalTo: speedLimitSignView.trailingAnchor, constant: 8),
             bubbleView.bottomAnchor.constraint(equalTo: speedBadge.bottomAnchor),
             bubbleView.trailingAnchor.constraint(lessThanOrEqualTo: mascotImageView.leadingAnchor, constant: -8),
             bubbleView.heightAnchor.constraint(equalToConstant: 54),
@@ -223,10 +256,31 @@ class CarPlayMapViewController: UIViewController, MKMapViewDelegate {
             }
             .store(in: &cancellables)
 
-        mgr.$speedLimitKmh
+        Publishers.CombineLatest(mgr.$speedLimitKmh, mgr.$isOverspeeding)
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] lim in
-                self?.limitLabel.text = "限速 \(Int(lim))"
+            .sink { [weak self] lim, over in
+                guard let self = self else { return }
+                let v = Int(lim)
+                if v > 0 {
+                    self.limitLabel.text = "限速 \(v)"
+                    self.speedLimitSignView.isHidden = false
+                    self.speedLimitSignLabel.text = "\(v)"
+                    self.speedLimitSignView.backgroundColor = over ? UIColor(red: 1.0, green: 0.90, blue: 0.90, alpha: 1.0) : .white
+                    self.speedLimitSignLabel.textColor = over ? UIColor(red: 0.85, green: 0.05, blue: 0.05, alpha: 1.0) : .black
+                } else {
+                    self.limitLabel.text = "无限速"
+                    self.speedLimitSignView.isHidden = true
+                }
+            }
+            .store(in: &cancellables)
+
+        mgr.$routeHazards
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] hazards in
+                guard let self = self else { return }
+                let existing = self.mapView.annotations.filter { $0 is RoadHazardAnnotation }
+                self.mapView.removeAnnotations(existing)
+                self.mapView.addAnnotations(hazards)
             }
             .store(in: &cancellables)
 
@@ -284,13 +338,30 @@ class CarPlayMapViewController: UIViewController, MKMapViewDelegate {
             .sink { [weak self] coord in
                 guard let self = self else { return }
                 if !self.isUserPanning {
-                    let cam = MKMapCamera(
-                        lookingAtCenter: coord,
-                        fromDistance: mgr.travelMode == .walking ? 380 : 520,
-                        pitch: 45,
-                        heading: mgr.headingDegrees
-                    )
-                    self.mapView.setCamera(cam, animated: true)
+                    let dynDist = mgr.hasActiveNavigation ? mgr.recommendedNavigationZoomDistance() : (mgr.travelMode == .walking ? 340.0 : 520.0)
+                    let nowTime = CACurrentMediaTime()
+                    let curDist = self.mapView.camera.centerCoordinateDistance
+                    let camLoc = CLLocation(latitude: self.mapView.camera.centerCoordinate.latitude, longitude: self.mapView.camera.centerCoordinate.longitude)
+                    let usrLoc = CLLocation(latitude: coord.latitude, longitude: coord.longitude)
+                    let movedMeters = camLoc.distance(from: usrLoc)
+                    var hDiff = abs(self.mapView.camera.heading - mgr.headingDegrees).truncatingRemainder(dividingBy: 360.0)
+                    if hDiff > 180.0 { hDiff = 360.0 - hDiff }
+                    if (movedMeters > 2.2 || hDiff > 3.5 || abs(curDist - dynDist) > 40.0) && (nowTime - self.lastCameraFollowTime >= 0.45) {
+                        self.lastCameraFollowTime = nowTime
+                        let cam = MKMapCamera(
+                            lookingAtCenter: coord,
+                            fromDistance: dynDist,
+                            pitch: 45,
+                            heading: mgr.headingDegrees
+                        )
+                        UIView.animate(
+                            withDuration: 0.42,
+                            delay: 0,
+                            options: [.curveLinear, .allowUserInteraction, .beginFromCurrentState]
+                        ) {
+                            self.mapView.camera = cam
+                        }
+                    }
                 }
                 if let route = mgr.activeRoute {
                     let prev = self.lastSplitUpdateCoord
@@ -353,28 +424,60 @@ class CarPlayMapViewController: UIViewController, MKMapViewDelegate {
 
         mapView.removeOverlays(mapView.overlays)
 
+        let mgr = AudioPlayerManager.shared
         if closestIdx >= 1 && minDist < 120.0 {
             var traveledCoords = Array(coords[0...closestIdx])
             let traveledPoly = MKPolyline(coordinates: &traveledCoords, count: traveledCoords.count)
-            traveledPoly.title = "TRAVELED_GREEN"
+            traveledPoly.title = "TRAVELED_GRAY"
             mapView.addOverlay(traveledPoly, level: .aboveRoads)
         }
 
         let remStart = (minDist < 120.0) ? closestIdx : 0
-        if remStart < count - 1 {
+        let remCount = count - remStart
+        if mgr.travelMode == .driving && remCount > 8 {
+            let slowNow = mgr.isCongested || (mgr.hasActiveNavigation && mgr.currentSpeedKmh > 3 && mgr.speedLimitKmh > 0 && mgr.currentSpeedKmh < mgr.speedLimitKmh * 0.45)
+            let cut1 = remStart + max(2, Int(Double(remCount) * 0.45))
+            let cut2 = remStart + max(cut1 - remStart + 2, Int(Double(remCount) * 0.72))
+
+            var c1 = Array(coords[remStart...cut1])
+            let p1 = MKPolyline(coordinates: &c1, count: c1.count)
+            p1.title = slowNow ? "TRAFFIC_RED" : "TRAFFIC_GREEN"
+            mapView.addOverlay(p1, level: .aboveRoads)
+
+            var c2 = Array(coords[cut1...cut2])
+            let p2 = MKPolyline(coordinates: &c2, count: c2.count)
+            p2.title = mgr.isCongested ? "TRAFFIC_RED" : "TRAFFIC_YELLOW"
+            mapView.addOverlay(p2, level: .aboveRoads)
+
+            var c3 = Array(coords[cut2..<count])
+            let p3 = MKPolyline(coordinates: &c3, count: c3.count)
+            p3.title = "TRAFFIC_GREEN"
+            mapView.addOverlay(p3, level: .aboveRoads)
+        } else if remStart < count - 1 {
             var remCoords = Array(coords[remStart..<count])
             let remPoly = MKPolyline(coordinates: &remCoords, count: remCoords.count)
-            switch AudioPlayerManager.shared.travelMode {
+            switch mgr.travelMode {
             case .walking: remPoly.title = "WALKING_BLUE"
             case .ebike: remPoly.title = "EBIKE_CYAN_BLUE"
-            default: remPoly.title = "DRIVING_ACTIVE_BLUE"
+            default: remPoly.title = mgr.isCongested ? "TRAFFIC_RED" : "TRAFFIC_GREEN"
             }
             mapView.addOverlay(remPoly, level: .aboveRoads)
         }
     }
 
+    private func scheduleAutoRecenter() {
+        autoRecenterWorkItem?.cancel()
+        guard AudioPlayerManager.shared.hasActiveNavigation && AudioPlayerManager.shared.autoRecenterEnabled else { return }
+        let item = DispatchWorkItem { [weak self] in
+            self?.recenterImmediate()
+        }
+        autoRecenterWorkItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 6.0, execute: item)
+    }
+
     func panMap(direction: CPMapTemplate.PanDirection) {
         isUserPanning = true
+        scheduleAutoRecenter()
         let span = mapView.region.span
         var center = mapView.centerCoordinate
         let stepLat = span.latitudeDelta * 0.25
@@ -395,18 +498,20 @@ class CarPlayMapViewController: UIViewController, MKMapViewDelegate {
 
     func zoomMap(scale: Double) {
         isUserPanning = true
+        scheduleAutoRecenter()
         var cam = mapView.camera
         cam.centerCoordinateDistance = max(120, min(15000, cam.centerCoordinateDistance * scale))
         mapView.setCamera(cam, animated: true)
     }
 
     func recenterImmediate() {
+        autoRecenterWorkItem?.cancel()
         isUserPanning = false
         let mgr = AudioPlayerManager.shared
         let coord = mapView.userLocation.location?.coordinate ?? mgr.userCoordinate
         let cam = MKMapCamera(
             lookingAtCenter: coord,
-            fromDistance: mgr.travelMode == .walking ? 380 : 520,
+            fromDistance: mgr.hasActiveNavigation ? mgr.recommendedNavigationZoomDistance() : (mgr.travelMode == .walking ? 340.0 : 520.0),
             pitch: 45,
             heading: mgr.headingDegrees
         )
@@ -425,6 +530,43 @@ class CarPlayMapViewController: UIViewController, MKMapViewDelegate {
                 ?? CarPlayMapViewController.createNavigationArrowImage()
             v?.centerOffset = CGPoint(x: 0, y: -18)
             return v
+        }
+        if let hazard = annotation as? RoadHazardAnnotation {
+            let id = "CarPlayHazard_\(hazard.kind.rawValue)"
+            var hv = mapView.dequeueReusableAnnotationView(withIdentifier: id) as? MKMarkerAnnotationView
+            if hv == nil {
+                hv = MKMarkerAnnotationView(annotation: hazard, reuseIdentifier: id)
+                hv?.canShowCallout = true
+            } else {
+                hv?.annotation = hazard
+            }
+            switch hazard.kind {
+            case .speedCamera:
+                hv?.markerTintColor = .systemRed
+                hv?.glyphText = "\(hazard.speedLimitValue)"
+            case .redLightCam:
+                hv?.markerTintColor = .systemPink
+                hv?.glyphImage = UIImage(systemName: "camera.fill")
+            case .violationCam:
+                hv?.markerTintColor = .systemPurple
+                hv?.glyphImage = UIImage(systemName: "video.badge.checkmark") ?? UIImage(systemName: "camera.fill")
+            case .trafficRuleWarn:
+                hv?.markerTintColor = .systemIndigo
+                hv?.glyphImage = UIImage(systemName: "exclamationmark.shield.fill")
+            case .tollStation:
+                hv?.markerTintColor = .systemOrange
+                hv?.glyphText = "¥"
+            case .serviceArea:
+                hv?.markerTintColor = .systemBlue
+                hv?.glyphImage = UIImage(systemName: "cup.and.saucer.fill")
+            case .congestion:
+                hv?.markerTintColor = .systemYellow
+                hv?.glyphImage = UIImage(systemName: "exclamationmark.triangle.fill")
+            case .trafficLight:
+                hv?.markerTintColor = .systemGreen
+                hv?.glyphImage = UIImage(systemName: "light.beacon.max.fill") ?? UIImage(systemName: "circle.fill")
+            }
+            return hv
         }
         return nil
     }
@@ -453,11 +595,26 @@ class CarPlayMapViewController: UIViewController, MKMapViewDelegate {
         if let poly = overlay as? MKPolyline {
             let renderer = GaoDeArrowRouteRenderer(polyline: poly)
             let tag = poly.title ?? ""
-            if tag == "TRAVELED_GREEN" {
-                renderer.mainFillColor = UIColor(red: 0.16, green: 0.78, blue: 0.36, alpha: 0.95)
-                renderer.outerBorderColor = UIColor(red: 0.06, green: 0.45, blue: 0.18, alpha: 1.0)
+            if tag == "TRAVELED_GRAY" || tag == "TRAVELED_GREEN" {
+                renderer.mainFillColor = UIColor(white: 0.62, alpha: 0.90)
+                renderer.outerBorderColor = UIColor(white: 0.40, alpha: 1.0)
                 renderer.drawDirectionChevrons = false
                 renderer.lineWidth = 10.0
+            } else if tag == "TRAFFIC_GREEN" {
+                renderer.mainFillColor = UIColor(red: 0.06, green: 0.72, blue: 0.51, alpha: 0.98)
+                renderer.outerBorderColor = UIColor(red: 0.02, green: 0.44, blue: 0.30, alpha: 1.0)
+                renderer.drawDirectionChevrons = true
+                renderer.lineWidth = 11.0
+            } else if tag == "TRAFFIC_YELLOW" {
+                renderer.mainFillColor = UIColor(red: 0.96, green: 0.62, blue: 0.04, alpha: 0.98)
+                renderer.outerBorderColor = UIColor(red: 0.68, green: 0.40, blue: 0.0, alpha: 1.0)
+                renderer.drawDirectionChevrons = true
+                renderer.lineWidth = 11.0
+            } else if tag == "TRAFFIC_RED" {
+                renderer.mainFillColor = UIColor(red: 0.94, green: 0.22, blue: 0.22, alpha: 0.98)
+                renderer.outerBorderColor = UIColor(red: 0.60, green: 0.05, blue: 0.05, alpha: 1.0)
+                renderer.drawDirectionChevrons = true
+                renderer.lineWidth = 11.0
             } else if tag == "WALKING_BLUE" {
                 renderer.mainFillColor = UIColor(red: 0.05, green: 0.65, blue: 0.98, alpha: 0.96)
                 renderer.outerBorderColor = UIColor(red: 0.0, green: 0.38, blue: 0.72, alpha: 1.0)

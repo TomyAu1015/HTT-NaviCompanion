@@ -599,12 +599,14 @@ enum RouteStrategyPreference: String, CaseIterable, Identifiable {
 }
 
 enum RoadHazardKind: String {
-    case speedCamera = "speedCamera"   // 测速电子眼 (60/80/100/120 km/h)
-    case redLightCam = "redLightCam"   // 闯红灯拍照 / 违章抓拍
-    case tollStation = "tollStation"   // 收费站
-    case serviceArea = "serviceArea"   // 高速服务区 (SA/PA)
-    case congestion = "congestion"     // 拥堵缓行路段
-    case trafficLight = "trafficLight" // 导航路线真实路口红绿灯 (中国大陆高德数据 / 海外Apple Maps)
+    case speedCamera = "speedCamera"         // 测速电子眼 (40/60/80/100/120 km/h)
+    case redLightCam = "redLightCam"         // 闯红灯拍照电子眼
+    case violationCam = "violationCam"       // 违章抓拍 / 实线变道监控
+    case trafficRuleWarn = "trafficRuleWarn" // 交通规则预警 (注意礼让/禁止超速/严禁压线)
+    case tollStation = "tollStation"         // 收费站
+    case serviceArea = "serviceArea"         // 高速服务区 (SA/PA)
+    case congestion = "congestion"           // 拥堵缓行路段
+    case trafficLight = "trafficLight"       // 导航路线真实路口红绿灯
 }
 
 class RoadHazardAnnotation: MKPointAnnotation {
@@ -1193,6 +1195,8 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     @Published var selectedCarTierIds: Set<UUID> = []
     @Published var isReverseGeocoding: Bool = false
     @Published var userZoomDistance: Double = 280.0
+    @Published var autoRecenterEnabled: Bool = true
+    var routeMaxSpeedPoints: [(coord: CLLocationCoordinate2D, limit: Int)] = []
     @Published var routePreference: RouteStrategyPreference = .gaodeRecommended {
         didSet {
             applyRoutePreferenceSort()
@@ -8451,17 +8455,73 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             return 0
         }
         
-        // Driving mode: match actual road class from map data
-        if text.contains("高速") || text.contains("Expressway") || text.contains("Freeway") || text.contains("Motorway") || text.contains("G") || text.contains("S") {
-            return 100
-        } else if text.contains("快速") || text.contains("高架") || text.contains("环线") || text.contains("環線") || text.contains("大桥") || text.contains("大橋") || text.contains("隧道") || text.contains("Highway") {
-            return 80
-        } else if text.contains("大道") || text.contains("干道") || text.contains("幹道") || text.contains("公路") || text.contains("国道") || text.contains("國道") || text.contains("省道") || text.contains("Avenue") || text.contains("Boulevard") {
+        // Driving mode: match actual road class accurately (ramps/auxiliary -> expressway/viaduct -> highway)
+        if text.contains("匝道") || text.contains("出口") || text.contains("入口") || text.contains("Ramp") || text.contains("Exit") {
+            return 40
+        }
+        if text.contains("辅路") || text.contains("輔路") || text.contains("连接线") || text.contains("連接線") {
             return 60
-        } else if text.contains("路") || text.contains("道") || text.contains("街") || text.contains("辅路") || text.contains("輔路") || text.contains("Road") || text.contains("Street") || text.contains("Rd") || text.contains("St") {
+        }
+        if text.contains("快速") || text.contains("高架") || text.contains("环线") || text.contains("環線") || text.contains("大桥") || text.contains("大橋") || text.contains("隧道") || text.contains("快速路") {
+            return 80
+        }
+        let isRealHighwayCode = text.range(of: #"\b[GS]\d{1,4}\b"#, options: .regularExpression) != nil
+        if text.contains("高速") || text.contains("Expressway") || text.contains("Freeway") || text.contains("Motorway") || (isRealHighwayCode && !text.contains("辅")) {
+            return 100
+        }
+        if text.contains("大道") || text.contains("干道") || text.contains("幹道") || text.contains("公路") || text.contains("国道") || text.contains("國道") || text.contains("省道") || text.contains("Avenue") || text.contains("Boulevard") {
+            return 60
+        }
+        if text.contains("路") || text.contains("道") || text.contains("街") || text.contains("Road") || text.contains("Street") || text.contains("Rd") || text.contains("St") {
             return 50
         }
         return 0
+    }
+
+    /// 高德同款动态跟车视距：高速自动缩小看全局，城区路口/收费站/匝道自动放大看清细节
+    func recommendedNavigationZoomDistance() -> Double {
+        if travelMode == .walking { return 260.0 }
+        if travelMode == .ebike {
+            return (hasActiveNavigation && distanceToNextStepMeters > 0 && distanceToNextStepMeters <= 140) ? 220.0 : 340.0
+        }
+        // 1. 接近收费站（<= 600m）或即将转弯/进出匝道（<= 220m）：自动放大看清车道与出口
+        if hasActiveNavigation && upcomingTollDistance > 0 && upcomingTollDistance <= 600 {
+            return 240.0
+        }
+        if hasActiveNavigation && distanceToNextStepMeters > 0 && distanceToNextStepMeters <= 220 {
+            return 250.0
+        }
+        // 2. 接近前方测速电子眼/红绿灯路口（<= 320m 且在城区低中速）：适度放大
+        if hasActiveNavigation && distanceToNextStepMeters > 0 && distanceToNextStepMeters <= 380 && currentSpeedKmh < 65.0 {
+            return 330.0
+        }
+        // 3. 高速/快速路巡航（无近期转弯/收费站）：自动拉远缩小视野
+        if currentSpeedKmh >= 85.0 || (speedLimitKmh >= 100.0 && currentSpeedKmh >= 65.0) {
+            return 1400.0
+        }
+        if currentSpeedKmh >= 65.0 || (speedLimitKmh >= 80.0 && currentSpeedKmh >= 50.0) {
+            return 1080.0
+        }
+        // 4. 城区拥堵缓行 / 一般城区道路
+        if isCongested || currentSpeedKmh < 24.0 {
+            return 340.0
+        }
+        return 460.0
+    }
+
+    func lookupNearestOsmMaxSpeed(near coord: CLLocationCoordinate2D) -> Int? {
+        guard !routeMaxSpeedPoints.isEmpty else { return nil }
+        let userLoc = CLLocation(latitude: coord.latitude, longitude: coord.longitude)
+        var bestDist = 180.0
+        var bestLimit: Int? = nil
+        for item in routeMaxSpeedPoints {
+            let d = userLoc.distance(from: CLLocation(latitude: item.coord.latitude, longitude: item.coord.longitude))
+            if d < bestDist {
+                bestDist = d
+                bestLimit = item.limit
+            }
+        }
+        return bestLimit
     }
 
     func evaluateRoadSpeedLimitAndNotify(for instruction: String) {
@@ -8471,7 +8531,8 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             return
         }
         let combinedRoadText = instruction.isEmpty ? (activeRoute?.name ?? "") : instruction
-        let detectedLimit = detectActualRoadSpeedLimit(from: combinedRoadText)
+        let osmLimit = (travelMode == .driving) ? lookupNearestOsmMaxSpeed(near: userCoordinate) : nil
+        let detectedLimit = osmLimit ?? detectActualRoadSpeedLimit(from: combinedRoadText)
         
         if detectedLimit != upcomingCameraLimit {
             upcomingCameraLimit = detectedLimit
@@ -8501,6 +8562,10 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                 self.routeOverviewFitTrigger += 1
             }
             self.routeSelectionRenderTrigger += 1
+        } else {
+            self.isNavigatingFocused = true
+            self.mapTrackingUser = true
+            self.recenterTrigger += 1
         }
         let steps = route.steps
         self.currentStepIndex = (steps.count > 1 && steps[0].instructions.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) ? 1 : 0
@@ -8585,6 +8650,49 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             }
         }
         
+        // Fetch real-world OpenStreetMap maxspeed tags along the route bounding box
+        self.routeMaxSpeedPoints = []
+        if travelMode == .driving && ptCount >= 2 {
+            var minLat = 90.0, maxLat = -90.0, minLon = 180.0, maxLon = -180.0
+            for i in stride(from: 0, to: ptCount, by: max(1, ptCount / 20)) {
+                let c = pts[i].coordinate
+                minLat = min(minLat, c.latitude); maxLat = max(maxLat, c.latitude)
+                minLon = min(minLon, c.longitude); maxLon = max(maxLon, c.longitude)
+            }
+            if (maxLat - minLat) < 0.35 && (maxLon - minLon) < 0.35 {
+                let bbox = String(format: "%.5f,%.5f,%.5f,%.5f", minLat - 0.002, minLon - 0.002, maxLat + 0.002, maxLon + 0.002)
+                let q = "[out:json][timeout:4];way[\"maxspeed\"](\(bbox));out center;"
+                if let enc = q.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
+                   let url = URL(string: "https://overpass-api.de/api/interpreter?data=\(enc)") {
+                    var req = URLRequest(url: url, timeoutInterval: 4.5)
+                    req.setValue("HTT-NaviCompanion/2.0", forHTTPHeaderField: "User-Agent")
+                    URLSession.shared.dataTask(with: req) { [weak self] data, _, _ in
+                        guard let self = self, let data = data,
+                              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                              let elems = json["elements"] as? [[String: Any]] else { return }
+                        var parsed: [(coord: CLLocationCoordinate2D, limit: Int)] = []
+                        for el in elems {
+                            guard let center = el["center"] as? [String: Any],
+                                  let lat = center["lat"] as? Double,
+                                  let lon = center["lon"] as? Double,
+                                  let tags = el["tags"] as? [String: Any],
+                                  let msStr = tags["maxspeed"] as? String else { continue }
+                            let digits = msStr.components(separatedBy: CharacterSet.decimalDigits.inverted).joined()
+                            if let val = Int(digits), val >= 20, val <= 130 {
+                                parsed.append((CLLocationCoordinate2D(latitude: lat, longitude: lon), val))
+                            }
+                        }
+                        if !parsed.isEmpty {
+                            DispatchQueue.main.async {
+                                self.routeMaxSpeedPoints = parsed
+                                self.evaluateRoadSpeedLimitAndNotify(for: self.currentStepInstruction)
+                            }
+                        }
+                    }.resume()
+                }
+            }
+        }
+
         // Fetch real-world OpenStreetMap traffic_signals along the route bounding box
         if !hasHighway && ptCount >= 2 {
             var minLat = 90.0, maxLat = -90.0, minLon = 180.0, maxLon = -180.0
@@ -8663,9 +8771,34 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                     cam.coordinate = coord
                     cam.kind = .speedCamera
                     cam.speedLimitValue = detectedRouteLimit
-                    cam.title = language == .zhHant ? "限速 \(cam.speedLimitValue) 電子眼" : "限速 \(cam.speedLimitValue) 电子眼"
+                    cam.title = language == .zhHant ? "限速 \(cam.speedLimitValue) 測速電子眼" : "限速 \(cam.speedLimitValue) 测速电子眼"
                     hazards.append(cam)
                 }
+                // 违章抓拍 / 闯红灯拍照 / 交通规则预警标志
+                let ruleStep = max(1, ptCount / 4)
+                let vIdx = min(ptCount - 2, ruleStep)
+                let vCam = RoadHazardAnnotation()
+                vCam.coordinate = pts[vIdx].coordinate
+                vCam.kind = .violationCam
+                vCam.title = language == .zhHant ? "違章抓拍（禁止壓實線變道）" : "违章抓拍（禁止压实线变道）"
+                hazards.append(vCam)
+
+                if !hasHighway && ptCount > 8 {
+                    let rIdx = min(ptCount - 2, ruleStep * 2)
+                    let rCam = RoadHazardAnnotation()
+                    rCam.coordinate = pts[rIdx].coordinate
+                    rCam.kind = .redLightCam
+                    rCam.title = language == .zhHant ? "闖紅燈拍照預警" : "闯红灯拍照预警"
+                    hazards.append(rCam)
+                }
+
+                let wIdx = min(ptCount - 2, ruleStep * 3)
+                let warn = RoadHazardAnnotation()
+                warn.coordinate = pts[wIdx].coordinate
+                warn.kind = .trafficRuleWarn
+                warn.speedLimitValue = detectedRouteLimit
+                warn.title = language == .zhHant ? "交通規則預警：限速 \(detectedRouteLimit) · 禮讓行人" : "交通规则预警：限速 \(detectedRouteLimit) · 礼让行人"
+                hazards.append(warn)
             }
             
             // Highway Service Areas & Toll Stations (Driving on Highway only)
@@ -9116,14 +9249,14 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                 minSegDist = lastRoutePerpendicularDistance
             }
 
-            let offThreshold: Double = (travelMode == .walking) ? 32.0 : 48.0
+            let offThreshold: Double = (travelMode == .walking) ? 22.0 : ((travelMode == .ebike) ? 26.0 : 30.0)
             if location.horizontalAccuracy >= 0 && location.horizontalAccuracy <= 100.0 && minSegDist > offThreshold {
-                consecutiveOffRouteCount += (minSegDist > 80.0 ? 2 : 1)
+                consecutiveOffRouteCount += (minSegDist > 42.0 ? 2 : 1)
             } else {
                 consecutiveOffRouteCount = 0
             }
 
-            if consecutiveOffRouteCount >= 2 && Date().timeIntervalSince(lastRerouteTime) > 8.0 {
+            if consecutiveOffRouteCount >= 2 && Date().timeIntervalSince(lastRerouteTime) > 3.5 {
                 consecutiveOffRouteCount = 0
                 lastRerouteTime = Date()
                 let rerouteMsg = "🔄 你已偏离路线，正在为您重新规划路线..."
