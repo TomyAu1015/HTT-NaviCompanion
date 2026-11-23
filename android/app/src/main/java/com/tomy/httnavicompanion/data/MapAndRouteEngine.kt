@@ -611,6 +611,68 @@ object MapAndRouteEngine {
         return listOf(ComputedRoute(if (isChina) "公交/地铁推荐" else "Transit Route", basePts, steps, totalDist, dur, segs))
     }
 
+    fun detectRoadSpeedLimit(roadText: String, modeName: String = "DRIVING"): Int {
+        val text = roadText.trim()
+        if (text.isEmpty()) return 0
+        if (modeName == "WALKING" || modeName == "TRANSIT") return 0
+        val noLimit = listOf("步行", "人行", "天桥", "天橋", "小路", "村", "胡同", "弄", "巷", "小区", "小區", "公园", "公園", "绿道", "綠道")
+        if (noLimit.any { text.contains(it) }) return 0
+        if (modeName == "EBIKE") return 25
+        if (text.contains("匝道") || text.contains("出口") || text.contains("入口") || text.contains("Ramp") || text.contains("Exit")) return 40
+        if (text.contains("辅路") || text.contains("輔路") || text.contains("连接线") || text.contains("連接線")) return 60
+        if (text.contains("快速") || text.contains("高架") || text.contains("环线") || text.contains("環線") || text.contains("大桥") || text.contains("大橋") || text.contains("隧道")) return 80
+        val isRealHwyCode = Regex("\\b[GS]\\d{1,4}\\b").containsMatchIn(text)
+        if (text.contains("高速") || text.contains("Expressway") || text.contains("Freeway") || text.contains("Motorway") || (isRealHwyCode && !text.contains("辅"))) return 100
+        if (text.contains("大道") || text.contains("干道") || text.contains("幹道") || text.contains("公路") || text.contains("国道") || text.contains("省道")) return 60
+        if (text.contains("路") || text.contains("道") || text.contains("街") || text.contains("Road") || text.contains("Street")) return 50
+        return 0
+    }
+
+    fun fetchMaxSpeedAlongRoute(routePts: List<LatLng>): List<Pair<LatLng, Int>> {
+        if (routePts.size < 2) return emptyList()
+        var minLat = 90.0; var maxLat = -90.0; var minLon = 180.0; var maxLon = -180.0
+        val stride = (routePts.size / 20).coerceAtLeast(1)
+        for (i in routePts.indices step stride) {
+            val c = routePts[i]
+            if (c.latitude < minLat) minLat = c.latitude
+            if (c.latitude > maxLat) maxLat = c.latitude
+            if (c.longitude < minLon) minLon = c.longitude
+            if (c.longitude > maxLon) maxLon = c.longitude
+        }
+        if ((maxLat - minLat) > 0.35 || (maxLon - minLon) > 0.35) return emptyList()
+        val bbox = String.format(Locale.US, "%.5f,%.5f,%.5f,%.5f", minLat - 0.002, minLon - 0.002, maxLat + 0.002, maxLon + 0.002)
+        val q = URLEncoder.encode("[out:json][timeout:4];way[\"maxspeed\"]($bbox);out center;", "UTF-8")
+        return try {
+            val conn = (URL("https://overpass-api.de/api/interpreter?data=$q").openConnection() as HttpURLConnection).apply {
+                connectTimeout = 3500
+                readTimeout = 3500
+                setRequestProperty("User-Agent", "HTT-NaviCompanion-Android/2.1")
+            }
+            val res = mutableListOf<Pair<LatLng, Int>>()
+            if (conn.responseCode == 200) {
+                val body = BufferedReader(InputStreamReader(conn.inputStream)).use { it.readText() }
+                val elems = JSONObject(body).optJSONArray("elements")
+                if (elems != null) {
+                    for (i in 0 until elems.length()) {
+                        val el = elems.getJSONObject(i)
+                        val center = el.optJSONObject("center") ?: continue
+                        val lat = center.optDouble("lat", Double.NaN)
+                        val lon = center.optDouble("lon", Double.NaN)
+                        val msStr = el.optJSONObject("tags")?.optString("maxspeed", "") ?: ""
+                        val num = msStr.filter { it.isDigit() }.toIntOrNull()
+                        if (!lat.isNaN() && !lon.isNaN() && num != null && num in 20..130) {
+                            res.add(LatLng(lat, lon) to num)
+                        }
+                    }
+                }
+            }
+            conn.disconnect()
+            res
+        } catch (_: Throwable) {
+            emptyList()
+        }
+    }
+
     fun fetchTrafficSignalsAlongRoute(routePts: List<LatLng>): List<LatLng> {
         if (routePts.size < 2) return emptyList()
         var minLat = 90.0; var maxLat = -90.0; var minLon = 180.0; var maxLon = -180.0

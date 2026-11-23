@@ -745,6 +745,42 @@ class AudioPlayerManager(
     }
 
     private var currentRouteStepIdx: Int = 0
+    private var routeMaxSpeedPoints: List<Pair<LatLng, Int>> = emptyList()
+
+    fun recommendedZoomLevel(): Double {
+        val mode = _travelMode.value
+        if (mode == NavigationTravelMode.WALKING) return 17.6
+        if (mode == NavigationTravelMode.EBIKE) {
+            return if (_hasActiveNavigation.value && _distanceToNextStepMeters.value in 1..120) 17.8 else 16.9
+        }
+        if (_hasActiveNavigation.value && _distanceToNextStepMeters.value in 1..180) return 17.8
+        val spd = _currentSpeedKmh.value
+        return when {
+            spd < 24 -> 17.1
+            spd >= 80 -> 15.2
+            spd >= 60 -> 15.8
+            else -> 16.5
+        }
+    }
+
+    private fun refreshRoadSpeedLimit(coord: LatLng, roadHint: String) {
+        val mode = _travelMode.value
+        if (!mode.supportsSpeedLimit) {
+            _speedLimitKmh.value = 0
+            return
+        }
+        var bestDist = 180.0
+        var osmLim: Int? = null
+        for ((pt, lim) in routeMaxSpeedPoints) {
+            val d = CoordinateConverter.distanceMeters(coord, pt)
+            if (d < bestDist) {
+                bestDist = d
+                osmLim = lim
+            }
+        }
+        val detected = osmLim ?: MapAndRouteEngine.detectRoadSpeedLimit(roadHint, mode.name)
+        if (detected > 0) _speedLimitKmh.value = detected
+    }
     private var offRouteStrikeCount: Int = 0
     private var lastRerouteMillis: Long = 0L
 
@@ -867,11 +903,15 @@ class AudioPlayerManager(
             minSegDist = CoordinateConverter.distanceMeters(coord, pts[0])
         }
 
-        val offLimit = if (_travelMode.value == NavigationTravelMode.WALKING) 32.0 else 48.0
+        val offLimit = when (_travelMode.value) {
+            NavigationTravelMode.WALKING -> 22.0
+            NavigationTravelMode.EBIKE -> 26.0
+            else -> 30.0
+        }
         if (minSegDist > offLimit && !_isRoutePreviewing.value && !isRecalculatingRoute) {
-            offRouteStrikeCount += if (minSegDist > 80.0) 2 else 1
+            offRouteStrikeCount += if (minSegDist > 42.0) 2 else 1
             val now = System.currentTimeMillis()
-            if (offRouteStrikeCount >= 2 && dest != null && now - lastRerouteMillis > 8000L) {
+            if (offRouteStrikeCount >= 2 && dest != null && now - lastRerouteMillis > 3500L) {
                 offRouteStrikeCount = 0
                 lastRerouteMillis = now
                 playVoice(id = activeBaseId() + 43, customQuote = "🔄 你已偏离路线，正在为您重新规划路线...", clearQueue = true)
@@ -889,6 +929,7 @@ class AudioPlayerManager(
             val distToManeuver = CoordinateConverter.distanceMeters(coord, step.maneuverLocation).toInt()
             _distanceToNextStepMeters.value = distToManeuver
             _currentStepInstruction.value = step.instruction
+            refreshRoadSpeedLimit(coord, step.instruction)
             if (!isAppInForeground && _hasActiveNavigation.value) { postOrUpdateBackgroundNavNotification(forceAlert = false) }
             var futureDist = distToManeuver.toDouble()
             for (idx in (currentRouteStepIdx + 1) until steps.size) {
@@ -1023,6 +1064,9 @@ class AudioPlayerManager(
                 selectRoute(0)
                 if (!isReroute) {
                     _isRoutePreviewing.value = true
+                } else {
+                    _mapTrackingUser.value = true
+                    _recenterTrigger.value += 1
                 }
             }
         }.start()
@@ -1041,9 +1085,15 @@ class AudioPlayerManager(
         lastRerouteMillis = 0L
         announcedStepThresholds.clear()
         val ptsCopy = r.points.toList()
+        routeMaxSpeedPoints = emptyList()
         Thread {
             val realSignals = MapAndRouteEngine.fetchTrafficSignalsAlongRoute(ptsCopy)
+            val maxSpeeds = MapAndRouteEngine.fetchMaxSpeedAlongRoute(ptsCopy)
             mainHandler.post {
+                if (maxSpeeds.isNotEmpty()) {
+                    routeMaxSpeedPoints = maxSpeeds
+                    refreshRoadSpeedLimit(_userCoordinate.value, _currentStepInstruction.value)
+                }
                 if (realSignals.isNotEmpty()) {
                     routeTrafficSignals = realSignals
                 } else {

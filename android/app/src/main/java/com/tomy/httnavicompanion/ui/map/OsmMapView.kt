@@ -103,7 +103,9 @@ fun OsmMapView(
     val userMarkerHolder = remember { arrayOfNulls<Marker>(1) }
     val destMarkerHolder = remember { arrayOfNulls<Marker>(1) }
     val tappedMarkerHolder = remember { arrayOfNulls<Marker>(1) }
+    val traveledPolyHolder = remember { arrayOfNulls<Polyline>(1) }
     val outerPolyHolder = remember { arrayOfNulls<Polyline>(1) }
+    val lastUserPanMsHolder = remember { longArrayOf(0L) }
     val innerPolyHolder = remember { arrayOfNulls<Polyline>(1) }
     val walkPoly1Holder = remember { arrayOfNulls<Polyline>(1) }
     val walkPoly2Holder = remember { arrayOfNulls<Polyline>(1) }
@@ -146,7 +148,7 @@ fun OsmMapView(
                             val dx = ev.x - downX
                             val dy = ev.y - downY
                             if (dx * dx + dy * dy > 320f) {
-                                manager.setMapTracking(false)
+                                lastUserPanMsHolder[0] = System.currentTimeMillis(); manager.setMapTracking(false)
                             }
                         }
                         MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
@@ -174,12 +176,13 @@ fun OsmMapView(
                     outlinePaint.strokeWidth = 20f
                 }
                 val traveledLine = Polyline(this).apply {
-                    outlinePaint.color = AndroidColor.rgb(34, 197, 94)
+                    outlinePaint.color = AndroidColor.rgb(156, 163, 175)
                     outlinePaint.strokeWidth = 13f
                     outlinePaint.strokeCap = android.graphics.Paint.Cap.ROUND
                     outlinePaint.strokeJoin = android.graphics.Paint.Join.ROUND
                 }
                 overlays.add(traveledLine)
+                traveledPolyHolder[0] = traveledLine
 
                 val innerLine = Polyline(this).apply {
                     outlinePaint.color = AndroidColor.rgb(0, 229, 255)
@@ -269,14 +272,30 @@ fun OsmMapView(
                     walkPoly1Holder[0]?.setPoints(w1Pts)
                     walkPoly2Holder[0]?.setPoints(w2Pts)
                 } else {
-                    outerPolyHolder[0]?.outlinePaint?.color = AndroidColor.rgb(18, 92, 168)
-                    innerPolyHolder[0]?.outlinePaint?.color = AndroidColor.rgb(0, 229, 255)
                     val dispRoute = routePoints.map { pt ->
                         val c = if (useAmapTiles) CoordinateConverter.wgs84ToGCJ02(pt) else pt
                         GeoPoint(c.latitude, c.longitude)
                     }
-                    outerPolyHolder[0]?.setPoints(dispRoute)
-                    innerPolyHolder[0]?.setPoints(dispRoute)
+                    var closestIdx = 0
+                    var bestD = Double.MAX_VALUE
+                    for (i in dispRoute.indices) {
+                        val d = dispRoute[i].distanceToAsDouble(userGeo)
+                        if (d < bestD) { bestD = d; closestIdx = i }
+                    }
+                    if (closestIdx >= 1 && bestD < 120.0) {
+                        traveledPolyHolder[0]?.setPoints(dispRoute.subList(0, closestIdx + 1))
+                    } else {
+                        traveledPolyHolder[0]?.setPoints(emptyList())
+                    }
+                    val remStart = if (bestD < 120.0) closestIdx else 0
+                    val remPts = if (remStart < dispRoute.size) dispRoute.subList(remStart, dispRoute.size) else dispRoute
+                    val spd = manager.currentSpeedKmh.value
+                    val lim = manager.speedLimitKmh.value
+                    val slowNow = (spd in 3 until (lim * 0.45).toInt().coerceAtLeast(15))
+                    outerPolyHolder[0]?.outlinePaint?.color = if (slowNow) AndroidColor.rgb(185, 28, 28) else AndroidColor.rgb(4, 120, 87)
+                    innerPolyHolder[0]?.outlinePaint?.color = if (slowNow) AndroidColor.rgb(239, 68, 68) else AndroidColor.rgb(16, 185, 129)
+                    outerPolyHolder[0]?.setPoints(remPts)
+                    innerPolyHolder[0]?.setPoints(remPts)
                     walkPoly1Holder[0]?.setPoints(emptyList())
                     walkPoly2Holder[0]?.setPoints(emptyList())
                 }
@@ -312,15 +331,21 @@ fun OsmMapView(
                 needsRedraw = true
             }
 
-            // 6. Throttled Smooth Camera follow (min 550ms cadence & >= 2.5m delta prevents canceling in-flight animations!)
+            // 6. Throttled Smooth Camera follow + GaoDe Dynamic Zoom + 6s Auto-Recenter
             val nowMs = System.currentTimeMillis()
+            if (!trackingUser && manager.hasActiveNavigation.value && lastUserPanMsHolder[0] > 0L && (nowMs - lastUserPanMsHolder[0] >= 6000L)) {
+                lastUserPanMsHolder[0] = 0L
+                manager.setMapTracking(true)
+                manager.triggerRecenter()
+            }
             if (trackingUser) {
                 val prev = lastAnimatedCoord[0]
                 val moved = prev == null || CoordinateConverter.distanceMeters(prev, dispUser) >= 2.5
                 if (moved && (prev == null || nowMs - lastCameraAnimMs[0] >= 550L)) {
                     lastAnimatedCoord[0] = dispUser
                     lastCameraAnimMs[0] = nowMs
-                    mapView.controller.animateTo(userGeo, null, 480L)
+                    val targetZoom = if (manager.hasActiveNavigation.value) manager.recommendedZoomLevel() else null
+                    mapView.controller.animateTo(userGeo, targetZoom, 480L)
                     needsRedraw = true
                 }
             }
