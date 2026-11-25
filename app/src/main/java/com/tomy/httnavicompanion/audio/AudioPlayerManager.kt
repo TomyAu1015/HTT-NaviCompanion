@@ -444,6 +444,15 @@ class AudioPlayerManager(
     private val _candidateRoutes = MutableStateFlow<List<ComputedRoute>>(emptyList())
     val candidateRoutes: StateFlow<List<ComputedRoute>> = _candidateRoutes
 
+    private val _isTouchingMap = MutableStateFlow(false)
+    val isTouchingMap: StateFlow<Boolean> = _isTouchingMap
+
+    private val _isRoutePreviewing = MutableStateFlow(false)
+    val isRoutePreviewing: StateFlow<Boolean> = _isRoutePreviewing
+
+    private val _transitFirstLegUseBike = MutableStateFlow(false)
+    val transitFirstLegUseBike: StateFlow<Boolean> = _transitFirstLegUseBike
+
     private val _selectedRouteIndex = MutableStateFlow(0)
     val selectedRouteIndex: StateFlow<Int> = _selectedRouteIndex
 
@@ -470,6 +479,14 @@ class AudioPlayerManager(
 
     private val _trafficLightColor = MutableStateFlow(2) // 0=Red, 1=Yellow, 2=Green
     val trafficLightColor: StateFlow<Int> = _trafficLightColor
+
+    private val _trafficLightIsHighwayNonStop = MutableStateFlow(true)
+    val trafficLightIsHighwayNonStop: StateFlow<Boolean> = _trafficLightIsHighwayNonStop
+
+    private var routeTrafficSignals: List<LatLng> = emptyList()
+    private var trafficLightCalibrationOffset: Int = 0
+    private val announcedStepThresholds = HashSet<String>()
+    @Volatile private var isRecalculatingRoute = false
 
     private val _upcomingCameraDistance = MutableStateFlow(350)
     val upcomingCameraDistance: StateFlow<Int> = _upcomingCameraDistance
@@ -680,7 +697,8 @@ class AudioPlayerManager(
             NotificationManagerCompat.from(HTTNaviApp.instance).cancel(20261)
         } catch (_: Throwable) {}
     }
-    val appVersion = "17/11/2026"
+    val appVersion: String = com.tomy.httnavicompanion.BuildConfig.APP_BUILD_DATE
+    val appShortVersion: String = com.tomy.httnavicompanion.BuildConfig.APP_SHORT_VER
 
     fun appAuthorLabel(): String = when (_language.value) {
         AppLanguage.ZH_HANS -> "制作作者: 君殇"
@@ -727,6 +745,42 @@ class AudioPlayerManager(
     }
 
     private var currentRouteStepIdx: Int = 0
+    private var routeMaxSpeedPoints: List<Pair<LatLng, Int>> = emptyList()
+
+    fun recommendedZoomLevel(): Double {
+        val mode = _travelMode.value
+        if (mode == NavigationTravelMode.WALKING) return 17.6
+        if (mode == NavigationTravelMode.EBIKE) {
+            return if (_hasActiveNavigation.value && _distanceToNextStepMeters.value in 1..120) 17.8 else 16.9
+        }
+        if (_hasActiveNavigation.value && _distanceToNextStepMeters.value in 1..180) return 17.8
+        val spd = _currentSpeedKmh.value
+        return when {
+            spd < 24 -> 17.1
+            spd >= 80 -> 15.2
+            spd >= 60 -> 15.8
+            else -> 16.5
+        }
+    }
+
+    private fun refreshRoadSpeedLimit(coord: LatLng, roadHint: String) {
+        val mode = _travelMode.value
+        if (mode != NavigationTravelMode.DRIVING && mode != NavigationTravelMode.EBIKE) {
+            _speedLimitKmh.value = 0
+            return
+        }
+        var bestDist = 180.0
+        var osmLim: Int? = null
+        for ((pt, lim) in routeMaxSpeedPoints) {
+            val d = CoordinateConverter.distanceMeters(coord, pt)
+            if (d < bestDist) {
+                bestDist = d
+                osmLim = lim
+            }
+        }
+        val detected = osmLim ?: MapAndRouteEngine.detectRoadSpeedLimit(roadHint, mode.name)
+        if (detected > 0) _speedLimitKmh.value = detected
+    }
     private var offRouteStrikeCount: Int = 0
     private var lastRerouteMillis: Long = 0L
 
@@ -736,6 +790,11 @@ class AudioPlayerManager(
     private var smoothedSpeedKmh: Double = 0.0
     private var consecutiveLowSpeedFixes: Int = 0
     private var lastValidSpeedMs: Long = 0L
+
+    fun triggerRecenter() {
+        _mapTrackingUser.value = true
+        _recenterTrigger.value += 1
+    }
 
     fun setMapTracking(enabled: Boolean) {
         _mapTrackingUser.value = enabled
@@ -765,30 +824,30 @@ class AudioPlayerManager(
             lastRealLocTimeMs = nowMs
             _userCoordinate.value = newCoord
 
-            // Smooth Doppler GPS speed with EMA & anti-zero-jump hysteresis
-            val sampleKmh: Double? = when {
-                accuracyMeters in 0.1f..50f && speedMps >= 0.01f -> (speedMps * 3.6).coerceIn(0.0, 260.0)
-                accuracyMeters in 0.1f..25f && dtSec >= 0.8 && movedMeters >= 2.0 && movedMeters <= 80.0 * dtSec ->
+            // Stationary anti-jitter + responsive EMA aligned 1:1 with iOS
+            val rawKmh: Double? = when {
+                accuracyMeters in 0.1f..45f && speedMps >= 0f -> (speedMps * 3.6).coerceIn(0.0, 260.0)
+                accuracyMeters in 0.1f..18f && dtSec >= 0.9 && movedMeters >= 2.5 && movedMeters <= 75.0 * dtSec ->
                     ((movedMeters / dtSec) * 3.6).coerceIn(0.0, 260.0)
-                accuracyMeters in 0.1f..50f && speedMps == 0f -> 0.0
                 else -> null
             }
+            val sampleKmh = if (rawKmh != null && rawKmh < 6.5 && movedMeters < 2.2 && accuracyMeters > 12f) 0.0 else rawKmh
             if (sampleKmh != null) {
-                if (sampleKmh < 1.8) {
+                if (sampleKmh < 3.0) {
                     consecutiveLowSpeedFixes += 1
-                    if (consecutiveLowSpeedFixes >= 2 || smoothedSpeedKmh < 4.0) {
+                    if (consecutiveLowSpeedFixes >= 2 || smoothedSpeedKmh < 6.0) {
                         smoothedSpeedKmh = 0.0
                     }
                 } else {
                     consecutiveLowSpeedFixes = 0
-                    smoothedSpeedKmh = if (smoothedSpeedKmh < 1.0 || kotlin.math.abs(sampleKmh - smoothedSpeedKmh) > 18.0) {
+                    smoothedSpeedKmh = if (smoothedSpeedKmh < 1.0 || kotlin.math.abs(sampleKmh - smoothedSpeedKmh) > 12.0) {
                         sampleKmh
                     } else {
-                        smoothedSpeedKmh * 0.62 + sampleKmh * 0.38
+                        smoothedSpeedKmh * 0.25 + sampleKmh * 0.75
                     }
                     lastValidSpeedMs = nowMs
                 }
-            } else if (nowMs - lastValidSpeedMs > 3500L) {
+            } else if (nowMs - lastValidSpeedMs > 2500L) {
                 smoothedSpeedKmh = 0.0
             }
             val kmh = kotlin.math.round(smoothedSpeedKmh).toInt().coerceAtLeast(0)
@@ -849,13 +908,19 @@ class AudioPlayerManager(
             minSegDist = CoordinateConverter.distanceMeters(coord, pts[0])
         }
 
-        if (minSegDist > 90.0) {
-            offRouteStrikeCount += 1
+        val offLimit = when (_travelMode.value) {
+            NavigationTravelMode.WALKING -> 22.0
+            NavigationTravelMode.EBIKE -> 26.0
+            else -> 30.0
+        }
+        if (minSegDist > offLimit && !_isRoutePreviewing.value && !isRecalculatingRoute) {
+            offRouteStrikeCount += if (minSegDist > 42.0) 2 else 1
             val now = System.currentTimeMillis()
-            if (offRouteStrikeCount >= 3 && dest != null && now - lastRerouteMillis > 20000L) {
+            if (offRouteStrikeCount >= 2 && dest != null && now - lastRerouteMillis > 3500L) {
                 offRouteStrikeCount = 0
                 lastRerouteMillis = now
-                startRouteToPlace(_destinationName.value, dest)
+                playVoice(id = activeBaseId() + 43, customQuote = "🔄 你已偏离路线，正在为您重新规划路线...", clearQueue = true)
+                startRouteToPlace(_destinationName.value, dest, isReroute = true)
                 return
             }
         } else {
@@ -869,6 +934,7 @@ class AudioPlayerManager(
             val distToManeuver = CoordinateConverter.distanceMeters(coord, step.maneuverLocation).toInt()
             _distanceToNextStepMeters.value = distToManeuver
             _currentStepInstruction.value = step.instruction
+            refreshRoadSpeedLimit(coord, step.instruction)
             if (!isAppInForeground && _hasActiveNavigation.value) { postOrUpdateBackgroundNavNotification(forceAlert = false) }
             var futureDist = distToManeuver.toDouble()
             for (idx in (currentRouteStepIdx + 1) until steps.size) {
@@ -877,8 +943,44 @@ class AudioPlayerManager(
             _remainingRouteDistanceKm.value = (futureDist / 1000.0).coerceAtLeast(0.01)
             val ratio = if (route.totalDistanceMeters > 1.0) (futureDist / route.totalDistanceMeters).coerceIn(0.02, 1.0) else 1.0
             _remainingRouteMinutes.value = ((route.durationSeconds * ratio) / 60.0).toInt().coerceAtLeast(1)
-            if (distToManeuver <= 20 && currentRouteStepIdx < steps.lastIndex) {
+
+            // Turn-by-Turn Junction Voice Announcements (500m / 300m / 100m / 35m + Arrival!)
+            val thresholds = listOf(
+                Triple(360, 580, "500米"),
+                Triple(170, 355, "300米"),
+                Triple(60, 165, "100米"),
+                Triple(0, 59, "前方路口")
+            )
+            for ((minD, maxD, label) in thresholds) {
+                val key = "${currentRouteStepIdx}_$label"
+                if (distToManeuver in minD..maxD && !announcedStepThresholds.contains(key)) {
+                    announcedStepThresholds.add(key)
+                    val instrText = step.instruction
+                    val quote = if (label == "前方路口") "↪️ 即将到达路口：$instrText" else "📍 前方约${label}：${instrText}"
+                    val turnOffset = when {
+                        instrText.contains("调头") || instrText.contains("掉头") -> 21
+                        instrText.contains("左") -> 32
+                        instrText.contains("右") -> 33
+                        else -> 34
+                    }
+                    playVoice(id = activeBaseId() + turnOffset, customQuote = quote, clearQueue = false)
+                    break
+                }
+            }
+
+            if (currentRouteStepIdx == steps.lastIndex && distToManeuver <= 40 && !announcedStepThresholds.contains("ARRIVED")) {
+                announcedStepThresholds.add("ARRIVED")
+                playVoice(id = activeBaseId() + 38, customQuote = "🎉 已到达目的地 ${_destinationName.value} 附近，本次导航结束！", clearQueue = true)
+            }
+
+            if (distToManeuver <= 32 && currentRouteStepIdx < steps.lastIndex) {
                 currentRouteStepIdx += 1
+                val nextStep = steps[currentRouteStepIdx]
+                val enterKey = "${currentRouteStepIdx}_ENTER"
+                if (!announcedStepThresholds.contains(enterKey) && nextStep.instruction.isNotBlank()) {
+                    announcedStepThresholds.add(enterKey)
+                    playVoice(id = activeBaseId() + 34, customQuote = "↪️ ${nextStep.instruction}", clearQueue = false)
+                }
             }
         }
     }
@@ -932,7 +1034,10 @@ class AudioPlayerManager(
         }.start()
     }
 
-    fun startRouteToPlace(destName: String, destCoord: LatLng) {
+    fun startRouteToPlace(destName: String, destCoord: LatLng, isReroute: Boolean = false) {
+        if (isReroute && isRecalculatingRoute) return
+        isRecalculatingRoute = true
+        mainHandler.postDelayed({ isRecalculatingRoute = false }, 12000L)
         val recAddr = if (_tappedTitle.value == destName && _tappedAddress.value.isNotBlank()) _tappedAddress.value else String.format("%.4f, %.4f", destCoord.latitude, destCoord.longitude)
         recordRecentDestination(destName, recAddr, destCoord)
         _tappedCoord.value = null
@@ -954,13 +1059,20 @@ class AudioPlayerManager(
                 startWgs = start,
                 destWgs = destCoord,
                 travelMode = mode,
-                avoidHighways = avoids.contains(DrivingAvoidanceOption.AVOID_HIGHWAYS),
-                avoidTolls = avoids.contains(DrivingAvoidanceOption.AVOID_TOLLS)
+                avoidHighways = avoids.contains(DrivingAvoidanceOption.AVOID_HIGHWAY),
+                avoidTolls = avoids.contains(DrivingAvoidanceOption.AVOID_TOLL),
+                transitFirstLegUseBike = _transitFirstLegUseBike.value
             )
             mainHandler.post {
+                isRecalculatingRoute = false
                 _candidateRoutes.value = routes
                 selectRoute(0)
-                triggerDepartureGreeting()
+                if (!isReroute) {
+                    _isRoutePreviewing.value = true
+                } else {
+                    _mapTrackingUser.value = true
+                    _recenterTrigger.value += 1
+                }
             }
         }.start()
     }
@@ -976,14 +1088,80 @@ class AudioPlayerManager(
         _remainingRouteMinutes.value = (r.durationSeconds / 60.0).toInt().coerceAtLeast(1)
         offRouteStrikeCount = 0
         lastRerouteMillis = 0L
+        announcedStepThresholds.clear()
+        val ptsCopy = r.points.toList()
+        routeMaxSpeedPoints = emptyList()
+        Thread {
+            val realSignals = MapAndRouteEngine.fetchTrafficSignalsAlongRoute(ptsCopy)
+            val maxSpeeds = MapAndRouteEngine.fetchMaxSpeedAlongRoute(ptsCopy)
+            mainHandler.post {
+                if (maxSpeeds.isNotEmpty()) {
+                    routeMaxSpeedPoints = maxSpeeds
+                    refreshRoadSpeedLimit(_userCoordinate.value, _currentStepInstruction.value)
+                }
+                if (realSignals.isNotEmpty()) {
+                    routeTrafficSignals = realSignals
+                } else {
+                    routeTrafficSignals = r.steps.drop(1).dropLast(1)
+                        .filter { !it.instruction.contains("高速") && !it.instruction.contains("高架") }
+                        .map { it.maneuverLocation }
+                }
+            }
+        }.start()
         currentRouteStepIdx = if (r.steps.size > 1 && (r.steps[0].instruction.contains("出发"))) 1 else 0
         val activeStep = r.steps.getOrNull(currentRouteStepIdx) ?: r.steps.firstOrNull()
         _currentStepInstruction.value = activeStep?.instruction ?: "沿规划路线前往 ${_destinationName.value}"
         _distanceToNextStepMeters.value = activeStep?.distanceMeters?.toInt() ?: r.totalDistanceMeters.toInt()
     }
 
+    fun calibrateTrafficLight() {
+        val cycleSecs = 60
+        val userPt = _userCoordinate.value
+        val nearestSig = routeTrafficSignals.minByOrNull { CoordinateConverter.distanceMeters(userPt, it) }
+        val seed = nearestSig?.let { kotlin.math.abs((it.latitude * 10000 + it.longitude * 10000).toInt()) } ?: 0
+        val baseNow = (System.currentTimeMillis() / 1000L).toInt() + seed
+        val targetSec = if (_trafficLightColor.value == 0) 0 else 35
+        val currentMod = ((baseNow + trafficLightCalibrationOffset) % cycleSecs + cycleSecs) % cycleSecs
+        trafficLightCalibrationOffset += (targetSec - currentMod)
+        if (targetSec == 0) {
+            _trafficLightColor.value = 2
+            _trafficLightCountdown.value = 32
+        } else {
+            _trafficLightColor.value = 0
+            _trafficLightCountdown.value = 25
+        }
+        playVoice(id = activeBaseId() + 39, customQuote = "🚦 已为您校准当前路口红绿灯倒计时！", clearQueue = true)
+    }
+
+    fun setTouchingMap(touching: Boolean) {
+        _isTouchingMap.value = touching
+    }
+
+    fun confirmStartNavigation() {
+        _isRoutePreviewing.value = false
+        isRecalculatingRoute = false
+        routeTrafficSignals = emptyList()
+        announcedStepThresholds.clear()
+        triggerDepartureGreeting()
+    }
+
+    fun setTransitFirstLegUseBike(useBike: Boolean) {
+        if (_transitFirstLegUseBike.value == useBike) return
+        _transitFirstLegUseBike.value = useBike
+        val dest = _destinationCoord.value
+        if (dest != null && _hasActiveNavigation.value && _travelMode.value == NavigationTravelMode.TRANSIT) {
+            startRouteToPlace(_destinationName.value, dest)
+        }
+    }
+
+    fun switchTransitToDirectMode(mode: NavigationTravelMode) {
+        _transitFirstLegUseBike.value = false
+        setTravelMode(mode)
+    }
+
     fun stopNavigation() {
         _hasActiveNavigation.value = false
+        _isRoutePreviewing.value = false
         _activeRoutePoints.value = emptyList()
         _transitSegments.value = emptyList()
         _candidateRoutes.value = emptyList()
@@ -1051,14 +1229,33 @@ class AudioPlayerManager(
                     _drivingSeconds.value += 1
                 }
 
-                if (_trafficLightCountdown.value > 1) {
-                    _trafficLightCountdown.value -= 1
+                val userPt = _userCoordinate.value
+                val nearestSig = routeTrafficSignals.minByOrNull { CoordinateConverter.distanceMeters(userPt, it) }
+                val sigDist = nearestSig?.let { CoordinateConverter.distanceMeters(userPt, it) } ?: 9999.0
+                val curInstr = _currentStepInstruction.value
+                val isHwy = curInstr.contains("高速") || curInstr.contains("高架") || curInstr.contains("匝道")
+                if (!_hasActiveNavigation.value || isHwy || (sigDist > 380.0 && _distanceToNextStepMeters.value > 380)) {
+                    _trafficLightIsHighwayNonStop.value = true
+                    _trafficLightColor.value = 2
+                    _trafficLightCountdown.value = 99
                 } else {
-                    _trafficLightColor.value = (_trafficLightColor.value + 1) % 3
-                    _trafficLightCountdown.value = when (_trafficLightColor.value) {
-                        0 -> 22
-                        1 -> 4
-                        else -> 26
+                    _trafficLightIsHighwayNonStop.value = false
+                    val seed = nearestSig?.let { kotlin.math.abs((it.latitude * 10000 + it.longitude * 10000).toInt()) } ?: 0
+                    val nowSec = (System.currentTimeMillis() / 1000L).toInt() + trafficLightCalibrationOffset + seed
+                    val secInCycle = ((nowSec % 60) + 60) % 60
+                    when {
+                        secInCycle < 32 -> {
+                            _trafficLightColor.value = 2
+                            _trafficLightCountdown.value = 32 - secInCycle
+                        }
+                        secInCycle < 35 -> {
+                            _trafficLightColor.value = 1
+                            _trafficLightCountdown.value = 35 - secInCycle
+                        }
+                        else -> {
+                            _trafficLightColor.value = 0
+                            _trafficLightCountdown.value = 60 - secInCycle
+                        }
                     }
                 }
 
@@ -1544,41 +1741,50 @@ class AudioPlayerManager(
     }
 
     private fun playAudioData(audioBytes: ByteArray) {
-        try {
-            requestAudioFocus()
-            HTTNaviApp.instance.musicManager.duckForVoice(true)
+        mainHandler.post {
+            try {
+                requestAudioFocus()
+                HTTNaviApp.instance.musicManager.duckForVoice(true)
 
-            val tempFile = File.createTempFile("htt_voice_", ".mp3", context.cacheDir)
-            FileOutputStream(tempFile).use { it.write(audioBytes) }
+                val tempFile = File.createTempFile("htt_voice_", ".mp3", context.cacheDir)
+                FileOutputStream(tempFile).use { it.write(audioBytes) }
 
-            mediaPlayer?.release()
-            mediaPlayer = MediaPlayer().apply {
-                setDataSource(tempFile.absolutePath)
-                setAudioAttributes(
-                    AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_ASSISTANCE_NAVIGATION_GUIDANCE)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                        .build()
-                )
-                setOnCompletionListener {
-                    tempFile.delete()
-                    if (voiceQueue.isNotEmpty()) {
-                        val next = voiceQueue.removeAt(0)
-                        playVoice(next.first, next.second, clearQueue = false)
-                    } else {
-                        _isPlaying.value = false
-                        _currentPlayingId.value = null
-                        HTTNaviApp.instance.musicManager.duckForVoice(false)
+                try { mediaPlayer?.stop() } catch (_: Exception) {}
+                try { mediaPlayer?.release() } catch (_: Exception) {}
+                mediaPlayer = MediaPlayer().apply {
+                    setDataSource(tempFile.absolutePath)
+                    setAudioAttributes(
+                        AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_MEDIA)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                            .build()
+                    )
+                    setOnCompletionListener {
+                        try { tempFile.delete() } catch (_: Exception) {}
+                        if (voiceQueue.isNotEmpty()) {
+                            val next = voiceQueue.removeAt(0)
+                            playVoice(next.first, next.second, clearQueue = false)
+                        } else {
+                            _isPlaying.value = false
+                            _currentPlayingId.value = null
+                            HTTNaviApp.instance.musicManager.duckForVoice(false)
+                        }
                     }
+                    setOnErrorListener { _, _, _ ->
+                        try { tempFile.delete() } catch (_: Exception) {}
+                        _isPlaying.value = false
+                        HTTNaviApp.instance.musicManager.duckForVoice(false)
+                        true
+                    }
+                    prepare()
+                    start()
                 }
-                prepare()
-                start()
+                _isPlaying.value = true
+            } catch (e: Exception) {
+                Log.e(TAG, "Error playing voice audio", e)
+                _isPlaying.value = false
+                HTTNaviApp.instance.musicManager.duckForVoice(false)
             }
-            _isPlaying.value = true
-        } catch (e: Exception) {
-            Log.e(TAG, "Error playing voice audio", e)
-            _isPlaying.value = false
-            HTTNaviApp.instance.musicManager.duckForVoice(false)
         }
     }
 
@@ -1587,7 +1793,7 @@ class AudioPlayerManager(
             val req = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
                 .setAudioAttributes(
                     AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_ASSISTANCE_NAVIGATION_GUIDANCE)
+                        .setUsage(AudioAttributes.USAGE_MEDIA)
                         .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                         .build()
                 )

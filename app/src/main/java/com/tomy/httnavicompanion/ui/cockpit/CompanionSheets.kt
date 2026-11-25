@@ -13,6 +13,10 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.unit.IntOffset
+import kotlin.math.roundToInt
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -150,27 +154,33 @@ fun MusicLibrarySheetDialog(onDismiss: () -> Unit) {
                     Column(modifier = Modifier.padding(12.dp)) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Column(modifier = Modifier.weight(1f)) {
+                            Box(
+                                modifier = Modifier
+                                    .size(44.dp)
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(SheetCrimson)
+                                    .border(1.5.dp, SheetGold, RoundedCornerShape(10.dp)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(Icons.Default.MusicNote, contentDescription = null, tint = SheetGold, modifier = Modifier.size(24.dp))
+                            }
+                            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                                 Text(currentTrack.title, color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Black, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                    Text("${currentTrack.artist} · ${currentTrack.album}", color = SheetGold, fontSize = 11.sp, maxLines = 1)
+                                    Text("${currentTrack.artist} · ${currentTrack.album}", color = SheetGold, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
                                     Text(
                                         if (currentTrack.isAvailable) "● 已就绪" else "○ 待导入",
                                         color = if (currentTrack.isAvailable) Color(0xFF4CAF50) else Color(0xFFFF9800),
                                         fontSize = 10.sp,
-                                        fontWeight = FontWeight.Bold
+                                        fontWeight = FontWeight.Bold,
+                                        maxLines = 1,
+                                        softWrap = false
                                     )
                                 }
                             }
-                            Text(
-                                String.format("%02d:%02d / %02d:%02d", currentTime / 60, currentTime % 60, duration / 60, duration % 60),
-                                color = SheetCream,
-                                fontSize = 11.sp,
-                                fontFamily = FontFamily.Monospace
-                            )
                         }
 
                         val progressFraction = if (duration > 0) (currentTime.toFloat() / duration.toFloat()).coerceIn(0f, 1f) else 0f
@@ -180,42 +190,68 @@ fun MusicLibrarySheetDialog(onDismiss: () -> Unit) {
                             colors = SliderDefaults.colors(
                                 thumbColor = SheetGold,
                                 activeTrackColor = SheetCrimson,
-                                inactiveTrackColor = Color.White.copy(alpha = 0.2f)
+                                inactiveTrackColor = Color.White.copy(alpha = 0.22f)
                             ),
-                            modifier = Modifier.height(26.dp)
+                            modifier = Modifier.fillMaxWidth().height(26.dp)
                         )
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 2.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(String.format("%02d:%02d", currentTime / 60, currentTime % 60), color = SheetCream.copy(alpha = 0.85f), fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+                            Text(String.format("%02d:%02d", duration / 60, duration % 60), color = SheetCream.copy(alpha = 0.85f), fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+                        }
 
+                        Spacer(Modifier.height(4.dp))
                         Row(
                             modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceEvenly,
+                            horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            TextButton(onClick = { musicMgr.cyclePlayMode() }) {
-                                Text(playMode.label, color = SheetGold, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                            }
-                            IconButton(onClick = { musicMgr.prevTrack() }) {
-                                Icon(Icons.Default.SkipPrevious, contentDescription = null, tint = Color.White, modifier = Modifier.size(28.dp))
-                            }
-                            Button(
-                                onClick = { musicMgr.togglePlayPause() },
-                                colors = ButtonDefaults.buttonColors(containerColor = SheetCrimson),
-                                shape = CircleShape
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(Color.White.copy(alpha = 0.08f))
+                                    .clickable { musicMgr.cyclePlayMode() }
+                                    .padding(horizontal = 8.dp, vertical = 6.dp)
                             ) {
-                                Icon(
-                                    if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                                    contentDescription = null,
-                                    tint = Color.White
-                                )
+                                Text(playMode.label, color = SheetGold, fontSize = 11.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
                             }
-                            IconButton(onClick = { musicMgr.nextTrack() }) {
-                                Icon(Icons.Default.SkipNext, contentDescription = null, tint = Color.White, modifier = Modifier.size(28.dp))
-                            }
-                            TextButton(
-                                onClick = {
-                                    importMusicLauncher.launch(arrayOf("audio/*", "video/mp4", "application/octet-stream", "*/*"))
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                IconButton(onClick = { musicMgr.prevTrack() }, modifier = Modifier.size(36.dp)) {
+                                    Icon(Icons.Default.SkipPrevious, contentDescription = null, tint = Color.White, modifier = Modifier.size(26.dp))
                                 }
+                                Box(
+                                    modifier = Modifier
+                                        .size(44.dp)
+                                        .clip(CircleShape)
+                                        .background(SheetCrimson)
+                                        .border(1.5.dp, SheetGold, CircleShape)
+                                        .clickable { musicMgr.togglePlayPause() },
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                                        contentDescription = null,
+                                        tint = Color.White,
+                                        modifier = Modifier.size(24.dp)
+                                    )
+                                }
+                                IconButton(onClick = { musicMgr.nextTrack() }, modifier = Modifier.size(36.dp)) {
+                                    Icon(Icons.Default.SkipNext, contentDescription = null, tint = Color.White, modifier = Modifier.size(26.dp))
+                                }
+                            }
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(SheetGold.copy(alpha = 0.16f))
+                                    .border(1.dp, SheetGold.copy(alpha = 0.6f), RoundedCornerShape(8.dp))
+                                    .clickable {
+                                        importMusicLauncher.launch(arrayOf("audio/*", "video/mp4", "application/octet-stream", "*/*"))
+                                    }
+                                    .padding(horizontal = 8.dp, vertical = 6.dp)
                             ) {
-                                Text("+ 导入", color = SheetGold, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                Text("+ 导入", color = SheetGold, fontSize = 11.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
                             }
                         }
                     }
@@ -255,42 +291,61 @@ fun MusicLibrarySheetDialog(onDismiss: () -> Unit) {
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(10.dp))
-                                .background(if (isCur) SheetCrimson.copy(alpha = 0.35f) else SheetCardBg)
-                                .border(1.dp, if (isCur) SheetGold else Color.White.copy(alpha = 0.08f), RoundedCornerShape(10.dp))
+                                .background(if (isCur) SheetCrimson.copy(alpha = 0.32f) else SheetCardBg)
+                                .border(1.dp, if (isCur) SheetGold.copy(alpha = 0.7f) else Color.White.copy(alpha = 0.06f), RoundedCornerShape(10.dp))
                                 .clickable { musicMgr.playSong(song) }
-                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                                .padding(horizontal = 10.dp, vertical = 7.dp),
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.weight(1f)) {
+                            Text(
+                                String.format("%02d", song.trackNumber),
+                                color = if (isCur) SheetGold else Color.Gray,
+                                fontWeight = FontWeight.Bold,
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 11.sp,
+                                softWrap = false
+                            )
+                            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
                                 Text(
-                                    String.format("%02d", song.trackNumber),
-                                    color = SheetGold,
+                                    song.title,
+                                    color = if (isCur) SheetGold else Color.White,
                                     fontWeight = FontWeight.Bold,
-                                    fontFamily = FontFamily.Monospace,
-                                    fontSize = 12.sp
+                                    fontSize = 13.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
                                 )
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(song.title, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                        Text("${song.artist} · ${song.album}", color = Color.LightGray, fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                        Text(
-                                            if (song.isAvailable) "● 已就绪" else "○ 待导入",
-                                            color = if (song.isAvailable) Color(0xFF4CAF50) else Color(0xFFFF9800),
-                                            fontSize = 9.sp,
-                                            fontWeight = FontWeight.Bold
-                                        )
-                                    }
-                                }
+                                Text(
+                                    "${song.artist} · ${song.album}",
+                                    color = Color.LightGray,
+                                    fontSize = 10.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
                             }
                             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                Text(song.durationFormatted, color = SheetCream, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(6.dp))
+                                        .background(if (song.isAvailable) Color(0xFF4CAF50).copy(alpha = 0.16f) else Color(0xFFFF9800).copy(alpha = 0.14f))
+                                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                                ) {
+                                    Text(
+                                        if (song.isAvailable) "已就绪" else "待放入",
+                                        color = if (song.isAvailable) Color(0xFF4CAF50) else Color(0xFFFF9800),
+                                        fontSize = 9.5.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        maxLines = 1,
+                                        softWrap = false
+                                    )
+                                }
+                                Text(song.durationFormatted, color = SheetCream.copy(alpha = 0.8f), fontSize = 10.sp, fontFamily = FontFamily.Monospace, softWrap = false)
                                 if (song.localFilePath != null) {
                                     IconButton(
                                         onClick = { musicMgr.deleteSongFile(song) },
-                                        modifier = Modifier.size(24.dp)
+                                        modifier = Modifier.size(22.dp)
                                     ) {
-                                        Icon(Icons.Default.Delete, contentDescription = "移除", tint = Color(0xFFFF5252), modifier = Modifier.size(16.dp))
+                                        Icon(Icons.Default.Delete, contentDescription = "移除", tint = Color(0xFFFF5252), modifier = Modifier.size(15.dp))
                                     }
                                 }
                             }
@@ -399,9 +454,10 @@ fun RM500AlbumAndOutfitSheetDialog(
                                         horizontalArrangement = Arrangement.spacedBy(24.dp),
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
-                                        if (navArrowBmp != null) {
+                                        val arrowBmp = navArrowBmp
+                                        if (arrowBmp != null) {
                                             Image(
-                                                bitmap = navArrowBmp!!.asImageBitmap(),
+                                                bitmap = arrowBmp.asImageBitmap(),
                                                 contentDescription = null,
                                                 filterQuality = FilterQuality.None,
                                                 modifier = Modifier.size(90.dp, 115.dp)
@@ -453,7 +509,7 @@ fun RM500AlbumAndOutfitSheetDialog(
                     }
 
                     1 -> {
-                        // 36 Episode CG Album Tab
+                        // 36 Episode CG Album Tab (1:1 iOS RM-500HTT Album Grid)
                         Column(
                             modifier = Modifier.fillMaxSize(),
                             horizontalAlignment = Alignment.CenterHorizontally
@@ -462,45 +518,107 @@ fun RM500AlbumAndOutfitSheetDialog(
                             val cgBmp = remember(selectedCGIndex) {
                                 app.assetDecryptor.getSpriteBitmap(cgName)
                             }
-                            if (cgBmp != null) {
-                                Image(
-                                    bitmap = cgBmp.asImageBitmap(),
-                                    contentDescription = null,
-                                    contentScale = ContentScale.Fit,
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .height(190.dp)
-                                        .clip(RoundedCornerShape(12.dp))
-                                        .border(2.dp, SheetGold, RoundedCornerShape(12.dp))
-                                )
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(175.dp)
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(Color.Black.copy(alpha = 0.45f))
+                                    .border(1.5.dp, SheetGold, RoundedCornerShape(12.dp)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                if (cgBmp != null) {
+                                    Image(
+                                        bitmap = cgBmp.asImageBitmap(),
+                                        contentDescription = null,
+                                        contentScale = ContentScale.Fit,
+                                        modifier = Modifier.fillMaxSize().padding(4.dp)
+                                    )
+                                } else {
+                                    Text("CG #$selectedCGIndex", color = SheetGold, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                                }
                             }
                             Spacer(Modifier.height(6.dp))
-                            Text(
-                                episodeTitles.getOrElse(selectedCGIndex - 1) { "K-ON! CG #$selectedCGIndex" },
-                                color = SheetGold,
-                                fontWeight = FontWeight.Black,
-                                fontSize = 13.sp
-                            )
-                            Spacer(Modifier.height(8.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                TextButton(
+                                    onClick = { selectedCGIndex = if (selectedCGIndex <= 1) 36 else selectedCGIndex - 1 },
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                                ) {
+                                    Text("◀ 上一张", color = SheetGold, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                }
+                                Text(
+                                    "$selectedCGIndex / 36 · ${episodeTitles.getOrElse(selectedCGIndex - 1) { "K-ON! #$selectedCGIndex" }}",
+                                    color = SheetCream,
+                                    fontWeight = FontWeight.Black,
+                                    fontSize = 11.5.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                TextButton(
+                                    onClick = { selectedCGIndex = if (selectedCGIndex >= 36) 1 else selectedCGIndex + 1 },
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                                ) {
+                                    Text("下一张 ▶", color = SheetGold, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                            Spacer(Modifier.height(4.dp))
 
                             LazyVerticalGrid(
-                                columns = GridCells.Adaptive(minSize = 64.dp),
+                                columns = GridCells.Fixed(3),
                                 modifier = Modifier.weight(1f),
                                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                                 verticalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
                                 items((1..36).toList()) { idx ->
                                     val sel = idx == selectedCGIndex
-                                    Box(
+                                    val thumbName = String.format("rm_cg_%02d", idx)
+                                    val thumbBmp = remember(idx) { app.assetDecryptor.getSpriteBitmap(thumbName) }
+                                    val epTitle = episodeTitles.getOrElse(idx - 1) { "#$idx" }
+                                    Column(
                                         modifier = Modifier
                                             .clip(RoundedCornerShape(8.dp))
-                                            .background(if (sel) SheetCrimson else SheetCardBg)
-                                            .border(1.dp, if (sel) SheetGold else Color.White.copy(alpha = 0.15f), RoundedCornerShape(8.dp))
+                                            .background(if (sel) SheetCrimson.copy(alpha = 0.65f) else SheetCardBg)
+                                            .border(if (sel) 1.5.dp else 1.dp, if (sel) SheetGold else Color.White.copy(alpha = 0.14f), RoundedCornerShape(8.dp))
                                             .clickable { selectedCGIndex = idx }
-                                            .padding(vertical = 8.dp),
-                                        contentAlignment = Alignment.Center
+                                            .padding(4.dp),
+                                        horizontalAlignment = Alignment.CenterHorizontally
                                     ) {
-                                        Text("#$idx", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                        if (thumbBmp != null) {
+                                            Image(
+                                                bitmap = thumbBmp.asImageBitmap(),
+                                                contentDescription = epTitle,
+                                                contentScale = ContentScale.Crop,
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .height(54.dp)
+                                                    .clip(RoundedCornerShape(6.dp))
+                                            )
+                                        } else {
+                                            Box(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .height(54.dp)
+                                                    .clip(RoundedCornerShape(6.dp))
+                                                    .background(Color.Black.copy(alpha = 0.35f)),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Text("#$idx", color = SheetGold, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                            }
+                                        }
+                                        Spacer(Modifier.height(3.dp))
+                                        Text(
+                                            epTitle,
+                                            color = if (sel) SheetGold else Color.White,
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 9.5.sp,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
                                     }
                                 }
                             }
@@ -597,7 +715,7 @@ fun AboutAndFeedbackContent(manager: AudioPlayerManager) {
                     Spacer(Modifier.height(4.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(
-                            "版本 v${manager.appVersion}",
+                            "版本 ${manager.appShortVersion} (v${manager.appVersion})",
                             color = SheetGold,
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Bold,
@@ -704,8 +822,9 @@ fun AboutAndFeedbackContent(manager: AudioPlayerManager) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text(previewTitle, color = SheetGold, fontWeight = FontWeight.Black, fontSize = 14.sp)
                     Spacer(Modifier.height(10.dp))
-                    Image(
-                        bitmap = previewBitmap!!.asImageBitmap(),
+                    val prevBmp = previewBitmap
+                    if (prevBmp != null) Image(
+                        bitmap = prevBmp.asImageBitmap(),
                         contentDescription = null,
                         contentScale = ContentScale.Fit,
                         modifier = Modifier
@@ -730,9 +849,14 @@ fun DestinationSearchSheetDialog(onDismiss: () -> Unit) {
     val lang by manager.language.collectAsState()
     val travelMode by manager.travelMode.collectAsState()
     val onlineResults by manager.onlineSearchResults.collectAsState()
+    val recentDests by manager.recentDestinations.collectAsState()
     val isSearching by manager.isSearchingPlaces.collectAsState()
     val userCoord by manager.userCoordinate.collectAsState()
     var queryText by remember { mutableStateOf("") }
+
+    LaunchedEffect(Unit) {
+        manager.loadAndPruneRecentDestinations()
+    }
 
     val builtInLandmarks = remember(userCoord) {
         com.tomy.httnavicompanion.data.MapAndRouteEngine.domesticLandmarksDatabase.map { item ->
@@ -741,19 +865,32 @@ fun DestinationSearchSheetDialog(onDismiss: () -> Unit) {
         }.sortedBy { it.distanceKm }
     }
 
-    val displayList = remember(queryText, onlineResults, builtInLandmarks) {
+    val recentWithDist = remember(recentDests, userCoord) {
+        recentDests.map { item ->
+            val dKm = com.tomy.httnavicompanion.data.CoordinateConverter.distanceMeters(userCoord, item.coordinate) / 1000.0
+            item.copy(distanceKm = dKm, category = "🕒 最近导航")
+        }
+    }
+
+    val displayList = remember(queryText, onlineResults, builtInLandmarks, recentWithDist) {
         val q = queryText.trim()
+        val merged = ArrayList<PlaceSearchItem>()
+        val seen = HashSet<String>()
         if (q.isEmpty()) {
-            builtInLandmarks
+            (recentWithDist + builtInLandmarks).forEach { item ->
+                if (seen.add(item.name.lowercase())) merged.add(item)
+            }
+            merged
         } else {
+            val recentMatches = recentWithDist.filter {
+                it.name.contains(q, ignoreCase = true) || it.address.contains(q, ignoreCase = true)
+            }
             val localMatches = builtInLandmarks.filter {
                 it.name.contains(q, ignoreCase = true) ||
                     it.address.contains(q, ignoreCase = true) ||
                     it.category.contains(q, ignoreCase = true)
             }
-            val merged = ArrayList<PlaceSearchItem>()
-            val seen = HashSet<String>()
-            (localMatches + onlineResults).forEach { item ->
+            (recentMatches + localMatches + onlineResults).forEach { item ->
                 if (seen.add(item.name.lowercase())) {
                     merged.add(item)
                 }
@@ -816,11 +953,31 @@ fun DestinationSearchSheetDialog(onDismiss: () -> Unit) {
                         .border(1.dp, Color(0xFF64B5F6).copy(alpha = 0.5f), RoundedCornerShape(8.dp))
                         .clickable {
                             val cb = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                            val clipText = cb.primaryClip?.getItemAt(0)?.text?.toString()?.trim() ?: ""
-                            if (clipText.isNotEmpty()) {
-                                queryText = clipText
-                                manager.performOnlineSearch(clipText)
-                                Toast.makeText(context, "已粘贴剪贴板地址: $clipText", Toast.LENGTH_SHORT).show()
+                            val rawClip = cb.primaryClip?.getItemAt(0)?.text?.toString()?.trim() ?: ""
+                            if (rawClip.isNotEmpty()) {
+                                // Check for embedded WeChat / Tencent / Amap coordinates first (e.g. coord:22.54,114.05 or dlat=..&dlon=..)
+                                val coordMatch = Regex("(?:coord[:=]|tocoord=|latlng:)\\s*(-?\\d+\\.\\d+)\\s*,\\s*(-?\\d+\\.\\d+)", RegexOption.IGNORE_CASE).find(rawClip)
+                                if (coordMatch != null) {
+                                    val la = coordMatch.groupValues[1].toDoubleOrNull()
+                                    val lo = coordMatch.groupValues[2].toDoubleOrNull()
+                                    if (la != null && lo != null) {
+                                        val titleMatch = Regex("(?:title[:=]|dname=|name=|poiname=)([^;&\\s]+)", RegexOption.IGNORE_CASE).find(rawClip)
+                                        val title = titleMatch?.groupValues?.getOrNull(1)?.let { runCatching { java.net.URLDecoder.decode(it, "UTF-8") }.getOrDefault(it) } ?: "微信分享目的地"
+                                        val wgs = com.tomy.httnavicompanion.data.CoordinateConverter.gcj02ToWGS84(com.tomy.httnavicompanion.data.LatLng(la, lo))
+                                        manager.startRouteToPlace(title, wgs)
+                                        onDismiss()
+                                        Toast.makeText(context, "已识别微信坐标，开始导航: $title", Toast.LENGTH_SHORT).show()
+                                        return@clickable
+                                    }
+                                }
+                                var cleaned = rawClip.substringBefore("http").substringBefore("HTTP")
+                                listOf("【", "】", "「", "」", "位置：", "位置:", "地址：", "地址:", "分享位置：", "导航到：", "我在", "高德地图", "腾讯地图", "百度地图").forEach {
+                                    cleaned = cleaned.replace(it, " ")
+                                }
+                                cleaned = cleaned.lines().map { it.trim() }.firstOrNull { it.isNotEmpty() } ?: cleaned.trim()
+                                queryText = cleaned
+                                manager.performOnlineSearch(cleaned)
+                                Toast.makeText(context, "已识别剪贴板地址: $cleaned", Toast.LENGTH_SHORT).show()
                             } else {
                                 Toast.makeText(context, "剪贴板为空，请先复制地址或地点名称", Toast.LENGTH_SHORT).show()
                             }
@@ -892,16 +1049,66 @@ fun DestinationSearchSheetDialog(onDismiss: () -> Unit) {
                     modifier = Modifier.weight(1f),
                     verticalArrangement = Arrangement.spacedBy(7.dp)
                 ) {
-                    items(displayList) { item ->
+                    items(displayList, key = { "${it.category}_${it.name}_${it.coordinate.latitude}" }) { item ->
+                        val isRecent = item.category.contains("最近")
+                        var swipeOffsetX by remember(item.name) { mutableStateOf(0f) }
+                        val deleteRevealPx = 150f
+
+                        Box(modifier = Modifier.fillMaxWidth()) {
+                            if (isRecent) {
+                                Box(
+                                    modifier = Modifier
+                                        .matchParentSize()
+                                        .padding(vertical = 2.dp),
+                                    contentAlignment = Alignment.CenterEnd
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .width(64.dp)
+                                            .fillMaxHeight()
+                                            .clip(RoundedCornerShape(12.dp))
+                                            .background(Color(0xFFD32F2F))
+                                            .clickable {
+                                                manager.deleteRecentDestination(item.name, item.coordinate)
+                                            },
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                            Icon(Icons.Default.Delete, contentDescription = "删除", tint = Color.White, modifier = Modifier.size(18.dp))
+                                            Text("删除", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                        }
+                                    }
+                                }
+                            }
                         Card(
                             colors = CardDefaults.cardColors(containerColor = SheetCardBg),
                             shape = RoundedCornerShape(12.dp),
                             modifier = Modifier
                                 .fillMaxWidth()
+                                .offset { IntOffset(if (isRecent) swipeOffsetX.roundToInt() else 0, 0) }
+                                .then(
+                                    if (isRecent) {
+                                        Modifier.pointerInput(item.name) {
+                                            detectHorizontalDragGestures(
+                                                onDragEnd = {
+                                                    swipeOffsetX = if (swipeOffsetX < -deleteRevealPx * 0.4f) -deleteRevealPx else 0f
+                                                },
+                                                onHorizontalDrag = { change, dragAmount ->
+                                                    change.consume()
+                                                    swipeOffsetX = (swipeOffsetX + dragAmount).coerceIn(-deleteRevealPx - 20f, 0f)
+                                                }
+                                            )
+                                        }
+                                    } else Modifier
+                                )
                                 .border(1.dp, SheetGold.copy(alpha = 0.35f), RoundedCornerShape(12.dp))
                                 .clickable {
-                                    manager.startRouteToPlace(item.name, item.coordinate)
-                                    onDismiss()
+                                    if (isRecent && swipeOffsetX < -20f) {
+                                        swipeOffsetX = 0f
+                                    } else {
+                                        manager.startRouteToPlace(item.name, item.coordinate)
+                                        onDismiss()
+                                    }
                                 }
                         ) {
                             Row(
@@ -943,6 +1150,7 @@ fun DestinationSearchSheetDialog(onDismiss: () -> Unit) {
                                     Text("去这里", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                                 }
                             }
+                        }
                         }
                     }
                 }

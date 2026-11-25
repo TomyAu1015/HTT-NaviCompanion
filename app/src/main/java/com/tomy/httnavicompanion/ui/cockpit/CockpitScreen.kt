@@ -73,6 +73,8 @@ fun CockpitScreen(
     val isMapEnlarged by manager.isMapEnlarged.collectAsState()
     val isHUDMirrored by manager.isHUDMirrored.collectAsState()
     val themeBgBmp by manager.themeBackgroundBitmap.collectAsState()
+    val isDraggingMascot by manager.isDraggingMascot.collectAsState()
+    val isTouchingMap by manager.isTouchingMap.collectAsState()
 
     var showMusicDialog by remember { mutableStateOf(false) }
     var showAlbumDialog by remember { mutableStateOf(false) }
@@ -90,9 +92,10 @@ fun CockpitScreen(
             .scale(scaleX = if (isHUDMirrored) -1f else 1f, scaleY = 1f)
     ) {
         // RM-500HTT Official Background Wallpaper Layer (matches iOS 0.38 opacity)
-        if (themeBgBmp != null && !isMapEnlarged) {
+        val bgBmp = themeBgBmp
+        if (bgBmp != null && !isMapEnlarged) {
             Image(
-                bitmap = themeBgBmp!!.asImageBitmap(),
+                bitmap = bgBmp.asImageBitmap(),
                 contentDescription = null,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize(),
@@ -103,8 +106,10 @@ fun CockpitScreen(
         if (isMapEnlarged) {
             EnlargedNavigationHUDView(
                 manager = manager,
+                musicMgr = musicMgr,
                 isLandscape = isLandscape,
-                onOpenSearch = { showSearchDialog = true }
+                onOpenSearch = { showSearchDialog = true },
+                onOpenMusic = { showMusicDialog = true }
             )
         } else if (isLandscape) {
             // Landscape Dual-Column Cockpit matching iOS ContentView.swift
@@ -112,7 +117,7 @@ fun CockpitScreen(
                 modifier = Modifier
                     .fillMaxSize()
                     .statusBarsPadding()
-                    .verticalScroll(rememberScrollState())
+                    .verticalScroll(rememberScrollState(), enabled = !isDraggingMascot && !isTouchingMap)
                     .padding(horizontal = 10.dp, vertical = 6.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
@@ -175,24 +180,21 @@ fun CockpitScreen(
                         )
                         CharacterSelectorStrip(manager = manager)
                         TravelModesRow(manager = manager)
-                        MiniMusicPlayerStrip(
-                            musicMgr = musicMgr,
-                            onOpenMusicSheet = { showMusicDialog = true }
-                        )
                     }
                 }
             }
         } else {
             // Portrait Single-Column Cockpit matching iOS ContentView.swift (adaptive height for all Android screen ratios)
             BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
-                val adaptiveStageH = (maxHeight * 0.255f).coerceIn(178.dp, 232.dp)
+                val adaptiveStageH = (maxHeight * 0.245f).coerceIn(176.dp, 212.dp)
                 Column(
                     modifier = Modifier
                         .fillMaxSize()
                         .statusBarsPadding()
-                        .verticalScroll(rememberScrollState())
-                        .padding(horizontal = 9.dp, vertical = 4.dp),
-                    verticalArrangement = Arrangement.spacedBy(5.dp)
+                        .navigationBarsPadding()
+                        .verticalScroll(rememberScrollState(), enabled = !isDraggingMascot && !isTouchingMap)
+                        .padding(horizontal = 9.dp, vertical = 3.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     TopBezelBar(
                         manager = manager,
@@ -227,10 +229,6 @@ fun CockpitScreen(
                         albumInitialTab = 0
                         showAlbumDialog = true
                     }
-                )
-                MiniMusicPlayerStrip(
-                    musicMgr = musicMgr,
-                    onOpenMusicSheet = { showMusicDialog = true }
                 )
                 AuthorAndFeedbackBar(
                     manager = manager,
@@ -419,21 +417,6 @@ fun TopBezelBar(
             )
         }
 
-        // 4.6 Vehicle & Map Layer Settings
-        Row(
-            modifier = Modifier
-                .clip(RoundedCornerShape(8.dp))
-                .background(Color.White.copy(alpha = 0.14f))
-                .border(1.dp, HTTGold.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
-                .clickable { onOpenVehicle() }
-                .padding(horizontal = 8.dp, vertical = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(3.dp)
-        ) {
-            Icon(Icons.Default.DirectionsCar, contentDescription = null, tint = HTTGold, modifier = Modifier.size(13.dp))
-            Text("车辆/图层", color = HTTCream, fontSize = 11.sp, fontWeight = FontWeight.Bold, maxLines = 1)
-        }
-
         // 5. Language Switcher
         Box {
             Row(
@@ -497,7 +480,16 @@ fun TopBezelBar(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(3.dp)
         ) {
-            Icon(Icons.Default.PhotoLibrary, contentDescription = null, tint = Color.White, modifier = Modifier.size(13.dp))
+            val albumIconBmp = remember { HTTNaviApp.instance.assetDecryptor.getSpriteBitmap("rm_btn_icon_on") }
+            if (albumIconBmp != null) {
+                Image(
+                    bitmap = albumIconBmp.asImageBitmap(),
+                    contentDescription = null,
+                    modifier = Modifier.size(15.dp).clip(RoundedCornerShape(3.dp))
+                )
+            } else {
+                Icon(Icons.Default.PhotoLibrary, contentDescription = null, tint = Color.White, modifier = Modifier.size(13.dp))
+            }
             Text("相册/车标", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Black, maxLines = 1)
         }
     }
@@ -677,9 +669,9 @@ fun ClubroomStageView(
 
     val themeColor = characterThemeColor(selectedChar)
     val isCompactStage = stageHeight < 215.dp
-    val spriteSize = if (isCompactStage) 104.dp else 124.dp
-    val singleSpriteSize = if (isCompactStage) 122.dp else 144.dp
-    val teaSceneHeight = if (isCompactStage) 138.dp else 166.dp
+    val spriteSize = if (isCompactStage) 64.dp else 72.dp
+    val singleSpriteSize = if (isCompactStage) 76.dp else 86.dp
+    val teaSceneHeight = if (isCompactStage) 118.dp else 134.dp
 
     val seatedOrder = remember {
         listOf(
@@ -713,7 +705,7 @@ fun ClubroomStageView(
                 contentAlignment = Alignment.BottomCenter
             ) {
                 Image(
-                    bitmap = teaPartyBmp!!.asImageBitmap(),
+                    bitmap = requireNotNull(teaPartyBmp).asImageBitmap(),
                     contentDescription = "放课后茶会下午茶",
                     filterQuality = FilterQuality.None,
                     contentScale = ContentScale.Fit,
@@ -727,7 +719,7 @@ fun ClubroomStageView(
                     Row(
                         modifier = Modifier
                             .height(teaSceneHeight)
-                            .fillMaxWidth(0.94f),
+                            .width((teaSceneHeight * 1.92f).coerceAtMost(290.dp)),
                         horizontalArrangement = Arrangement.SpaceEvenly,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
@@ -742,8 +734,7 @@ fun ClubroomStageView(
                                     .then(
                                         if (!isUnseated) {
                                             Modifier
-                                                .clickable { manager.triggerCharacterTap(member) }
-                                                .pointerInput(member.charId) {
+                                                .pointerInput(member.charId, "tea_seat") {
                                                     detectDragGestures(
                                                         onDragStart = {
                                                             dragDeltaX = 0f
@@ -770,6 +761,7 @@ fun ClubroomStageView(
                                                         }
                                                     )
                                                 }
+                                                .clickable { manager.triggerCharacterTap(member) }
                                         } else Modifier
                                     ),
                                 contentAlignment = Alignment.Center
@@ -891,9 +883,10 @@ fun ClubroomStageView(
                             },
                         contentAlignment = Alignment.Center
                     ) {
-                        if (isDragging && currentSprite != null) {
+                        val dragSprite = currentSprite
+                        if (isDragging && dragSprite != null) {
                             Image(
-                                bitmap = currentSprite!!.asImageBitmap(),
+                                bitmap = dragSprite.asImageBitmap(),
                                 contentDescription = selectedChar.displayName(lang),
                                 filterQuality = FilterQuality.None,
                                 contentScale = ContentScale.Fit,
@@ -917,7 +910,7 @@ fun ClubroomStageView(
                     alpha = 0.55f,
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
-                        .height(if (isCompactStage) 96.dp else 112.dp)
+                        .height(if (isCompactStage) 66.dp else 76.dp)
                         .padding(bottom = 10.dp)
                 )
             }
@@ -1053,9 +1046,10 @@ fun ClubroomStageView(
                         )
                     }
             ) {
-                if (currentSprite != null) {
+                val activeSprite = currentSprite
+                if (activeSprite != null) {
                     Image(
-                        bitmap = currentSprite!!.asImageBitmap(),
+                        bitmap = activeSprite.asImageBitmap(),
                         contentDescription = selectedChar.displayName(lang),
                         filterQuality = FilterQuality.None,
                         contentScale = ContentScale.Fit,
@@ -1258,7 +1252,7 @@ fun InteractiveMapBoxView(
                         modifier = Modifier
                             .clip(RoundedCornerShape(6.dp))
                             .background(HTTCrimson)
-                            .clickable { manager.startRouteToPlace(tappedTitle, tappedCoord!!) }
+                            .clickable { tappedCoord?.let { tc -> manager.startRouteToPlace(tappedTitle, tc) } }
                             .padding(horizontal = 8.dp, vertical = 4.dp)
                     ) {
                         Text("去这里", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
@@ -1277,9 +1271,10 @@ fun InteractiveMapBoxView(
         }
 
         // Bottom-left Mascot Companion + Bottom-right Traffic Light & Step
-        if (currentSprite != null) {
+        val miniSprite = currentSprite
+        if (miniSprite != null) {
             Image(
-                bitmap = currentSprite!!.asImageBitmap(),
+                bitmap = miniSprite.asImageBitmap(),
                 contentDescription = null,
                 filterQuality = FilterQuality.None,
                 modifier = Modifier
@@ -1348,14 +1343,14 @@ fun SpeechBubbleBox(manager: AudioPlayerManager) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
+            .clip(RoundedCornerShape(10.dp))
             .background(HTTCream)
-            .border(2.dp, HTTGold, RoundedCornerShape(12.dp))
-            .padding(horizontal = 12.dp, vertical = 8.dp),
+            .border(1.2.dp, HTTGold, RoundedCornerShape(10.dp))
+            .padding(horizontal = 10.dp, vertical = 5.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween
     ) {
-        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -1364,25 +1359,26 @@ fun SpeechBubbleBox(manager: AudioPlayerManager) {
                 Text(
                     selectedChar.roleTag(lang),
                     color = HTTCrimson,
-                    fontSize = 10.sp,
-                    fontWeight = FontWeight.Black
+                    fontSize = 9.5.sp,
+                    fontWeight = FontWeight.Black,
+                    maxLines = 1
                 )
                 Box(
                     modifier = Modifier
                         .clip(RoundedCornerShape(4.dp))
-                        .background(HTTCrimson.copy(alpha = 0.15f))
+                        .background(HTTCrimson.copy(alpha = 0.14f))
                         .clickable { manager.resetPositions() }
-                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                        .padding(horizontal = 5.dp, vertical = 1.dp)
                 ) {
-                    Text("位置归位", color = HTTCrimson, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                    Text("位置归位", color = HTTCrimson, fontSize = 8.5.sp, fontWeight = FontWeight.Bold)
                 }
             }
             Text(
                 text = bubbleText,
                 color = Color.Black.copy(alpha = 0.88f),
-                fontSize = 12.sp,
+                fontSize = 11.sp,
                 fontWeight = FontWeight.Bold,
-                maxLines = 2,
+                maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
         }
@@ -1449,7 +1445,7 @@ fun UtilityControlGrid(
     val cruiseRem by manager.cruiseRemainingSeconds.collectAsState()
     var showIntervalMenu by remember { mutableStateOf(false) }
 
-    Column(verticalArrangement = Arrangement.spacedBy(if (isCompact) 5.dp else 7.dp)) {
+    Column(verticalArrangement = Arrangement.spacedBy(if (isCompact) 4.dp else 5.dp)) {
         // Row 1: 3 Tactical Buttons (出发进行 / 多人相声 / 顶蛋糕下午茶)
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -1584,16 +1580,18 @@ fun TacticalButton(
 ) {
     Column(
         modifier = modifier
-            .clip(RoundedCornerShape(11.dp))
+            .clip(RoundedCornerShape(10.dp))
             .background(bgColor)
-            .border(1.4.dp, HTTGold.copy(alpha = 0.8f), RoundedCornerShape(11.dp))
+            .border(1.dp, HTTGold.copy(alpha = 0.72f), RoundedCornerShape(10.dp))
             .clickable { onClick() }
-            .padding(vertical = 6.dp, horizontal = 4.dp),
+            .padding(vertical = 4.dp, horizontal = 4.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(2.dp)
+        verticalArrangement = Arrangement.spacedBy(1.dp)
     ) {
-        Icon(icon, contentDescription = null, tint = HTTCream, modifier = Modifier.size(14.dp))
-        Text(title, color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Black, maxLines = 1)
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+            Icon(icon, contentDescription = null, tint = HTTCream, modifier = Modifier.size(12.dp))
+            Text(title, color = Color.White, fontSize = 10.5.sp, fontWeight = FontWeight.Black, maxLines = 1)
+        }
         Text(subtitle, color = HTTCream.copy(alpha = 0.85f), fontSize = 8.sp, maxLines = 1)
     }
 }
@@ -1798,8 +1796,10 @@ fun AuthorAndFeedbackBar(
 @Composable
 fun EnlargedNavigationHUDView(
     manager: AudioPlayerManager,
+    musicMgr: KOnMusicManager,
     isLandscape: Boolean,
-    onOpenSearch: () -> Unit
+    onOpenSearch: () -> Unit,
+    onOpenMusic: () -> Unit
 ) {
     val stepInstruction by manager.currentStepInstruction.collectAsState()
     val distMeters by manager.distanceToNextStepMeters.collectAsState()
@@ -1808,11 +1808,16 @@ fun EnlargedNavigationHUDView(
     val currentSprite by manager.currentSpriteFrame.collectAsState()
     val bubbleText by manager.currentSpeechBubble.collectAsState()
     val camDist by manager.upcomingCameraDistance.collectAsState()
-    val saDist by manager.upcomingServiceAreaDist.collectAsState()
-    val saName by manager.upcomingServiceAreaName.collectAsState()
     val remKm by manager.remainingRouteDistanceKm.collectAsState()
     val remMins by manager.remainingRouteMinutes.collectAsState()
     val candidateRoutes by manager.candidateRoutes.collectAsState()
+    val isRoutePreviewing by manager.isRoutePreviewing.collectAsState()
+    val transitFirstLegUseBike by manager.transitFirstLegUseBike.collectAsState()
+    val drivingAvoids by manager.drivingAvoidOptions.collectAsState()
+    val destName by manager.destinationName.collectAsState()
+    val tlCountdown by manager.trafficLightCountdown.collectAsState()
+    val tlColor by manager.trafficLightColor.collectAsState()
+    val tlNoStop by manager.trafficLightIsHighwayNonStop.collectAsState()
     val selectedRouteIdx by manager.selectedRouteIndex.collectAsState()
     val tappedCoord by manager.tappedCoord.collectAsState()
     val tappedTitle by manager.tappedTitle.collectAsState()
@@ -1820,8 +1825,19 @@ fun EnlargedNavigationHUDView(
     val travelMode by manager.travelMode.collectAsState()
     val isDemo by manager.isDemoSimulating.collectAsState()
     val hasNav by manager.hasActiveNavigation.collectAsState()
+    val heading by manager.headingDegrees.collectAsState()
 
     val distLabel = if (distMeters >= 1000) String.format("%.1f公里", distMeters / 1000.0) else "${distMeters}米"
+    val compassDir = when (((heading % 360.0 + 360.0) % 360.0)) {
+        in 22.5..67.5 -> "东北 NE"
+        in 67.5..112.5 -> "东 E"
+        in 112.5..157.5 -> "东南 SE"
+        in 157.5..202.5 -> "南 S"
+        in 202.5..247.5 -> "西南 SW"
+        in 247.5..292.5 -> "西 W"
+        in 292.5..337.5 -> "西北 NW"
+        else -> "北 N"
+    }
 
     Box(
         modifier = Modifier
@@ -1834,367 +1850,732 @@ fun EnlargedNavigationHUDView(
             modifier = Modifier.fillMaxSize()
         )
 
-        // Top Amap-style Navigation Stack (safe-area aware, never overlaps right controls!)
+        // Top Overlay Stack (1:1 iOS Enlarged Navigation Layout)
         Column(
             modifier = Modifier
-                .then(if (isLandscape) Modifier.width(370.dp) else Modifier.fillMaxWidth())
-                .align(Alignment.TopStart)
+                .fillMaxWidth()
+                .align(Alignment.TopCenter)
                 .statusBarsPadding()
                 .padding(horizontal = 10.dp, vertical = 6.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            // 1. Sleek Amap-style Turn-by-Turn Header Card
-            Surface(
-                color = Color(0xFF0F211C).copy(alpha = 0.94f),
-                shape = RoundedCornerShape(16.dp),
-                shadowElevation = 6.dp,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .border(1.dp, HTTGold.copy(alpha = 0.72f), RoundedCornerShape(16.dp))
+            if (!hasNav || isRoutePreviewing) {
+            // Row 1: 4 Travel Mode Pills (开车 / 骑车 / 步行 / 公交/地铁) matching iOS
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                NavigationTravelMode.values().forEach { mode ->
+                    val sel = travelMode == mode
+                    val (icon, title) = when (mode) {
+                        NavigationTravelMode.DRIVING -> Icons.Default.DirectionsCar to "开车"
+                        NavigationTravelMode.EBIKE -> Icons.Default.TwoWheeler to "骑车"
+                        NavigationTravelMode.WALKING -> Icons.Default.DirectionsWalk to "步行"
+                        NavigationTravelMode.TRANSIT -> Icons.Default.DirectionsTransit to "公交/地铁"
+                    }
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        modifier = Modifier
+                            .weight(if (mode == NavigationTravelMode.TRANSIT) 1.25f else 1f)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(if (sel) HTTCrimson else Color(0xFF141824).copy(alpha = 0.88f))
+                            .border(1.dp, if (sel) HTTGold else Color.White.copy(alpha = 0.16f), RoundedCornerShape(10.dp))
+                            .clickable { manager.setTravelMode(mode) }
+                            .padding(vertical = 7.dp, horizontal = 4.dp),
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        val turnIcon = when {
-                            travelMode == NavigationTravelMode.TRANSIT -> Icons.Default.DirectionsTransit
-                            travelMode == NavigationTravelMode.WALKING -> Icons.Default.DirectionsWalk
-                            travelMode == NavigationTravelMode.EBIKE -> Icons.Default.DirectionsBike
-                            stepInstruction.contains("调头") || stepInstruction.contains("掉头") -> Icons.Default.UTurnLeft
-                            stepInstruction.contains("左") && !stepInstruction.contains("右") -> Icons.Default.TurnLeft
-                            stepInstruction.contains("右") && !stepInstruction.contains("左") -> Icons.Default.TurnRight
-                            else -> Icons.Default.ArrowUpward
-                        }
-                        Box(
-                            modifier = Modifier
-                                .size(44.dp)
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(Color(0xFF185A42))
-                                .border(1.dp, Color(0xFF4ADE80).copy(alpha = 0.45f), RoundedCornerShape(12.dp)),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(turnIcon, contentDescription = null, tint = Color.White, modifier = Modifier.size(26.dp))
-                        }
+                        Icon(icon, contentDescription = null, tint = Color.White, modifier = Modifier.size(14.dp))
+                        Spacer(Modifier.width(3.dp))
+                        Text(title, color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
+                    }
+                }
+            }
 
-                        Column(modifier = Modifier.weight(1f)) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.Bottom
+            }
+
+            // Active Turn-by-Turn Banner at VERY TOP (1:1 iOS Layout — never blocks center map!)
+            if (hasNav && !isRoutePreviewing) {
+                val etaCal = java.util.Calendar.getInstance().apply { add(java.util.Calendar.MINUTE, remMins.coerceAtLeast(1)) }
+                val etaStr = String.format("%02d:%02d", etaCal.get(java.util.Calendar.HOUR_OF_DAY), etaCal.get(java.util.Calendar.MINUTE))
+                Surface(
+                    color = Color(0xFF0F141E).copy(alpha = 0.94f),
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .border(1.2.dp, HTTGold.copy(alpha = 0.85f), RoundedCornerShape(14.dp))
+                ) {
+                    Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            val turnIcon = when {
+                                travelMode == NavigationTravelMode.TRANSIT -> Icons.Default.DirectionsTransit
+                                travelMode == NavigationTravelMode.WALKING -> Icons.Default.DirectionsWalk
+                                travelMode == NavigationTravelMode.EBIKE -> Icons.Default.DirectionsBike
+                                stepInstruction.contains("调头") || stepInstruction.contains("掉头") -> Icons.Default.UTurnLeft
+                                stepInstruction.contains("左") && !stepInstruction.contains("右") -> Icons.Default.TurnLeft
+                                stepInstruction.contains("右") && !stepInstruction.contains("左") -> Icons.Default.TurnRight
+                                else -> Icons.Default.ArrowUpward
+                            }
+                            Box(
+                                modifier = Modifier
+                                    .size(34.dp)
+                                    .clip(CircleShape)
+                                    .background(HTTCrimson),
+                                contentAlignment = Alignment.Center
                             ) {
-                                Text(
-                                    distLabel,
-                                    color = Color(0xFF4ADE80),
-                                    fontSize = 20.sp,
-                                    fontWeight = FontWeight.Black,
-                                    fontFamily = FontFamily.Monospace
-                                )
-                                if (remKm > 0.05) {
-                                    Text(
-                                        String.format("余 %.1fkm · %d分", remKm, remMins),
-                                        color = HTTGold,
-                                        fontSize = 11.sp,
-                                        fontWeight = FontWeight.Bold
-                                    )
+                                Icon(turnIcon, contentDescription = null, tint = Color.White, modifier = Modifier.size(20.dp))
+                            }
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(stepInstruction, color = Color.White, fontSize = 12.5.sp, fontWeight = FontWeight.Black, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    Text(distLabel, color = Color(0xFF4ADE80), fontSize = 12.sp, fontWeight = FontWeight.Black, fontFamily = FontFamily.Monospace)
+                                    if (remKm > 0.05) {
+                                        Text(String.format("· 余 %.1fkm · %d分 · 预计 %s 到达", remKm, remMins.coerceAtLeast(1), etaStr), color = HTTGold, fontSize = 10.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    }
                                 }
                             }
-                            Text(
-                                stepInstruction,
-                                color = Color.White,
-                                fontSize = 13.sp,
-                                fontWeight = FontWeight.Bold,
-                                maxLines = 2,
-                                overflow = TextOverflow.Ellipsis
-                            )
+                            Box(
+                                modifier = Modifier
+                                    .size(26.dp)
+                                    .clip(CircleShape)
+                                    .background(Color(0xFF8B1A24))
+                                    .clickable { manager.stopNavigation() },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(Icons.Default.Close, contentDescription = null, tint = Color.White, modifier = Modifier.size(14.dp))
+                            }
+                        }
+                        if (candidateRoutes.size > 1) {
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                                candidateRoutes.forEachIndexed { idx, r ->
+                                    val sel = idx == selectedRouteIdx
+                                    val durMins = (r.durationSeconds / 60).toInt().coerceAtLeast(1)
+                                    Box(
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .clip(RoundedCornerShape(7.dp))
+                                            .background(if (sel) HTTCrimson else Color.White.copy(alpha = 0.08f))
+                                            .border(1.dp, if (sel) HTTGold else Color.Transparent, RoundedCornerShape(7.dp))
+                                            .clickable { manager.selectRoute(idx) }
+                                            .padding(vertical = 3.dp, horizontal = 4.dp),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Text("${r.name} · ${durMins}分", color = Color.White, fontSize = 9.5.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    }
+                                }
+                            }
                         }
                     }
+                }
+            }
 
-                    // Compact Top Action Row: Back to Cockpit + End Nav + Travel Mode Quick Switcher
+            // Lane Guidance Strip + Traffic Light Countdown Pill (1:1 iOS Parity during active navigation)
+            if (hasNav && !isRoutePreviewing) {
+                val lowerStep = stepInstruction.lowercase()
+                val isUturn = lowerStep.contains("调头") || lowerStep.contains("掉头") || lowerStep.contains("u-turn")
+                val isKeepRight = lowerStep.contains("稍向右") || lowerStep.contains("靠右") || lowerStep.contains("出口") || lowerStep.contains("右前方")
+                val isKeepLeft = lowerStep.contains("稍向左") || lowerStep.contains("靠左") || lowerStep.contains("左前方")
+                val isRightTurn = !isKeepRight && (lowerStep.contains("右") && !lowerStep.contains("左") || lowerStep.contains("right"))
+                val isLeftTurn = !isKeepLeft && (lowerStep.contains("左") && !lowerStep.contains("右") || lowerStep.contains("left"))
+                val isHwy = listOf("高速", "高架", "环线", "匝道", "出口").any { lowerStep.contains(it) } || speedLimit >= 80
+                val isArt = listOf("大道", "快速", "隧道", "大桥", "中路").any { lowerStep.contains(it) } || speedLimit in 60..79
+                val isNarrow = listOf("巷", "弄", "胡同", "村", "里", "支路", "小区", "内部").any { lowerStep.contains(it) } || (!isHwy && !isArt && (speedLimit <= 40 || lowerStep.contains("开始")))
+                val laneCnt = when {
+                    isHwy -> 4
+                    isArt -> 3
+                    isNarrow -> 1
+                    else -> 2
+                }
+                // bitmask: 1=uturn, 2=left, 4=straight, 8=right
+                fun lblOf(m: Int): String = when (m) {
+                    2 -> "左转"; 4 -> "直行"; 8 -> "右转"; 1 -> "掉头"
+                    else -> buildString {
+                        if ((m and 1) != 0) append("掉")
+                        if ((m and 4) != 0) append("直")
+                        if ((m and 2) != 0) append("左")
+                        if ((m and 8) != 0) append("右")
+                    }.ifEmpty { "直行" }
+                }
+                val lanes: List<Pair<Int, Int>> = when (laneCnt) {
+                    1 -> {
+                        val alw = if (isUturn) 15 else 14
+                        val rec = when { isUturn -> 1; isLeftTurn || isKeepLeft -> 2; isRightTurn || isKeepRight -> 8; else -> 4 }
+                        listOf(alw to rec)
+                    }
+                    2 -> when {
+                        isUturn -> listOf(7 to 1, 12 to 0)
+                        isLeftTurn || isKeepLeft -> listOf(6 to 2, 12 to 0)
+                        isRightTurn || isKeepRight -> listOf(6 to 0, 12 to 8)
+                        else -> listOf(6 to 4, 12 to 4)
+                    }
+                    3 -> when {
+                        isUturn -> listOf(3 to 1, 4 to 0, 12 to 0)
+                        isLeftTurn -> listOf(2 to 2, 4 to 0, 12 to 0)
+                        isKeepLeft -> listOf(6 to 2, 4 to 4, 12 to 0)
+                        isRightTurn -> listOf(6 to 0, 4 to 0, 8 to 8)
+                        isKeepRight -> listOf(6 to 0, 4 to 0, 12 to 8)
+                        else -> listOf(2 to 0, 4 to 4, 12 to 4)
+                    }
+                    else -> when {
+                        isUturn -> listOf(3 to 1, 4 to 0, 4 to 0, 12 to 0)
+                        isKeepRight -> listOf(4 to 0, 4 to 0, 12 to 8, 8 to 8)
+                        isKeepLeft -> listOf(2 to 2, 6 to 2, 4 to 0, 4 to 0)
+                        isRightTurn -> listOf(6 to 0, 4 to 0, 4 to 0, 8 to 8)
+                        isLeftTurn -> listOf(2 to 2, 4 to 0, 4 to 0, 12 to 0)
+                        else -> listOf(4 to 4, 4 to 4, 4 to 4, 12 to 4)
+                    }
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(Color(0xFF141824).copy(alpha = 0.92f))
+                            .border(1.dp, HTTGold.copy(alpha = 0.55f), RoundedCornerShape(10.dp))
+                            .padding(horizontal = 5.dp, vertical = 3.dp),
                         horizontalArrangement = Arrangement.spacedBy(5.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        NavigationTravelMode.values().forEach { mode ->
-                            val sel = travelMode == mode
-                            val shortTitle = when (mode) {
-                                NavigationTravelMode.DRIVING -> "驾车"
-                                NavigationTravelMode.EBIKE -> "骑行"
-                                NavigationTravelMode.WALKING -> "步行"
-                                NavigationTravelMode.TRANSIT -> "公交"
-                            }
-                            Box(
+                        lanes.forEach { (allowed, rec) ->
+                            val active = rec != 0
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
                                 modifier = Modifier
-                                    .weight(1f)
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .background(if (sel) HTTCrimson else Color.White.copy(alpha = 0.08f))
-                                    .border(1.dp, if (sel) HTTGold else Color.White.copy(alpha = 0.14f), RoundedCornerShape(8.dp))
-                                    .clickable { manager.setTravelMode(mode) }
-                                    .padding(vertical = 5.dp),
-                                contentAlignment = Alignment.Center
+                                    .clip(RoundedCornerShape(5.dp))
+                                    .background(if (active) HTTCrimson.copy(alpha = 0.85f) else Color.Transparent)
+                                    .padding(horizontal = 4.dp, vertical = 2.dp)
                             ) {
-                                Text(shortTitle, color = if (sel) Color.White else Color.LightGray, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                androidx.compose.foundation.Canvas(modifier = Modifier.size(width = 22.dp, height = 18.dp)) {
+                                    val w = size.width
+                                    val h = size.height
+                                    val cx = w * 0.50f
+                                    val by = h * 0.92f
+                                    val sy = h * 0.54f
+                                    val st = androidx.compose.ui.graphics.drawscope.Stroke(
+                                        width = 2.1.dp.toPx(),
+                                        cap = androidx.compose.ui.graphics.StrokeCap.Round,
+                                        join = androidx.compose.ui.graphics.StrokeJoin.Round
+                                    )
+                                    val dimC = Color.Gray.copy(alpha = 0.45f)
+                                    val actC = Color.White
+                                    fun drawDir(d: Int, c: Color) {
+                                        val p = androidx.compose.ui.graphics.Path()
+                                        when (d) {
+                                            4 -> {
+                                                p.moveTo(cx, sy); p.lineTo(cx, h * 0.14f)
+                                                p.moveTo(cx - w * 0.16f, h * 0.30f); p.lineTo(cx, h * 0.12f); p.lineTo(cx + w * 0.16f, h * 0.30f)
+                                            }
+                                            2 -> {
+                                                p.moveTo(cx, sy); p.quadraticTo(cx, h * 0.36f, w * 0.16f, h * 0.34f)
+                                                p.moveTo(w * 0.28f, h * 0.22f); p.lineTo(w * 0.14f, h * 0.34f); p.lineTo(w * 0.28f, h * 0.46f)
+                                            }
+                                            8 -> {
+                                                p.moveTo(cx, sy); p.quadraticTo(cx, h * 0.36f, w * 0.84f, h * 0.34f)
+                                                p.moveTo(w * 0.72f, h * 0.22f); p.lineTo(w * 0.86f, h * 0.34f); p.lineTo(w * 0.72f, h * 0.46f)
+                                            }
+                                            1 -> {
+                                                p.moveTo(cx, sy); p.lineTo(cx, h * 0.30f)
+                                                p.quadraticTo(w * 0.33f, h * 0.10f, w * 0.16f, h * 0.32f)
+                                                p.lineTo(w * 0.16f, h * 0.68f)
+                                                p.moveTo(w * 0.06f, h * 0.56f); p.lineTo(w * 0.16f, h * 0.70f); p.lineTo(w * 0.26f, h * 0.56f)
+                                            }
+                                        }
+                                        drawPath(p, color = c, style = st)
+                                    }
+                                    for (d in listOf(1, 2, 4, 8)) {
+                                        if ((allowed and d) != 0 && (rec and d) == 0) drawDir(d, dimC)
+                                    }
+                                    val stem = androidx.compose.ui.graphics.Path().apply { moveTo(cx, by); lineTo(cx, sy) }
+                                    drawPath(stem, color = if (active) actC else dimC, style = st)
+                                    for (d in listOf(1, 2, 4, 8)) {
+                                        if ((allowed and d) != 0 && (rec and d) != 0) drawDir(d, actC)
+                                    }
+                                }
+                                Text(
+                                    lblOf(allowed),
+                                    color = if (active) HTTGold else Color.Gray.copy(alpha = 0.55f),
+                                    fontSize = 8.sp,
+                                    fontWeight = if (active) FontWeight.Black else FontWeight.Normal,
+                                    maxLines = 1
+                                )
                             }
                         }
+                    }
 
-                        Box(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(8.dp))
-                                .background(Color(0xFF282E3F))
-                                .border(1.dp, HTTGold.copy(alpha = 0.45f), RoundedCornerShape(8.dp))
-                                .clickable { manager.setMapEnlarged(false) }
-                                .padding(horizontal = 9.dp, vertical = 5.dp)
-                        ) {
-                            Text("收起", color = HTTGold, fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                        }
-
-                        if (hasNav) {
-                            Box(
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .background(Color(0xFF8B1A24))
-                                    .clickable { manager.stopNavigation() }
-                                    .padding(horizontal = 9.dp, vertical = 5.dp)
-                            ) {
-                                Text("结束", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                            }
-                        }
+                    val tlBg = when {
+                        tlNoStop -> Color(0xFF0F291E)
+                        tlColor == 0 -> Color(0xFF450A0A)
+                        tlColor == 1 -> Color(0xFF422006)
+                        else -> Color(0xFF0F291E)
+                    }
+                    val tlDot = when {
+                        tlNoStop -> Color(0xFF4ADE80)
+                        tlColor == 0 -> Color(0xFFEF4444)
+                        tlColor == 1 -> Color(0xFFFACC15)
+                        else -> Color(0xFF4ADE80)
+                    }
+                    val tlLabel = when {
+                        tlNoStop -> "前方无信号灯 · 畅行"
+                        tlColor == 0 -> "红灯 ${tlCountdown}s · 点按校准"
+                        tlColor == 1 -> "黄灯 ${tlCountdown}s · 点按校准"
+                        else -> "绿灯 ${tlCountdown}s · 点按校准"
+                    }
+                    Row(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(tlBg.copy(alpha = 0.92f))
+                            .border(1.dp, tlDot.copy(alpha = 0.7f), RoundedCornerShape(10.dp))
+                            .clickable { manager.calibrateTrafficLight() }
+                            .padding(horizontal = 9.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(5.dp)
+                    ) {
+                        Box(modifier = Modifier.size(8.dp).clip(CircleShape).background(tlDot))
+                        Text(tlLabel, color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
                     }
                 }
             }
 
-            // 2. Candidate Routes Selector (when multiple routes available)
-            if (candidateRoutes.size > 1) {
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    candidateRoutes.forEachIndexed { idx, r ->
-                        val sel = idx == selectedRouteIdx
-                        val durMins = (r.durationSeconds / 60).toInt().coerceAtLeast(1)
+            // Row 2: Left Status Badges + Right Quick Action Pills (搜索 / 音乐 / 返回驾驶舱)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.Top
+            ) {
+                // Left Telemetry Badges (matching iOS)
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Row(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(Color(0xFF141824).copy(alpha = 0.90f))
+                            .border(1.dp, Color(0xFFEF4444).copy(alpha = 0.85f), RoundedCornerShape(10.dp))
+                            .padding(horizontal = 8.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
                         Box(
                             modifier = Modifier
-                                .weight(1f)
-                                .clip(RoundedCornerShape(10.dp))
-                                .background(if (sel) HTTCrimson.copy(alpha = 0.94f) else Color(0xFF141824).copy(alpha = 0.86f))
-                                .border(1.dp, if (sel) HTTGold else Color.White.copy(alpha = 0.2f), RoundedCornerShape(10.dp))
-                                .clickable { manager.selectRoute(idx) }
-                                .padding(horizontal = 8.dp, vertical = 6.dp),
+                                .size(24.dp)
+                                .clip(CircleShape)
+                                .background(Color.White)
+                                .border(2.dp, Color(0xFFDC2626), CircleShape),
                             contentAlignment = Alignment.Center
                         ) {
-                            Text(
-                                "${r.name} · ${durMins}分",
-                                color = Color.White,
-                                fontSize = 10.sp,
-                                fontWeight = FontWeight.Bold,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
+                            Text("$speedLimit", color = Color.Black, fontSize = 9.sp, fontWeight = FontWeight.Black)
+                        }
+                        Column {
+                            Text("测速电子眼", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                            Text("距离 ${camDist}m", color = Color(0xFFFF8A80), fontSize = 9.sp)
+                        }
+                    }
+
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Row(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(Color(0xFF0F291E).copy(alpha = 0.90f))
+                                .border(1.dp, Color(0xFF22C55E).copy(alpha = 0.55f), RoundedCornerShape(12.dp))
+                                .padding(horizontal = 7.dp, vertical = 3.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Box(modifier = Modifier.size(6.dp).clip(CircleShape).background(Color(0xFF4ADE80)))
+                            Text("道路畅通", color = Color(0xFF86EFAC), fontSize = 9.5.sp, fontWeight = FontWeight.Bold)
+                        }
+                        Row(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(Color(0xFF0F291E).copy(alpha = 0.90f))
+                                .border(1.dp, Color(0xFF22C55E).copy(alpha = 0.55f), RoundedCornerShape(12.dp))
+                                .padding(horizontal = 7.dp, vertical = 3.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(3.dp)
+                        ) {
+                            Icon(Icons.Default.GpsFixed, contentDescription = null, tint = Color(0xFF4ADE80), modifier = Modifier.size(11.dp))
+                            Text("GPS正常", color = Color(0xFF86EFAC), fontSize = 9.5.sp, fontWeight = FontWeight.Bold)
                         }
                     }
                 }
-            }
 
-            // 3. Mode-Specific Secondary Strip: Lane + Speed Camera (Driving) vs Transit Legs (Transit)
-            if (travelMode == NavigationTravelMode.DRIVING) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(Color(0xFF101521).copy(alpha = 0.86f))
-                        .border(1.dp, HTTGold.copy(alpha = 0.45f), RoundedCornerShape(12.dp))
-                        .padding(horizontal = 10.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
+                // Right Action Bar + Vertical Map Controls (matching iOS)
+                Column(
+                    horizontalAlignment = Alignment.End,
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
-                        val activeLaneIdx = when {
-                            stepInstruction.contains("左") && !stepInstruction.contains("右") -> 0
-                            stepInstruction.contains("右") && !stepInstruction.contains("左") -> 2
-                            else -> 1
+                    Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                        Row(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(Color(0xFF141824).copy(alpha = 0.90f))
+                                .border(1.dp, HTTGold.copy(alpha = 0.45f), RoundedCornerShape(10.dp))
+                                .clickable { onOpenSearch() }
+                                .padding(horizontal = 8.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(3.dp)
+                        ) {
+                            Icon(Icons.Default.Search, contentDescription = null, tint = Color.White, modifier = Modifier.size(13.dp))
+                            Text("搜索", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                         }
-                        listOf(Icons.Default.TurnLeft, Icons.Default.ArrowUpward, Icons.Default.TurnRight).forEachIndexed { idx, ic ->
-                            val isRec = (idx == activeLaneIdx)
-                            Box(
-                                modifier = Modifier
-                                    .size(24.dp)
-                                    .clip(RoundedCornerShape(5.dp))
-                                    .background(if (isRec) Color(0xFF16A34A) else Color.White.copy(alpha = 0.08f))
-                                    .border(1.dp, if (isRec) Color(0xFF4ADE80) else Color.White.copy(alpha = 0.16f), RoundedCornerShape(5.dp)),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(ic, contentDescription = null, tint = if (isRec) Color.White else Color.Gray, modifier = Modifier.size(14.dp))
-                            }
+
+                        Row(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(Color(0xFF141824).copy(alpha = 0.90f))
+                                .border(1.dp, HTTGold.copy(alpha = 0.45f), RoundedCornerShape(10.dp))
+                                .clickable { onOpenMusic() }
+                                .padding(horizontal = 8.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(3.dp)
+                        ) {
+                            Icon(Icons.Default.MusicNote, contentDescription = null, tint = HTTGold, modifier = Modifier.size(13.dp))
+                            Text("音乐", color = HTTGold, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                         }
-                        Spacer(Modifier.width(6.dp))
-                        Icon(Icons.Default.Videocam, contentDescription = null, tint = Color(0xFFFF6B6B), modifier = Modifier.size(14.dp))
-                        Text("测速 ${camDist}m", color = Color(0xFFFFB4AB), fontSize = 10.sp, fontWeight = FontWeight.SemiBold)
-                        Spacer(Modifier.width(4.dp))
-                        Icon(Icons.Default.LocalGasStation, contentDescription = null, tint = Color(0xFF4ADE80), modifier = Modifier.size(14.dp))
-                        Text(String.format("%s %.1fkm", saName.take(5), saDist / 1000.0), color = Color(0xFF86EFAC), fontSize = 10.sp, maxLines = 1)
+
+                        Row(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(Color(0xFF141824).copy(alpha = 0.90f))
+                                .border(1.dp, HTTGold.copy(alpha = 0.55f), RoundedCornerShape(10.dp))
+                                .clickable { manager.setMapEnlarged(false) }
+                                .padding(horizontal = 8.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(3.dp)
+                        ) {
+                            Icon(Icons.Default.FullscreenExit, contentDescription = null, tint = HTTGold, modifier = Modifier.size(13.dp))
+                            Text("返回驾驶舱", color = HTTGold, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        }
                     }
 
+                    // Compass + 回中 + Zoom Pill + 模拟 + 结束 (Vertical Right Rail matching iOS)
                     Box(
                         modifier = Modifier
-                            .size(26.dp)
+                            .size(34.dp)
                             .clip(CircleShape)
-                            .background(Color.White)
-                            .border(2.5.dp, Color(0xFFDC2626), CircleShape),
+                            .background(Color(0xFF141824).copy(alpha = 0.90f))
+                            .border(1.dp, Color.White.copy(alpha = 0.18f), CircleShape)
+                            .clickable { manager.toggleCameraMode() },
                         contentAlignment = Alignment.Center
                     ) {
-                        Text("$speedLimit", color = Color.Black, fontSize = 9.sp, fontWeight = FontWeight.Black)
+                        Icon(Icons.Default.Navigation, contentDescription = null, tint = Color(0xFFEF4444), modifier = Modifier.size(18.dp))
                     }
-                }
-            } else if (travelMode == NavigationTravelMode.TRANSIT) {
-                val activeRoute = candidateRoutes.getOrNull(selectedRouteIdx)
-                if (activeRoute != null && activeRoute.steps.isNotEmpty()) {
+
+                    Row(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(Color(0xFF141824).copy(alpha = 0.90f))
+                            .border(1.dp, HTTGold.copy(alpha = 0.45f), RoundedCornerShape(10.dp))
+                            .clickable { manager.triggerFastRecenter() }
+                            .padding(horizontal = 9.dp, vertical = 5.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(3.dp)
+                    ) {
+                        Icon(Icons.Default.NearMe, contentDescription = null, tint = HTTGold, modifier = Modifier.size(12.dp))
+                        Text("回中", color = HTTGold, fontSize = 10.5.sp, fontWeight = FontWeight.Bold)
+                    }
+
                     Column(
                         modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(Color(0xFF101828).copy(alpha = 0.88f))
-                            .border(1.dp, Color(0xFF38BDF8).copy(alpha = 0.55f), RoundedCornerShape(12.dp))
-                            .padding(horizontal = 10.dp, vertical = 7.dp),
-                        verticalArrangement = Arrangement.spacedBy(3.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(Color(0xFF141824).copy(alpha = 0.90f))
+                            .border(1.dp, Color.White.copy(alpha = 0.18f), RoundedCornerShape(10.dp)),
+                        horizontalAlignment = Alignment.CenterHorizontally
                     ) {
-                        activeRoute.steps.take(3).forEachIndexed { idx, st ->
-                            Text(
-                                "${idx + 1}. ${st.instruction}",
-                                color = if (idx == 1) Color(0xFF7DD3FC) else Color.White,
-                                fontSize = 10.5.sp,
-                                fontWeight = if (idx == 1) FontWeight.Bold else FontWeight.Medium,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
+                        Box(
+                            modifier = Modifier
+                                .size(34.dp, 30.dp)
+                                .clickable { manager.triggerZoom(1) },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(Icons.Default.Add, contentDescription = null, tint = Color.White, modifier = Modifier.size(17.dp))
                         }
+                        Divider(color = Color.White.copy(alpha = 0.15f), modifier = Modifier.width(24.dp))
+                        Box(
+                            modifier = Modifier
+                                .size(34.dp, 30.dp)
+                                .clickable { manager.triggerZoom(-1) },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(Icons.Default.Remove, contentDescription = null, tint = Color.White, modifier = Modifier.size(17.dp))
+                        }
+                    }
+
+                    Row(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(if (isDemo) HTTCrimson else Color(0xFF141824).copy(alpha = 0.90f))
+                            .border(1.dp, HTTGold.copy(alpha = 0.45f), RoundedCornerShape(10.dp))
+                            .clickable { manager.toggleDemoSimulation() }
+                            .padding(horizontal = 9.dp, vertical = 5.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(3.dp)
+                    ) {
+                        Icon(if (isDemo) Icons.Default.Stop else Icons.Default.PlayArrow, contentDescription = null, tint = Color.White, modifier = Modifier.size(13.dp))
+                        Text(if (isDemo) "停止" else "模拟", color = Color.White, fontSize = 10.5.sp, fontWeight = FontWeight.Bold)
                     }
                 }
             }
+
         }
 
-        // Right-Side Floating Circular Map Controls (aligned CenterEnd so they NEVER overlap the top banner!)
-        Column(
-            modifier = Modifier
-                .align(Alignment.CenterEnd)
-                .padding(end = 10.dp),
-            horizontalAlignment = Alignment.End,
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            SmallFloatingActionButton(
-                onClick = onOpenSearch,
-                containerColor = Color(0xFF141824).copy(alpha = 0.90f),
-                contentColor = HTTGold,
-                shape = CircleShape
-            ) {
-                Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(19.dp))
-            }
-            SmallFloatingActionButton(
-                onClick = { manager.triggerFastRecenter() },
-                containerColor = Color(0xFF141824).copy(alpha = 0.90f),
-                contentColor = HTTGold,
-                shape = CircleShape
-            ) {
-                Icon(Icons.Default.MyLocation, contentDescription = null, modifier = Modifier.size(19.dp))
-            }
-            SmallFloatingActionButton(
-                onClick = { manager.triggerZoom(1) },
-                containerColor = Color(0xFF141824).copy(alpha = 0.90f),
-                contentColor = Color.White,
-                shape = CircleShape
-            ) {
-                Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(19.dp))
-            }
-            SmallFloatingActionButton(
-                onClick = { manager.triggerZoom(-1) },
-                containerColor = Color(0xFF141824).copy(alpha = 0.90f),
-                contentColor = Color.White,
-                shape = CircleShape
-            ) {
-                Icon(Icons.Default.Remove, contentDescription = null, modifier = Modifier.size(19.dp))
-            }
-            SmallFloatingActionButton(
-                onClick = { manager.toggleDemoSimulation() },
-                containerColor = if (isDemo) HTTCrimson else Color(0xFF141824).copy(alpha = 0.90f),
-                contentColor = Color.White,
-                shape = CircleShape
-            ) {
-                Icon(if (isDemo) Icons.Default.Stop else Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(19.dp))
-            }
-        }
-
-        // Tapped Map Point POI Detail Card
-        if (tappedCoord != null) {
-            Card(
-                colors = CardDefaults.cardColors(containerColor = Color(0xFF141824).copy(alpha = 0.94f)),
+        // Amap-Style Interactive Route Preview Sheet (Preserves K-ON! Outline: Top Pills, Right Controls, Bottom Music + Speed + Bubble + Mascot)
+        if (hasNav && isRoutePreviewing && candidateRoutes.isNotEmpty()) {
+            val selectedRoute = candidateRoutes.getOrNull(selectedRouteIdx) ?: candidateRoutes.first()
+            val directKm = selectedRoute.totalDistanceMeters / 1000.0
+            Surface(
+                color = Color(0xFF101522).copy(alpha = 0.96f),
                 shape = RoundedCornerShape(16.dp),
                 modifier = Modifier
-                    .width(265.dp)
-                    .align(Alignment.BottomEnd)
+                    .fillMaxWidth()
+                    .align(Alignment.BottomCenter)
                     .navigationBarsPadding()
-                    .padding(end = 12.dp, bottom = 92.dp)
-                    .border(1.dp, HTTGold.copy(alpha = 0.7f), RoundedCornerShape(16.dp))
+                    .padding(start = 10.dp, end = 10.dp, bottom = 128.dp)
+                    .border(1.2.dp, HTTGold.copy(alpha = 0.78f), RoundedCornerShape(16.dp))
             ) {
-                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Column(
+                    modifier = Modifier.padding(horizontal = 11.dp, vertical = 9.dp),
+                    verticalArrangement = Arrangement.spacedBy(7.dp)
+                ) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(tappedTitle, color = HTTGold, fontSize = 13.sp, fontWeight = FontWeight.Black, modifier = Modifier.weight(1f))
-                        IconButton(onClick = { manager.clearTappedPOI() }, modifier = Modifier.size(20.dp)) {
-                            Icon(Icons.Default.Close, contentDescription = null, tint = Color.White, modifier = Modifier.size(14.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                "路线预览 · $destName",
+                                color = HTTGold,
+                                fontSize = 12.5.sp,
+                                fontWeight = FontWeight.Black,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                "共 ${candidateRoutes.size} 套方案 · 选定方案后点击下方「开始导航」",
+                                color = Color(0xFFD1D5DB),
+                                fontSize = 9.5.sp
+                            )
+                        }
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(7.dp))
+                                .background(Color.White.copy(alpha = 0.12f))
+                                .clickable { manager.stopNavigation() }
+                                .padding(horizontal = 8.dp, vertical = 4.dp)
+                        ) {
+                            Text("取消", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
                         }
                     }
-                    Text(tappedAddress, color = Color.LightGray, fontSize = 10.sp, maxLines = 2)
+
+                    if (travelMode == NavigationTravelMode.DRIVING) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            listOf(
+                                DrivingAvoidanceOption.AVOID_CONGESTION to "躲避拥堵",
+                                DrivingAvoidanceOption.AVOID_HIGHWAY to "不走高速",
+                                DrivingAvoidanceOption.AVOID_TOLL to "少收费"
+                            ).forEach { (opt, label) ->
+                                val active = drivingAvoids.contains(opt)
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(if (active) Color(0xFF1D4ED8) else Color.White.copy(alpha = 0.08f))
+                                        .border(1.dp, if (active) Color(0xFF60A5FA) else Color.White.copy(alpha = 0.18f), RoundedCornerShape(8.dp))
+                                        .clickable { manager.toggleDrivingAvoidOption(opt) }
+                                        .padding(horizontal = 8.dp, vertical = 4.dp)
+                                ) {
+                                    Text(label, color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
+                    }
+
+                    if (travelMode == NavigationTravelMode.TRANSIT) {
+                        if (directKm > 0.0 && directKm < 3.5) {
+                            val walkM = (selectedRoute.totalDistanceMeters / 76.0).toInt().coerceAtLeast(1)
+                            val bikeM = (selectedRoute.totalDistanceMeters / 250.0).toInt().coerceAtLeast(1)
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(9.dp))
+                                    .background(Color(0xFF3A2510))
+                                    .border(1.dp, HTTGold.copy(alpha = 0.55f), RoundedCornerShape(9.dp))
+                                    .padding(horizontal = 8.dp, vertical = 5.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Text("距离较近", color = HTTGold, fontSize = 10.sp, fontWeight = FontWeight.Black)
+                                Spacer(Modifier.weight(1f))
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(6.dp))
+                                        .background(Color(0xFF15803D))
+                                        .clickable { manager.switchTransitToDirectMode(NavigationTravelMode.WALKING) }
+                                        .padding(horizontal = 7.dp, vertical = 4.dp)
+                                ) {
+                                    Text("步行 ${walkM}分", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                }
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(6.dp))
+                                        .background(Color(0xFF0F766E))
+                                        .clickable { manager.switchTransitToDirectMode(NavigationTravelMode.EBIKE) }
+                                        .padding(horizontal = 7.dp, vertical = 4.dp)
+                                ) {
+                                    Text("骑行 ${bikeM}分", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Text("第一步去上车站：", color = HTTCream, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .background(if (!transitFirstLegUseBike) Color(0xFF2563EB) else Color.White.copy(alpha = 0.1f))
+                                    .clickable { manager.setTransitFirstLegUseBike(false) }
+                                    .padding(horizontal = 8.dp, vertical = 4.dp)
+                            ) {
+                                Text("🚶 步行前往", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                            }
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .background(if (transitFirstLegUseBike) Color(0xFF0D9488) else Color.White.copy(alpha = 0.1f))
+                                    .clickable { manager.setTransitFirstLegUseBike(true) }
+                                    .padding(horizontal = 8.dp, vertical = 4.dp)
+                            ) {
+                                Text("🚲 骑车前往", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        candidateRoutes.take(3).forEachIndexed { idx, r ->
+                            val isSel = idx == selectedRouteIdx
+                            val mins = (r.durationSeconds / 60.0).toInt().coerceAtLeast(1)
+                            val kmStr = String.format("%.1f公里", r.totalDistanceMeters / 1000.0)
+                            Column(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(if (isSel) Color(0xFF1E293B) else Color.White.copy(alpha = 0.06f))
+                                    .border(if (isSel) 1.5.dp else 1.dp, if (isSel) HTTGold else Color.White.copy(alpha = 0.15f), RoundedCornerShape(10.dp))
+                                    .clickable { manager.selectRoute(idx) }
+                                    .padding(horizontal = 8.dp, vertical = 6.dp),
+                                verticalArrangement = Arrangement.spacedBy(2.dp)
+                            ) {
+                                Text(r.name, color = if (isSel) HTTGold else Color(0xFF9CA3AF), fontSize = 9.5.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Text("${mins}分钟", color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Black)
+                                Text(kmStr, color = Color(0xFFD1D5DB), fontSize = 10.sp)
+                            }
+                        }
+                    }
+
+                    if (travelMode == NavigationTravelMode.TRANSIT && selectedRoute.steps.isNotEmpty()) {
+                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            selectedRoute.steps.take(3).forEachIndexed { idx, st ->
+                                Text(
+                                    "${idx + 1}. ${st.instruction}",
+                                    color = if (idx == 1) Color(0xFF7DD3FC) else HTTCream,
+                                    fontSize = 10.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+                    }
+
                     Button(
-                        onClick = { manager.startRouteToPlace(tappedTitle, tappedCoord!!) },
-                        colors = ButtonDefaults.buttonColors(containerColor = HTTCrimson),
+                        onClick = { manager.confirmStartNavigation() },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF16A34A)),
                         shape = RoundedCornerShape(10.dp),
-                        modifier = Modifier.fillMaxWidth().height(34.dp),
+                        modifier = Modifier.fillMaxWidth().height(38.dp),
                         contentPadding = PaddingValues(0.dp)
                     ) {
-                        Text("导航到这里", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        Text("🚀 开始导航（${selectedRoute.name}）", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Black)
                     }
                 }
             }
         }
 
-        // Bottom Floating Island: Speed + Mascot + Speech Bubble
-        Row(
+        // Bottom Stack (1:1 iOS Layout: Music Player Strip + Speedometer + Cream Speech Bubble + Right Mascot!)
+        Column(
             modifier = Modifier
-                .then(if (isLandscape) Modifier.width(370.dp) else Modifier.fillMaxWidth())
-                .align(Alignment.BottomStart)
+                .fillMaxWidth()
+                .align(Alignment.BottomCenter)
                 .navigationBarsPadding()
-                .padding(horizontal = 10.dp, vertical = 10.dp)
-                .clip(RoundedCornerShape(16.dp))
-                .background(Color(0xFF101521).copy(alpha = 0.90f))
-                .border(1.dp, HTTGold.copy(alpha = 0.65f), RoundedCornerShape(16.dp))
-                .padding(horizontal = 12.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                .padding(horizontal = 10.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Text("$speed", color = Color(0xFF4ADE80), fontSize = 24.sp, fontWeight = FontWeight.Black, fontFamily = FontFamily.Monospace)
-                Text("km/h", color = HTTCream, fontSize = 9.sp)
-            }
-            if (currentSprite != null) {
-                Image(
-                    bitmap = currentSprite!!.asImageBitmap(),
-                    contentDescription = null,
-                    filterQuality = FilterQuality.None,
-                    modifier = Modifier
-                        .size(58.dp)
-                        .clickable { manager.triggerCharacterTap(null) }
-                )
-            }
-            Text(
-                bubbleText,
-                color = HTTCream,
-                fontSize = 11.5.sp,
-                fontWeight = FontWeight.SemiBold,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f)
+            MiniMusicPlayerStrip(
+                musicMgr = musicMgr,
+                onOpenMusicSheet = onOpenMusic
             )
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.Bottom,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                // Left Speedometer Card (matching iOS)
+                Column(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(Color(0xFF141824).copy(alpha = 0.92f))
+                        .border(1.dp, HTTGold.copy(alpha = 0.65f), RoundedCornerShape(14.dp))
+                        .padding(horizontal = 12.dp, vertical = 7.dp),
+                    horizontalAlignment = Alignment.Start
+                ) {
+                    Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+                        Text("$speed", color = Color(0xFF4ADE80), fontSize = 26.sp, fontWeight = FontWeight.Black, fontFamily = FontFamily.Monospace)
+                        Text("km/h", color = HTTCream, fontSize = 10.sp, modifier = Modifier.padding(bottom = 4.dp))
+                    }
+                    Text("限速: $speedLimit  $compassDir", color = HTTGold, fontSize = 9.5.sp, fontWeight = FontWeight.Bold, softWrap = false)
+                }
+
+                // Middle Cream Speech Bubble (matching iOS!)
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(HTTCream.copy(alpha = 0.95f))
+                        .border(1.dp, HTTGold, RoundedCornerShape(14.dp))
+                        .padding(horizontal = 10.dp, vertical = 8.dp)
+                ) {
+                    Text(
+                        bubbleText,
+                        color = Color(0xFF231815),
+                        fontSize = 10.5.sp,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+
+                // Right Mascot Sprite (matching iOS!)
+                val hudSprite = currentSprite
+                if (hudSprite != null) {
+                    Image(
+                        bitmap = hudSprite.asImageBitmap(),
+                        contentDescription = null,
+                        filterQuality = FilterQuality.None,
+                        modifier = Modifier
+                            .size(56.dp)
+                            .clickable { manager.triggerCharacterTap(null) }
+                    )
+                }
+            }
         }
     }
 }

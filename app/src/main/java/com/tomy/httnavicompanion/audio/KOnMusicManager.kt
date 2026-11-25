@@ -435,8 +435,10 @@ class KOnMusicManager(private val context: Context) {
             try {
                 val inputStream = if (cFile != null && cFile.exists()) {
                     FileInputStream(cFile)
+                } else if (cPath != null) {
+                    context.assets.open(cPath)
                 } else {
-                    context.assets.open(cPath!!)
+                    throw IllegalStateException("Encrypted audio container unavailable")
                 }
                 inputStream.use { stream ->
                     var toSkip = containerPayloadOffset + song.encryptedOffset.toLong()

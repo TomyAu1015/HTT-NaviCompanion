@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Color as AndroidColor
+import android.graphics.DashPathEffect
 import android.graphics.drawable.BitmapDrawable
 import android.view.MotionEvent
 import androidx.compose.runtime.*
@@ -43,6 +44,23 @@ private object AmapTileSource : OnlineTileSourceBase(
     }
 }
 
+private object GoogleMapsTileSource : OnlineTileSourceBase(
+    "GoogleMapsGlobal", 1, 20, 256, ".png",
+    arrayOf(
+        "https://mt0.google.com/vt/lyrs=m&hl=zh-CN",
+        "https://mt1.google.com/vt/lyrs=m&hl=zh-CN",
+        "https://mt2.google.com/vt/lyrs=m&hl=zh-CN",
+        "https://mt3.google.com/vt/lyrs=m&hl=zh-CN"
+    )
+) {
+    override fun getTileURLString(pMapTileIndex: Long): String {
+        val z = MapTileIndex.getZoom(pMapTileIndex)
+        val x = MapTileIndex.getX(pMapTileIndex)
+        val y = MapTileIndex.getY(pMapTileIndex)
+        return "$baseUrl&x=$x&y=$y&z=$z"
+    }
+}
+
 private val CartoDarkTileSource = XYTileSource(
     "CartoDark", 1, 19, 256, ".png",
     arrayOf("https://basemaps.cartocdn.com/dark_all/")
@@ -58,11 +76,13 @@ fun OsmMapView(
     val userCoord by manager.userCoordinate.collectAsState()
     val destCoord by manager.destinationCoord.collectAsState()
     val routePoints by manager.activeRoutePoints.collectAsState()
+    val transitSegments by manager.transitSegments.collectAsState()
     val navArrowBmp by manager.currentNavArrowBitmap.collectAsState()
     val camMode by manager.cameraMode.collectAsState()
     val heading by manager.headingDegrees.collectAsState()
     val mapTileMode by manager.mapTileMode.collectAsState()
     val trackingUser by manager.mapTrackingUser.collectAsState()
+    val hasActiveNav by manager.hasActiveNavigation.collectAsState()
     val recenterTrigger by manager.recenterTrigger.collectAsState()
     val zoomTrigger by manager.zoomCommandTrigger.collectAsState()
     val tappedCoord by manager.tappedCoord.collectAsState()
@@ -84,10 +104,20 @@ fun OsmMapView(
     val userMarkerHolder = remember { arrayOfNulls<Marker>(1) }
     val destMarkerHolder = remember { arrayOfNulls<Marker>(1) }
     val tappedMarkerHolder = remember { arrayOfNulls<Marker>(1) }
+    val traveledPolyHolder = remember { arrayOfNulls<Polyline>(1) }
     val outerPolyHolder = remember { arrayOfNulls<Polyline>(1) }
+    val lastUserPanMsHolder = remember { longArrayOf(0L) }
     val innerPolyHolder = remember { arrayOfNulls<Polyline>(1) }
+    val walkPoly1Holder = remember { arrayOfNulls<Polyline>(1) }
+    val walkPoly2Holder = remember { arrayOfNulls<Polyline>(1) }
     val lastAnimatedCoord = remember { arrayOfNulls<LatLng>(1) }
     val lastArrowBmp = remember { arrayOfNulls<Bitmap>(1) }
+    val lastCameraAnimMs = remember { longArrayOf(0L) }
+    val lastRouteKey = remember { arrayOfNulls<Any>(1) }
+    val lastTransitKey = remember { arrayOfNulls<Any>(1) }
+    val lastUseAmap = remember { booleanArrayOf(useAmapTiles) }
+    val lastDestMarkerKey = remember { arrayOfNulls<LatLng>(1) }
+    val lastTappedMarkerKey = remember { arrayOfNulls<LatLng>(1) }
 
     AndroidView(
         modifier = modifier,
@@ -104,18 +134,27 @@ fun OsmMapView(
                 // Pause auto-follow when user manually drags/pans the map
                 var downX = 0f
                 var downY = 0f
-                setOnTouchListener { _, ev ->
+                setOnTouchListener { v, ev ->
                     when (ev.actionMasked) {
-                        MotionEvent.ACTION_DOWN -> {
-                            downX = ev.x
-                            downY = ev.y
+                        MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> {
+                            v.parent?.requestDisallowInterceptTouchEvent(true)
+                            manager.setTouchingMap(true)
+                            if (ev.actionMasked == MotionEvent.ACTION_DOWN) {
+                                downX = ev.x
+                                downY = ev.y
+                            }
                         }
                         MotionEvent.ACTION_MOVE -> {
+                            v.parent?.requestDisallowInterceptTouchEvent(true)
                             val dx = ev.x - downX
                             val dy = ev.y - downY
-                            if (dx * dx + dy * dy > 400f) {
-                                manager.setMapTracking(false)
+                            if (dx * dx + dy * dy > 320f) {
+                                lastUserPanMsHolder[0] = System.currentTimeMillis(); manager.setMapTracking(false)
                             }
+                        }
+                        MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                            v.parent?.requestDisallowInterceptTouchEvent(false)
+                            manager.setTouchingMap(false)
                         }
                     }
                     false
@@ -137,6 +176,15 @@ fun OsmMapView(
                     outlinePaint.color = AndroidColor.rgb(18, 92, 168)
                     outlinePaint.strokeWidth = 20f
                 }
+                val traveledLine = Polyline(this).apply {
+                    outlinePaint.color = AndroidColor.rgb(156, 163, 175)
+                    outlinePaint.strokeWidth = 13f
+                    outlinePaint.strokeCap = android.graphics.Paint.Cap.ROUND
+                    outlinePaint.strokeJoin = android.graphics.Paint.Join.ROUND
+                }
+                overlays.add(traveledLine)
+                traveledPolyHolder[0] = traveledLine
+
                 val innerLine = Polyline(this).apply {
                     outlinePaint.color = AndroidColor.rgb(0, 229, 255)
                     outlinePaint.strokeWidth = 11f
@@ -145,6 +193,20 @@ fun OsmMapView(
                 overlays.add(innerLine)
                 outerPolyHolder[0] = outerLine
                 innerPolyHolder[0] = innerLine
+                val w1 = Polyline(this).apply {
+                    outlinePaint.color = AndroidColor.rgb(21, 101, 192)
+                    outlinePaint.strokeWidth = 10f
+                    outlinePaint.pathEffect = DashPathEffect(floatArrayOf(20f, 14f), 0f)
+                }
+                val w2 = Polyline(this).apply {
+                    outlinePaint.color = AndroidColor.rgb(21, 101, 192)
+                    outlinePaint.strokeWidth = 10f
+                    outlinePaint.pathEffect = DashPathEffect(floatArrayOf(20f, 14f), 0f)
+                }
+                overlays.add(w1)
+                overlays.add(w2)
+                walkPoly1Holder[0] = w1
+                walkPoly2Holder[0] = w2
 
                 val uMarker = Marker(this).apply {
                     setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
@@ -175,7 +237,7 @@ fun OsmMapView(
             val desiredSource = when {
                 mapTileMode == MapTileSourceMode.CARTODB_DARK -> CartoDarkTileSource
                 useAmapTiles -> AmapTileSource
-                else -> TileSourceFactory.MAPNIK
+                else -> GoogleMapsTileSource
             }
             if (mapView.tileProvider.tileSource.name() != desiredSource.name()) {
                 mapView.setTileSource(desiredSource)
@@ -192,58 +254,132 @@ fun OsmMapView(
                 }
             }
 
-            // 3. Update Route Polylines
-            val dispRoute = routePoints.map { pt ->
-                val c = if (useAmapTiles) CoordinateConverter.wgs84ToGCJ02(pt) else pt
-                GeoPoint(c.latitude, c.longitude)
+            var needsRedraw = false
+
+            // 3. Update Route Polylines ONLY when route/transitSegments/tileCoordSystem actually changed (eliminates GC stutter!)
+            if (lastRouteKey[0] !== routePoints || lastTransitKey[0] !== transitSegments || lastUseAmap[0] != useAmapTiles) {
+                lastRouteKey[0] = routePoints
+                lastTransitKey[0] = transitSegments
+                lastUseAmap[0] = useAmapTiles
+                needsRedraw = true
+                if (transitSegments.size >= 3) {
+                    val w1Pts = transitSegments[0].points.map { pt -> val c = if (useAmapTiles) CoordinateConverter.wgs84ToGCJ02(pt) else pt; GeoPoint(c.latitude, c.longitude) }
+                    val trPts = transitSegments[1].points.map { pt -> val c = if (useAmapTiles) CoordinateConverter.wgs84ToGCJ02(pt) else pt; GeoPoint(c.latitude, c.longitude) }
+                    val w2Pts = transitSegments[2].points.map { pt -> val c = if (useAmapTiles) CoordinateConverter.wgs84ToGCJ02(pt) else pt; GeoPoint(c.latitude, c.longitude) }
+                    outerPolyHolder[0]?.outlinePaint?.color = AndroidColor.rgb(0, 150, 136)
+                    innerPolyHolder[0]?.outlinePaint?.color = AndroidColor.rgb(0, 230, 118)
+                    outerPolyHolder[0]?.setPoints(trPts)
+                    innerPolyHolder[0]?.setPoints(trPts)
+                    walkPoly1Holder[0]?.setPoints(w1Pts)
+                    walkPoly2Holder[0]?.setPoints(w2Pts)
+                } else {
+                    val dispRoute = routePoints.map { pt ->
+                        val c = if (useAmapTiles) CoordinateConverter.wgs84ToGCJ02(pt) else pt
+                        GeoPoint(c.latitude, c.longitude)
+                    }
+                    var closestIdx = 0
+                    var bestD = Double.MAX_VALUE
+                    for (i in dispRoute.indices) {
+                        val d = dispRoute[i].distanceToAsDouble(userGeo)
+                        if (d < bestD) { bestD = d; closestIdx = i }
+                    }
+                    if (closestIdx >= 1 && bestD < 120.0) {
+                        traveledPolyHolder[0]?.setPoints(dispRoute.subList(0, closestIdx + 1))
+                    } else {
+                        traveledPolyHolder[0]?.setPoints(emptyList())
+                    }
+                    val remStart = if (bestD < 120.0) closestIdx else 0
+                    val remPts = if (remStart < dispRoute.size) dispRoute.subList(remStart, dispRoute.size) else dispRoute
+                    val spd = manager.currentSpeedKmh.value
+                    val lim = manager.speedLimitKmh.value
+                    val slowNow = (spd in 3 until (lim * 0.45).toInt().coerceAtLeast(15))
+                    outerPolyHolder[0]?.outlinePaint?.color = if (slowNow) AndroidColor.rgb(185, 28, 28) else AndroidColor.rgb(4, 120, 87)
+                    innerPolyHolder[0]?.outlinePaint?.color = if (slowNow) AndroidColor.rgb(239, 68, 68) else AndroidColor.rgb(16, 185, 129)
+                    outerPolyHolder[0]?.setPoints(remPts)
+                    innerPolyHolder[0]?.setPoints(remPts)
+                    walkPoly1Holder[0]?.setPoints(emptyList())
+                    walkPoly2Holder[0]?.setPoints(emptyList())
+                }
             }
-            outerPolyHolder[0]?.setPoints(dispRoute)
-            innerPolyHolder[0]?.setPoints(dispRoute)
 
             // 4. Update Destination Marker
             val dMarker = destMarkerHolder[0]
-            if (destCoord != null && dMarker != null) {
-                val dc = if (useAmapTiles) CoordinateConverter.wgs84ToGCJ02(destCoord!!) else destCoord!!
-                dMarker.position = GeoPoint(dc.latitude, dc.longitude)
-                dMarker.setVisible(true)
-            } else {
-                dMarker?.setVisible(false)
+            if (destCoord != lastDestMarkerKey[0]) {
+                lastDestMarkerKey[0] = destCoord
+                val dCoord = destCoord
+                if (dCoord != null && dMarker != null) {
+                    val dc = if (useAmapTiles) CoordinateConverter.wgs84ToGCJ02(dCoord) else dCoord
+                    dMarker.position = GeoPoint(dc.latitude, dc.longitude)
+                    dMarker.setVisible(true)
+                } else {
+                    dMarker?.setVisible(false)
+                }
+                needsRedraw = true
             }
 
             // 5. Update Tapped POI Marker
             val tMarker = tappedMarkerHolder[0]
-            if (tappedCoord != null && tMarker != null) {
-                val tc = if (useAmapTiles) CoordinateConverter.wgs84ToGCJ02(tappedCoord!!) else tappedCoord!!
-                tMarker.position = GeoPoint(tc.latitude, tc.longitude)
-                tMarker.setVisible(true)
-            } else {
-                tMarker?.setVisible(false)
+            if (tappedCoord != lastTappedMarkerKey[0]) {
+                lastTappedMarkerKey[0] = tappedCoord
+                val tCoord = tappedCoord
+                if (tCoord != null && tMarker != null) {
+                    val tc = if (useAmapTiles) CoordinateConverter.wgs84ToGCJ02(tCoord) else tCoord
+                    tMarker.position = GeoPoint(tc.latitude, tc.longitude)
+                    tMarker.setVisible(true)
+                } else {
+                    tMarker?.setVisible(false)
+                }
+                needsRedraw = true
             }
 
-            // 6. Smooth Camera follow (only animate when coordinate actually moved >= 2m to stop 240ms jitter!)
+            // 6. Throttled Smooth Camera follow + GaoDe Dynamic Zoom + 6s Auto-Recenter
+            val nowMs = System.currentTimeMillis()
+            if (!trackingUser && manager.hasActiveNavigation.value && lastUserPanMsHolder[0] > 0L && (nowMs - lastUserPanMsHolder[0] >= 6000L)) {
+                lastUserPanMsHolder[0] = 0L
+                manager.setMapTracking(true)
+                manager.triggerRecenter()
+            }
             if (trackingUser) {
                 val prev = lastAnimatedCoord[0]
-                if (prev == null || CoordinateConverter.distanceMeters(prev, dispUser) >= 2.0) {
+                val moved = prev == null || CoordinateConverter.distanceMeters(prev, dispUser) >= 2.5
+                if (moved && (prev == null || nowMs - lastCameraAnimMs[0] >= 550L)) {
                     lastAnimatedCoord[0] = dispUser
-                    mapView.controller.animateTo(userGeo)
+                    lastCameraAnimMs[0] = nowMs
+                    val targetZoom = if (manager.hasActiveNavigation.value) manager.recommendedZoomLevel() else null
+                    mapView.controller.animateTo(userGeo, targetZoom, 480L)
+                    needsRedraw = true
                 }
             }
             val targetOrient = if (camMode == NavigationCameraMode.HEADING_UP) -heading.toFloat() else 0f
-            if (kotlin.math.abs(mapView.mapOrientation - targetOrient) >= 1.5f) {
+            if (kotlin.math.abs(mapView.mapOrientation - targetOrient) >= 3.0f) {
                 mapView.mapOrientation = targetOrient
+                needsRedraw = true
             }
 
-            mapView.invalidate()
+            if (needsRedraw) {
+                mapView.invalidate()
+            }
         }
     )
 
-    // Respond to recenter trigger
+    // 导航期间手动拖动地图后，6 秒自动回中并恢复高德动态缩放跟随
+    LaunchedEffect(trackingUser, hasActiveNav) {
+        if (!trackingUser && hasActiveNav) {
+            kotlinx.coroutines.delay(6000L)
+            if (!manager.mapTrackingUser.value && manager.hasActiveNavigation.value) {
+                manager.setMapTracking(true)
+                manager.triggerRecenter()
+            }
+        }
+    }
+
+    // Respond to recenter trigger (按高德逻辑动态缩放，不再锁死过大视角)
     LaunchedEffect(recenterTrigger) {
         if (recenterTrigger > 0) {
             val dispUser = if (useAmapTiles) CoordinateConverter.wgs84ToGCJ02(userCoord) else userCoord
             lastAnimatedCoord[0] = dispUser
-            mapViewHolder[0]?.controller?.animateTo(GeoPoint(dispUser.latitude, dispUser.longitude))
-            mapViewHolder[0]?.controller?.setZoom(16.5)
+            val targetZ = if (manager.hasActiveNavigation.value) manager.recommendedZoomLevel() else 16.2
+            mapViewHolder[0]?.controller?.animateTo(GeoPoint(dispUser.latitude, dispUser.longitude), targetZ, 450L)
         }
     }
 

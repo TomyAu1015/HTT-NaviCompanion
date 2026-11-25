@@ -325,26 +325,43 @@ object MahjongEvaluator {
         return res
     }
 
-    fun bestAIDiscard(hand: List<MahjongTile>): MahjongTile {
+    fun bestAIDiscard(hand: List<MahjongTile>, meldsCount: Int = 0, difficulty: MahjongAIDifficulty = MahjongAIDifficulty.STANDARD): MahjongTile {
         val nonLaizi = hand.filter { !it.isLaizi }
         if (nonLaizi.isEmpty()) return hand.last()
         val counts = IntArray(33)
         nonLaizi.forEach { if (it.typeKey in 0 until 33) counts[it.typeKey] += 1 }
+        if (difficulty == MahjongAIDifficulty.MASTER) {
+            var bestMasterTile: MahjongTile? = null
+            var bestReadyCount = 0
+            for (idx in hand.indices) {
+                val cand = hand[idx]
+                if (cand.isLaizi) continue
+                val rem = hand.toMutableList().apply { removeAt(idx) }
+                val ready = readyTiles(rem, meldsCount)
+                if (ready.size > bestReadyCount) {
+                    bestReadyCount = ready.size
+                    bestMasterTile = cand
+                }
+            }
+            if (bestMasterTile != null) return bestMasterTile
+        }
         var best = nonLaizi[0]
         var lowest = Int.MAX_VALUE
         for (t in nonLaizi) {
             val k = t.typeKey
-            var score = (counts[k] - 1) * 14
+            var score = (counts[k] - 1) * (if (difficulty == MahjongAIDifficulty.MASTER) 18 else 14)
+            if (difficulty == MahjongAIDifficulty.MASTER && counts[k] >= 3) score += 16
             if (k < 27) {
                 val pos = k % 9
-                if (pos > 0 && counts[k - 1] > 0) score += 7
-                if (pos < 8 && counts[k + 1] > 0) score += 7
+                if (pos > 0 && counts[k - 1] > 0) score += (if (difficulty == MahjongAIDifficulty.MASTER) 10 else 7)
+                if (pos < 8 && counts[k + 1] > 0) score += (if (difficulty == MahjongAIDifficulty.MASTER) 10 else 7)
                 if (pos > 1 && counts[k - 2] > 0) score += 3
                 if (pos < 7 && counts[k + 2] > 0) score += 3
-                if (pos == 0 || pos == 8) score -= 2
+                if (pos == 0 || pos == 8) score -= (if (difficulty == MahjongAIDifficulty.MASTER) 4 else 2)
             } else {
-                score -= 3
+                score -= (if (difficulty == MahjongAIDifficulty.MASTER) 5 else 3)
             }
+            if (difficulty == MahjongAIDifficulty.CASUAL) score += (-4..6).random()
             if (score < lowest) {
                 lowest = score
                 best = t
@@ -353,6 +370,21 @@ object MahjongEvaluator {
         return best
     }
 }
+
+enum class MahjongAIDifficulty(val label: String) {
+    CASUAL("休闲 AI"),
+    STANDARD("标准 AI"),
+    MASTER("大师 AI")
+}
+
+data class MahjongClaimEvent(
+    val id: String,
+    val seatIndex: Int,
+    val seatName: String,
+    val character: CharacterFilter,
+    val actionLabel: String,
+    val tile: MahjongTile
+)
 
 class MahjongEngine(private val context: Context, private val audioMgr: AudioPlayerManager) {
     private val TAG = "MahjongEngine"
@@ -399,6 +431,50 @@ class MahjongEngine(private val context: Context, private val audioMgr: AudioPla
 
     private val _connectedPeerNames = MutableStateFlow<List<String>>(emptyList())
     val connectedPeerNames: StateFlow<List<String>> = _connectedPeerNames
+
+    private val _aiDifficulty = MutableStateFlow(MahjongAIDifficulty.STANDARD)
+    val aiDifficulty: StateFlow<MahjongAIDifficulty> = _aiDifficulty
+    fun setAiDifficulty(d: MahjongAIDifficulty) { _aiDifficulty.value = d }
+
+    private val _lastClaimEvent = MutableStateFlow<MahjongClaimEvent?>(null)
+    val lastClaimEvent: StateFlow<MahjongClaimEvent?> = _lastClaimEvent
+
+    private val _activeDiscardFlight = MutableStateFlow<MahjongClaimEvent?>(null)
+    val activeDiscardFlight: StateFlow<MahjongClaimEvent?> = _activeDiscardFlight
+
+    private val _horseTiles = MutableStateFlow<List<MahjongTile>>(emptyList())
+    val horseTiles: StateFlow<List<MahjongTile>> = _horseTiles
+
+    private val _hitHorseIds = MutableStateFlow<Set<String>>(emptySet())
+    val hitHorseIds: StateFlow<Set<String>> = _hitHorseIds
+
+    private val _lastWinScoreDelta = MutableStateFlow(0)
+    val lastWinScoreDelta: StateFlow<Int> = _lastWinScoreDelta
+
+    private val _lastWinHasRedDragon = MutableStateFlow(true)
+    val lastWinHasRedDragon: StateFlow<Boolean> = _lastWinHasRedDragon
+
+    private fun triggerClaimEvent(seatIdx: Int, actionLabel: String, tile: MahjongTile) {
+        val seat = _seats.value.getOrNull(seatIdx) ?: return
+        val ev = MahjongClaimEvent(UUID.randomUUID().toString(), seatIdx, seat.name, seat.character, actionLabel, tile)
+        _lastClaimEvent.value = ev
+        mainHandler.postDelayed({
+            if (_lastClaimEvent.value?.id == ev.id) {
+                _lastClaimEvent.value = null
+            }
+        }, 1850L)
+    }
+
+    private fun triggerDiscardFlight(seatIdx: Int, tile: MahjongTile) {
+        val seat = _seats.value.getOrNull(seatIdx) ?: return
+        val ev = MahjongClaimEvent(UUID.randomUUID().toString(), seatIdx, seat.name, seat.character, "打出", tile)
+        _activeDiscardFlight.value = ev
+        mainHandler.postDelayed({
+            if (_activeDiscardFlight.value?.id == ev.id) {
+                _activeDiscardFlight.value = null
+            }
+        }, 520L)
+    }
 
     private val _totalRounds = MutableStateFlow(4)
     val totalRounds: StateFlow<Int> = _totalRounds
@@ -758,6 +834,10 @@ class MahjongEngine(private val context: Context, private val audioMgr: AudioPla
     }
 
     fun connectOnlineServerRoom() {
+        if (!QQCoinBinder.isBound) {
+            _statusBanner.value = "🔒 远程服务器联机需先绑定登录 QQ 账号，未登录仅可使用面对面或 AI 游玩！"
+            return
+        }
         val code = _roomCode.value.trim()
         if (code.isEmpty()) { _statusBanner.value = "⚠️ 请先填写房号！"; return }
         val url = _serverUrl.value.trim()
@@ -844,7 +924,7 @@ class MahjongEngine(private val context: Context, private val audioMgr: AudioPla
 
     private fun sendJoinRequestPacket() {
         sendPacketJson(JSONObject().apply {
-            put("kind", "joinRequest")
+            put("kind", "joinRequest"); if (QQCoinBinder.token.isNotEmpty()) put("qqToken", QQCoinBinder.token)
             put("roomCode", wireRoomCode())
             put("senderPeerName", myPeerKey())
             put("senderCharId", _myChar.value.charId)
@@ -857,7 +937,7 @@ class MahjongEngine(private val context: Context, private val audioMgr: AudioPla
         if (!isRoomAuthorityVal) return
         val myKey = myPeerKey()
         val pkt = JSONObject().apply {
-            put("kind", "stateSync")
+            put("kind", "stateSync"); put("coinAnte", QQCoinBinder.coinAnte.value)
             put("roomCode", wireRoomCode())
             put("senderPeerName", myKey)
             put("senderCharId", _myChar.value.charId)
@@ -942,14 +1022,18 @@ class MahjongEngine(private val context: Context, private val audioMgr: AudioPla
                         }
                         _seats.value = list
                         _statusBanner.value = "🤖 玩家 [$cleanLeft] 已退房，由 AI 自动接管摸打！"
-                        if (newAuth) {
+                        promoteAuthorityIfNeeded()
+                        if (_isRoomAuthority.value) {
                             val pc = _pendingClaim.value
-                            if (leftSeatIdx != null && pc != null && pc.waitingSeats.contains(leftSeatIdx)) {
+                            val isWaitingOnLeft = leftSeatIdx != null && pc != null &&
+                                (pc.eligibleHuSeats.contains(leftSeatIdx) || pc.eligibleKongSeats.contains(leftSeatIdx) || pc.eligiblePongSeats.contains(leftSeatIdx)) &&
+                                !pc.passedSeats.contains(leftSeatIdx)
+                            if (isWaitingOnLeft && leftSeatIdx != null) {
                                 handleClaimResponse("pass", leftSeatIdx)
                             } else {
                                 broadcastFullStateSync()
-                                scheduleAiActionIfNeeded()
-                                scheduleAiClaimIfNeeded()
+                                scheduleAIActionIfNeeded()
+                                scheduleAIClaimIfNeeded()
                             }
                         }
                     }
@@ -1132,6 +1216,10 @@ class MahjongEngine(private val context: Context, private val audioMgr: AudioPla
         _pendingClaim.value = null
         _winnerSeat.value = null
         _winReason.value = ""
+        _horseTiles.value = emptyList()
+        _hitHorseIds.value = emptySet()
+        _lastWinScoreDelta.value = 0
+        _activeDiscardFlight.value = null
         _phase.value = MahjongGamePhase.PLAYING
         _currentTurnSeat.value = dealerIdx
         _turnRemainingSeconds.value = if (_turnTimeLimit.value > 0) _turnTimeLimit.value else 20
@@ -1161,7 +1249,8 @@ class MahjongEngine(private val context: Context, private val audioMgr: AudioPla
     }
 
     fun canDeclareSelfHu(seatIdx: Int = _mySeatIndex.value): Boolean {
-        if (_phase.value != MahjongGamePhase.PLAYING || _currentTurnSeat.value != seatIdx) return false
+        // 广东红中麻将：只能摸牌自摸胡，碰牌后 _drawnTileId == null 禁止直接胡牌，必须先打出一张牌！
+        if (_phase.value != MahjongGamePhase.PLAYING || _currentTurnSeat.value != seatIdx || _drawnTileId.value == null) return false
         val s = _seats.value.getOrNull(seatIdx) ?: return false
         return MahjongEvaluator.canWin(s.hand, s.melds.size)
     }
@@ -1218,7 +1307,7 @@ class MahjongEngine(private val context: Context, private val audioMgr: AudioPla
         else if (_phase.value == MahjongGamePhase.PLAYING) {
             val actor = _currentTurnSeat.value
             val s = _seats.value.getOrNull(actor) ?: return
-            if (s.hand.isNotEmpty()) executeDiscard(MahjongEvaluator.bestAIDiscard(s.hand).id, actor)
+            if (s.hand.isNotEmpty()) executeDiscard(MahjongEvaluator.bestAIDiscard(s.hand, s.melds.size, _aiDifficulty.value).id, actor)
         }
     }
 
@@ -1226,6 +1315,7 @@ class MahjongEngine(private val context: Context, private val audioMgr: AudioPla
         val cur = _seats.value.toMutableList()
         val s = cur.getOrNull(actor) ?: return
         val inHand = s.hand.filter { it.suit == tile.suit && it.rank == tile.rank }
+        val kongLabel = if (inHand.size == 4) "暗杠" else "补杠"
         val newSeats = if (inHand.size == 4) {
             val rem = s.hand.filterNot { it.suit == tile.suit && it.rank == tile.rank }
             val melds = s.melds + MahjongMeld(UUID.randomUUID().toString(), MahjongMeldKind.CONCEALED_KONG, tile)
@@ -1244,6 +1334,7 @@ class MahjongEngine(private val context: Context, private val audioMgr: AudioPla
             }
         }
         _seats.value = newSeats
+        triggerClaimEvent(actor, kongLabel, tile)
         audioMgr.playMascotVoice(s.character)
         drawTileForSeat(actor, "🔥 [${s.name}] 杠牌补摸")
     }
@@ -1257,6 +1348,7 @@ class MahjongEngine(private val context: Context, private val audioMgr: AudioPla
         cur[actor] = s.copy(hand = newHand, discards = s.discards + tile, lastActionText = "打出 ${tile.fullName}")
         _seats.value = cur
         _drawnTileId.value = null
+        triggerDiscardFlight(actor, tile)
         audioMgr.playMascotVoice(s.character)
 
         val huSeats = mutableListOf<Int>()
@@ -1304,6 +1396,7 @@ class MahjongEngine(private val context: Context, private val audioMgr: AudioPla
                 score = s.score + _baseScore.value * 3,
                 lastActionText = "明杠 ${cl.tile.fullName}"
             )
+            triggerClaimEvent(seatIdx, "明杠", cl.tile)
             _seats.value = cur
             _pendingClaim.value = null
             _phase.value = MahjongGamePhase.PLAYING
@@ -1321,6 +1414,7 @@ class MahjongEngine(private val context: Context, private val audioMgr: AudioPla
                 if (remCnt < 2 && it.suit == cl.tile.suit && it.rank == cl.tile.rank) { remCnt++; true } else false
             }
             cur[seatIdx] = s.copy(hand = newH, melds = s.melds + MahjongMeld(UUID.randomUUID().toString(), MahjongMeldKind.PONG, cl.tile), lastActionText = "碰 ${cl.tile.fullName}")
+            triggerClaimEvent(seatIdx, "碰", cl.tile)
             _seats.value = cur
             _pendingClaim.value = null
             _phase.value = MahjongGamePhase.PLAYING
@@ -1376,25 +1470,54 @@ class MahjongEngine(private val context: Context, private val audioMgr: AudioPla
         if (winningTile != null) {
             cur[winner] = cur[winner].copy(hand = MahjongEvaluator.sortHand(cur[winner].hand + winningTile))
         }
-        val laizi = cur[winner].hand.count { it.isLaizi }
-        val mult = (if (isSelfDrawn) 2 else 1) * (if (laizi >= 4) 2 else 1)
-        val pts = _baseScore.value * mult
-        val settled = cur.mapIndexed { idx, s ->
-            val delta = when {
-                isSelfDrawn -> if (idx == winner) pts * 3 else -pts
-                idx == winner -> pts * 2
-                idx == loser -> -pts * 2
-                else -> 0
+        val laizi = cur[winner].hand.count { it.isLaizi } + cur[winner].melds.count { it.tile.isLaizi }
+        val hasRedDragon = (laizi > 0)
+        _lastWinHasRedDragon.value = hasRedDragon
+
+        // 广东红中麻将摸马规则：有红中摸4个马，无红中摸6个马（1、5、9、红中为中马）！
+        val targetHorses = if (hasRedDragon) 4 else 6
+        val horseCount = minOf(targetHorses, wall.size)
+        val drawnHorses = mutableListOf<MahjongTile>()
+        val hitIds = mutableSetOf<String>()
+        val horseNames = mutableListOf<String>()
+        var horseHits = 0
+        repeat(horseCount) {
+            val h = wall.removeAt(0)
+            drawnHorses.add(h)
+            val isHit = h.isLaizi || ((h.suit == MahjongSuit.WAN || h.suit == MahjongSuit.TIAO || h.suit == MahjongSuit.TONG) && (h.rank == 1 || h.rank == 5 || h.rank == 9))
+            if (isHit) {
+                horseHits++
+                hitIds.add(h.id)
+                horseNames.add(h.fullName)
             }
-            if (idx == winner) s.copy(score = s.score + delta, lastActionText = "🎉 胡牌!") else s.copy(score = s.score + delta)
+        }
+        _horseTiles.value = drawnHorses
+        _hitHorseIds.value = hitIds
+        _wallCount.value = wall.size
+
+        val mult = (2 + horseHits) * (if (laizi >= 4) 2 else if (hasRedDragon) 1 else 2)
+        val pts = _baseScore.value * mult
+        _lastWinScoreDelta.value = pts * 3
+        val settled = cur.mapIndexed { idx, s ->
+            val delta = if (idx == winner) pts * 3 else -pts
+            if (idx == winner) s.copy(score = s.score + delta, lastActionText = "🎉 自摸胡!") else s.copy(score = s.score + delta)
         }
         _seats.value = settled
         _pendingClaim.value = null
         _winnerSeat.value = winner
-        _winReason.value = if (isSelfDrawn) "自摸胡牌 (x$mult)" else "点炮胡牌 (x$mult)"
+        val ruleTag = if (hasRedDragon) "有红中摸4马" else "无红中摸6马"
+        val horseDesc = if (horseCount > 0) " · $ruleTag · 摸马中${horseHits}匹${if (horseNames.isNotEmpty()) "[${horseNames.joinToString(",")}]" else ""}" else ""
+        _winReason.value = (if (laizi >= 4) "四红中自摸" else "自摸胡牌") + " (x$mult)" + horseDesc
         _phase.value = MahjongGamePhase.ROUND_OVER
         _statusBanner.value = "🎉 恭喜 [${settled[winner].name}] ${_winReason.value}！"
         audioMgr.triggerBirthdaySpecialVoice()
+        runCatching {
+            com.tomy.httnavicompanion.HTTNaviApp.instance.localLLMManager.recordGameOutcome(
+                "广东红中麻将",
+                winner == _mySeatIndex.value,
+                "${_winReason.value}，+${pts * 3}分"
+            )
+        }
         broadcastFullStateSync()
     }
 
@@ -1408,9 +1531,9 @@ class MahjongEngine(private val context: Context, private val audioMgr: AudioPla
             if (canDeclareSelfHu(turn)) { executeWin(turn, null, null, true); return@postDelayed }
             val k = selfKongOptions(turn).firstOrNull()
             if (k != null) { executeSelfKong(k, turn); return@postDelayed }
-            val d = MahjongEvaluator.bestAIDiscard(_seats.value[turn].hand)
+            val d = MahjongEvaluator.bestAIDiscard(_seats.value[turn].hand, _seats.value[turn].melds.size, _aiDifficulty.value)
             executeDiscard(d.id, turn)
-        }, 850L)
+        }, 1650L)
     }
 
     private fun scheduleAIClaimIfNeeded() {
@@ -1427,7 +1550,7 @@ class MahjongEngine(private val context: Context, private val audioMgr: AudioPla
             when {
                 hu != null -> handleClaimResponse("hu", hu)
                 kong != null -> handleClaimResponse("kong", kong)
-                pong != null -> handleClaimResponse("pong", pong)
+                pong != null -> if (_aiDifficulty.value == MahjongAIDifficulty.CASUAL && (0..2).random() == 0) handleClaimResponse("pass", pong) else handleClaimResponse("pong", pong)
                 else -> resolveClaimAsAllPass()
             }
         }, 750L)

@@ -157,8 +157,8 @@ class FloatingMascotService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         updateRunnable?.let { handler.removeCallbacks(it) }
-        if (floatView != null) {
-            windowManager?.removeView(floatView)
+        floatView?.let { v ->
+            try { windowManager?.removeView(v) } catch (_: Exception) {}
         }
     }
 }

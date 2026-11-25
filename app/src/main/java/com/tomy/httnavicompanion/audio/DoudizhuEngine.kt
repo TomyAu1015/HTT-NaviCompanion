@@ -1275,6 +1275,10 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
     // 3. Online WebSocket Client (`ws://` or `wss://`)
     // =========================================================================
     fun connectOnlineServerRoom() {
+        if (!QQCoinBinder.isBound) {
+            _statusBanner.value = "🔒 远程服务器联机需先绑定登录 QQ 账号，未登录仅可使用面对面或 AI 游玩！"
+            return
+        }
         val code = _roomCode.value.trim()
         if (code.isEmpty()) {
             _statusBanner.value = "⚠️ 请先填写房间号，不填写无法进入在线房间！"
@@ -1440,7 +1444,7 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
 
     private fun sendJoinRequestPacket() {
         val pkt = JSONObject().apply {
-            put("kind", "joinRequest")
+            put("kind", "joinRequest"); if (QQCoinBinder.token.isNotEmpty()) put("qqToken", QQCoinBinder.token)
             put("roomCode", _roomCode.value)
             put("senderPeerName", myPeerKey())
             put("senderCharId", _myChar.value.charId)
@@ -1458,7 +1462,7 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
         if (!isRoomAuthorityVal && !hasUnmodifiedIosWsPeer) return
         val myKey = myPeerKey()
         val pkt = JSONObject().apply {
-            put("kind", "stateSync")
+            put("kind", "stateSync"); put("coinAnte", QQCoinBinder.coinAnte.value)
             put("roomCode", _roomCode.value)
             put("senderPeerName", myKey)
             put("senderCharId", _myChar.value.charId)
@@ -1558,9 +1562,9 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
                         }
                         _seats.value = list
                         _statusBanner.value = "🤖 玩家 [$cleanLeft] 已退房，由 AI 自动接管出牌！"
-                        if (newAuth) {
+                        promoteAuthorityIfNeededAndResumeAI()
+                        if (_isRoomAuthority.value) {
                             broadcastFullStateSync()
-                            scheduleAiTurnIfNeeded()
                         }
                     }
                 }
@@ -2069,6 +2073,14 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
             _seats.value = settled
             _statusBanner.value = "🎉 本局结束！[${winner.name}] (${if (winner.isLandlord) "🎩 地主" else "🌾 农民"}) 获胜！(倍数 x${_multiplier.value})"
             audioMgr.triggerBirthdaySpecialVoice()
+            runCatching {
+                val mySeat = settled.getOrNull(_mySeatIndex.value)
+                val myWon = mySeat != null && mySeat.isLandlord == winner.isLandlord
+                val myDelta = if (mySeat?.isLandlord == true) winPts * 2 else winPts
+                com.tomy.httnavicompanion.HTTNaviApp.instance.localLLMManager.recordGameOutcome(
+                    "放课后斗地主", myWon, "倍数 x${_multiplier.value}，${if (myWon) "+" else "-"}${myDelta}分"
+                )
+            }
             broadcastFullStateSync()
             return
         }
@@ -2143,7 +2155,7 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
                     2 -> hints.add(arr)
                     3 -> {
                         val kickerR = uniqueRanks.firstOrNull { it != r && (byRank[it]?.isNotEmpty() == true) }
-                        if (kickerR != null) hints.add(arr + byRank[kickerR]!!.first()) else hints.add(arr)
+                        val k = kickerR?.let { byRank[it]?.firstOrNull() }; if (k != null) hints.add(arr + k) else hints.add(arr)
                     }
                 }
             }
@@ -2178,7 +2190,7 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
                     val arr = byRank[r] ?: continue
                     if (r > target.mainRank && arr.size >= 3) {
                         val kickerR = uniqueRanks.firstOrNull { it != r }
-                        if (kickerR != null) hints.add(arr.take(3) + byRank[kickerR]!!.first())
+                        val k = kickerR?.let { byRank[it]?.firstOrNull() }; if (k != null) hints.add(arr.take(3) + k)
                     }
                 }
             }
@@ -2187,7 +2199,7 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
                     val arr = byRank[r] ?: continue
                     if (r > target.mainRank && arr.size >= 3) {
                         val kickerR = uniqueRanks.firstOrNull { it != r && (byRank[it]?.size ?: 0) >= 2 }
-                        if (kickerR != null) hints.add(arr.take(3) + byRank[kickerR]!!.take(2))
+                        if (kickerR != null) hints.add(arr.take(3) + byRank[kickerR].orEmpty().take(2))
                     }
                 }
             }
@@ -2198,7 +2210,7 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
                     for (startIdx in 0..(validSingleRanks.size - len)) {
                         val slice = validSingleRanks.subList(startIdx, startIdx + len)
                         if (slice.last() - slice.first() == len - 1 && slice.last() > target.mainRank) {
-                            hints.add(slice.map { byRank[it]!!.first() })
+                            val straight = slice.mapNotNull { byRank[it]?.firstOrNull() }; if (straight.size == len) hints.add(straight)
                         }
                     }
                 }
@@ -2211,7 +2223,7 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
                         val slice = validPairRanks.subList(startIdx, startIdx + pairCount)
                         if (slice.last() - slice.first() == pairCount - 1 && slice.last() > target.mainRank) {
                             val combo = mutableListOf<DoudizhuCard>()
-                            slice.forEach { r -> combo.addAll(byRank[r]!!.take(2)) }
+                            slice.forEach { r -> combo.addAll(byRank[r].orEmpty().take(2)) }
                             hints.add(combo)
                         }
                     }

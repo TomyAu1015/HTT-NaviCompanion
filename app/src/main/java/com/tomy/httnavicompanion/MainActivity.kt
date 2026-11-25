@@ -66,6 +66,9 @@ class MainActivity : ComponentActivity() {
                     perms.add(android.Manifest.permission.BLUETOOTH_CONNECT)
                     perms.add(android.Manifest.permission.BLUETOOTH_ADVERTISE)
                 }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    perms.add(android.Manifest.permission.POST_NOTIFICATIONS)
+                }
                 requestLocationPermission.launch(perms.toTypedArray())
             } catch (t: Throwable) {
                 Log.w("MainActivity", "Permission launch warning", t)
@@ -87,15 +90,16 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                val req = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 1500L)
-                    .setMinUpdateIntervalMillis(1000L)
+                val req = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 1000L)
+                    .setMinUpdateIntervalMillis(800L)
                     .build()
 
                 val cb = object : LocationCallback() {
                     override fun onLocationResult(result: LocationResult) {
                         result.lastLocation?.let { loc ->
+                            val spd = if (loc.hasSpeed()) loc.speed else -1f
                             HTTNaviApp.instance.audioPlayerManager.updateRealLocation(
-                                loc.latitude, loc.longitude, loc.speed, loc.bearing, if (loc.hasAccuracy()) loc.accuracy else 25f
+                                loc.latitude, loc.longitude, spd, loc.bearing, if (loc.hasAccuracy()) loc.accuracy else 25f
                             )
                         }
                     }
@@ -113,8 +117,9 @@ class MainActivity : ComponentActivity() {
             systemLocationManager = lm
             val listener = object : LocationListener {
                 override fun onLocationChanged(loc: Location) {
+                    val spd = if (loc.hasSpeed()) loc.speed else -1f
                     HTTNaviApp.instance.audioPlayerManager.updateRealLocation(
-                        loc.latitude, loc.longitude, loc.speed, loc.bearing, if (loc.hasAccuracy()) loc.accuracy else 25f
+                        loc.latitude, loc.longitude, spd, loc.bearing, if (loc.hasAccuracy()) loc.accuracy else 25f
                     )
                 }
                 @Deprecated("Deprecated in Java")
@@ -127,12 +132,13 @@ class MainActivity : ComponentActivity() {
                 if (lm.isProviderEnabled(prov)) {
                     lm.getLastKnownLocation(prov)?.let { loc ->
                         if (kotlin.math.abs(System.currentTimeMillis() - loc.time) < 45000L) {
+                            val spd = if (loc.hasSpeed()) loc.speed else -1f
                             HTTNaviApp.instance.audioPlayerManager.updateRealLocation(
-                                loc.latitude, loc.longitude, loc.speed, loc.bearing, if (loc.hasAccuracy()) loc.accuracy else 25f
+                                loc.latitude, loc.longitude, spd, loc.bearing, if (loc.hasAccuracy()) loc.accuracy else 25f
                             )
                         }
                     }
-                    lm.requestLocationUpdates(prov, 1500L, 1f, listener, Looper.getMainLooper())
+                    lm.requestLocationUpdates(prov, 1000L, 0.5f, listener, Looper.getMainLooper())
                 }
             }
         } catch (t: Throwable) {
@@ -140,14 +146,14 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    override fun onResume() {
-        super.onResume()
-        try { HTTNaviApp.instance.audioPlayerManager.isAppInForeground = true } catch (_: Throwable) {}
+    override fun onStart() {
+        super.onStart()
+        try { HTTNaviApp.instance.audioPlayerManager.onAppForegroundChanged(true) } catch (_: Throwable) {}
     }
 
-    override fun onPause() {
-        super.onPause()
-        try { HTTNaviApp.instance.audioPlayerManager.isAppInForeground = false } catch (_: Throwable) {}
+    override fun onStop() {
+        super.onStop()
+        try { HTTNaviApp.instance.audioPlayerManager.onAppForegroundChanged(false) } catch (_: Throwable) {}
     }
 
     override fun onDestroy() {

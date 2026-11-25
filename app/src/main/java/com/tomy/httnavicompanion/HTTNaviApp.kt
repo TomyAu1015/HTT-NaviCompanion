@@ -5,6 +5,7 @@ import android.util.Log
 import com.tomy.httnavicompanion.data.AssetDecryptor
 import com.tomy.httnavicompanion.audio.AudioPlayerManager
 import com.tomy.httnavicompanion.audio.KOnMusicManager
+import com.tomy.httnavicompanion.audio.LocalLLMManager
 
 class HTTNaviApp : Application() {
     lateinit var assetDecryptor: AssetDecryptor
@@ -12,6 +13,8 @@ class HTTNaviApp : Application() {
     lateinit var audioPlayerManager: AudioPlayerManager
         private set
     lateinit var musicManager: KOnMusicManager
+        private set
+    lateinit var localLLMManager: LocalLLMManager
         private set
 
     override fun onCreate() {
@@ -21,6 +24,7 @@ class HTTNaviApp : Application() {
         assetDecryptor = AssetDecryptor(this)
         audioPlayerManager = AudioPlayerManager(this, assetDecryptor)
         musicManager = KOnMusicManager(this)
+        localLLMManager = LocalLLMManager(this, audioPlayerManager, musicManager)
 
         // Initialize assets asynchronously with crash guard
         Thread {

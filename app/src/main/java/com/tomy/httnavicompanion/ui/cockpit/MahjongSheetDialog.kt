@@ -1,10 +1,20 @@
 package com.tomy.httnavicompanion.ui.cockpit
 
 import android.app.Activity
+import androidx.activity.compose.BackHandler
+import androidx.compose.ui.zIndex
 import android.content.Context
 import android.content.ContextWrapper
 import android.content.pm.ActivityInfo
+import android.os.Build
+import android.view.ViewGroup
+import android.view.WindowManager
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.window.DialogWindowProvider
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.Image
 import androidx.compose.ui.graphics.graphicsLayer
@@ -27,6 +37,7 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -228,7 +239,7 @@ object HTTGameRoomLocalizer {
         "AI补位" to "AI補位",
         "真机玩家" to "真機玩家",
         "真人玩家" to "真人玩家",
-        "积分" to "積分",
+        "金币" to "金幣",
         "立即开始" to "立即開始",
         "等待" to "等待",
         "开始" to "開始",
@@ -260,7 +271,7 @@ object HTTGameRoomLocalizer {
         "胡!" to "糊!",
         "荒庄流局" to "荒莊流局",
         "再来一局" to "再來一局",
-        "整场积分排名" to "整場積分排名",
+        "整场金币排名" to "整場金幣排名",
         "地主胜利" to "地主勝利",
         "农民胜利" to "農民勝利",
         "农民" to "農民",
@@ -383,6 +394,23 @@ fun KOnGameRoomSheetDialog(onDismiss: () -> Unit) {
     val rmkHosting by rmkEngine.isHostingRoom.collectAsState()
     val rmkPeers by rmkEngine.connectedPeerNames.collectAsState()
     val rmkPlayerCnt by rmkEngine.roomPlayerCount.collectAsState()
+    val grScope = rememberCoroutineScope()
+    val grQqCoins by QQCoinBinder.coins.collectAsState()
+    val grQqBound by QQCoinBinder.isBound.collectAsState()
+    val grQqUid by QQCoinBinder.qqUid.collectAsState()
+    val grQqAnte by QQCoinBinder.coinAnte.collectAsState()
+    val grQqStatus by QQCoinBinder.status.collectAsState()
+    var showGrQqDialog by remember { mutableStateOf(false) }
+    var grQqInput by remember { mutableStateOf(grQqUid) }
+    var grCodeInput by remember { mutableStateOf("") }
+    LaunchedEffect(Unit) {
+        QQCoinBinder.init(context)
+        grQqInput = QQCoinBinder.qqUid.value
+        while (true) {
+            QQCoinBinder.refreshCoins(context)
+            kotlinx.coroutines.delay(12000)
+        }
+    }
 
     val inLobbyNow = (selectedGame == 0 && ddzPhase == DoudizhuGamePhase.LOBBY) ||
         (selectedGame == 1 && mjPhase == MahjongGamePhase.LOBBY) ||
@@ -420,20 +448,62 @@ fun KOnGameRoomSheetDialog(onDismiss: () -> Unit) {
         }
     }
 
-    Dialog(
-        onDismissRequest = {
+    // True 100% edge-to-edge full-screen overlay (replaces Dialog so main cockpit NEVER peeks out on any Android aspect ratio!)
+    val hostView = LocalView.current
+    DisposableEffect(inLobbyNow) {
+        val win = activity?.window
+        if (win != null) {
+            WindowCompat.setDecorFitsSystemWindows(win, false)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                val lp = win.attributes
+                lp.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+                win.attributes = lp
+            }
+            val ctrl = WindowInsetsControllerCompat(win, hostView)
+            if (!inLobbyNow) {
+                ctrl.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                ctrl.hide(WindowInsetsCompat.Type.systemBars())
+            } else {
+                ctrl.show(WindowInsetsCompat.Type.systemBars())
+            }
+        }
+        onDispose {
+            val w = activity?.window
+            if (w != null) {
+                WindowCompat.setDecorFitsSystemWindows(w, true)
+                WindowInsetsControllerCompat(w, hostView).show(WindowInsetsCompat.Type.systemBars())
+            }
+        }
+    }
+
+    BackHandler {
+        if (!inLobbyNow) {
+            if (selectedGame == 0) ddzEngine.leaveRoomAndResetLobby()
+            else if (selectedGame == 1) mjEngine.leaveRoomAndResetLobby()
+            else rmkEngine.leaveRoomAndResetLobby()
+        } else {
             ddzEngine.leaveRoomAndResetLobby()
             mjEngine.leaveRoomAndResetLobby()
             rmkEngine.leaveRoomAndResetLobby()
             onDismiss()
-        },
-        properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)
+        }
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .zIndex(100f)
     ) {
         Surface(
             modifier = Modifier.fillMaxSize(),
-            color = if (selectedGame == 0) Color(0xFF104B2C) else MjBgGreen
+            color = if (selectedGame == 0) Color(0xFF104B2C) else if (selectedGame == 2 && !inLobbyNow) Color(0xFF0E3266) else MjBgGreen
         ) {
-            Column(modifier = Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
+            val containerMod = if (!inLobbyNow) {
+                Modifier.fillMaxSize().displayCutoutPadding()
+            } else {
+                Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()
+            }
+            Column(modifier = containerMod) {
                 // Unified Header (Hidden when inside Rummikub playing room so Rummikub table is 1:1 full-screen like the video!)
                 if (!(selectedGame == 2 && !inLobbyNow)) {
                 Row(
@@ -467,19 +537,41 @@ fun KOnGameRoomSheetDialog(onDismiss: () -> Unit) {
                         overflow = TextOverflow.Ellipsis
                     )
                     if (inLobbyNow) {
-                        Box(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(16.dp))
-                                .background(MjCardGreen)
-                                .clickable {
-                                    ddzEngine.leaveRoomAndResetLobby()
-                                    mjEngine.leaveRoomAndResetLobby()
-                                    rmkEngine.leaveRoomAndResetLobby()
-                                    onDismiss()
-                                }
-                                .padding(horizontal = 10.dp, vertical = 5.dp)
-                        ) {
-                            Text(tr("✕ 关闭", "✕ 關閉", "✕ Close"), color = MjGold, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(16.dp))
+                                    .background(Color(0xFF2B220A))
+                                    .border(1.dp, MjGold.copy(alpha = 0.7f), RoundedCornerShape(16.dp))
+                                    .clickable {
+                                        grQqInput = QQCoinBinder.qqUid.value
+                                        grScope.launch { QQCoinBinder.refreshCoins(context, manual = true) }
+                                        showGrQqDialog = true
+                                    }
+                                    .padding(horizontal = 9.dp, vertical = 5.dp)
+                            ) {
+                                Text(
+                                    if (grQqBound) "🪙 $grQqCoins" else "🪙 绑定QQ",
+                                    color = MjGold,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Black,
+                                    maxLines = 1
+                                )
+                            }
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(16.dp))
+                                    .background(MjCardGreen)
+                                    .clickable {
+                                        ddzEngine.leaveRoomAndResetLobby()
+                                        mjEngine.leaveRoomAndResetLobby()
+                                        rmkEngine.leaveRoomAndResetLobby()
+                                        onDismiss()
+                                    }
+                                    .padding(horizontal = 10.dp, vertical = 5.dp)
+                            ) {
+                                Text(tr("✕ 关闭", "✕ 關閉", "✕ Close"), color = MjGold, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            }
                         }
                     } else {
                         Spacer(Modifier.width(72.dp))
@@ -487,6 +579,52 @@ fun KOnGameRoomSheetDialog(onDismiss: () -> Unit) {
                 }
                 }
 
+                if (showGrQqDialog) {
+                    AlertDialog(
+                        onDismissRequest = { showGrQqDialog = false },
+                        title = { Text("🪙 绑定 QQ 群金币", fontWeight = FontWeight.Black) },
+                        text = {
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Text("仅「在线服务器联机且 ≥2 名真人」增减 QQ 群金币；未登录仅可使用面对面或本地 AI。", fontSize = 12.sp)
+                                Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    Text("底注:", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                    listOf(5, 10, 20, 50).forEach { amt ->
+                                        Box(
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(8.dp))
+                                                .background(if (grQqAnte == amt) Color(0xFFF59E0B) else Color.Gray.copy(alpha = 0.25f))
+                                                .clickable { QQCoinBinder.setAnte(context, amt) }
+                                                .padding(horizontal = 8.dp, vertical = 4.dp)
+                                        ) {
+                                            Text("${amt}🪙", fontSize = 11.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false, color = if (grQqAnte == amt) Color.Black else Color.Unspecified)
+                                        }
+                                    }
+                                }
+                                if (grQqBound) {
+                                    Text("已绑定 QQ: $grQqUid · 当前群金币: $grQqCoins 🪙", color = Color(0xFFD97706), fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                }
+                                OutlinedTextField(value = grQqInput, onValueChange = { grQqInput = it }, label = { Text("输入 QQ 号") }, singleLine = true)
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Button(onClick = { grScope.launch { QQCoinBinder.requestCode(grQqInput) } }) { Text("发验证码") }
+                                    if (grQqBound) {
+                                        OutlinedButton(onClick = { grScope.launch { QQCoinBinder.refreshCoins(context, manual = true) } }) { Text("刷新") }
+                                        OutlinedButton(onClick = { QQCoinBinder.unbind(context) }) { Text("解绑") }
+                                    }
+                                }
+                                OutlinedTextField(value = grCodeInput, onValueChange = { grCodeInput = it }, label = { Text("6位私聊验证码") }, singleLine = true)
+                                Button(onClick = {
+                                    grScope.launch {
+                                        if (QQCoinBinder.verifyCode(context, grQqInput, grCodeInput)) {
+                                            grCodeInput = ""; showGrQqDialog = false
+                                        }
+                                    }
+                                }) { Text("确认绑定") }
+                                if (grQqStatus.isNotEmpty()) Text(grQqStatus, fontSize = 11.sp, color = Color(0xFFD97706))
+                            }
+                        },
+                        confirmButton = { TextButton(onClick = { showGrQqDialog = false }) { Text("关闭") } }
+                    )
+                }
                 // Game Switcher Bar
                 if (isInJoinedRoom && inLobbyNow) {
                     Row(
@@ -534,7 +672,7 @@ fun KOnGameRoomSheetDialog(onDismiss: () -> Unit) {
                             contentAlignment = Alignment.Center
                         ) {
                             Text(
-                                tr("🃏 斗地主 (3人)", "🃏 鬥地主 (3人)", "🃏 Doudizhu (3P)"),
+                                tr("🃏 斗地主(3人)", "🃏 鬥地主(3人)", "🃏 Doudizhu"),
                                 color = Color.White,
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.Black,
@@ -562,7 +700,7 @@ fun KOnGameRoomSheetDialog(onDismiss: () -> Unit) {
                             contentAlignment = Alignment.Center
                         ) {
                             Text(
-                                tr("🀄 红中麻将 (4人)", "🀄 紅中麻雀 (4人)", "🀄 Mahjong (4P)"),
+                                tr("🀄 红中麻将(4人)", "🀄 紅中麻雀(4人)", "🀄 Mahjong"),
                                 color = Color.White,
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.Black,
@@ -590,7 +728,7 @@ fun KOnGameRoomSheetDialog(onDismiss: () -> Unit) {
                             contentAlignment = Alignment.Center
                         ) {
                             Text(
-                                tr("🔢 拉密数字牌 (2-4人)", "🔢 拉密數字牌 (2-4人)", "🔢 Rummikub (2-4P)"),
+                                tr("🔢 拉密牌 (2-4人)", "🔢 拉密牌 (2-4人)", "🔢 Rummikub"),
                                 color = Color.White,
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.Black,
@@ -660,8 +798,11 @@ fun KOnMahjongSheetDialog(onDismiss: () -> Unit, embeddedInGameRoom: Boolean = f
     val lastWinHasRedDragon by engine.lastWinHasRedDragon.collectAsState()
     val aiDifficulty by engine.aiDifficulty.collectAsState()
     val lastClaimEvent by engine.lastClaimEvent.collectAsState()
+    val context = LocalContext.current
 
-    LaunchedEffect(Unit) { engine.refreshLocalIpAddress() }
+    LaunchedEffect(Unit) {
+        launch { while (true) { QQCoinBinder.refreshCoins(context); kotlinx.coroutines.delay(12000) } }
+        engine.refreshLocalIpAddress() }
     DisposableEffect(Unit) { onDispose { engine.leaveRoomAndResetLobby() } }
 
     val contentBody: @Composable () -> Unit = {
@@ -1225,10 +1366,15 @@ fun KOnMahjongSheetDialog(onDismiss: () -> Unit, embeddedInGameRoom: Boolean = f
 
                         Spacer(Modifier.height(4.dp))
 
-                        // Melds + Hand Tiles side-by-side on bottom row so tiles are 100% visible!
+                        // Melds + Hand Tiles side-by-side on bottom row so tiles are 100% visible and NEVER overlap!
                         BoxWithConstraints(modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp)) {
                             val totalW = maxWidth
-                            val tileW = (totalW / 16.2f).coerceIn(30.dp, 36.dp)
+                            var meldCountUnits = 0
+                            me.melds.forEach { meldCountUnits += if (it.kind == MahjongMeldKind.PONG) 3 else 4 }
+                            val meldsReservedW = if (me.melds.isEmpty()) 0.dp else (meldCountUnits * 23 + me.melds.size * 8 + 10).dp
+                            val availHandW = (totalW - meldsReservedW).coerceAtLeast(180.dp)
+                            val handCount = me.hand.size.coerceAtLeast(13)
+                            val tileW = ((availHandW - 22.dp) / handCount.toFloat()).coerceIn(22.dp, 36.dp)
                             val tileH = tileW * 1.4f
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
@@ -1405,8 +1551,9 @@ private fun MjTileCard(tile: MahjongTile, w: Dp, h: Dp, isSelected: Boolean, isH
             Image(
                 bitmap = tileBmp.asImageBitmap(),
                 contentDescription = tile.fullName,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize()
+                contentScale = ContentScale.Fit,
+                filterQuality = FilterQuality.High,
+                modifier = Modifier.fillMaxSize().padding(1.5.dp)
             )
         } else {
             Text(tile.shortLabel, color = Color.Black, fontSize = (w.value * 0.40f).coerceAtLeast(9f).sp, fontWeight = FontWeight.Black)
@@ -1691,8 +1838,8 @@ fun KOnRummikubContent() {
         var dragTableOffX by remember { mutableStateOf(0f) }
         var dragTableOffY by remember { mutableStateOf(0f) }
         var dragRackStartCenter by remember { mutableStateOf(Offset.Zero) }
-        val meldBoundsMap = remember { mutableStateMapOf<String, Rect>() }
-        val seatBoundsMap = remember { mutableStateMapOf<Int, Rect>() }
+        val meldBoundsMap = remember { HashMap<String, Rect>() }
+        val seatBoundsMap = remember { HashMap<Int, Rect>() }
         var drawBtnBounds by remember { mutableStateOf<Rect?>(null) }
         var tableAreaBounds by remember { mutableStateOf<Rect?>(null) }
         var rackAreaBounds by remember { mutableStateOf<Rect?>(null) }
@@ -1711,11 +1858,12 @@ fun KOnRummikubContent() {
             for (meld in dispMelds) {
                 if (meld.id == excludeMeldId) continue
                 val rect = meldBoundsMap[meld.id] ?: continue
+                // Tight hit-box so open-space drops near a meld are never hijacked
                 val expanded = Rect(
-                    left = rect.left - 34f,
-                    top = rect.top - 16f,
-                    right = rect.right + 34f,
-                    bottom = rect.bottom + 16f
+                    left = rect.left - 5f,
+                    top = rect.top - 4f,
+                    right = rect.right + 5f,
+                    bottom = rect.bottom + 4f
                 )
                 if (!expanded.contains(pt)) continue
                 val dx = pt.x - rect.center.x
@@ -1724,14 +1872,16 @@ fun KOnRummikubContent() {
                 if (rect.contains(pt)) score *= 0.45f
                 if (draggingTiles.isNotEmpty()) {
                     val cand = meld.tiles + draggingTiles
-                    if (RmkEvaluator.evaluateMeld(cand) != null) {
+                    val splitTest = RmkEvaluator.autoSplitMeldTiles(cand)
+                    if (RmkEvaluator.evaluateMeld(cand) != null ||
+                        (splitTest.size >= 2 && splitTest.all { RmkEvaluator.evaluateMeld(it) != null })
+                    ) {
                         score *= 0.35f
                     } else {
                         val norms = cand.filter { !it.isJoker }
                         val sameNum = norms.all { it.number == (norms.firstOrNull()?.number ?: 0) } &&
                             norms.map { it.color }.distinct().size == norms.size
-                        val sameCol = norms.all { it.color == norms.firstOrNull()?.color } &&
-                            norms.map { it.number }.distinct().size == norms.size
+                        val sameCol = norms.all { it.color == norms.firstOrNull()?.color }
                         if (!sameNum && !sameCol) score *= 2.4f
                     }
                 }
@@ -1742,19 +1892,41 @@ fun KOnRummikubContent() {
                 }
             }
             if (bestId != null) return Triple(bestId, bestPreferLeading, null)
-            var insertIdx = dispMelds.size
-            for ((idx, meld) in dispMelds.withIndex()) {
-                val rect = meldBoundsMap[meld.id] ?: continue
-                if (pt.y < rect.top - 8f) {
-                    insertIdx = idx
-                    break
-                }
-                if (pt.y <= rect.bottom + 8f && pt.x < rect.center.x) {
-                    insertIdx = idx
-                    break
+
+            // Open-space drop: find the exact row & horizontal slot closest to pt so the tile stays where dropped
+            data class IndexedRect(val idx: Int, val rect: Rect)
+            val indexedRects = dispMelds.mapIndexedNotNull { idx, meld ->
+                meldBoundsMap[meld.id]?.let { IndexedRect(idx, it) }
+            }
+            if (indexedRects.isEmpty()) return Triple(null, false, 0)
+
+            val rowGroups = mutableListOf<MutableList<IndexedRect>>()
+            for (item in indexedRects) {
+                val lastGroup = rowGroups.lastOrNull()
+                if (lastGroup != null && kotlin.math.abs(item.rect.center.y - lastGroup[0].rect.center.y) < 28f) {
+                    lastGroup.add(item)
+                } else {
+                    rowGroups.add(mutableListOf(item))
                 }
             }
-            return Triple(null, false, insertIdx)
+            val firstRowTop = rowGroups.first().first().rect.top
+            val lastRowBottom = rowGroups.last().first().rect.bottom
+            if (pt.y < firstRowTop - 16f) return Triple(null, false, 0)
+            if (pt.y > lastRowBottom + 24f) return Triple(null, false, dispMelds.size)
+
+            val bestRow = rowGroups.minByOrNull { row ->
+                val avgY = row.map { it.rect.center.y }.average().toFloat()
+                kotlin.math.abs(pt.y - avgY)
+            } ?: rowGroups.last()
+
+            val sortedRow = bestRow.sortedBy { it.rect.center.x }
+            for (item in sortedRow) {
+                if (pt.x < item.rect.center.x) {
+                    return Triple(null, false, item.idx)
+                }
+            }
+            val afterIdx = (sortedRow.last().idx + 1).coerceAtMost(dispMelds.size)
+            return Triple(null, false, afterIdx)
         }
 
         // Order seats so opponents are at top-left and local player (me) is anchored at bottom-left next to the rack (1:1 like video!)
@@ -1764,11 +1936,15 @@ fun KOnRummikubContent() {
             if (me != null) opps + me else opps
         }
 
-        Box(
+        BoxWithConstraints(
             modifier = Modifier
                 .fillMaxSize()
                 .background(Color(0xFF0E3266))
         ) {
+            val screenH = maxHeight
+            val adaptiveRackH = (screenH * 0.30f).coerceIn(82.dp, 108.dp)
+            val adaptiveSlotH = ((adaptiveRackH - 16.dp) / 2f).coerceIn(33.dp, 46.dp)
+            val adaptiveTileH = (adaptiveSlotH - 2.dp).coerceAtLeast(31.dp)
             // Subtle K-ON! HTT Watermark in Center of Table
             Column(
                 modifier = Modifier.align(Alignment.Center).offset(y = (-42).dp),
@@ -1798,7 +1974,7 @@ fun KOnRummikubContent() {
                             Box(
                                 modifier = Modifier
                                     .size(52.dp)
-                                    .onGloballyPositioned { seatBoundsMap[s.id] = it.boundsInRoot() },
+                                    .onGloballyPositioned { if (it.isAttached) seatBoundsMap[s.id] = it.boundsInRoot() },
                                 contentAlignment = Alignment.Center
                             ) {
                                 Box(
@@ -1924,7 +2100,7 @@ fun KOnRummikubContent() {
                         modifier = Modifier
                             .weight(1f)
                             .fillMaxWidth()
-                            .onGloballyPositioned { tableAreaBounds = it.boundsInRoot() }
+                            .onGloballyPositioned { if (it.isAttached) tableAreaBounds = it.boundsInRoot() }
                             .clip(RoundedCornerShape(10.dp))
                             .background(Color.Black.copy(alpha = 0.16f))
                             .clickable(enabled = myTurn && selIds.isNotEmpty()) {
@@ -2002,10 +2178,11 @@ fun KOnRummikubContent() {
                                 chosenRows.forEach { rowMelds ->
                                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                         rowMelds.forEach { meld ->
+                                            key(meld.id) {
                                             val ok = RmkEvaluator.evaluateMeld(meld.tiles) != null
                                             Row(
                                                 modifier = Modifier
-                                                    .onGloballyPositioned { meldBoundsMap[meld.id] = it.boundsInRoot() }
+                                                    .onGloballyPositioned { if (it.isAttached) meldBoundsMap[meld.id] = it.boundsInRoot() }
                                                     .clip(RoundedCornerShape(7.dp))
                                                     .background(if (ok) Color.Transparent else Color.Red.copy(alpha = 0.16f))
                                                     .border(
@@ -2017,13 +2194,14 @@ fun KOnRummikubContent() {
                                                 horizontalArrangement = Arrangement.spacedBy(1.5.dp)
                                             ) {
                                                 meld.tiles.forEach { t ->
+                                                    key(t.id) {
                                                     val isPickedTable = (selectedTableTile?.first == meld.id && selectedTableTile?.second == t.id)
                                                     val isDragTbl = (dragTableTileKey?.first == meld.id && dragTableTileKey?.second == t.id)
                                                     val isHigh = highlightedIds.contains(t.id)
                                                     var tileRootPos by remember { mutableStateOf(Offset.Zero) }
                                                     Box(
                                                         modifier = Modifier
-                                                            .onGloballyPositioned { tileRootPos = it.boundsInRoot().center }
+                                                            .onGloballyPositioned { if (it.isAttached) tileRootPos = it.boundsInRoot().center }
                                                             .pointerInput(meld.id, t.id, myTurn) {
                                                                 if (!myTurn) return@pointerInput
                                                                 detectDragGestures(
@@ -2041,13 +2219,17 @@ fun KOnRummikubContent() {
                                                                     },
                                                                     onDragEnd = {
                                                                         val dropPt = Offset(tileRootPos.x + dragTableOffX, tileRootPos.y + dragTableOffY)
-                                                                        if (rackAreaBounds?.contains(dropPt) == true) {
-                                                                            rmk.returnTableTileToRackIfFromThisTurn(meld.id, t.id)
+                                                                        val rb = rackAreaBounds
+                                                                        if (rb != null && (rb.inflate(24f).contains(dropPt) || dropPt.y >= rb.top - 18f)) {
+                                                                            val relX = (dropPt.x - rb.left).coerceIn(0f, rb.width.coerceAtLeast(1f))
+                                                                            val dstCol = ((relX / rb.width.coerceAtLeast(1f)) * cols).toInt().coerceIn(0, cols - 1)
+                                                                            val dstRow = if (dropPt.y >= rb.center.y) 1 else 0
+                                                                            rmk.returnTableTileToRackIfFromThisTurn(meld.id, t.id, preferredRackSlot = dstRow * cols + dstCol)
                                                                         } else {
                                                                             val (targetMeld, preferLead, insIdx) = findMagneticMeldHit(dropPt, excludeMeldId = meld.id, draggingTiles = listOf(t))
                                                                             if (targetMeld != null) {
                                                                                 rmk.moveTableTile(meld.id, t.id, targetMeld, preferLeading = preferLead)
-                                                                            } else if (tableAreaBounds?.inflate(32f)?.contains(dropPt) == true) {
+                                                                            } else if (tableAreaBounds?.inflate(36f)?.contains(dropPt) == true) {
                                                                                 rmk.moveTableTile(meld.id, t.id, null, preferLeading = false, insertAtMeldIndex = insIdx)
                                                                             }
                                                                         }
@@ -2069,7 +2251,7 @@ fun KOnRummikubContent() {
                                                             if (!isDragTbl) {
                                                                 RmkTileCard(
                                                                     tile = t,
-                                                                    selected = isPickedTable,
+                                                                    selected = false,
                                                                     highlighted = isHigh,
                                                                     compact = chosenW < 34f,
                                                                     customW = tileWDp,
@@ -2088,7 +2270,9 @@ fun KOnRummikubContent() {
                                                             }
                                                         }
                                                     }
+                                                    }
                                                 }
+                                            }
                                             }
                                         }
                                     }
@@ -2097,12 +2281,12 @@ fun KOnRummikubContent() {
                         }
                     }
 
-                    // Bottom Fixed 2-Row × 10-Column Wooden Rack (1:1 like Video!)
+                    // Bottom Adaptive 2-Row × 10-Column Wooden Rack (1:1 like iOS, never clipped on any Android ratio!)
                     BoxWithConstraints(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(104.dp)
-                            .onGloballyPositioned { rackAreaBounds = it.boundsInRoot() }
+                            .height(adaptiveRackH)
+                            .onGloballyPositioned { if (it.isAttached) rackAreaBounds = it.boundsInRoot() }
                             .clip(RoundedCornerShape(10.dp))
                             .background(Color(0xFFB57C44))
                             .border(2.dp, Color(0xFFE0AC63), RoundedCornerShape(10.dp))
@@ -2131,7 +2315,7 @@ fun KOnRummikubContent() {
 
                                             Box(
                                                 modifier = Modifier
-                                                    .size(width = slotW, height = 43.dp)
+                                                    .size(width = slotW, height = adaptiveSlotH)
                                                     .clip(RoundedCornerShape(5.dp))
                                                     .background(if (liftedIdx != null && tileOpt == null) Color.Yellow.copy(alpha = 0.16f) else Color.Black.copy(alpha = 0.10f))
                                                     .border(1.dp, if (liftedIdx != null) Color.Yellow.copy(alpha = 0.55f) else Color.Black.copy(alpha = 0.20f), RoundedCornerShape(5.dp))
@@ -2198,7 +2382,7 @@ fun KOnRummikubContent() {
                                                                     rmk.setLiftedSlot(null)
                                                                 }
                                                             } else if (liftedIdx != null) {
-                                                                rmk.moveRackSlot(liftedIdx!!, slotIdx)
+                                                                liftedIdx?.let { rmk.moveRackSlot(it, slotIdx) }
                                                             }
                                                         }
                                                     ),
@@ -2217,7 +2401,7 @@ fun KOnRummikubContent() {
                                                             highlighted = highlightedIds.contains(tileOpt.id),
                                                             compact = true,
                                                             customW = (slotW - 2.dp).coerceAtLeast(24.dp),
-                                                            customH = 41.dp
+                                                            customH = adaptiveTileH
                                                         )
                                                         if (dragSlotIdx == slotIdx && selIds.size > 1 && selIds.contains(tileOpt.id)) {
                                                             Box(
@@ -2328,7 +2512,7 @@ fun KOnRummikubContent() {
                         Box(
                             modifier = Modifier
                                 .size(width = 56.dp, height = 86.dp)
-                                .onGloballyPositioned { drawBtnBounds = it.boundsInRoot() }
+                                .onGloballyPositioned { if (it.isAttached) drawBtnBounds = it.boundsInRoot() }
                                 .clip(RoundedCornerShape(14.dp))
                                 .background(if (myTurn) Color(0xFF2A4A7C) else Color(0xFF182C4F))
                                 .border(if (myTurn) 2.2.dp else 1.dp, if (myTurn) Color(0xFFFB8C00) else Color.White.copy(alpha = 0.25f), RoundedCornerShape(14.dp))
@@ -2429,7 +2613,7 @@ fun KOnRummikubContent() {
                         }
                 ) {
                     RmkTileCard(
-                        tile = dragTableTileObj!!,
+                        tile = dragTableTileObj ?: return@Box,
                         selected = true,
                         highlighted = true,
                         compact = false,
@@ -2453,7 +2637,7 @@ fun KOnRummikubContent() {
                             y = (-54f + (targetY + 54f) * drawAnimProg - kotlin.math.sin(drawAnimProg * Math.PI.toFloat()) * 42f).dp
                         )
                 ) {
-                    RmkTileCard(tile = drawAnimTile!!, selected = true, compact = false)
+                    drawAnimTile?.let { RmkTileCard(tile = it, selected = true, compact = false) }
                 }
             }
 
@@ -2491,7 +2675,7 @@ fun KOnRummikubContent() {
                         )
                 ) {
                     RmkTileCard(
-                        tile = oppPlayTile!!,
+                        tile = oppPlayTile ?: return@Box,
                         selected = true,
                         highlighted = true,
                         compact = true,
