@@ -100,7 +100,7 @@ fun KOnDoudizhuSheetDialog(onDismiss: () -> Unit, embeddedInGameRoom: Boolean = 
     var showCardCounter by remember { mutableStateOf(true) }
 
     LaunchedEffect(Unit) {
-        kotlinx.coroutines.launch { while (true) { QQCoinBinder.refreshCoins(ctx); kotlinx.coroutines.delay(12000) } }
+        launch { while (true) { QQCoinBinder.refreshCoins(context); kotlinx.coroutines.delay(12000) } }
         engine.refreshLocalIpAddress()
     }
 

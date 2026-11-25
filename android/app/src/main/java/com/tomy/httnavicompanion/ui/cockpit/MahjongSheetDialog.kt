@@ -37,6 +37,7 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -714,7 +715,8 @@ fun KOnMahjongSheetDialog(onDismiss: () -> Unit, embeddedInGameRoom: Boolean = f
     val lastClaimEvent by engine.lastClaimEvent.collectAsState()
 
     LaunchedEffect(Unit) {
-        kotlinx.coroutines.launch { while (true) { QQCoinBinder.refreshCoins(ctx); kotlinx.coroutines.delay(12000) } } engine.refreshLocalIpAddress() }
+        launch { while (true) { QQCoinBinder.refreshCoins(context); kotlinx.coroutines.delay(12000) } }
+        engine.refreshLocalIpAddress() }
     DisposableEffect(Unit) { onDispose { engine.leaveRoomAndResetLobby() } }
 
     val contentBody: @Composable () -> Unit = {
