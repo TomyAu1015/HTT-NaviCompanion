@@ -1976,9 +1976,9 @@ fun EnlargedNavigationHUDView(
                 val isKeepLeft = lowerStep.contains("稍向左") || lowerStep.contains("靠左") || lowerStep.contains("左前方")
                 val isRightTurn = !isKeepRight && (lowerStep.contains("右") && !lowerStep.contains("左") || lowerStep.contains("right"))
                 val isLeftTurn = !isKeepLeft && (lowerStep.contains("左") && !lowerStep.contains("右") || lowerStep.contains("left"))
-                val isHwy = listOf("高速", "高架", "环线", "匝道", "出口").any { lowerStep.contains(it) } || speedLimitKmh >= 80
-                val isArt = listOf("大道", "快速", "隧道", "大桥", "中路").any { lowerStep.contains(it) } || speedLimitKmh in 60..79
-                val isNarrow = listOf("巷", "弄", "胡同", "村", "里", "支路", "小区", "内部").any { lowerStep.contains(it) } || (!isHwy && !isArt && (speedLimitKmh <= 40 || lowerStep.contains("开始")))
+                val isHwy = listOf("高速", "高架", "环线", "匝道", "出口").any { lowerStep.contains(it) } || speedLimit >= 80
+                val isArt = listOf("大道", "快速", "隧道", "大桥", "中路").any { lowerStep.contains(it) } || speedLimit in 60..79
+                val isNarrow = listOf("巷", "弄", "胡同", "村", "里", "支路", "小区", "内部").any { lowerStep.contains(it) } || (!isHwy && !isArt && (speedLimit <= 40 || lowerStep.contains("开始")))
                 val laneCnt = when {
                     isHwy -> 4
                     isArt -> 3
