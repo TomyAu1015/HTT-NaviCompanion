@@ -11169,8 +11169,8 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
     }
     
     func connectOnlineServerRoom() {
-        let hostTrim = onlineServerHost.trimmingCharacters(in: .whitespacesAndNewlines)
-        let isLanBridge = hostTrim.hasPrefix("192.168.") || hostTrim.hasPrefix("10.") || hostTrim.hasPrefix("172.")
+        let hostTrim = customServerURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let isLanBridge = hostTrim.contains("://192.168.") || hostTrim.contains("://10.") || hostTrim.contains("://172.")
         if !isLanBridge && !KOnQQCoinBinder.shared.isBound {
             statusBanner = "🔒 远程服务器联机需先绑定登录 QQ 账号，未登录仅可使用面对面或 AI 游玩！"
             return
@@ -13221,8 +13221,8 @@ class KOnMahjongManager: NSObject, ObservableObject, MCSessionDelegate, MCNearby
     }
 
     func connectOnlineServerRoom() {
-        let hostTrim = onlineServerHost.trimmingCharacters(in: .whitespacesAndNewlines)
-        let isLanBridge = hostTrim.hasPrefix("192.168.") || hostTrim.hasPrefix("10.") || hostTrim.hasPrefix("172.")
+        let hostTrim = customServerURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let isLanBridge = hostTrim.contains("://192.168.") || hostTrim.contains("://10.") || hostTrim.contains("://172.")
         if !isLanBridge && !KOnQQCoinBinder.shared.isBound {
             statusBanner = "🔒 远程服务器联机需先绑定登录 QQ 账号，未登录仅可使用面对面或 AI 游玩！"
             return
@@ -15385,8 +15385,8 @@ final class RummikubEngine: NSObject, ObservableObject {
     }
 
     func connectOnlineServerRoom() {
-        let hostTrim = onlineServerHost.trimmingCharacters(in: .whitespacesAndNewlines)
-        let isLanBridge = hostTrim.hasPrefix("192.168.") || hostTrim.hasPrefix("10.") || hostTrim.hasPrefix("172.")
+        let hostTrim = customServerURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let isLanBridge = hostTrim.contains("://192.168.") || hostTrim.contains("://10.") || hostTrim.contains("://172.")
         if !isLanBridge && !KOnQQCoinBinder.shared.isBound {
             statusBanner = "🔒 远程服务器联机需先绑定登录 QQ 账号，未登录仅可使用面对面或 AI 游玩！"
             return
