@@ -11750,7 +11750,6 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
             lastValidHand: lastValidHand,
             lastPlaySeat: lastPlaySeat,
             winnerSeat: winnerSeat,
-            coinAnte: isOnlineConnected ? KOnQQCoinBinder.shared.coinAnte : nil,
             statusBanner: statusBanner,
             totalRounds: totalRounds,
             currentRound: currentRound,
@@ -11758,7 +11757,8 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
             maxMultiplier: maxMultiplier,
             turnTimeLimit: turnTimeLimit,
             allowCardCounter: allowCardCounter,
-            aiDifficulty: aiDifficulty
+            aiDifficulty: aiDifficulty,
+            coinAnte: isOnlineConnected ? KOnQQCoinBinder.shared.coinAnte : nil
         )
         sendPacketToPeers(pkt)
     }
@@ -13785,7 +13785,6 @@ class KOnMahjongManager: NSObject, ObservableObject, MCSessionDelegate, MCNearby
             drawnTileId: drawnTileId,
             pendingClaim: pendingClaim,
             winnerSeat: winnerSeat,
-            coinAnte: isOnlineConnected ? KOnQQCoinBinder.shared.coinAnte : nil,
             winReason: winReason,
             horseTiles: horseTiles,
             hitHorseIds: Array(hitHorseIds),
@@ -13793,7 +13792,8 @@ class KOnMahjongManager: NSObject, ObservableObject, MCSessionDelegate, MCNearby
             totalRounds: totalRounds,
             currentRound: currentRound,
             baseScore: baseScore,
-            turnTimeLimit: turnTimeLimit
+            turnTimeLimit: turnTimeLimit,
+            coinAnte: isOnlineConnected ? KOnQQCoinBinder.shared.coinAnte : nil
         )
         sendPacketToPeers(pkt)
     }
