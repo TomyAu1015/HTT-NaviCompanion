@@ -14508,7 +14508,7 @@ struct RmkEvaluator {
         }
 
         // 百搭不参与 777/789 自动组合，保留在剩余手牌末尾由玩家自由决定
-        if false, let jIdx = remaining.firstIndex(where: { $0.isJoker }) {
+        while false, let jIdx = remaining.firstIndex(where: { $0.isJoker }) {
             let joker = remaining[jIdx]
             var paired: [RmkTile]? = nil
             if preferRuns {
