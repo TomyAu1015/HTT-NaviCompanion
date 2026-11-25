@@ -902,7 +902,7 @@ namespace RmkEvaluator {
             if (uniq.size() >= 3) {
                 int pts = evaluateMeld(uniq);
                 if (pts > bestPts) { bestPts = pts; best = uniq; }
-            } else if (uniq.size() == 2 && !jokers.empty()) {
+            } else if (false && uniq.size() == 2 && !jokers.empty()) {
                 auto cand = uniq; cand.push_back(jokers[0]);
                 int pts = evaluateMeld(cand);
                 if (pts > bestPts) { bestPts = pts; best = cand; }
