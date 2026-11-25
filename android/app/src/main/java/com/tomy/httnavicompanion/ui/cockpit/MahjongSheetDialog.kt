@@ -394,6 +394,23 @@ fun KOnGameRoomSheetDialog(onDismiss: () -> Unit) {
     val rmkHosting by rmkEngine.isHostingRoom.collectAsState()
     val rmkPeers by rmkEngine.connectedPeerNames.collectAsState()
     val rmkPlayerCnt by rmkEngine.roomPlayerCount.collectAsState()
+    val grScope = rememberCoroutineScope()
+    val grQqCoins by QQCoinBinder.coins.collectAsState()
+    val grQqBound by QQCoinBinder.isBound.collectAsState()
+    val grQqUid by QQCoinBinder.qqUid.collectAsState()
+    val grQqAnte by QQCoinBinder.coinAnte.collectAsState()
+    val grQqStatus by QQCoinBinder.status.collectAsState()
+    var showGrQqDialog by remember { mutableStateOf(false) }
+    var grQqInput by remember { mutableStateOf(grQqUid) }
+    var grCodeInput by remember { mutableStateOf("") }
+    LaunchedEffect(Unit) {
+        QQCoinBinder.init(context)
+        grQqInput = QQCoinBinder.qqUid.value
+        while (true) {
+            QQCoinBinder.refreshCoins(context)
+            kotlinx.coroutines.delay(12000)
+        }
+    }
 
     val inLobbyNow = (selectedGame == 0 && ddzPhase == DoudizhuGamePhase.LOBBY) ||
         (selectedGame == 1 && mjPhase == MahjongGamePhase.LOBBY) ||
@@ -520,19 +537,41 @@ fun KOnGameRoomSheetDialog(onDismiss: () -> Unit) {
                         overflow = TextOverflow.Ellipsis
                     )
                     if (inLobbyNow) {
-                        Box(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(16.dp))
-                                .background(MjCardGreen)
-                                .clickable {
-                                    ddzEngine.leaveRoomAndResetLobby()
-                                    mjEngine.leaveRoomAndResetLobby()
-                                    rmkEngine.leaveRoomAndResetLobby()
-                                    onDismiss()
-                                }
-                                .padding(horizontal = 10.dp, vertical = 5.dp)
-                        ) {
-                            Text(tr("✕ 关闭", "✕ 關閉", "✕ Close"), color = MjGold, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(16.dp))
+                                    .background(Color(0xFF2B220A))
+                                    .border(1.dp, MjGold.copy(alpha = 0.7f), RoundedCornerShape(16.dp))
+                                    .clickable {
+                                        grQqInput = QQCoinBinder.qqUid.value
+                                        grScope.launch { QQCoinBinder.refreshCoins(context, manual = true) }
+                                        showGrQqDialog = true
+                                    }
+                                    .padding(horizontal = 9.dp, vertical = 5.dp)
+                            ) {
+                                Text(
+                                    if (grQqBound) "🪙 $grQqCoins" else "🪙 绑定QQ",
+                                    color = MjGold,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Black,
+                                    maxLines = 1
+                                )
+                            }
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(16.dp))
+                                    .background(MjCardGreen)
+                                    .clickable {
+                                        ddzEngine.leaveRoomAndResetLobby()
+                                        mjEngine.leaveRoomAndResetLobby()
+                                        rmkEngine.leaveRoomAndResetLobby()
+                                        onDismiss()
+                                    }
+                                    .padding(horizontal = 10.dp, vertical = 5.dp)
+                            ) {
+                                Text(tr("✕ 关闭", "✕ 關閉", "✕ Close"), color = MjGold, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            }
                         }
                     } else {
                         Spacer(Modifier.width(72.dp))
@@ -540,6 +579,52 @@ fun KOnGameRoomSheetDialog(onDismiss: () -> Unit) {
                 }
                 }
 
+                if (showGrQqDialog) {
+                    AlertDialog(
+                        onDismissRequest = { showGrQqDialog = false },
+                        title = { Text("🪙 绑定 QQ 群金币", fontWeight = FontWeight.Black) },
+                        text = {
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Text("仅「在线服务器联机且 ≥2 名真人」增减 QQ 群金币；未登录仅可使用面对面或本地 AI。", fontSize = 12.sp)
+                                Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    Text("底注:", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                    listOf(5, 10, 20, 50).forEach { amt ->
+                                        Box(
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(8.dp))
+                                                .background(if (grQqAnte == amt) Color(0xFFF59E0B) else Color.Gray.copy(alpha = 0.25f))
+                                                .clickable { QQCoinBinder.setAnte(context, amt) }
+                                                .padding(horizontal = 8.dp, vertical = 4.dp)
+                                        ) {
+                                            Text("${amt}🪙", fontSize = 11.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false, color = if (grQqAnte == amt) Color.Black else Color.Unspecified)
+                                        }
+                                    }
+                                }
+                                if (grQqBound) {
+                                    Text("已绑定 QQ: $grQqUid · 当前群金币: $grQqCoins 🪙", color = Color(0xFFD97706), fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                }
+                                OutlinedTextField(value = grQqInput, onValueChange = { grQqInput = it }, label = { Text("输入 QQ 号") }, singleLine = true)
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Button(onClick = { grScope.launch { QQCoinBinder.requestCode(grQqInput) } }) { Text("发验证码") }
+                                    if (grQqBound) {
+                                        OutlinedButton(onClick = { grScope.launch { QQCoinBinder.refreshCoins(context, manual = true) } }) { Text("刷新") }
+                                        OutlinedButton(onClick = { QQCoinBinder.unbind(context) }) { Text("解绑") }
+                                    }
+                                }
+                                OutlinedTextField(value = grCodeInput, onValueChange = { grCodeInput = it }, label = { Text("6位私聊验证码") }, singleLine = true)
+                                Button(onClick = {
+                                    grScope.launch {
+                                        if (QQCoinBinder.verifyCode(context, grQqInput, grCodeInput)) {
+                                            grCodeInput = ""; showGrQqDialog = false
+                                        }
+                                    }
+                                }) { Text("确认绑定") }
+                                if (grQqStatus.isNotEmpty()) Text(grQqStatus, fontSize = 11.sp, color = Color(0xFFD97706))
+                            }
+                        },
+                        confirmButton = { TextButton(onClick = { showGrQqDialog = false }) { Text("关闭") } }
+                    )
+                }
                 // Game Switcher Bar
                 if (isInJoinedRoom && inLobbyNow) {
                     Row(

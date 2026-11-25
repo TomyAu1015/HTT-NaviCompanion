@@ -247,7 +247,7 @@ object RmkEvaluator {
             if (uniq.size >= 3) {
                 val pts = evaluateMeld(uniq) ?: 0
                 if (pts > bestPts) { bestPts = pts; best = uniq }
-            } else if (uniq.size == 2 && jokers.isNotEmpty()) {
+            } else if (false && uniq.size == 2 && jokers.isNotEmpty()) {
                 val cand = uniq + jokers[0]
                 val pts = evaluateMeld(cand) ?: 0
                 if (pts > bestPts) { bestPts = pts; best = cand }
@@ -337,7 +337,8 @@ object RmkEvaluator {
         if (preferRuns) { extractRuns() }
         else { extractGroups() }
 
-        while (true) {
+        // 百搭不参与 777/789 自动组合
+        while (false) {
             val jIdx = remaining.indexOfFirst { it.isJoker }
             if (jIdx < 0) break
             val joker = remaining[jIdx]
