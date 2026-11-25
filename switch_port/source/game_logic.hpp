@@ -220,6 +220,17 @@ struct DdzEvalHand {
         return "{\"category\":\"" + category + "\",\"primaryRank\":" + std::to_string(primaryRank) +
                ",\"length\":" + std::to_string(length) + ",\"cards\":" + arr + "}";
     }
+
+    static DdzEvalHand fromJson(const std::string& j) {
+        DdzEvalHand h;
+        if (j.empty()) return h;
+        h.category = MiniJson::getStr(j, "category", "invalid");
+        h.primaryRank = MiniJson::getInt(j, "primaryRank", 0);
+        h.length = MiniJson::getInt(j, "length", 0);
+        auto cObjs = MiniJson::extractObjectsArray(j, "cards");
+        for (const auto& co : cObjs) h.cards.push_back(DdzCard::fromJson(co));
+        return h;
+    }
 };
 
 namespace DdzEvaluator {
@@ -393,7 +404,17 @@ struct MjTile {
     }
 
     std::string romfsImagePath() const {
-        return "romfs:/cards/mj_" + id + ".jpg";
+        std::string sUp = suit;
+        for (auto& ch : sUp) ch = (char)toupper((unsigned char)ch);
+        if (sUp != "W" && sUp != "T" && sUp != "D" && sUp != "H" && sUp != "Z") sUp = "W";
+        int r = (sUp == "Z") ? 0 : std::max(1, std::min((sUp == "H" ? 6 : 9), rank));
+        int copyIdx = 0;
+        size_t pos = id.rfind('_');
+        if (pos != std::string::npos && pos + 1 < id.size()) {
+            int rawC = std::atoi(id.c_str() + pos + 1);
+            copyIdx = (rawC >= 4) ? ((rawC - 1) % 4) : (rawC < 0 ? 0 : (rawC % 4));
+        }
+        return "romfs:/cards/mj_" + sUp + "_" + std::to_string(r) + "_" + std::to_string(copyIdx) + ".jpg";
     }
 
     std::string toJson() const {

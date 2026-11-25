@@ -10601,6 +10601,107 @@ struct DoudizhuRoomPeer: Codable, Equatable {
     var displayName: String?
 }
 
+
+// MARK: - QQ Group Coin Binder (放课后棋牌室 QQ 群金币绑定，仅在线服务器联机 ≥2 真人结算)
+final class KOnQQCoinBinder: ObservableObject {
+    static let shared = KOnQQCoinBinder()
+    @Published var qqUid: String = UserDefaults.standard.string(forKey: "htt_qq_uid") ?? ""
+    @Published var qqToken: String = UserDefaults.standard.string(forKey: "htt_qq_token") ?? ""
+    @Published var coins: Int = UserDefaults.standard.integer(forKey: "htt_qq_coins")
+    @Published var statusText: String = ""
+    @Published var isBusy: Bool = false
+
+    var isBound: Bool { !qqToken.isEmpty && !qqUid.isEmpty }
+    var onlineTokenOrNil: String? { qqToken.isEmpty ? nil : qqToken }
+
+    func save() {
+        UserDefaults.standard.set(qqUid, forKey: "htt_qq_uid")
+        UserDefaults.standard.set(qqToken, forKey: "htt_qq_token")
+        UserDefaults.standard.set(coins, forKey: "htt_qq_coins")
+    }
+
+    func unbind() {
+        qqUid = ""; qqToken = ""; coins = 0; statusText = "已解除 QQ 群金币绑定"
+        save()
+    }
+
+    func requestCode(qq: String) {
+        let clean = qq.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard clean.count >= 5, let url = URL(string: "https://azusa.online/club/bind_code") else {
+            statusText = "请输入正确的 QQ 号"
+            return
+        }
+        isBusy = true
+        statusText = "正在通过群机器人私聊发送验证码..."
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: ["qq": clean])
+        URLSession.shared.dataTask(with: req) { data, _, err in
+            DispatchQueue.main.async {
+                self.isBusy = false
+                guard let data = data,
+                      let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                    self.statusText = "网络请求失败：\(err?.localizedDescription ?? "请稍后重试")"
+                    return
+                }
+                if (obj["ok"] as? Bool) == true {
+                    self.statusText = "✅ 验证码已通过群机器人私聊发送，请查收并填写"
+                } else {
+                    self.statusText = "⚠️ \(obj["error"] as? String ?? "发送失败，请先在群内发言或开启临时会话")"
+                }
+            }
+        }.resume()
+    }
+
+    func verifyCode(qq: String, code: String, completion: @escaping (Bool) -> Void) {
+        let cleanQq = qq.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanCode = code.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let url = URL(string: "https://azusa.online/club/bind_verify") else { completion(false); return }
+        isBusy = true
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: ["qq": cleanQq, "code": cleanCode])
+        URLSession.shared.dataTask(with: req) { data, _, _ in
+            DispatchQueue.main.async {
+                self.isBusy = false
+                guard let data = data,
+                      let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      (obj["ok"] as? Bool) == true,
+                      let tok = obj["token"] as? String else {
+                    let msg = (data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] })?["error"] as? String
+                    self.statusText = "⚠️ \(msg ?? "验证码错误或已过期")"
+                    completion(false)
+                    return
+                }
+                self.qqUid = cleanQq
+                self.qqToken = tok
+                self.coins = obj["coins"] as? Int ?? 0
+                self.statusText = "🎉 绑定成功！当前 QQ 群金币：\(self.coins)"
+                self.save()
+                completion(true)
+            }
+        }.resume()
+    }
+
+    func refreshCoins() {
+        guard !qqToken.isEmpty,
+              let enc = qqToken.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
+              let url = URL(string: "https://azusa.online/club/coins?token=\(enc)") else { return }
+        URLSession.shared.dataTask(with: url) { data, _, _ in
+            guard let data = data,
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  (obj["ok"] as? Bool) == true,
+                  let c = obj["coins"] as? Int else { return }
+            DispatchQueue.main.async {
+                self.coins = c
+                self.save()
+            }
+        }.resume()
+    }
+}
+
 struct DoudizhuNetPacket: Codable {
     enum PacketKind: String, Codable {
         case joinRequest
@@ -10639,6 +10740,7 @@ struct DoudizhuNetPacket: Codable {
     var turnTimeLimit: Int?
     var allowCardCounter: Bool?
     var aiDifficulty: String?
+    var qqToken: String? = nil
 }
 
 // Abstract Transport Protocol: Supports Face-to-Face P2P Now & Online WebSocket Server Later!
@@ -11043,7 +11145,8 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
             kind: .joinRequest,
             roomCode: roomCode,
             senderPeerName: myPeerID.displayName,
-            senderCharId: myCharacter.charId
+            senderCharId: myCharacter.charId,
+            qqToken: isOnlineConnected ? KOnQQCoinBinder.shared.onlineTokenOrNil : nil
         )
         sendPacketToPeers(pkt)
         statusBanner = "✅ 已连接在线服务器，房间号：\(roomCode)（等待同房好友或直接开始）"
@@ -12121,6 +12224,7 @@ struct MahjongNetPacket: Codable {
     var turnTimeLimit: Int? = nil
     var tileId: String? = nil
     var actionType: String? = nil // "hu", "kong", "pong", "pass", "selfHu", "selfKong"
+    var qqToken: String? = nil
 }
 
 enum MahjongEvaluator {
@@ -13079,7 +13183,7 @@ class KOnMahjongManager: NSObject, ObservableObject, MCSessionDelegate, MCNearby
     }
 
     func sendJoinRequestToRoom() {
-        let pkt = MahjongNetPacket(kind: .joinRequest, roomCode: wireRoomCode(), senderPeerName: myPeerID.displayName, senderCharId: myCharacter.charId, maxPlayers: 4, gameType: "mahjong")
+        let pkt = MahjongNetPacket(kind: .joinRequest, roomCode: wireRoomCode(), senderPeerName: myPeerID.displayName, senderCharId: myCharacter.charId, maxPlayers: 4, gameType: "mahjong", qqToken: isOnlineConnected ? KOnQQCoinBinder.shared.onlineTokenOrNil : nil)
         sendPacketToPeers(pkt)
     }
 
@@ -13983,6 +14087,7 @@ enum RmkPhase: String, Codable {
 }
 
 struct RmkNetPacket: Codable {
+    var qqToken: String? = nil
     enum Kind: String, Codable {
         case joinRequest, leaveRoom, roomRoster, roomFull, stateSync
         case commitTurnAction, drawTileAction
@@ -15218,7 +15323,7 @@ final class RummikubEngine: NSObject, ObservableObject {
 
     private func sendJoinRequest() {
         guard !wireRoomCode().isEmpty else { return }
-        sendPacket(RmkNetPacket(kind: .joinRequest, roomCode: wireRoomCode(), senderPeerName: myPeerName, senderCharId: myCharacter.charId, maxPlayers: roomPlayerCount))
+        sendPacket(RmkNetPacket(qqToken: isOnlineConnected ? KOnQQCoinBinder.shared.onlineTokenOrNil : nil, kind: .joinRequest, roomCode: wireRoomCode(), senderPeerName: myPeerName, senderCharId: myCharacter.charId, maxPlayers: roomPlayerCount))
         statusBanner = "✅ 已连接拉密数字牌房间 [\(roomCode)] (\(roomPlayerCount)人局 · 真人进房自动替换AI)"
     }
 

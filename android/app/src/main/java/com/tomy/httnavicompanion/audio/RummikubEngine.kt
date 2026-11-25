@@ -1131,7 +1131,7 @@ class RummikubEngine(
                 lanWriters.add(writer)
                 if (!_isRoomAuthority.value) {
                     val joinJson = JSONObject().apply {
-                        put("kind", "joinRequest"); put("roomCode", wireRoomCode())
+                        put("kind", "joinRequest"); if (QQCoinBinder.token.isNotEmpty()) put("qqToken", QQCoinBinder.token); put("roomCode", wireRoomCode())
                         put("senderPeerName", myPeerName); put("senderCharId", _myCharacter.value.charId)
                         put("maxPlayers", _roomPlayerCount.value); put("gameType", "rummikub")
                     }.toString()
@@ -1279,7 +1279,7 @@ class RummikubEngine(
         val wc = wireRoomCode()
         if (wc.isEmpty()) return
         sendPacketText(JSONObject().apply {
-            put("kind", "joinRequest"); put("roomCode", wc)
+            put("kind", "joinRequest"); if (QQCoinBinder.token.isNotEmpty()) put("qqToken", QQCoinBinder.token); put("roomCode", wc)
             put("senderPeerName", myPeerName); put("senderCharId", _myCharacter.value.charId)
             put("maxPlayers", _roomPlayerCount.value); put("gameType", "rummikub")
         }.toString())

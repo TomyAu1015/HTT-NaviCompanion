@@ -8720,7 +8720,7 @@ struct KOnDoudizhuSheetView: View {
                             Text(seat.isAI ? tr("🤖 轻音AI补位", "🤖 輕音AI補位", "HTT AI") : (seat.id == 0 ? tr("👑 1号房主", "👑 1號房主", "Host") : tr("📱 真机玩家", "📱 真機玩家", "Player")))
                                 .font(.system(size: 9, weight: .bold))
                                 .foregroundColor(seat.isAI ? httGold : .green)
-                            Text(tr("积分: \(seat.score)", "積分: \(seat.score)", "Pts: \(seat.score)"))
+                            Text(tr("金币: \(seat.score)", "金幣: \(seat.score)", "Coins: \(seat.score)"))
                                 .font(.system(size: 9, weight: .medium, design: .monospaced))
                                 .foregroundColor(httCream.opacity(0.85))
                         }
@@ -8936,7 +8936,7 @@ struct KOnDoudizhuSheetView: View {
                             let isSeriesDone = (ddz.totalRounds > 0 && ddz.currentRound >= ddz.totalRounds)
                             let ranked = ddz.seats.sorted { $0.score > $1.score }
                             VStack(spacing: 3) {
-                                Text(isSeriesDone ? "🏆 整场积分排名 (共\(ddz.totalRounds)局)" : (ddz.seats[wIdx].isLandlord ? "🎉 地主胜利!" : "🎉 农民胜利!"))
+                                Text(isSeriesDone ? "🏆 整场金币排名 (共\(ddz.totalRounds)局)" : (ddz.seats[wIdx].isLandlord ? "🎉 地主胜利!" : "🎉 农民胜利!"))
                                     .font(.system(size: isSeriesDone ? 14 : 18, weight: .black))
                                     .foregroundColor(.white)
                                 if isSeriesDone {
@@ -9026,7 +9026,7 @@ struct KOnDoudizhuSheetView: View {
                                                 .cornerRadius(3)
                                         }
                                     }
-                                    Text(tr("手牌:\(me.hand.count) · 积分:\(me.score)", "手牌:\(me.hand.count) · 積分:\(me.score)", "Cards:\(me.hand.count) · Pts:\(me.score)"))
+                                    Text(tr("手牌:\(me.hand.count) · 金币:\(me.score)", "手牌:\(me.hand.count) · 金幣:\(me.score)", "Cards:\(me.hand.count) · Coins:\(me.score)"))
                                         .font(.system(size: 9, weight: .bold, design: .monospaced))
                                         .foregroundColor(httGold)
                                 }
@@ -9363,7 +9363,7 @@ struct KOnDoudizhuSheetView: View {
                         .font(.system(size: 11, weight: .black))
                         .foregroundColor(.white)
                         .lineLimit(1)
-                    Text(tr("积分: \(seat.score)", "積分: \(seat.score)", "Pts: \(seat.score)"))
+                    Text(tr("金币: \(seat.score)", "金幣: \(seat.score)", "Coins: \(seat.score)"))
                         .font(.system(size: 9, weight: .bold))
                         .foregroundColor(httCream.opacity(0.8))
                 }
@@ -9997,7 +9997,7 @@ struct KOnMahjongSheetView: View {
                                 let isSeriesDone = (mj.totalRounds > 0 && mj.currentRound >= mj.totalRounds)
                                 let ranked = mj.seats.sorted { $0.score > $1.score }
                                 VStack(spacing: 2) {
-                                    Text(isSeriesDone ? mjTr("🏆 整场积分排名", "🏆 整場積分排名", "🏆 Final Standings") : (mj.winnerSeat != nil ? mjTr("🀄 胡!", "🀄 糊!", "🀄 Win!") : mjTr("🌊 流局", "🌊 流局", "🌊 Draw")))
+                                    Text(isSeriesDone ? mjTr("🏆 整场金币排名", "🏆 整場金幣排名", "🏆 Final Standings") : (mj.winnerSeat != nil ? mjTr("🀄 胡!", "🀄 糊!", "🀄 Win!") : mjTr("🌊 流局", "🌊 流局", "🌊 Draw")))
                                         .font(.system(size: isSeriesDone ? 13 : 20, weight: .black))
                                         .foregroundColor(.yellow)
                                         .shadow(color: httCrimson, radius: 6)
@@ -10773,7 +10773,11 @@ struct KOnGameRoomSheetView: View {
     @ObservedObject private var mj = KOnMahjongManager.shared
     @ObservedObject private var rmk = RummikubEngine.shared
     @Environment(\.dismiss) private var dismiss
-    @State private var selectedGame: Int = 0 // 0 = 放课后斗地主(3人), 1 = 广东红中麻将(4人), 2 = 拉密数字牌(2-4人)
+    @State private var selectedGame: Int = 0
+    @ObservedObject private var qqBinder = KOnQQCoinBinder.shared
+    @State private var showQQBindSheet: Bool = false
+    @State private var qqInputText: String = KOnQQCoinBinder.shared.qqUid
+    @State private var qqCodeText: String = ""  // 0 = 放课后斗地主(3人), 1 = 广东红中麻将(4人), 2 = 拉密数字牌(2-4人)
 
     private let httGold = Color(red: 0.88, green: 0.68, blue: 0.24)
 
@@ -10829,6 +10833,7 @@ struct KOnGameRoomSheetView: View {
                             .overlay(RoundedRectangle(cornerRadius: 14).stroke(httGold.opacity(0.55), lineWidth: 1))
                         }
                         .buttonStyle(PlainButtonStyle())
+                        }
                     } else {
                         Color.clear.frame(width: 72, height: 28)
                     }
@@ -10843,6 +10848,57 @@ struct KOnGameRoomSheetView: View {
                     Spacer()
 
                     if isInLobby {
+                        HStack(spacing: 6) {
+                            Button(action: {
+                                qqInputText = qqBinder.qqUid
+                                qqBinder.refreshCoins()
+                                showQQBindSheet = true
+                            }) {
+                                Text(qqBinder.isBound ? "🪙 \(qqBinder.coins)" : "🪙 绑定QQ")
+                                    .font(.system(size: 11, weight: .black))
+                                    .foregroundColor(.black)
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 5)
+                                    .background(httGold)
+                                    .cornerRadius(12)
+                            }
+                            .buttonStyle(PlainButtonStyle())
+                            .sheet(isPresented: $showQQBindSheet) {
+                                VStack(spacing: 14) {
+                                    Text("🪙 绑定 QQ 群金币").font(.title3.bold())
+                                    Text("仅「在线服务器联机且 ≥2 名真人」增减 QQ 群金币；面对面与单机 AI 练习局不扣不加。")
+                                        .font(.caption).foregroundColor(.secondary).multilineTextAlignment(.center)
+                                    if qqBinder.isBound {
+                                        Text("已绑定 QQ：\(qqBinder.qqUid) · 当前群金币：\(qqBinder.coins) 🪙").font(.subheadline.bold()).foregroundColor(.orange)
+                                    }
+                                    HStack {
+                                        TextField("输入 QQ 号", text: $qqInputText).textFieldStyle(RoundedBorderTextFieldStyle()).keyboardType(.numberPad)
+                                        Button("发验证码") { qqBinder.requestCode(qq: qqInputText) }
+                                            .buttonStyle(.borderedProminent).disabled(qqBinder.isBusy)
+                                    }
+                                    HStack {
+                                        TextField("输入机器人私聊 6 位验证码", text: $qqCodeText).textFieldStyle(RoundedBorderTextFieldStyle()).keyboardType(.numberPad)
+                                        Button("确认绑定") {
+                                            qqBinder.verifyCode(qq: qqInputText, code: qqCodeText) { ok in
+                                                if ok { qqCodeText = ""; showQQBindSheet = false }
+                                            }
+                                        }
+                                        .buttonStyle(.borderedProminent).tint(.green).disabled(qqBinder.isBusy)
+                                    }
+                                    if !qqBinder.statusText.isEmpty {
+                                        Text(qqBinder.statusText).font(.caption).foregroundColor(.orange)
+                                    }
+                                    HStack(spacing: 16) {
+                                        if qqBinder.isBound {
+                                            Button("刷新金币") { qqBinder.refreshCoins() }.buttonStyle(.bordered)
+                                            Button("解绑", role: .destructive) { qqBinder.unbind() }.buttonStyle(.bordered)
+                                        }
+                                        Button("关闭") { showQQBindSheet = false }.buttonStyle(.bordered)
+                                    }
+                                }
+                                .padding(20)
+                            }
+
                         Button(action: {
                             ddz.leaveCurrentRoomAndReset()
                             mj.leaveCurrentRoomAndReset()

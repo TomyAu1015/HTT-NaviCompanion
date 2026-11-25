@@ -71,6 +71,101 @@ static bool gIsOnlineRoom = false;
 static bool gIsRoomAuthority = true;
 static std::vector<RoomPeer> gRoomPeers;
 
+// QQ 群金币绑定状态 (持久化在 sdmc:/switch/htt_club_qq.cfg)
+static std::string gQqUid = "";
+static std::string gQqToken = "";
+static int gQqCoins = -1;
+
+// 60fps 平滑动画状态 (斗地主/麻将提起插值 + 出牌飞行动画)
+static std::map<std::string, float> gCardLiftAnim;
+static std::vector<DdzCard> gDdzPlayFlightCards;
+static int gDdzPlayFlightSeat = -1;
+static uint32_t gDdzPlayFlightTick = 0;
+static uint32_t gMjLastTapTick = 0;
+static int gMjLastTapIdx = -1;
+
+static float smoothLiftOffset(const std::string& key, bool lifted, float targetPx) {
+    float& cur = gCardLiftAnim[key];
+    float target = lifted ? targetPx : 0.0f;
+    cur += (target - cur) * 0.28f;
+    if (std::abs(cur - target) < 0.4f) cur = target;
+    return cur;
+}
+
+static void loadQqBindingFromDisk() {
+    FILE* f = fopen("sdmc:/switch/htt_club_qq.cfg", "r");
+    if (!f) return;
+    char buf[512] = {0};
+    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    std::string raw(buf, n);
+    gQqUid = MiniJson::getStr(raw, "qq");
+    gQqToken = MiniJson::getStr(raw, "token");
+    gQqCoins = MiniJson::getInt(raw, "coins", -1);
+}
+
+static void saveQqBindingToDisk() {
+    FILE* f = fopen("sdmc:/switch/htt_club_qq.cfg", "w");
+    if (!f) return;
+    std::string raw = "{\"qq\":\"" + MiniJson::esc(gQqUid) + "\",\"token\":\"" + MiniJson::esc(gQqToken) + "\",\"coins\":" + std::to_string(gQqCoins) + "}";
+    fwrite(raw.data(), 1, raw.size(), f);
+    fclose(f);
+}
+
+static void refreshQqCoinsOnline() {
+    if (gQqToken.empty()) return;
+    std::string resp = switchHttpsRequest("GET", "azusa.online", "443", "/club/coins?token=" + gQqToken);
+    if (MiniJson::getBool(resp, "ok", false)) {
+        gQqCoins = MiniJson::getInt(resp, "coins", gQqCoins);
+        saveQqBindingToDisk();
+    }
+}
+
+static void openSwitchQqBindFlow() {
+    SwkbdConfig kbd;
+    if (R_FAILED(swkbdCreate(&kbd, 0))) return;
+    swkbdConfigMakePresetDefault(&kbd);
+    swkbdConfigSetHeaderText(&kbd, "绑定 QQ 群金币（第1步：输入你的 QQ 号）");
+    swkbdConfigSetSubText(&kbd, "机器人在群里会私聊发送 6 位验证码");
+    swkbdConfigSetInitialText(&kbd, gQqUid.c_str());
+    swkbdConfigSetStringLenMax(&kbd, 16);
+    char qqBuf[32] = {0};
+    bool gotQq = R_SUCCEEDED(swkbdShow(&kbd, qqBuf, sizeof(qqBuf))) && strlen(qqBuf) >= 5;
+    swkbdClose(&kbd);
+    if (!gotQq) return;
+
+    std::string qqStr(qqBuf);
+    std::string reqResp = switchHttpsRequest("POST", "azusa.online", "443", "/club/bind_code", "{\"qq\":\"" + MiniJson::esc(qqStr) + "\"}");
+    if (!MiniJson::getBool(reqResp, "ok", false)) {
+        std::string err = MiniJson::getStr(reqResp, "error", "发送验证码失败，请确认已在群里或允许临时会话");
+        gStatusBanner = "[注意] " + err;
+        return;
+    }
+
+    SwkbdConfig kbd2;
+    if (R_FAILED(swkbdCreate(&kbd2, 0))) return;
+    swkbdConfigMakePresetDefault(&kbd2);
+    swkbdConfigSetHeaderText(&kbd2, "绑定 QQ 群金币（第2步：输入 6 位验证码）");
+    swkbdConfigSetSubText(&kbd2, "请查看 QQ 机器人私聊发来的 6 位数字");
+    swkbdConfigSetStringLenMax(&kbd2, 8);
+    char codeBuf[16] = {0};
+    bool gotCode = R_SUCCEEDED(swkbdShow(&kbd2, codeBuf, sizeof(codeBuf))) && strlen(codeBuf) >= 4;
+    swkbdClose(&kbd2);
+    if (!gotCode) return;
+
+    std::string vResp = switchHttpsRequest("POST", "azusa.online", "443", "/club/bind_verify",
+        "{\"qq\":\"" + MiniJson::esc(qqStr) + "\",\"code\":\"" + MiniJson::esc(codeBuf) + "\"}");
+    if (MiniJson::getBool(vResp, "ok", false)) {
+        gQqUid = qqStr;
+        gQqToken = MiniJson::getStr(vResp, "token");
+        gQqCoins = MiniJson::getInt(vResp, "coins", 0);
+        saveQqBindingToDisk();
+        gStatusBanner = "QQ " + gQqUid + " 绑定成功！当前群金币：" + std::to_string(gQqCoins) + " 金币";
+    } else {
+        gStatusBanner = "[注意] " + MiniJson::getStr(vResp, "error", "验证码错误或已过期");
+    }
+}
+
 // Lobby focus index for D-Pad / Stick navigation
 // 0..4: Character selection, 5: Room Code input, 6: Connect/Leave Server, 7: Start Game
 static int gLobbyFocus = 7;
@@ -656,7 +751,8 @@ static void sendJoinRequestPacket() {
                     "\",\"senderPeerName\":\"" + MiniJson::esc(gMyPeerName) +
                     "\",\"senderCharId\":" + std::to_string(gMyCharId) +
                     ",\"maxPlayers\":" + std::to_string(maxP) +
-                    ",\"gameType\":\"" + gType + "\"}";
+                    ",\"gameType\":\"" + gType + "\"" +
+                    (!gQqToken.empty() ? (",\"qqToken\":\"" + MiniJson::esc(gQqToken) + "\"") : "") + "}";
     gWs.sendText(j);
 }
 
@@ -847,6 +943,7 @@ static void rebuildLobbySeats() {
 
 static void startNewDoudizhuRound() {
     if (gIsOnlineRoom && !gIsRoomAuthority) return;
+    loadQqBindingFromDisk();
     rebuildLobbySeats();
 
     std::vector<DdzCard> deck;
@@ -2090,6 +2187,36 @@ static void processIncomingNetworkMessages() {
         } else if (kind == "discardAction" && gIsRoomAuthority && isMjPkt) {
             std::string tid = MiniJson::getStr(raw, "tileId");
             executeMjDiscard(gMjTurnSeat, tid);
+        } else if (kind == "claimAction" && gIsRoomAuthority && isMjPkt) {
+            std::string act = MiniJson::getStr(raw, "actionType");
+            int actorSeat = -1;
+            for (int i = 0; i < 4; ++i) if (gMjSeats[i].peerDisplayName == sender) actorSeat = i;
+            if (actorSeat >= 0 && gMjPhase == "claimWindow") {
+                if (act == "hu") {
+                    executeMjWin(actorSeat, gMjClaimFromSeat, "接炮胡牌");
+                } else if (act == "pong" || act == "kong") {
+                    if (!gMjSeats[gMjClaimFromSeat].discards.empty()) gMjSeats[gMjClaimFromSeat].discards.pop_back();
+                    int needRem = (act == "kong") ? 3 : 2, rem = 0;
+                    auto& h = gMjSeats[actorSeat].hand;
+                    for (auto it = h.begin(); it != h.end() && rem < needRem;) {
+                        if (it->suit == gMjClaimTile.suit && it->rank == gMjClaimTile.rank) { it = h.erase(it); rem++; }
+                        else ++it;
+                    }
+                    gMjSeats[actorSeat].melds.push_back({gMjClaimTile.id, (act == "kong") ? "明杠" : "碰", gMjClaimTile});
+                    gMjHasClaim = false;
+                    if (act == "kong") drawMjTileForSeat(actorSeat);
+                    else { gMjPhase = "playing"; gMjTurnSeat = actorSeat; broadcastMjState(); }
+                } else {
+                    gMjHasClaim = false;
+                    drawMjTileForSeat((gMjClaimFromSeat + 1) % 4);
+                }
+            }
+        } else if (kind == "selfAction" && gIsRoomAuthority && isMjPkt) {
+            int actorSeat = -1;
+            for (int i = 0; i < 4; ++i) if (gMjSeats[i].peerDisplayName == sender) actorSeat = i;
+            if (actorSeat >= 0 && MiniJson::getStr(raw, "actionType") == "selfHu") {
+                executeMjWin(actorSeat, -1, "自摸胡牌");
+            }
         } else if (kind == "drawTileAction" && gIsRoomAuthority && isRmkPkt) {
             executeRmkDraw(gRmkTurnSeat, "摸牌过");
         } else if (kind == "commitTurnAction" && gIsRoomAuthority && isRmkPkt) {
@@ -2175,8 +2302,28 @@ static void processIncomingNetworkMessages() {
                 gDdzPhase = MiniJson::getStr(raw, "phase", gDdzPhase);
                 gDdzTurnSeat = MiniJson::getInt(raw, "currentTurnSeat", gDdzTurnSeat);
                 gDdzHighestBid = MiniJson::getInt(raw, "highestBid", gDdzHighestBid);
+                gDdzHighestBidder = MiniJson::getInt(raw, "highestBidderSeat", gDdzHighestBidder);
+                gDdzBidsCount = MiniJson::getInt(raw, "bidsCount", gDdzBidsCount);
                 gDdzMultiplier = MiniJson::getInt(raw, "multiplier", gDdzMultiplier);
+                int prevLastPlay = gDdzLastPlaySeat;
                 gDdzLastPlaySeat = MiniJson::getInt(raw, "lastPlaySeat", gDdzLastPlaySeat);
+                std::string lvhObj = MiniJson::extractObject(raw, "lastValidHand");
+                if (!lvhObj.empty()) {
+                    DdzEvalHand parsedLvh = DdzEvalHand::fromJson(lvhObj);
+                    if (parsedLvh.category != "invalid") {
+                        bool isNewPlay = (prevLastPlay != gDdzLastPlaySeat || parsedLvh.cards.size() != gDdzLastValid.cards.size() ||
+                                          (!parsedLvh.cards.empty() && !gDdzLastValid.cards.empty() && parsedLvh.cards[0].id != gDdzLastValid.cards[0].id));
+                        gDdzLastValid = parsedLvh;
+                        if (isNewPlay && gDdzLastPlaySeat >= 0) {
+                            gDdzPlayFlightCards = parsedLvh.cards;
+                            gDdzPlayFlightSeat = gDdzLastPlaySeat;
+                            gDdzPlayFlightTick = SDL_GetTicks();
+                            RmkSoundFX::playSnap();
+                        }
+                    }
+                } else if (gDdzLastPlaySeat == -1 || gDdzPhase == "bidding") {
+                    gDdzLastValid = DdzEvalHand{};
+                }
                 gDdzWinnerSeat = MiniJson::getInt(raw, "winnerSeat", gDdzWinnerSeat);
                 gDdzRound = MiniJson::getInt(raw, "currentRound", gDdzRound);
                 gDdzTotalRounds = MiniJson::getInt(raw, "totalRounds", gDdzTotalRounds);
@@ -2318,8 +2465,23 @@ static void drawTeaPartyBanner(int x, int y, int w, int h) {
     }
 }
 
+static void drawActionButton(int x, int y, int w, int h, const std::string& keyTag, const std::string& label, SDL_Color bg, SDL_Color border = COL_GOLD, bool enabled = true) {
+    SDL_Color fillCol = enabled ? bg : SDL_Color{55, 62, 60, 210};
+    drawRoundedRectFill(x + 2, y + 3, w, h, 12, {0, 0, 0, 110});
+    drawRoundedRectFill(x, y, w, h, 12, fillCol);
+    drawRoundedRectOutline(x, y, w, h, 12, enabled ? border : COL_GRAY, enabled ? 2 : 1);
+    if (!keyTag.empty()) {
+        drawRoundedRectFill(x + 10, y + (h - 26) / 2, 34, 26, 7, enabled ? COL_GOLD : COL_GRAY);
+        drawText(gFontSmall, keyTag, x + 27, y + (h - 26) / 2 + 3, COL_BLACK, true);
+        drawText(gFontMed, label, x + 48 + (w - 54) / 2, y + (h - 22) / 2, enabled ? COL_WHITE : COL_GRAY, true);
+    } else {
+        drawText(gFontMed, label, x + w / 2, y + (h - 22) / 2, enabled ? COL_WHITE : COL_GRAY, true);
+    }
+}
+
 static void drawPokerCard(const DdzCard& c, int x, int y, int w, int h, bool isCursor, bool isSelected) {
-    int drawY = y - (isSelected ? 18 : 0);
+    int lift = (w >= 70) ? (int)smoothLiftOffset("ddz_" + c.id, isSelected, 24.0f) : (isSelected ? 18 : 0);
+    int drawY = y - lift;
     SDL_Texture* baseTex = getTexture("romfs:/cards/poker_front.png");
     if (baseTex) {
         SDL_Rect bDst = {x - 2, drawY - 2, w + 4, h + 4};
@@ -2390,7 +2552,8 @@ static void drawPokerBack(int x, int y, int w, int h) {
 }
 
 static void drawMahjongTile(const MjTile& t, int x, int y, int w, int h, bool isCursor, bool isSelected, bool isHighlight) {
-    int drawY = y - (isSelected ? 16 : 0);
+    int lift = (w >= 54) ? (int)smoothLiftOffset("mj_" + t.id, isSelected, 20.0f) : (isSelected ? 16 : 0);
+    int drawY = y - lift;
     SDL_Texture* baseTex = getTexture("romfs:/cards/tile_front.png");
     if (baseTex) {
         SDL_Rect bDst = {x - 1, drawY - 1, w + 2, h + 2};
@@ -2451,7 +2614,7 @@ static void drawCompactSeatBadge(int x, int y, int w, int h, int charId, const s
     drawText(gFontSmall, cleanN, tx + 21, y + 6, COL_WHITE);
 
     // Line 2: Score + Tile count + Dealer/Role pill
-    std::string line2 = std::to_string(score) + "分";
+    std::string line2 = std::to_string(score) + " 金币";
     if (tileCount >= 0) line2 += " · " + std::to_string(tileCount) + "张";
     if (!extraRole.empty()) line2 = extraRole + " · " + line2;
     drawText(gFontSmall, line2, tx, y + 29, isAI ? COL_GOLD : COL_HUMAN_GREEN);
@@ -2546,9 +2709,14 @@ static void renderLobbyScreen() {
     drawRoundedRectOutline(36, 152, 1208, 134, 14, COL_GOLD_DIM, 1);
     drawText(gFontMed, "1. 昵称与轻音部角色 (摇杆/触屏选择)    本机昵称: " + gMyDisplayName, 54, 160, COL_GOLD);
 
-    drawRoundedRectFill(756, 158, 168, 28, 8, COL_BLUE_BTN);
-    drawRoundedRectOutline(756, 158, 168, 28, 8, COL_GOLD, 1);
-    drawText(gFontSmall, "[ZL] 修改昵称", 840, 163, COL_WHITE, true);
+    drawRoundedRectFill(574, 158, 156, 28, 8, COL_BLUE_BTN);
+    drawRoundedRectOutline(574, 158, 156, 28, 8, COL_GOLD, 1);
+    drawText(gFontSmall, "[ZL] 修改昵称", 652, 163, COL_WHITE, true);
+
+    std::string qqLbl = gQqUid.empty() ? "[ZR] 绑定QQ金币" : ("[ZR] QQ金币:" + std::to_string(std::max(0, gQqCoins)));
+    drawRoundedRectFill(740, 158, 198, 28, 8, gQqUid.empty() ? SDL_Color{185, 110, 18, 255} : COL_GREEN_BTN);
+    drawRoundedRectOutline(740, 158, 198, 28, 8, COL_GOLD, 1);
+    drawText(gFontSmall, qqLbl, 839, 163, COL_WHITE, true);
 
     for (int i = 0; i < 5; ++i) {
         int bx = 52 + i * 178;
@@ -2644,7 +2812,7 @@ static void renderLobbyScreen() {
         drawImage(isAI ? "romfs:/cards/icon_ai.png" : "romfs:/cards/icon_human.png", sx + 84, sy + 52, 18, 18);
         drawText(gFontSmall, isAI ? "AI 补位" : "真人玩家", sx + 106, sy + 51, isAI ? COL_GOLD : COL_HUMAN_GREEN);
 
-        drawText(gFontSmall, "积分: " + std::to_string(sc) + " 分", sx + 84, sy + 82, COL_CREAM);
+        drawText(gFontSmall, "金币: " + std::to_string(sc), sx + 84, sy + 82, COL_GOLD);
     }
 
     // 4. Bottom Start Button (gLobbyFocus == 7 — ZERO '☒' boxes, dynamically measured icon + text so it NEVER overlaps!)
@@ -2783,33 +2951,57 @@ static void renderDoudizhuTable() {
     drawCompactSeatBadge(20, 428, 420, 52, me.characterId, me.name, me.score, (int)me.hand.size(), false, gDdzTurnSeat == gDdzMySeat, me.isLandlord, myRole);
 
     if (gDdzPhase == "bidding" && gDdzTurnSeat == gDdzMySeat) {
-        drawRoundedRectFill(456, 428, 804, 52, 12, COL_CRIMSON);
-        drawRoundedRectOutline(456, 428, 804, 52, 12, COL_GOLD, 2);
-        drawText(gFontMed, "叫地主阶段:   [B] 不叫     [Y] 叫1分     [X] 叫2分     [A] 叫3分", 858, 442, COL_WHITE, true);
+        drawActionButton(456, 428, 188, 52, "B", "不叫", {100, 108, 118, 245});
+        drawActionButton(658, 428, 188, 52, "Y", "叫 1 分", COL_BLUE_BTN);
+        drawActionButton(860, 428, 188, 52, "X", "叫 2 分", {212, 124, 24, 245});
+        drawActionButton(1062, 428, 198, 52, "A", "叫 3 分", COL_CRIMSON);
     } else if (gDdzPhase == "playing" && gDdzTurnSeat == gDdzMySeat) {
-        drawRoundedRectFill(456, 428, 804, 52, 12, COL_GREEN_BTN);
-        drawRoundedRectOutline(456, 428, 804, 52, 12, COL_GOLD, 2);
-        drawText(gFontMed, "[摇杆/触屏] 选牌   [A] 提起/放下   [Y] 提示   [B] 不出   [X] 出牌", 858, 442, COL_WHITE, true);
+        bool hasSel = false;
+        for (const auto& c : me.hand) if (c.selected) { hasSel = true; break; }
+        drawActionButton(456, 428, 184, 52, "Y", "选牌/放下", {62, 78, 92, 245});
+        drawActionButton(654, 428, 184, 52, "B", hasSel ? "取消选牌" : "不出", {168, 58, 58, 245});
+        drawActionButton(852, 428, 184, 52, "X", "提示", COL_BLUE_BTN);
+        drawActionButton(1050, 428, 210, 52, "A", "确认出牌", COL_GREEN_BTN);
     } else if (gDdzPhase == "roundOver") {
-        drawRoundedRectFill(456, 428, 804, 52, 12, COL_CRIMSON);
-        drawRoundedRectOutline(456, 428, 804, 52, 12, COL_GOLD, 2);
-        drawText(gFontMed, "本局结束！按 [A] 再来一局，按 [-] 退出房间返回大厅", 858, 442, COL_WHITE, true);
+        drawActionButton(540, 428, 320, 52, "A", "再来一局", COL_GREEN_BTN);
+        drawActionButton(884, 428, 320, 52, "B", "返回大厅", COL_CRIMSON);
     } else {
         drawRoundedRectFill(456, 428, 804, 52, 12, COL_PANEL);
         drawRoundedRectOutline(456, 428, 804, 52, 12, COL_GOLD_DIM, 1);
         drawText(gFontMed, "等待 [" + cleanPeerLabel(gDdzSeats[gDdzTurnSeat].name) + "] 操作...", 858, 442, COL_GOLD, true);
     }
 
+    // 60fps 顺滑发牌飞入动画 (ease-out cubic)
     uint32_t elapsed = SDL_GetTicks() - gDdzDealStartTick;
-    int visCount = std::min((int)me.hand.size(), std::max(1, (int)(elapsed / 38)));
-    if (elapsed > 850) visCount = (int)me.hand.size();
-
     int cardW = 84, cardH = 120;
-    int step = (visCount > 1) ? std::min(52, (1160 - cardW) / (visCount - 1)) : 0;
-    int totalW = cardW + std::max(0, visCount - 1) * step;
+    int cnt = (int)me.hand.size();
+    int step = (cnt > 1) ? std::min(52, (1160 - cardW) / (cnt - 1)) : 0;
+    int totalW = cardW + std::max(0, cnt - 1) * step;
     int startX = (SCREEN_W - totalW) / 2;
-    for (int i = 0; i < visCount; ++i) {
-        drawPokerCard(me.hand[i], startX + i * step, 512, cardW, cardH, (i == gDdzCursor), me.hand[i].selected);
+    for (int i = 0; i < cnt; ++i) {
+        int delay = i * 24;
+        if ((int)elapsed < delay) continue;
+        float t = std::min(1.0f, (float)(elapsed - delay) / 220.0f);
+        float ease = 1.0f - (1.0f - t) * (1.0f - t) * (1.0f - t);
+        int targetX = startX + i * step;
+        int curX = (int)(SCREEN_W / 2 + (targetX - SCREEN_W / 2) * ease);
+        int curY = (int)(320 + (512 - 320) * ease);
+        drawPokerCard(me.hand[i], curX, curY, cardW, cardH, (i == gDdzCursor), me.hand[i].selected);
+    }
+
+    // 60fps 出牌飞向桌面动画
+    uint32_t pfEl = SDL_GetTicks() - gDdzPlayFlightTick;
+    if (gDdzPlayFlightTick > 0 && pfEl < 260 && !gDdzPlayFlightCards.empty() && gDdzPlayFlightSeat >= 0) {
+        float p = std::min(1.0f, (float)pfEl / 260.0f);
+        float e = 1.0f - (1.0f - p) * (1.0f - p);
+        int sx = SCREEN_W / 2, sy = 520, ex = SCREEN_W / 2, ey = 322;
+        if (gDdzPlayFlightSeat == leftIdx) { sx = 120; sy = 280; ex = 265; ey = 222; }
+        else if (gDdzPlayFlightSeat == rightIdx) { sx = 1140; sy = 280; ex = 900; ey = 222; }
+        int fx = sx + (int)((ex - sx) * e);
+        int fy = sy + (int)((ey - sy) * e) - (int)(sinf(p * 3.14159f) * 28.0f);
+        for (size_t i = 0; i < std::min<size_t>(5, gDdzPlayFlightCards.size()); ++i) {
+            drawPokerCard(gDdzPlayFlightCards[i], fx + (int)i * 26 - 30, fy, 62, 86, false, false);
+        }
     }
 }
 
@@ -2939,25 +3131,19 @@ static void renderMahjongTable() {
     drawCompactSeatBadge(20, 446, 356, 50, me.characterId, me.name, me.score, (int)me.hand.size(), false, gMjTurnSeat == gMjMySeat, me.isDealer);
 
     if (gMjPhase == "claimWindow" && gMjHasClaim) {
-        drawRoundedRectFill(390, 446, 870, 50, 12, COL_CRIMSON);
-        drawRoundedRectOutline(390, 446, 870, 50, 12, COL_GOLD, 2);
-        std::string cActs = "响应 [" + gMjClaimTile.fullName() + "]：";
-        if (gMjCanHu) cActs += "  [X] 胡牌!";
-        if (gMjCanKong) cActs += "  [Y] 明杠";
-        else if (gMjCanPong) cActs += "  [Y] 碰牌";
-        cActs += "    [B] 过";
-        drawText(gFontMed, cActs, 825, 459, COL_WHITE, true);
+        drawActionButton(390, 446, 200, 50, "B", "过", {110, 118, 128, 245});
+        drawActionButton(606, 446, 210, 50, "Y", gMjCanKong ? "明杠" : "碰牌", COL_BLUE_BTN, COL_GOLD, gMjCanKong || gMjCanPong);
+        drawActionButton(832, 446, 200, 50, "X", "胡牌!", COL_CRIMSON, COL_GOLD, gMjCanHu);
+        drawActionButton(1048, 446, 212, 50, "A", gMjCanHu ? "确认胡牌" : (gMjCanKong ? "确认明杠" : "确认碰牌"), COL_GREEN_BTN);
     } else if (gMjPhase == "playing" && gMjTurnSeat == gMjMySeat) {
-        drawRoundedRectFill(390, 446, 870, 50, 12, COL_GREEN_BTN);
-        drawRoundedRectOutline(390, 446, 870, 50, 12, COL_GOLD, 2);
-        std::string selTxt = (gMjSelectedIdx >= 0 && gMjSelectedIdx < (int)me.hand.size())
-            ? ("已选 [" + me.hand[gMjSelectedIdx].fullName() + "] · 按[Y]或点击右侧打出 / 再按[A]取消")
-            : "[摇杆/触屏] 选牌   [A] 选中/取消   [Y] 打出选中牌   [X] 自摸胡牌";
-        drawText(gFontMed, selTxt, 825, 459, COL_WHITE, true);
+        bool canHuNow = (gMjCanSelfHuTurn && MjEvaluator::canHu(me.hand, (int)me.melds.size()));
+        drawActionButton(390, 446, 196, 50, "B", "取消/返回", {148, 62, 62, 245});
+        drawActionButton(602, 446, 206, 50, "X", canHuNow ? "自摸胡牌!" : "提示出牌", canHuNow ? COL_CRIMSON : COL_BLUE_BTN);
+        drawActionButton(824, 446, 206, 50, "Y", "选中/放下", {66, 84, 98, 245});
+        drawActionButton(1046, 446, 214, 50, "A", "确认出牌", COL_GREEN_BTN);
     } else if (gMjPhase == "roundOver") {
-        drawRoundedRectFill(390, 446, 870, 50, 12, COL_CRIMSON);
-        drawRoundedRectOutline(390, 446, 870, 50, 12, COL_GOLD, 2);
-        drawText(gFontMed, "本局结束 (" + gMjWinReason + ")！按 [A] 下一局，按 [-] 返回大厅", 825, 459, COL_WHITE, true);
+        drawActionButton(520, 446, 320, 50, "A", "下一局", COL_GREEN_BTN);
+        drawActionButton(866, 446, 320, 50, "B", "返回大厅", COL_CRIMSON);
     } else {
         drawRoundedRectFill(390, 446, 870, 50, 12, COL_PANEL);
         drawRoundedRectOutline(390, 446, 870, 50, 12, COL_GOLD_DIM, 1);
@@ -3013,7 +3199,7 @@ static void renderMahjongTable() {
         drawRoundedRectOutline(304, 144, 76, 76, 38, COL_GOLD, 2);
         drawCharAvatar(wSeat.characterId, 310, 148, 64, 68, true);
 
-        drawText(gFontLarge, "胡牌大吉！ +" + std::to_string(std::max(gMjBaseScore * 2, gMjLastWinScoreDelta)) + " 分", 398, 146, COL_GOLD);
+        drawText(gFontLarge, "胡牌大吉！", 398, 146, COL_GOLD);
         drawText(gFontMed, cleanPeerLabel(wSeat.name) + " · " + gMjWinReason, 398, 184, COL_WHITE);
 
         // Winning hand preview
@@ -3520,7 +3706,7 @@ int main(int argc, char* argv[]) {
         } else if (!nowWsConnected && wasWsConnected && gIsOnlineRoom) {
             gIsOnlineRoom = false;
             gStatusBanner = "[注意] 服务器连接已断开，请检查网络后按 [X] 重连";
-        } else if (nowWsConnected && gIsOnlineRoom && gScreen == MODE_LOBBY && SDL_GetTicks() - lastJoinHbTick > 2500) {
+        } else if (nowWsConnected && gIsOnlineRoom && gScreen == MODE_LOBBY && gRoomPeers.size() < 2 && SDL_GetTicks() - lastJoinHbTick > 4000) {
             sendJoinRequestPacket();
             lastJoinHbTick = SDL_GetTicks();
         }
@@ -3542,7 +3728,7 @@ int main(int argc, char* argv[]) {
             if (isTouchingNow) {
                 gRmkDragCurX = tx;
                 gRmkDragCurY = ty;
-                if (abs(tx - gRmkDragStartX) > 12 || abs(ty - gRmkDragStartY) > 12) {
+                if (abs(tx - gRmkDragStartX) > 6 || abs(ty - gRmkDragStartY) > 6) {
                     gRmkDragMoved = true;
                 }
             } else if (touchReleased) {
@@ -3580,7 +3766,7 @@ int main(int argc, char* argv[]) {
             if (isTouchingNow) {
                 gRmkDragCurX = tx;
                 gRmkDragCurY = ty;
-                if (abs(tx - gRmkDragStartX) > 12 || abs(ty - gRmkDragStartY) > 12) {
+                if (abs(tx - gRmkDragStartX) > 6 || abs(ty - gRmkDragStartY) > 6) {
                     gRmkDragTableMoved = true;
                 }
             } else if (touchReleased) {
@@ -3657,7 +3843,7 @@ int main(int argc, char* argv[]) {
                 else if (gSelectedGame == 2 && pointInRect(tx, ty, 918, 421, 94, 28)) { gRmkRoomPlayerCount = 2; rebuildLobbySeats(); if (gIsRoomAuthority) broadcastRoomRoster(); }
                 else if (gSelectedGame == 2 && pointInRect(tx, ty, 1020, 421, 94, 28)) { gRmkRoomPlayerCount = 3; rebuildLobbySeats(); if (gIsRoomAuthority) broadcastRoomRoster(); }
                 else if (gSelectedGame == 2 && pointInRect(tx, ty, 1122, 421, 94, 28)) { gRmkRoomPlayerCount = 4; rebuildLobbySeats(); if (gIsRoomAuthority) broadcastRoomRoster(); }
-                else if (pointInRect(tx, ty, 756, 158, 168, 28)) kDown |= HidNpadButton_ZL;
+                else if (pointInRect(tx, ty, 574, 158, 156, 28)) kDown |= HidNpadButton_ZL;
                 else if (pointInRect(tx, ty, 54, 338, 360, 56)) { gLobbyFocus = 5; kDown |= HidNpadButton_Y; }
                 else if (pointInRect(tx, ty, 432, 338, 386, 56)) { gLobbyFocus = 6; kDown |= HidNpadButton_X; }
                 else if (pointInRect(tx, ty, 36, 600, 1208, 68)) { gLobbyFocus = 7; kDown |= HidNpadButton_A; }
@@ -3676,16 +3862,18 @@ int main(int argc, char* argv[]) {
                     kDown |= HidNpadButton_R;
                 } else if (pointInRect(tx, ty, 456, 428, 804, 52)) {
                     if (gDdzPhase == "bidding") {
-                        if (tx < 670) kDown |= HidNpadButton_B;
-                        else if (tx < 865) kDown |= HidNpadButton_Y;
-                        else if (tx < 1060) kDown |= HidNpadButton_X;
+                        if (tx < 650) kDown |= HidNpadButton_B;
+                        else if (tx < 852) kDown |= HidNpadButton_Y;
+                        else if (tx < 1054) kDown |= HidNpadButton_X;
                         else kDown |= HidNpadButton_A;
                     } else if (gDdzPhase == "playing") {
-                        if (tx < 760) kDown |= HidNpadButton_Y;
-                        else if (tx < 960) kDown |= HidNpadButton_B;
-                        else kDown |= HidNpadButton_X;
+                        if (tx < 648) kDown |= HidNpadButton_Y;
+                        else if (tx < 846) kDown |= HidNpadButton_B;
+                        else if (tx < 1044) kDown |= HidNpadButton_X;
+                        else kDown |= HidNpadButton_A;
                     } else if (gDdzPhase == "roundOver") {
-                        kDown |= HidNpadButton_A;
+                        if (tx < 870) kDown |= HidNpadButton_A;
+                        else kDown |= HidNpadButton_B;
                     }
                 } else if (ty >= 490) {
                     auto& myHand = gDdzSeats[gDdzMySeat].hand;
@@ -3708,14 +3896,18 @@ int main(int argc, char* argv[]) {
             } else if (gScreen == MODE_MJ_TABLE) {
                 if (pointInRect(tx, ty, 390, 446, 870, 50)) {
                     if (gMjPhase == "claimWindow") {
-                        if (tx < 680) kDown |= HidNpadButton_X;
-                        else if (tx < 980) kDown |= HidNpadButton_Y;
-                        else kDown |= HidNpadButton_B;
+                        if (tx < 598) kDown |= HidNpadButton_B;
+                        else if (tx < 824) kDown |= HidNpadButton_Y;
+                        else if (tx < 1040) kDown |= HidNpadButton_X;
+                        else kDown |= HidNpadButton_A;
                     } else if (gMjPhase == "playing") {
-                        if (tx > 1050) kDown |= HidNpadButton_X;
-                        else kDown |= HidNpadButton_Y;
+                        if (tx < 594) kDown |= HidNpadButton_B;
+                        else if (tx < 816) kDown |= HidNpadButton_X;
+                        else if (tx < 1038) kDown |= HidNpadButton_Y;
+                        else kDown |= HidNpadButton_A;
                     } else if (gMjPhase == "roundOver") {
-                        kDown |= HidNpadButton_A;
+                        if (tx < 855) kDown |= HidNpadButton_A;
+                        else kDown |= HidNpadButton_B;
                     }
                 } else if (ty >= 510) {
                     auto& myHand = gMjSeats[gMjMySeat].hand;
@@ -3731,9 +3923,16 @@ int main(int argc, char* argv[]) {
                         int mx = curX + i * (tileW + 4) + extraGap;
                         if (tx >= mx && tx <= mx + tileW) {
                             gMjCursor = i;
+                            RmkSoundFX::playClick();
                             if (gMjPhase == "playing" && gMjTurnSeat == gMjMySeat) {
-                                if (gMjSelectedIdx == i) gMjSelectedIdx = -1;
-                                else gMjSelectedIdx = i;
+                                uint32_t nowTap = SDL_GetTicks();
+                                if (gMjSelectedIdx == i && gMjLastTapIdx == i && nowTap - gMjLastTapTick < 650) {
+                                    kDown |= HidNpadButton_A;
+                                } else {
+                                    gMjSelectedIdx = (gMjSelectedIdx == i) ? -1 : i;
+                                }
+                                gMjLastTapIdx = i;
+                                gMjLastTapTick = nowTap;
                             }
                             break;
                         }
@@ -3953,41 +4152,56 @@ int main(int argc, char* argv[]) {
                 if (kDown & HidNpadButton_X) handleDdzBid(gDdzMySeat, 2);
                 if (kDown & HidNpadButton_A) handleDdzBid(gDdzMySeat, 3);
             } else if (gDdzPhase == "playing" && gDdzTurnSeat == gDdzMySeat) {
-                if (kDown & HidNpadButton_A) {
+                if (kDown & (HidNpadButton_Y | HidNpadButton_Up | HidNpadButton_Down)) {
                     if (gDdzCursor >= 0 && gDdzCursor < (int)myHand.size()) {
                         myHand[gDdzCursor].selected = !myHand[gDdzCursor].selected;
+                        RmkSoundFX::playClick();
                     }
                 }
                 if (kDown & HidNpadButton_L) {
                     for (auto& c : myHand) c.selected = false;
                 }
-                if (kDown & HidNpadButton_Y) {
+                if (kDown & HidNpadButton_X) {
                     selectDdzHintForMe();
+                    RmkSoundFX::playClick();
                 }
                 if (kDown & HidNpadButton_B) {
-                    handleDdzPass(gDdzMySeat);
+                    bool anySel = false;
+                    for (auto& c : myHand) if (c.selected) { c.selected = false; anySel = true; }
+                    if (anySel) {
+                        RmkSoundFX::playUndo();
+                        gStatusBanner = "已取消选牌（再按 [B] 不出）";
+                    } else {
+                        handleDdzPass(gDdzMySeat);
+                    }
                 }
-                if (kDown & HidNpadButton_X) {
+                if (kDown & HidNpadButton_A) {
                     std::vector<DdzCard> chosen;
                     for (const auto& c : myHand) if (c.selected) chosen.push_back(c);
-                    DdzEvalHand ev = DdzEvaluator::evaluate(chosen);
-                    bool freeLead = (gDdzLastPlaySeat == gDdzMySeat || gDdzLastPlaySeat == -1);
-                    if (ev.category == "invalid") {
-                        gStatusBanner = "[注意] 所选牌型不符合斗地主规则！";
-                    } else if (!freeLead && !DdzEvaluator::canBeat(ev, gDdzLastValid)) {
-                        gStatusBanner = "[注意] 所选牌型管不上上家的牌！";
+                    if (chosen.empty() && gDdzCursor >= 0 && gDdzCursor < (int)myHand.size()) {
+                        myHand[gDdzCursor].selected = true;
+                        RmkSoundFX::playClick();
+                        gStatusBanner = "已选该牌，再按 [A] 确认出牌，或按 [Y]/方向键多选";
                     } else {
-                        if (gIsOnlineRoom && !gIsRoomAuthority) {
-                            std::string arr = "[";
-                            for (size_t i = 0; i < chosen.size(); ++i) { if (i > 0) arr += ","; arr += chosen[i].toJson(); }
-                            arr += "]";
-                            std::string pkt = "{\"kind\":\"playCardsAction\",\"roomCode\":\"" + MiniJson::esc(gRoomCode) +
-                                              "\",\"senderPeerName\":\"" + MiniJson::esc(gMyPeerName) +
-                                              "\",\"senderCharId\":" + std::to_string(gMyCharId) +
-                                              ",\"playedCards\":" + arr + "}";
-                            gWs.sendText(pkt);
+                        DdzEvalHand ev = DdzEvaluator::evaluate(chosen);
+                        bool freeLead = (gDdzLastPlaySeat == gDdzMySeat || gDdzLastPlaySeat == -1);
+                        if (ev.category == "invalid") {
+                            gStatusBanner = "[注意] 所选牌型不符合斗地主规则！";
+                        } else if (!freeLead && !DdzEvaluator::canBeat(ev, gDdzLastValid)) {
+                            gStatusBanner = "[注意] 所选牌型管不上上家的牌！";
                         } else {
-                            executeDdzPlay(gDdzMySeat, ev);
+                            if (gIsOnlineRoom && !gIsRoomAuthority) {
+                                std::string arr = "[";
+                                for (size_t i = 0; i < chosen.size(); ++i) { if (i > 0) arr += ","; arr += chosen[i].toJson(); }
+                                arr += "]";
+                                std::string pkt = "{\"kind\":\"playCardsAction\",\"roomCode\":\"" + MiniJson::esc(gRoomCode) +
+                                                  "\",\"senderPeerName\":\"" + MiniJson::esc(gMyPeerName) +
+                                                  "\",\"senderCharId\":" + std::to_string(gMyCharId) +
+                                                  ",\"playedCards\":" + arr + "}";
+                                gWs.sendText(pkt);
+                            } else {
+                                executeDdzPlay(gDdzMySeat, ev);
+                            }
                         }
                     }
                 }
@@ -3995,6 +4209,10 @@ int main(int argc, char* argv[]) {
                 if (kDown & HidNpadButton_A) {
                     gDdzRound++;
                     startNewDoudizhuRound();
+                } else if (kDown & HidNpadButton_B) {
+                    gDdzPhase = "lobby";
+                    gScreen = MODE_LOBBY;
+                    gStatusBanner = "已退出房间返回大厅";
                 }
             }
         } else if (gScreen == MODE_MJ_TABLE) {
@@ -4015,7 +4233,21 @@ int main(int argc, char* argv[]) {
                 lastSlideTick = nowT;
             }
             if (gMjPhase == "claimWindow" && gMjHasClaim) {
-                if ((kDown & HidNpadButton_Y) && (gMjCanKong || gMjCanPong)) {
+                bool wantHu = ((kDown & HidNpadButton_X) && gMjCanHu) || ((kDown & HidNpadButton_A) && gMjCanHu);
+                bool wantPongKong = ((kDown & HidNpadButton_Y) && (gMjCanKong || gMjCanPong)) || ((kDown & HidNpadButton_A) && !gMjCanHu && (gMjCanKong || gMjCanPong));
+                if (wantHu) {
+                    if (gIsOnlineRoom && !gIsRoomAuthority) {
+                        std::string pkt = "{\"kind\":\"claimAction\",\"roomCode\":\"MJ_" + MiniJson::esc(gRoomCode) +
+                                          "\",\"senderPeerName\":\"" + MiniJson::esc(gMyPeerName) +
+                                          "\",\"senderCharId\":" + std::to_string(gMyCharId) +
+                                          ",\"actionType\":\"hu\"}";
+                        gWs.sendText(pkt);
+                        gMjHasClaim = false;
+                    } else {
+                        gMjHasClaim = false;
+                        executeMjWin(gMjMySeat, gMjClaimFromSeat, "接炮胡牌");
+                    }
+                } else if (wantPongKong) {
                     if (gIsOnlineRoom && !gIsRoomAuthority) {
                         std::string act = gMjCanKong ? "kong" : "pong";
                         std::string pkt = "{\"kind\":\"claimAction\",\"roomCode\":\"MJ_" + MiniJson::esc(gRoomCode) +
@@ -4025,7 +4257,7 @@ int main(int argc, char* argv[]) {
                         gWs.sendText(pkt);
                         gMjHasClaim = false;
                     } else {
-                        gMjSeats[gMjClaimFromSeat].discards.pop_back();
+                        if (!gMjSeats[gMjClaimFromSeat].discards.empty()) gMjSeats[gMjClaimFromSeat].discards.pop_back();
                         int needRem = gMjCanKong ? 3 : 2;
                         int rem = 0;
                         for (auto it = myHand.begin(); it != myHand.end() && rem < needRem;) {
@@ -4039,7 +4271,7 @@ int main(int argc, char* argv[]) {
                         } else {
                             gMjPhase = "playing";
                             gMjTurnSeat = gMjMySeat;
-                            gStatusBanner = "已碰 [" + gMjClaimTile.fullName() + "]！请点选一张手牌按 [Y] 打出";
+                            gStatusBanner = "已碰 [" + gMjClaimTile.fullName() + "]！请选一张手牌按 [A] 确认打出";
                             broadcastMjState();
                         }
                     }
@@ -4057,14 +4289,25 @@ int main(int argc, char* argv[]) {
                     }
                 }
             } else if (gMjPhase == "playing" && gMjTurnSeat == gMjMySeat) {
-                if (kDown & HidNpadButton_A) {
-                    if (gMjSelectedIdx == gMjCursor) gMjSelectedIdx = -1;
-                    else gMjSelectedIdx = gMjCursor;
+                if (kDown & (HidNpadButton_Y | HidNpadButton_Up | HidNpadButton_Down)) {
+                    gMjSelectedIdx = (gMjSelectedIdx == gMjCursor) ? -1 : gMjCursor;
+                    RmkSoundFX::playClick();
                 }
-                if (kDown & HidNpadButton_Y) {
+                if (kDown & HidNpadButton_B) {
+                    if (gMjSelectedIdx >= 0) {
+                        gMjSelectedIdx = -1;
+                        RmkSoundFX::playUndo();
+                    } else {
+                        gMjPhase = "lobby";
+                        gScreen = MODE_LOBBY;
+                        gStatusBanner = "已退出麻将房间返回大厅";
+                    }
+                }
+                if (kDown & HidNpadButton_A) {
                     int idx = (gMjSelectedIdx >= 0 && gMjSelectedIdx < (int)myHand.size()) ? gMjSelectedIdx : gMjCursor;
                     if (idx >= 0 && idx < (int)myHand.size()) {
                         std::string tid = myHand[idx].id;
+                        RmkSoundFX::playSnap();
                         if (gIsOnlineRoom && !gIsRoomAuthority) {
                             std::string pkt = "{\"kind\":\"discardAction\",\"roomCode\":\"MJ_" + MiniJson::esc(gRoomCode) +
                                               "\",\"senderPeerName\":\"" + MiniJson::esc(gMyPeerName) +
@@ -4088,14 +4331,36 @@ int main(int argc, char* argv[]) {
                         } else {
                             executeMjWin(gMjMySeat, -1, "自摸胡牌");
                         }
-                    } else {
-                        gStatusBanner = "[注意] 当前手牌尚未满足胡牌牌型！";
+                    } else if (!myHand.empty()) {
+                        // 智能提示：挑选最孤立的非红中牌高亮
+                        int bestIdx = (int)myHand.size() - 1;
+                        int bestIso = 999;
+                        for (int i = 0; i < (int)myHand.size(); ++i) {
+                            if (myHand[i].isLaizi()) continue;
+                            int score = 0;
+                            for (int j = 0; j < (int)myHand.size(); ++j) {
+                                if (i == j || myHand[j].suit != myHand[i].suit) continue;
+                                int diff = std::abs(myHand[j].rank - myHand[i].rank);
+                                if (diff == 0) score += 3;
+                                else if (diff == 1 && myHand[i].suit != "H") score += 2;
+                                else if (diff == 2 && myHand[i].suit != "H") score += 1;
+                            }
+                            if (score < bestIso) { bestIso = score; bestIdx = i; }
+                        }
+                        gMjCursor = bestIdx;
+                        gMjSelectedIdx = bestIdx;
+                        RmkSoundFX::playClick();
+                        gStatusBanner = "提示：建议打出 [" + myHand[bestIdx].fullName() + "]，按 [A] 确认出牌";
                     }
                 }
             } else if (gMjPhase == "roundOver") {
                 if (kDown & HidNpadButton_A) {
                     gMjRound++;
                     startNewMahjongRound();
+                } else if (kDown & HidNpadButton_B) {
+                    gMjPhase = "lobby";
+                    gScreen = MODE_LOBBY;
+                    gStatusBanner = "已退出麻将房间返回大厅";
                 }
             }
         } else if (gScreen == MODE_RMK_TABLE) {

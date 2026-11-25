@@ -1440,7 +1440,7 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
 
     private fun sendJoinRequestPacket() {
         val pkt = JSONObject().apply {
-            put("kind", "joinRequest")
+            put("kind", "joinRequest"); if (QQCoinBinder.token.isNotEmpty()) put("qqToken", QQCoinBinder.token)
             put("roomCode", _roomCode.value)
             put("senderPeerName", myPeerKey())
             put("senderCharId", _myChar.value.charId)

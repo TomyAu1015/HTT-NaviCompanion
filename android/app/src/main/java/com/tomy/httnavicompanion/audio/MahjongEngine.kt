@@ -920,7 +920,7 @@ class MahjongEngine(private val context: Context, private val audioMgr: AudioPla
 
     private fun sendJoinRequestPacket() {
         sendPacketJson(JSONObject().apply {
-            put("kind", "joinRequest")
+            put("kind", "joinRequest"); if (QQCoinBinder.token.isNotEmpty()) put("qqToken", QQCoinBinder.token)
             put("roomCode", wireRoomCode())
             put("senderPeerName", myPeerKey())
             put("senderCharId", _myChar.value.charId)

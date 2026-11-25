@@ -282,3 +282,62 @@ private:
         mbedtls_entropy_free(&entropy);
     }
 };
+
+
+// Lightweight synchronous HTTPS GET/POST helper (mbedTLS, for QQ Coin Binding)
+inline std::string switchHttpsRequest(const std::string& method, const std::string& host, const std::string& port, const std::string& path, const std::string& body = "") {
+    mbedtls_net_context server_fd;
+    mbedtls_entropy_context entropy;
+    mbedtls_ctr_drbg_context ctr_drbg;
+    mbedtls_ssl_context ssl;
+    mbedtls_ssl_config conf;
+    mbedtls_net_init(&server_fd);
+    mbedtls_ssl_init(&ssl);
+    mbedtls_ssl_config_init(&conf);
+    mbedtls_ctr_drbg_init(&ctr_drbg);
+    mbedtls_entropy_init(&entropy);
+    std::string resp;
+    const char* pers = "htt_switch_https";
+    if (mbedtls_ctr_drbg_seed(&ctr_drbg, mbedtls_entropy_func, &entropy, (const unsigned char*)pers, strlen(pers)) != 0) goto done;
+    if (mbedtls_net_connect(&server_fd, host.c_str(), port.c_str(), MBEDTLS_NET_PROTO_TCP) != 0) goto done;
+    if (mbedtls_ssl_config_defaults(&conf, MBEDTLS_SSL_IS_CLIENT, MBEDTLS_SSL_TRANSPORT_STREAM, MBEDTLS_SSL_PRESET_DEFAULT) != 0) goto done;
+    mbedtls_ssl_conf_authmode(&conf, MBEDTLS_SSL_VERIFY_NONE);
+    mbedtls_ssl_conf_rng(&conf, mbedtls_ctr_drbg_random, &ctr_drbg);
+    if (mbedtls_ssl_setup(&ssl, &conf) != 0) goto done;
+    mbedtls_ssl_set_hostname(&ssl, host.c_str());
+    mbedtls_ssl_set_bio(&ssl, &server_fd, mbedtls_net_send, mbedtls_net_recv, NULL);
+    while (true) {
+        int r = mbedtls_ssl_handshake(&ssl);
+        if (r == 0) break;
+        if (r != MBEDTLS_ERR_SSL_WANT_READ && r != MBEDTLS_ERR_SSL_WANT_WRITE && r != -0x7880) goto done;
+    }
+    {
+        std::string req = method + " " + path + " HTTP/1.1\r\nHost: " + host + "\r\nConnection: close\r\n";
+        if (!body.empty()) {
+            req += "Content-Type: application/json\r\nContent-Length: " + std::to_string(body.size()) + "\r\n";
+        }
+        req += "\r\n" + body;
+        size_t sent = 0;
+        while (sent < req.size()) {
+            int r = mbedtls_ssl_write(&ssl, (const unsigned char*)req.data() + sent, req.size() - sent);
+            if (r > 0) sent += r;
+            else if (r != MBEDTLS_ERR_SSL_WANT_READ && r != MBEDTLS_ERR_SSL_WANT_WRITE) goto done;
+        }
+        unsigned char buf[2048];
+        while (true) {
+            int r = mbedtls_ssl_read(&ssl, buf, sizeof(buf));
+            if (r > 0) resp.append((const char*)buf, r);
+            else if (r == MBEDTLS_ERR_SSL_WANT_READ || r == MBEDTLS_ERR_SSL_WANT_WRITE || r == -0x7880) continue;
+            else break;
+        }
+    }
+done:
+    mbedtls_ssl_close_notify(&ssl);
+    mbedtls_net_free(&server_fd);
+    mbedtls_ssl_free(&ssl);
+    mbedtls_ssl_config_free(&conf);
+    mbedtls_ctr_drbg_free(&ctr_drbg);
+    mbedtls_entropy_free(&entropy);
+    size_t hdrEnd = resp.find("\r\n\r\n");
+    return (hdrEnd != std::string::npos) ? resp.substr(hdrEnd + 4) : "";
+}

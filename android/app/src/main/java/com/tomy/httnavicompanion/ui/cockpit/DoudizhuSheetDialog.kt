@@ -144,17 +144,68 @@ fun KOnDoudizhuSheetDialog(onDismiss: () -> Unit, embeddedInGameRoom: Boolean = 
                         overflow = TextOverflow.Ellipsis
                     )
 
-                    Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(16.dp))
-                            .background(DdzCardGreen)
-                            .clickable {
-                                engine.leaveRoomAndResetLobby()
-                                onDismiss()
+                    val qqScope = rememberCoroutineScope()
+                    val qqUidState by QQCoinBinder.qqUid.collectAsState()
+                    val qqCoinsState by QQCoinBinder.coins.collectAsState()
+                    val qqStatusState by QQCoinBinder.status.collectAsState()
+                    var showQqDialog by remember { mutableStateOf(false) }
+                    var qqInput by remember { mutableStateOf(qqUidState) }
+                    var qqCode by remember { mutableStateOf("") }
+                    LaunchedEffect(Unit) { QQCoinBinder.init(context); QQCoinBinder.refreshCoins(context) }
+
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(16.dp))
+                                .background(DdzGold)
+                                .clickable { qqInput = qqUidState; showQqDialog = true }
+                                .padding(horizontal = 8.dp, vertical = 5.dp)
+                        ) {
+                            Text(if (QQCoinBinder.isBound) "🪙 $qqCoinsState" else "🪙 绑定QQ", color = Color.Black, fontSize = 11.sp, fontWeight = FontWeight.Black)
+                        }
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(16.dp))
+                                .background(DdzCardGreen)
+                                .clickable {
+                                    engine.leaveRoomAndResetLobby()
+                                    onDismiss()
+                                }
+                                .padding(horizontal = 10.dp, vertical = 5.dp)
+                        ) {
+                            Text("✕ 关闭", color = DdzGold, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+
+                    if (showQqDialog) {
+                        AlertDialog(
+                            onDismissRequest = { showQqDialog = false },
+                            title = { Text("🪙 绑定 QQ 群金币", fontWeight = FontWeight.Bold) },
+                            text = {
+                                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Text("仅在线服务器联机且 ≥2 位真人增减 QQ 群金币；面对面与 AI 局不计金币。", fontSize = 12.sp)
+                                    if (QQCoinBinder.isBound) {
+                                        Text("已绑定 QQ：$qqUidState · 当前群金币：$qqCoinsState", fontSize = 12.sp, color = Color(0xFFD97706), fontWeight = FontWeight.Bold)
+                                    }
+                                    OutlinedTextField(value = qqInput, onValueChange = { qqInput = it }, label = { Text("QQ 号") }, singleLine = true)
+                                    Button(onClick = { qqScope.launch { QQCoinBinder.requestCode(qqInput) } }) { Text("发送群机器人验证码") }
+                                    OutlinedTextField(value = qqCode, onValueChange = { qqCode = it }, label = { Text("6位私聊验证码") }, singleLine = true)
+                                    if (qqStatusState.isNotEmpty()) Text(qqStatusState, fontSize = 12.sp, color = Color(0xFFD97706))
+                                }
+                            },
+                            confirmButton = {
+                                TextButton(onClick = {
+                                    qqScope.launch {
+                                        if (QQCoinBinder.verifyCode(context, qqInput, qqCode)) {
+                                            qqCode = ""; showQqDialog = false
+                                        }
+                                    }
+                                }) { Text("确认绑定") }
+                            },
+                            dismissButton = {
+                                TextButton(onClick = { showQqDialog = false }) { Text("关闭") }
                             }
-                            .padding(horizontal = 10.dp, vertical = 5.dp)
-                    ) {
-                        Text("✕ 关闭", color = DdzGold, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        )
                     }
                 }
                 }
@@ -572,7 +623,7 @@ fun KOnDoudizhuSheetDialog(onDismiss: () -> Unit, embeddedInGameRoom: Boolean = 
                                         }
                                         Text(seat.name, color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                         Text(if (seat.isAI) "🤖 轻音AI补位" else "📱 真机玩家", color = if (seat.isAI) Color(0xFF64B5F6) else Color(0xFF00E676), fontSize = 9.sp)
-                                        Text("积分: ${seat.score}", color = Color.LightGray, fontSize = 9.sp)
+                                        Text("金币: ${seat.score}", color = Color.LightGray, fontSize = 9.sp)
                                     }
                                 }
                             }
@@ -1387,7 +1438,7 @@ private fun OpponentSeatBox(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
-                Text("积分:${seat.score}", color = Color.LightGray, fontSize = 9.sp)
+                Text("金币:${seat.score}", color = Color.LightGray, fontSize = 9.sp)
             }
         }
         Row(
