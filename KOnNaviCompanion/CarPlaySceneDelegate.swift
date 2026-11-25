@@ -319,14 +319,24 @@ class CarPlayMapViewController: UIViewController, MKMapViewDelegate {
                     self.etaSummaryLabel.text = "\(mgr.destinationName) · 余 \(remKmStr) · \(max(1, remMins))分钟 · 预计 \(etaTime) 到达"
 
                     let iconName: String
-                    if instr.contains("左") && !instr.contains("右") {
+                    if instr.contains("收费站") {
+                        iconName = "parkingsign.circle.fill"
+                    } else if instr.contains("到达") || instr.contains("目的地") {
+                        iconName = "flag.checkered.circle.fill"
+                    } else if instr.contains("调头") || instr.contains("掉头") {
+                        iconName = "arrow.uturn.left"
+                    } else if instr.contains("环岛") {
+                        iconName = "arrow.triangle.2.circlepath"
+                    } else if instr.contains("左前方") || instr.contains("靠左") {
+                        iconName = "arrow.up.left"
+                    } else if instr.contains("右前方") || instr.contains("靠右") || instr.contains("出口") || instr.contains("匝道") {
+                        iconName = "arrow.up.right"
+                    } else if instr.contains("左") && !instr.contains("右") {
                         iconName = "arrow.turn.up.left"
                     } else if instr.contains("右") && !instr.contains("左") {
                         iconName = "arrow.turn.up.right"
-                    } else if instr.contains("调头") || instr.contains("掉头") {
-                        iconName = "arrow.uturn.left"
                     } else {
-                        iconName = "arrow.up.circle.fill"
+                        iconName = "arrow.up"
                     }
                     self.turnIconView.image = UIImage(systemName: iconName)
                 }

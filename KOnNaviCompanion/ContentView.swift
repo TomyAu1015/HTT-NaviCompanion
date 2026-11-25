@@ -90,7 +90,9 @@ class GaoDeArrowRouteRenderer: MKPolylineRenderer {
     
     override func draw(_ mapRect: MKMapRect, zoomScale: MKZoomScale, in context: CGContext) {
         guard let path = self.path else { return }
-        let baseWidth = (self.lineWidth > 0 ? self.lineWidth : 10.0) / zoomScale
+        let safeZoom = max(zoomScale, 0.00015)
+        let screenPtWidth = max(7.5, min(11.5, self.lineWidth > 0 ? self.lineWidth : 9.5))
+        let baseWidth = screenPtWidth / safeZoom
         
         context.saveGState()
         context.setLineCap(.round)
@@ -573,9 +575,10 @@ struct HTTSmoothMapView: UIViewRepresentable {
             let targetCoord = manager.userCoordinate
             
             mapView.layer.removeAllAnimations()
+            let recenterDist = manager.hasActiveNavigation ? manager.recommendedNavigationZoomDistance() : manager.userZoomDistance
             let camera = MKMapCamera(
                 lookingAtCenter: targetCoord,
-                fromDistance: manager.userZoomDistance,
+                fromDistance: recenterDist,
                 pitch: camPitch,
                 heading: camHeading
             )
@@ -593,7 +596,7 @@ struct HTTSmoothMapView: UIViewRepresentable {
             
             let nowTime = CACurrentMediaTime()
             let targetZoomDist = manager.hasActiveNavigation ? manager.recommendedNavigationZoomDistance() : manager.userZoomDistance
-            if (distDelta > 2.2 || hDiff > 3.5 || abs(mapView.camera.centerCoordinateDistance - targetZoomDist) > 45.0) && (nowTime - context.coordinator.lastCameraFollowTime >= 0.45) {
+            if (distDelta > 2.5 || hDiff > 4.0 || abs(mapView.camera.centerCoordinateDistance - targetZoomDist) > 65.0) && (nowTime - context.coordinator.lastCameraFollowTime >= 0.48) {
                 context.coordinator.lastCameraFollowTime = nowTime
                 let camera = MKMapCamera(
                     lookingAtCenter: targetCoord,

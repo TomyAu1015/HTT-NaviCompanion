@@ -82,6 +82,7 @@ fun OsmMapView(
     val heading by manager.headingDegrees.collectAsState()
     val mapTileMode by manager.mapTileMode.collectAsState()
     val trackingUser by manager.mapTrackingUser.collectAsState()
+    val hasActiveNav by manager.hasActiveNavigation.collectAsState()
     val recenterTrigger by manager.recenterTrigger.collectAsState()
     val zoomTrigger by manager.zoomCommandTrigger.collectAsState()
     val tappedCoord by manager.tappedCoord.collectAsState()
@@ -361,13 +362,24 @@ fun OsmMapView(
         }
     )
 
-    // Respond to recenter trigger
+    // 导航期间手动拖动地图后，6 秒自动回中并恢复高德动态缩放跟随
+    LaunchedEffect(trackingUser, hasActiveNav) {
+        if (!trackingUser && hasActiveNav) {
+            kotlinx.coroutines.delay(6000L)
+            if (!manager.mapTrackingUser.value && manager.hasActiveNavigation.value) {
+                manager.setMapTracking(true)
+                manager.triggerRecenter()
+            }
+        }
+    }
+
+    // Respond to recenter trigger (按高德逻辑动态缩放，不再锁死过大视角)
     LaunchedEffect(recenterTrigger) {
         if (recenterTrigger > 0) {
             val dispUser = if (useAmapTiles) CoordinateConverter.wgs84ToGCJ02(userCoord) else userCoord
             lastAnimatedCoord[0] = dispUser
-            mapViewHolder[0]?.controller?.animateTo(GeoPoint(dispUser.latitude, dispUser.longitude))
-            mapViewHolder[0]?.controller?.setZoom(16.5)
+            val targetZ = if (manager.hasActiveNavigation.value) manager.recommendedZoomLevel() else 16.2
+            mapViewHolder[0]?.controller?.animateTo(GeoPoint(dispUser.latitude, dispUser.longitude), targetZ, 450L)
         }
     }
 

@@ -8479,34 +8479,39 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     }
 
     /// 高德同款动态跟车视距：高速自动缩小看全局，城区路口/收费站/匝道自动放大看清细节
+    private var smoothedNavZoomDist: Double = 620.0
+
     func recommendedNavigationZoomDistance() -> Double {
-        if travelMode == .walking { return 260.0 }
+        if travelMode == .walking { return 280.0 }
         if travelMode == .ebike {
-            return (hasActiveNavigation && distanceToNextStepMeters > 0 && distanceToNextStepMeters <= 140) ? 220.0 : 340.0
+            return (hasActiveNavigation && distanceToNextStepMeters > 0 && distanceToNextStepMeters <= 160) ? 240.0 : 380.0
         }
-        // 1. 接近收费站（<= 600m）或即将转弯/进出匝道（<= 220m）：自动放大看清车道与出口
+        var rawTarget: Double = 620.0
+        // 1. 临近收费站（<= 600m）或即将转弯/匝道/路口（<= 280m）：高德逻辑自动放大看清车道
         if hasActiveNavigation && upcomingTollDistance > 0 && upcomingTollDistance <= 600 {
-            return 240.0
+            rawTarget = 260.0
+        } else if hasActiveNavigation && distanceToNextStepMeters > 0 && distanceToNextStepMeters <= 280 {
+            rawTarget = 280.0
+        } else if hasActiveNavigation && distanceToNextStepMeters > 0 && distanceToNextStepMeters <= 480 && currentSpeedKmh < 70.0 {
+            rawTarget = 420.0
+        } else if hasActiveNavigation && distanceToNextStepMeters >= 2500 {
+            // 2. 高速/高架超长直行段：自动缩小地图看清前方大局
+            rawTarget = 1850.0
+        } else if currentSpeedKmh >= 80.0 || (speedLimitKmh >= 100.0 && currentSpeedKmh >= 60.0) || (hasActiveNavigation && distanceToNextStepMeters >= 1200) {
+            rawTarget = 1480.0
+        } else if currentSpeedKmh >= 58.0 || (speedLimitKmh >= 80.0 && currentSpeedKmh >= 45.0) {
+            rawTarget = 1050.0
+        } else if isCongested || currentSpeedKmh < 22.0 {
+            rawTarget = 380.0
+        } else {
+            rawTarget = 620.0
         }
-        if hasActiveNavigation && distanceToNextStepMeters > 0 && distanceToNextStepMeters <= 220 {
-            return 250.0
+        // 低通平滑滤波：消除路线与视野“一时大一时小”的突兀跳变
+        smoothedNavZoomDist = smoothedNavZoomDist + (rawTarget - smoothedNavZoomDist) * 0.22
+        if abs(rawTarget - smoothedNavZoomDist) < 18.0 {
+            smoothedNavZoomDist = rawTarget
         }
-        // 2. 接近前方测速电子眼/红绿灯路口（<= 320m 且在城区低中速）：适度放大
-        if hasActiveNavigation && distanceToNextStepMeters > 0 && distanceToNextStepMeters <= 380 && currentSpeedKmh < 65.0 {
-            return 330.0
-        }
-        // 3. 高速/快速路巡航（无近期转弯/收费站）：自动拉远缩小视野
-        if currentSpeedKmh >= 85.0 || (speedLimitKmh >= 100.0 && currentSpeedKmh >= 65.0) {
-            return 1400.0
-        }
-        if currentSpeedKmh >= 65.0 || (speedLimitKmh >= 80.0 && currentSpeedKmh >= 50.0) {
-            return 1080.0
-        }
-        // 4. 城区拥堵缓行 / 一般城区道路
-        if isCongested || currentSpeedKmh < 24.0 {
-            return 340.0
-        }
-        return 460.0
+        return smoothedNavZoomDist
     }
 
     func lookupNearestOsmMaxSpeed(near coord: CLLocationCoordinate2D) -> Int? {
