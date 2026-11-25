@@ -75,6 +75,7 @@ static std::vector<RoomPeer> gRoomPeers;
 static std::string gQqUid = "";
 static std::string gQqToken = "";
 static int gQqCoins = -1;
+static int gCoinAnte = 10;
 
 // 60fps 平滑动画状态 (斗地主/麻将提起插值 + 出牌飞行动画)
 static std::map<std::string, float> gCardLiftAnim;
@@ -819,7 +820,7 @@ static void broadcastDdzState() {
                       (gDdzWinnerSeat >= 0 ? (",\"winnerSeat\":" + std::to_string(gDdzWinnerSeat)) : "") +
                       ",\"currentRound\":" + std::to_string(gDdzRound) +
                       ",\"totalRounds\":" + std::to_string(gDdzTotalRounds) +
-                      ",\"baseScore\":" + std::to_string(gDdzBaseScore) +
+                      ",\"baseScore\":" + std::to_string(gDdzBaseScore) + ",\"coinAnte\":" + std::to_string(gCoinAnte) +
                       ",\"statusBanner\":\"" + MiniJson::esc(gStatusBanner) + "\"}";
     gWs.sendText(pkt);
 }
@@ -858,7 +859,7 @@ static void broadcastMjState() {
                       ",\"winReason\":\"" + MiniJson::esc(gMjWinReason) + "\"" +
                       ",\"currentRound\":" + std::to_string(gMjRound) +
                       ",\"totalRounds\":" + std::to_string(gMjTotalRounds) +
-                      ",\"baseScore\":" + std::to_string(gMjBaseScore) +
+                      ",\"baseScore\":" + std::to_string(gMjBaseScore) + ",\"coinAnte\":" + std::to_string(gCoinAnte) +
                       ",\"statusBanner\":\"" + MiniJson::esc(gStatusBanner) + "\"}";
     gWs.sendText(pkt);
 }
@@ -2768,7 +2769,7 @@ static void renderLobbyScreen() {
     drawText(gFontMed, wsConn ? ("[X] 已连(" + gRoomCode + ") · 按[X]退出房间") : "[X] 连接跨平台联机房间", 625, 353, COL_WHITE, true);
 
     drawText(gFontSmall, "同房号即与 iOS / Android 同桌对局", 840, 344, COL_CREAM);
-    drawText(gFontSmall, "真人进房自动替换轻音部 AI 座位", 840, 368, COL_GOLD);
+    drawText(gFontSmall, "在线联机底注: " + std::to_string(gCoinAnte) + " 金币 (点此切换 5/10/20/50)", 840, 368, COL_GOLD);
 
     // 3. Seat Preview (Supports 2P / 3P / 4P selector for Rummikub!)
     drawRoundedRectFill(36, 416, 1208, 174, 14, COL_PANEL);
@@ -3844,8 +3845,10 @@ int main(int argc, char* argv[]) {
                 else if (gSelectedGame == 2 && pointInRect(tx, ty, 1020, 421, 94, 28)) { gRmkRoomPlayerCount = 3; rebuildLobbySeats(); if (gIsRoomAuthority) broadcastRoomRoster(); }
                 else if (gSelectedGame == 2 && pointInRect(tx, ty, 1122, 421, 94, 28)) { gRmkRoomPlayerCount = 4; rebuildLobbySeats(); if (gIsRoomAuthority) broadcastRoomRoster(); }
                 else if (pointInRect(tx, ty, 574, 158, 156, 28)) kDown |= HidNpadButton_ZL;
+                else if (pointInRect(tx, ty, 740, 158, 198, 28)) { openSwitchQqBindFlow(); rebuildLobbySeats(); }
                 else if (pointInRect(tx, ty, 54, 338, 360, 56)) { gLobbyFocus = 5; kDown |= HidNpadButton_Y; }
                 else if (pointInRect(tx, ty, 432, 338, 386, 56)) { gLobbyFocus = 6; kDown |= HidNpadButton_X; }
+                else if (pointInRect(tx, ty, 830, 340, 400, 52)) { gCoinAnte = (gCoinAnte == 5 ? 10 : (gCoinAnte == 10 ? 20 : (gCoinAnte == 20 ? 50 : 5))); gStatusBanner = "已切换在线联机每局底注为 " + std::to_string(gCoinAnte) + " 金币"; }
                 else if (pointInRect(tx, ty, 36, 600, 1208, 68)) { gLobbyFocus = 7; kDown |= HidNpadButton_A; }
                 else {
                     for (int i = 0; i < 5; ++i) {
@@ -4023,10 +4026,9 @@ int main(int argc, char* argv[]) {
                 openSwitchNicknameKeyboard();
                 rebuildLobbySeats();
             }
-            if (gSelectedGame == 2 && (!gIsOnlineRoom || gIsRoomAuthority) && (kDown & HidNpadButton_ZR)) {
-                gRmkRoomPlayerCount = (gRmkRoomPlayerCount == 4) ? 2 : (gRmkRoomPlayerCount + 1);
+            if (kDown & HidNpadButton_ZR) {
+                openSwitchQqBindFlow();
                 rebuildLobbySeats();
-                if (gIsOnlineRoom && gIsRoomAuthority) broadcastRoomRoster();
             }
             if (kDown & (HidNpadButton_Left | HidNpadButton_StickLLeft)) {
                 if (gLobbyFocus <= 4) {

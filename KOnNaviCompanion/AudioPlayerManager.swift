@@ -10608,6 +10608,7 @@ final class KOnQQCoinBinder: ObservableObject {
     @Published var qqUid: String = UserDefaults.standard.string(forKey: "htt_qq_uid") ?? ""
     @Published var qqToken: String = UserDefaults.standard.string(forKey: "htt_qq_token") ?? ""
     @Published var coins: Int = UserDefaults.standard.integer(forKey: "htt_qq_coins")
+    @Published var coinAnte: Int = max(5, UserDefaults.standard.integer(forKey: "htt_qq_ante") == 0 ? 10 : UserDefaults.standard.integer(forKey: "htt_qq_ante"))
     @Published var statusText: String = ""
     @Published var isBusy: Bool = false
 
@@ -10618,6 +10619,7 @@ final class KOnQQCoinBinder: ObservableObject {
         UserDefaults.standard.set(qqUid, forKey: "htt_qq_uid")
         UserDefaults.standard.set(qqToken, forKey: "htt_qq_token")
         UserDefaults.standard.set(coins, forKey: "htt_qq_coins")
+        UserDefaults.standard.set(coinAnte, forKey: "htt_qq_ante")
     }
 
     func unbind() {
@@ -10741,6 +10743,7 @@ struct DoudizhuNetPacket: Codable {
     var allowCardCounter: Bool?
     var aiDifficulty: String?
     var qqToken: String? = nil
+    var coinAnte: Int? = nil
 }
 
 // Abstract Transport Protocol: Supports Face-to-Face P2P Now & Online WebSocket Server Later!
@@ -11742,6 +11745,7 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
             lastValidHand: lastValidHand,
             lastPlaySeat: lastPlaySeat,
             winnerSeat: winnerSeat,
+            coinAnte: isOnlineConnected ? KOnQQCoinBinder.shared.coinAnte : nil,
             statusBanner: statusBanner,
             totalRounds: totalRounds,
             currentRound: currentRound,
@@ -12225,6 +12229,7 @@ struct MahjongNetPacket: Codable {
     var tileId: String? = nil
     var actionType: String? = nil // "hu", "kong", "pong", "pass", "selfHu", "selfKong"
     var qqToken: String? = nil
+    var coinAnte: Int? = nil
 }
 
 enum MahjongEvaluator {
@@ -13775,6 +13780,7 @@ class KOnMahjongManager: NSObject, ObservableObject, MCSessionDelegate, MCNearby
             drawnTileId: drawnTileId,
             pendingClaim: pendingClaim,
             winnerSeat: winnerSeat,
+            coinAnte: isOnlineConnected ? KOnQQCoinBinder.shared.coinAnte : nil,
             winReason: winReason,
             horseTiles: horseTiles,
             hitHorseIds: Array(hitHorseIds),
@@ -14088,6 +14094,7 @@ enum RmkPhase: String, Codable {
 
 struct RmkNetPacket: Codable {
     var qqToken: String? = nil
+    var coinAnte: Int? = nil
     enum Kind: String, Codable {
         case joinRequest, leaveRoom, roomRoster, roomFull, stateSync
         case commitTurnAction, drawTileAction

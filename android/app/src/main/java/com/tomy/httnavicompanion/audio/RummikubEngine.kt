@@ -1348,7 +1348,7 @@ class RummikubEngine(
             meldsArr.put(JSONObject().apply { put("id", m.id); put("tiles", tArr) })
         }
         sendPacketText(JSONObject().apply {
-            put("kind", "stateSync"); put("roomCode", wireRoomCode())
+            put("kind", "stateSync"); put("coinAnte", QQCoinBinder.coinAnte.value); put("roomCode", wireRoomCode())
             put("senderPeerName", myPeerName); put("senderCharId", _myCharacter.value.charId)
             put("maxPlayers", _roomPlayerCount.value); put("gameType", "rummikub")
             put("hostPeerName", myPeerName); put("roomPeers", peersArr); put("seats", seatsArr); put("tableMelds", meldsArr)

@@ -42,6 +42,7 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.zIndex
 import com.tomy.httnavicompanion.HTTNaviApp
 import com.tomy.httnavicompanion.audio.*
+import kotlinx.coroutines.launch
 
 private val DdzBgGreen = Color(0xFF104B2C)
 private val DdzCardGreen = Color(0xFF0A331D)
@@ -183,7 +184,17 @@ fun KOnDoudizhuSheetDialog(onDismiss: () -> Unit, embeddedInGameRoom: Boolean = 
                             title = { Text("🪙 绑定 QQ 群金币", fontWeight = FontWeight.Bold) },
                             text = {
                                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    Text("仅在线服务器联机且 ≥2 位真人增减 QQ 群金币；面对面与 AI 局不计金币。", fontSize = 12.sp)
+                                    Text("仅在线服务器联机且 ≥2 位真人增减 QQ 群金币；金币不足自动按练习局不扣不加。", fontSize = 12.sp)
+                                    val anteState by QQCoinBinder.coinAnte.collectAsState()
+                                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                                        Text("底注:", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                        listOf(5, 10, 20, 50).forEach { amt ->
+                                            OutlinedButton(
+                                                onClick = { QQCoinBinder.setAnte(context, amt) },
+                                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                                            ) { Text(if (anteState == amt) "✓${amt}🪙" else "${amt}🪙", fontSize = 11.sp) }
+                                        }
+                                    }
                                     if (QQCoinBinder.isBound) {
                                         Text("已绑定 QQ：$qqUidState · 当前群金币：$qqCoinsState", fontSize = 12.sp, color = Color(0xFFD97706), fontWeight = FontWeight.Bold)
                                     }

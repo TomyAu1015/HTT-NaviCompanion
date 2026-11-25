@@ -10833,7 +10833,6 @@ struct KOnGameRoomSheetView: View {
                             .overlay(RoundedRectangle(cornerRadius: 14).stroke(httGold.opacity(0.55), lineWidth: 1))
                         }
                         .buttonStyle(PlainButtonStyle())
-                        }
                     } else {
                         Color.clear.frame(width: 72, height: 28)
                     }
@@ -10866,8 +10865,16 @@ struct KOnGameRoomSheetView: View {
                             .sheet(isPresented: $showQQBindSheet) {
                                 VStack(spacing: 14) {
                                     Text("🪙 绑定 QQ 群金币").font(.title3.bold())
-                                    Text("仅「在线服务器联机且 ≥2 名真人」增减 QQ 群金币；面对面与单机 AI 练习局不扣不加。")
+                                    Text("仅「在线服务器联机且 ≥2 名真人」增减 QQ 群金币；金币不足将自动按练习局不扣不加。")
                                         .font(.caption).foregroundColor(.secondary).multilineTextAlignment(.center)
+                                    HStack(spacing: 8) {
+                                        Text("房主联机底注:").font(.caption.bold())
+                                        ForEach([5, 10, 20, 50], id: \.self) { amt in
+                                            Button("\(amt)🪙") { qqBinder.coinAnte = amt; qqBinder.save() }
+                                                .buttonStyle(.borderedProminent)
+                                                .tint(qqBinder.coinAnte == amt ? .orange : .gray.opacity(0.5))
+                                        }
+                                    }
                                     if qqBinder.isBound {
                                         Text("已绑定 QQ：\(qqBinder.qqUid) · 当前群金币：\(qqBinder.coins) 🪙").font(.subheadline.bold()).foregroundColor(.orange)
                                     }
@@ -10918,6 +10925,7 @@ struct KOnGameRoomSheetView: View {
                             .overlay(RoundedRectangle(cornerRadius: 14).stroke(httGold.opacity(0.55), lineWidth: 1))
                         }
                         .buttonStyle(PlainButtonStyle())
+                        }
                     } else {
                         Color.clear.frame(width: 72, height: 28)
                     }

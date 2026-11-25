@@ -933,7 +933,7 @@ class MahjongEngine(private val context: Context, private val audioMgr: AudioPla
         if (!isRoomAuthorityVal) return
         val myKey = myPeerKey()
         val pkt = JSONObject().apply {
-            put("kind", "stateSync")
+            put("kind", "stateSync"); put("coinAnte", QQCoinBinder.coinAnte.value)
             put("roomCode", wireRoomCode())
             put("senderPeerName", myKey)
             put("senderCharId", _myChar.value.charId)

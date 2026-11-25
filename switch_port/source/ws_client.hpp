@@ -300,6 +300,7 @@ inline std::string switchHttpsRequest(const std::string& method, const std::stri
     const char* pers = "htt_switch_https";
     if (mbedtls_ctr_drbg_seed(&ctr_drbg, mbedtls_entropy_func, &entropy, (const unsigned char*)pers, strlen(pers)) != 0) goto done;
     if (mbedtls_net_connect(&server_fd, host.c_str(), port.c_str(), MBEDTLS_NET_PROTO_TCP) != 0) goto done;
+    { struct timeval tv; tv.tv_sec = 6; tv.tv_usec = 0; setsockopt(server_fd.fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)); setsockopt(server_fd.fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv)); }
     if (mbedtls_ssl_config_defaults(&conf, MBEDTLS_SSL_IS_CLIENT, MBEDTLS_SSL_TRANSPORT_STREAM, MBEDTLS_SSL_PRESET_DEFAULT) != 0) goto done;
     mbedtls_ssl_conf_authmode(&conf, MBEDTLS_SSL_VERIFY_NONE);
     mbedtls_ssl_conf_rng(&conf, mbedtls_ctr_drbg_random, &ctr_drbg);

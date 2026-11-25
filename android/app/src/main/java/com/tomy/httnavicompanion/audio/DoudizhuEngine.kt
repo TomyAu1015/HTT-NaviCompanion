@@ -1458,7 +1458,7 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
         if (!isRoomAuthorityVal && !hasUnmodifiedIosWsPeer) return
         val myKey = myPeerKey()
         val pkt = JSONObject().apply {
-            put("kind", "stateSync")
+            put("kind", "stateSync"); put("coinAnte", QQCoinBinder.coinAnte.value)
             put("roomCode", _roomCode.value)
             put("senderPeerName", myKey)
             put("senderCharId", _myChar.value.charId)
