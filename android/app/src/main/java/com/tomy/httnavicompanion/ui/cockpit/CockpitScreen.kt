@@ -1970,9 +1970,60 @@ fun EnlargedNavigationHUDView(
 
             // Lane Guidance Strip + Traffic Light Countdown Pill (1:1 iOS Parity during active navigation)
             if (hasNav && !isRoutePreviewing) {
-                val isLeftTurn = stepInstruction.contains("左") && !stepInstruction.contains("右")
-                val isRightTurn = stepInstruction.contains("右") && !stepInstruction.contains("左")
-                val isStraight = !isLeftTurn && !isRightTurn
+                val lowerStep = stepInstruction.lowercase()
+                val isUturn = lowerStep.contains("调头") || lowerStep.contains("掉头") || lowerStep.contains("u-turn")
+                val isKeepRight = lowerStep.contains("稍向右") || lowerStep.contains("靠右") || lowerStep.contains("出口") || lowerStep.contains("右前方")
+                val isKeepLeft = lowerStep.contains("稍向左") || lowerStep.contains("靠左") || lowerStep.contains("左前方")
+                val isRightTurn = !isKeepRight && (lowerStep.contains("右") && !lowerStep.contains("左") || lowerStep.contains("right"))
+                val isLeftTurn = !isKeepLeft && (lowerStep.contains("左") && !lowerStep.contains("右") || lowerStep.contains("left"))
+                val isHwy = listOf("高速", "高架", "环线", "匝道", "出口").any { lowerStep.contains(it) } || speedLimitKmh >= 80
+                val isArt = listOf("大道", "快速", "隧道", "大桥", "中路").any { lowerStep.contains(it) } || speedLimitKmh in 60..79
+                val isNarrow = listOf("巷", "弄", "胡同", "村", "里", "支路", "小区", "内部").any { lowerStep.contains(it) } || (!isHwy && !isArt && (speedLimitKmh <= 40 || lowerStep.contains("开始")))
+                val laneCnt = when {
+                    isHwy -> 4
+                    isArt -> 3
+                    isNarrow -> 1
+                    else -> 2
+                }
+                // bitmask: 1=uturn, 2=left, 4=straight, 8=right
+                fun lblOf(m: Int): String = when (m) {
+                    2 -> "左转"; 4 -> "直行"; 8 -> "右转"; 1 -> "掉头"
+                    else -> buildString {
+                        if ((m and 1) != 0) append("掉")
+                        if ((m and 4) != 0) append("直")
+                        if ((m and 2) != 0) append("左")
+                        if ((m and 8) != 0) append("右")
+                    }.ifEmpty { "直行" }
+                }
+                val lanes: List<Pair<Int, Int>> = when (laneCnt) {
+                    1 -> {
+                        val alw = if (isUturn) 15 else 14
+                        val rec = when { isUturn -> 1; isLeftTurn || isKeepLeft -> 2; isRightTurn || isKeepRight -> 8; else -> 4 }
+                        listOf(alw to rec)
+                    }
+                    2 -> when {
+                        isUturn -> listOf(7 to 1, 12 to 0)
+                        isLeftTurn || isKeepLeft -> listOf(6 to 2, 12 to 0)
+                        isRightTurn || isKeepRight -> listOf(6 to 0, 12 to 8)
+                        else -> listOf(6 to 4, 12 to 4)
+                    }
+                    3 -> when {
+                        isUturn -> listOf(3 to 1, 4 to 0, 12 to 0)
+                        isLeftTurn -> listOf(2 to 2, 4 to 0, 12 to 0)
+                        isKeepLeft -> listOf(6 to 2, 4 to 4, 12 to 0)
+                        isRightTurn -> listOf(6 to 0, 4 to 0, 8 to 8)
+                        isKeepRight -> listOf(6 to 0, 4 to 0, 12 to 8)
+                        else -> listOf(2 to 0, 4 to 4, 12 to 4)
+                    }
+                    else -> when {
+                        isUturn -> listOf(3 to 1, 4 to 0, 4 to 0, 12 to 0)
+                        isKeepRight -> listOf(4 to 0, 4 to 0, 12 to 8, 8 to 8)
+                        isKeepLeft -> listOf(2 to 2, 6 to 2, 4 to 0, 4 to 0)
+                        isRightTurn -> listOf(6 to 0, 4 to 0, 4 to 0, 8 to 8)
+                        isLeftTurn -> listOf(2 to 2, 4 to 0, 4 to 0, 12 to 0)
+                        else -> listOf(4 to 4, 4 to 4, 4 to 4, 12 to 4)
+                    }
+                }
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -1983,27 +2034,71 @@ fun EnlargedNavigationHUDView(
                             .clip(RoundedCornerShape(10.dp))
                             .background(Color(0xFF141824).copy(alpha = 0.92f))
                             .border(1.dp, HTTGold.copy(alpha = 0.55f), RoundedCornerShape(10.dp))
-                            .padding(horizontal = 6.dp, vertical = 4.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            .padding(horizontal = 5.dp, vertical = 3.dp),
+                        horizontalArrangement = Arrangement.spacedBy(5.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        listOf(
-                            Triple(Icons.Default.TurnLeft, "左转", isLeftTurn),
-                            Triple(Icons.Default.ArrowUpward, "直行", isStraight),
-                            Triple(Icons.Default.TurnRight, "右转", isRightTurn)
-                        ).forEach { (ic, lbl, active) ->
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                Icon(
-                                    ic,
-                                    contentDescription = null,
-                                    tint = if (active) Color(0xFF4ADE80) else Color.Gray.copy(alpha = 0.65f),
-                                    modifier = Modifier.size(14.dp)
-                                )
+                        lanes.forEach { (allowed, rec) ->
+                            val active = rec != 0
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(5.dp))
+                                    .background(if (active) HTTCrimson.copy(alpha = 0.85f) else Color.Transparent)
+                                    .padding(horizontal = 4.dp, vertical = 2.dp)
+                            ) {
+                                androidx.compose.foundation.Canvas(modifier = Modifier.size(width = 22.dp, height = 18.dp)) {
+                                    val w = size.width
+                                    val h = size.height
+                                    val cx = w * 0.50f
+                                    val by = h * 0.92f
+                                    val sy = h * 0.54f
+                                    val st = androidx.compose.ui.graphics.drawscope.Stroke(
+                                        width = 2.1.dp.toPx(),
+                                        cap = androidx.compose.ui.graphics.StrokeCap.Round,
+                                        join = androidx.compose.ui.graphics.StrokeJoin.Round
+                                    )
+                                    val dimC = Color.Gray.copy(alpha = 0.45f)
+                                    val actC = Color.White
+                                    fun drawDir(d: Int, c: Color) {
+                                        val p = androidx.compose.ui.graphics.Path()
+                                        when (d) {
+                                            4 -> {
+                                                p.moveTo(cx, sy); p.lineTo(cx, h * 0.14f)
+                                                p.moveTo(cx - w * 0.16f, h * 0.30f); p.lineTo(cx, h * 0.12f); p.lineTo(cx + w * 0.16f, h * 0.30f)
+                                            }
+                                            2 -> {
+                                                p.moveTo(cx, sy); p.quadraticTo(cx, h * 0.36f, w * 0.16f, h * 0.34f)
+                                                p.moveTo(w * 0.28f, h * 0.22f); p.lineTo(w * 0.14f, h * 0.34f); p.lineTo(w * 0.28f, h * 0.46f)
+                                            }
+                                            8 -> {
+                                                p.moveTo(cx, sy); p.quadraticTo(cx, h * 0.36f, w * 0.84f, h * 0.34f)
+                                                p.moveTo(w * 0.72f, h * 0.22f); p.lineTo(w * 0.86f, h * 0.34f); p.lineTo(w * 0.72f, h * 0.46f)
+                                            }
+                                            1 -> {
+                                                p.moveTo(cx, sy); p.lineTo(cx, h * 0.30f)
+                                                p.quadraticTo(w * 0.33f, h * 0.10f, w * 0.16f, h * 0.32f)
+                                                p.lineTo(w * 0.16f, h * 0.68f)
+                                                p.moveTo(w * 0.06f, h * 0.56f); p.lineTo(w * 0.16f, h * 0.70f); p.lineTo(w * 0.26f, h * 0.56f)
+                                            }
+                                        }
+                                        drawPath(p, color = c, style = st)
+                                    }
+                                    for (d in listOf(1, 2, 4, 8)) {
+                                        if ((allowed and d) != 0 && (rec and d) == 0) drawDir(d, dimC)
+                                    }
+                                    val stem = androidx.compose.ui.graphics.Path().apply { moveTo(cx, by); lineTo(cx, sy) }
+                                    drawPath(stem, color = if (active) actC else dimC, style = st)
+                                    for (d in listOf(1, 2, 4, 8)) {
+                                        if ((allowed and d) != 0 && (rec and d) != 0) drawDir(d, actC)
+                                    }
+                                }
                                 Text(
-                                    lbl,
-                                    color = if (active) Color.White else Color.Gray,
-                                    fontSize = 8.5.sp,
-                                    fontWeight = if (active) FontWeight.Black else FontWeight.Normal
+                                    lblOf(allowed),
+                                    color = if (active) HTTGold else Color.Gray.copy(alpha = 0.55f),
+                                    fontSize = 8.sp,
+                                    fontWeight = if (active) FontWeight.Black else FontWeight.Normal,
+                                    maxLines = 1
                                 )
                             }
                         }

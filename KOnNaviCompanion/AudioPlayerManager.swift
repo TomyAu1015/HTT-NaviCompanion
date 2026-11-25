@@ -550,11 +550,20 @@ enum NavigationTravelMode: String, CaseIterable, Identifiable {
     }
 }
 
+struct LaneDirectionMask: OptionSet {
+    let rawValue: Int
+    static let uturn    = LaneDirectionMask(rawValue: 1 << 0)
+    static let left     = LaneDirectionMask(rawValue: 1 << 1)
+    static let straight = LaneDirectionMask(rawValue: 1 << 2)
+    static let right    = LaneDirectionMask(rawValue: 1 << 3)
+}
+
 struct RoadLaneItem: Identifiable {
     let id = UUID()
-    let iconName: String       // e.g. "arrow.turn.up.left", "arrow.up", "arrow.turn.up.right"
-    let label: String          // e.g. "左转", "直行", "右转"
-    let isRecommended: Bool    // true = Bright White/Active, false = Dimmed Gray
+    let allowed: LaneDirectionMask     // All permitted directions in this single lane
+    let recommended: LaneDirectionMask // Active navigation direction(s) highlighted in white
+    let label: String                  // e.g. "直左右", "左直", "直右", "直行"
+    var isRecommended: Bool { !recommended.isEmpty }
 }
 
 enum TrafficLightPhase: String {
@@ -1874,9 +1883,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     @Published var customTransitPolyline: MKPolyline? = nil
     @Published var transitStopAnnotations: [MKPointAnnotation] = []
     @Published var currentRoadLanes: [RoadLaneItem] = [
-        RoadLaneItem(iconName: "arrow.turn.up.left", label: "左转", isRecommended: false),
-        RoadLaneItem(iconName: "arrow.up", label: "直行", isRecommended: true),
-        RoadLaneItem(iconName: "arrow.turn.up.right", label: "右转", isRecommended: false)
+        RoadLaneItem(allowed: [.left, .straight, .right], recommended: [.straight], label: "直左右")
     ]
     @Published var recenterTrigger: Int = 0
     
@@ -8387,51 +8394,89 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         return tags.joined(separator: " · ")
     }
     
-    // MARK: - Intelligent Multi-Lane Recommender (车道级白/灰高亮引导) & Dynamic Speed Camera Alert
+    // MARK: - GaoDe-Style Adaptive Combined-Arrow Lane Recommender
+    private func laneLabel(for mask: LaneDirectionMask) -> String {
+        var parts = ""
+        if mask.contains(.uturn) { parts += "掉" }
+        if mask.contains(.left) && !mask.contains(.straight) && !mask.contains(.right) && !mask.contains(.uturn) { return "左转" }
+        if mask.contains(.straight) && !mask.contains(.left) && !mask.contains(.right) && !mask.contains(.uturn) { return "直行" }
+        if mask.contains(.right) && !mask.contains(.left) && !mask.contains(.straight) && !mask.contains(.uturn) { return "右转" }
+        if mask.contains(.uturn) && !mask.contains(.left) && !mask.contains(.straight) && !mask.contains(.right) { return "掉头" }
+        if mask.contains(.straight) { parts += "直" }
+        if mask.contains(.left) { parts += "左" }
+        if mask.contains(.right) { parts += "右" }
+        return parts.isEmpty ? "直行" : parts
+    }
+
     func updateRoadLanes(for instruction: String) {
+        guard travelMode.supportsSpeedLimit else {
+            currentRoadLanes = []
+            return
+        }
         let lower = instruction.lowercased()
-        if lower.contains("调头") || lower.contains("掉头") || lower.contains("u-turn") {
-            currentRoadLanes = [
-                RoadLaneItem(iconName: "arrow.uturn.left", label: "掉头", isRecommended: true),
-                RoadLaneItem(iconName: "arrow.up", label: "直行", isRecommended: false),
-                RoadLaneItem(iconName: "arrow.turn.up.right", label: "右转", isRecommended: false)
-            ]
-        } else if lower.contains("稍向右") || lower.contains("靠右") || lower.contains("出口") || lower.contains("右前方") {
-            currentRoadLanes = [
-                RoadLaneItem(iconName: "arrow.up", label: "直行", isRecommended: false),
-                RoadLaneItem(iconName: "arrow.up", label: "直行", isRecommended: false),
-                RoadLaneItem(iconName: "arrow.up.right", label: "靠右", isRecommended: true),
-                RoadLaneItem(iconName: "arrow.turn.up.right", label: "右转", isRecommended: true)
-            ]
-        } else if lower.contains("稍向左") || lower.contains("靠左") || lower.contains("左前方") {
-            currentRoadLanes = [
-                RoadLaneItem(iconName: "arrow.turn.up.left", label: "左转", isRecommended: true),
-                RoadLaneItem(iconName: "arrow.up.left", label: "靠左", isRecommended: true),
-                RoadLaneItem(iconName: "arrow.up", label: "直行", isRecommended: false),
-                RoadLaneItem(iconName: "arrow.up", label: "直行", isRecommended: false)
-            ]
-        } else if lower.contains("右转") || lower.contains("右轉") || lower.contains("转右") || lower.contains("轉右") || lower.contains("向右") || lower.contains("turn right") || (lower.contains("right") && !lower.contains("left")) || (lower.contains("右") && !lower.contains("左")) {
-            // 3 lanes: Left (Gray), Straight (Gray), Right (White Highlighted!)
-            currentRoadLanes = [
-                RoadLaneItem(iconName: "arrow.turn.up.left", label: "左转", isRecommended: false),
-                RoadLaneItem(iconName: "arrow.up", label: "直行", isRecommended: false),
-                RoadLaneItem(iconName: "arrow.turn.up.right", label: "右转", isRecommended: true)
-            ]
-        } else if lower.contains("左转") || lower.contains("左轉") || lower.contains("转左") || lower.contains("轉左") || lower.contains("向左") || lower.contains("turn left") || lower.contains("left") || lower.contains("左") {
-            // 3 lanes: Left (White Highlighted!), Straight (Gray), Right (Gray)
-            currentRoadLanes = [
-                RoadLaneItem(iconName: "arrow.turn.up.left", label: "左转", isRecommended: true),
-                RoadLaneItem(iconName: "arrow.up", label: "直行", isRecommended: false),
-                RoadLaneItem(iconName: "arrow.turn.up.right", label: "右转", isRecommended: false)
-            ]
-        } else {
-            // Straight ahead: Left (Gray), Center Straight (White Highlighted!), Right (Gray)
-            currentRoadLanes = [
-                RoadLaneItem(iconName: "arrow.turn.up.left", label: "左转", isRecommended: false),
-                RoadLaneItem(iconName: "arrow.up", label: "直行", isRecommended: true),
-                RoadLaneItem(iconName: "arrow.up", label: "直行", isRecommended: true),
-                RoadLaneItem(iconName: "arrow.turn.up.right", label: "右转", isRecommended: false)
-            ]
+        let isUturn = lower.contains("调头") || lower.contains("掉头") || lower.contains("u-turn")
+        let isKeepRight = lower.contains("稍向右") || lower.contains("靠右") || lower.contains("出口") || lower.contains("右前方")
+        let isKeepLeft = lower.contains("稍向左") || lower.contains("靠左") || lower.contains("左前方")
+        let isRight = !isKeepRight && (lower.contains("右转") || lower.contains("右轉") || lower.contains("转右") || lower.contains("轉右") || lower.contains("向右") || lower.contains("turn right") || (lower.contains("right") && !lower.contains("left")) || (lower.contains("右") && !lower.contains("左")))
+        let isLeft = !isKeepLeft && (lower.contains("左转") || lower.contains("左轉") || lower.contains("转左") || lower.contains("轉左") || lower.contains("向左") || lower.contains("turn left") || lower.contains("left") || lower.contains("左"))
+
+        let highwayKeys = ["高速", "高架", "环线", "環線", "匝道", "出口", "expressway", "freeway", "highway"]
+        let arterialKeys = ["大道", "快速", "隧道", "大桥", "大橋", "中路", "主干", "avenue", "blvd"]
+        let narrowKeys = ["巷", "弄", "胡同", "村", "里", "支路", "小区", "小區", "内部", "內部", "园区", "園區", "广场", "廣場", "alley", "lane", "path"]
+
+        let isHighway = highwayKeys.contains { lower.contains($0) } || lower.range(of: #"(g|s)\d{1,4}"#, options: .regularExpression) != nil || speedLimitKmh >= 80
+        let isArterial = arterialKeys.contains { lower.contains($0) } || (speedLimitKmh >= 60 && speedLimitKmh < 80)
+        let isNarrow = narrowKeys.contains { lower.contains($0) } || (!isHighway && !isArterial && (speedLimitKmh <= 40 || lower.contains("开始") || lower.contains("開始") || lower.contains("到达") || lower.contains("到達")))
+
+        let laneCount: Int = isHighway ? 4 : (isArterial ? 3 : (isNarrow ? 1 : 2))
+
+        func make(_ allowed: LaneDirectionMask, _ rec: LaneDirectionMask) -> RoadLaneItem {
+            RoadLaneItem(allowed: allowed, recommended: rec, label: laneLabel(for: allowed))
+        }
+
+        switch laneCount {
+        case 1:
+            let allowed: LaneDirectionMask = isUturn ? [.uturn, .left, .straight, .right] : [.left, .straight, .right]
+            let rec: LaneDirectionMask = isUturn ? [.uturn] : (isLeft || isKeepLeft ? [.left] : (isRight || isKeepRight ? [.right] : [.straight]))
+            currentRoadLanes = [make(allowed, rec)]
+        case 2:
+            if isUturn {
+                currentRoadLanes = [make([.uturn, .left, .straight], [.uturn]), make([.straight, .right], [])]
+            } else if isLeft || isKeepLeft {
+                currentRoadLanes = [make([.left, .straight], [.left]), make([.straight, .right], [])]
+            } else if isRight || isKeepRight {
+                currentRoadLanes = [make([.left, .straight], []), make([.straight, .right], [.right])]
+            } else {
+                currentRoadLanes = [make([.left, .straight], [.straight]), make([.straight, .right], [.straight])]
+            }
+        case 3:
+            if isUturn {
+                currentRoadLanes = [make([.uturn, .left], [.uturn]), make([.straight], []), make([.straight, .right], [])]
+            } else if isLeft {
+                currentRoadLanes = [make([.left], [.left]), make([.straight], []), make([.straight, .right], [])]
+            } else if isKeepLeft {
+                currentRoadLanes = [make([.left, .straight], [.left]), make([.straight], [.straight]), make([.straight, .right], [])]
+            } else if isRight {
+                currentRoadLanes = [make([.left, .straight], []), make([.straight], []), make([.right], [.right])]
+            } else if isKeepRight {
+                currentRoadLanes = [make([.left, .straight], []), make([.straight], []), make([.straight, .right], [.right])]
+            } else {
+                currentRoadLanes = [make([.left], []), make([.straight], [.straight]), make([.straight, .right], [.straight])]
+            }
+        default: // 4 lanes
+            if isUturn {
+                currentRoadLanes = [make([.uturn, .left], [.uturn]), make([.straight], []), make([.straight], []), make([.straight, .right], [])]
+            } else if isKeepRight {
+                currentRoadLanes = [make([.straight], []), make([.straight], []), make([.straight, .right], [.right]), make([.right], [.right])]
+            } else if isKeepLeft {
+                currentRoadLanes = [make([.left], [.left]), make([.left, .straight], [.left]), make([.straight], []), make([.straight], [])]
+            } else if isRight {
+                currentRoadLanes = [make([.left, .straight], []), make([.straight], []), make([.straight], []), make([.right], [.right])]
+            } else if isLeft {
+                currentRoadLanes = [make([.left], [.left]), make([.straight], []), make([.straight], []), make([.straight, .right], [])]
+            } else {
+                currentRoadLanes = [make([.straight], [.straight]), make([.straight], [.straight]), make([.straight], [.straight]), make([.straight, .right], [.straight])]
+            }
         }
     }
     

@@ -2023,41 +2023,99 @@ struct ContentView: View {
         )
     }
 
-    // MARK: - Multi-Lane Indicator (左转/直行/右转 白灰高亮) + Real-Time Traffic Light Countdown (红绿灯倒计时 - 绝不变形与折行)
+    private func drawGaoDeLaneArrow(lane: RoadLaneItem) -> some View {
+        Canvas { ctx, size in
+            let w = size.width
+            let h = size.height
+            let cx = w * 0.50
+            let by = h * 0.92
+            let sy = h * 0.54
+            let style = StrokeStyle(lineWidth: 2.2, lineCap: .round, lineJoin: .round)
+            let dimColor = Color.gray.opacity(0.45)
+            let activeColor = Color.white
+
+            func strokeBranch(_ dir: LaneDirectionMask, color: Color) {
+                var p = Path()
+                if dir == .straight {
+                    p.move(to: CGPoint(x: cx, y: sy))
+                    p.addLine(to: CGPoint(x: cx, y: h * 0.14))
+                    p.move(to: CGPoint(x: cx - w * 0.16, y: h * 0.30))
+                    p.addLine(to: CGPoint(x: cx, y: h * 0.12))
+                    p.addLine(to: CGPoint(x: cx + w * 0.16, y: h * 0.30))
+                } else if dir == .left {
+                    p.move(to: CGPoint(x: cx, y: sy))
+                    p.addQuadCurve(to: CGPoint(x: w * 0.16, y: h * 0.34), control: CGPoint(x: cx, y: h * 0.36))
+                    p.move(to: CGPoint(x: w * 0.28, y: h * 0.22))
+                    p.addLine(to: CGPoint(x: w * 0.14, y: h * 0.34))
+                    p.addLine(to: CGPoint(x: w * 0.28, y: h * 0.46))
+                } else if dir == .right {
+                    p.move(to: CGPoint(x: cx, y: sy))
+                    p.addQuadCurve(to: CGPoint(x: w * 0.84, y: h * 0.34), control: CGPoint(x: cx, y: h * 0.36))
+                    p.move(to: CGPoint(x: w * 0.72, y: h * 0.22))
+                    p.addLine(to: CGPoint(x: w * 0.86, y: h * 0.34))
+                    p.addLine(to: CGPoint(x: w * 0.72, y: h * 0.46))
+                } else if dir == .uturn {
+                    p.move(to: CGPoint(x: cx, y: sy))
+                    p.addLine(to: CGPoint(x: cx, y: h * 0.32))
+                    p.addArc(center: CGPoint(x: w * 0.33, y: h * 0.32), radius: w * 0.17, startAngle: .degrees(0), endAngle: .degrees(180), clockwise: true)
+                    p.addLine(to: CGPoint(x: w * 0.16, y: h * 0.68))
+                    p.move(to: CGPoint(x: w * 0.06, y: h * 0.56))
+                    p.addLine(to: CGPoint(x: w * 0.16, y: h * 0.70))
+                    p.addLine(to: CGPoint(x: w * 0.26, y: h * 0.56))
+                }
+                ctx.stroke(p, with: .color(color), style: style)
+            }
+
+            let dirs: [LaneDirectionMask] = [.uturn, .left, .straight, .right]
+            for d in dirs where lane.allowed.contains(d) && !lane.recommended.contains(d) {
+                strokeBranch(d, color: dimColor)
+            }
+            var stem = Path()
+            stem.move(to: CGPoint(x: cx, y: by))
+            stem.addLine(to: CGPoint(x: cx, y: sy))
+            ctx.stroke(stem, with: .color(lane.isRecommended ? activeColor : dimColor), style: style)
+            for d in dirs where lane.allowed.contains(d) && lane.recommended.contains(d) {
+                strokeBranch(d, color: activeColor)
+            }
+        }
+        .frame(width: 24, height: 19)
+    }
+
+    // MARK: - GaoDe-Style Multi-Lane Combined Indicator + Real-Time Traffic Light Countdown
     private var laneGuidanceAndTrafficLightBar: some View {
         HStack(spacing: 6) {
-            // 1. Multi-Lane Indicator Box (紧凑高亮车道框，节省空间给红绿灯)
-            HStack(spacing: 0) {
-                ForEach(Array(manager.currentRoadLanes.enumerated()), id: \.element.id) { idx, lane in
-                    HStack(spacing: 0) {
-                        VStack(spacing: 1) {
-                            Image(systemName: lane.iconName)
-                                .font(.system(size: 13, weight: .black))
-                                .foregroundColor(lane.isRecommended ? .white : Color.gray.opacity(0.45))
-                                .shadow(color: lane.isRecommended ? httGold.opacity(0.8) : .clear, radius: 2)
-                            Text(lane.label)
-                                .font(.system(size: 8, weight: .bold))
-                                .foregroundColor(lane.isRecommended ? httGold : Color.gray.opacity(0.45))
-                        }
-                        .frame(width: 28, height: 32)
-                        .background(lane.isRecommended ? httCrimson.opacity(0.85) : Color.clear)
-                        .cornerRadius(5)
-                        
-                        if idx < manager.currentRoadLanes.count - 1 {
-                            Rectangle()
-                                .fill(Color.white.opacity(0.2))
-                                .frame(width: 1, height: 18)
-                                .padding(.horizontal, 1)
+            if !manager.currentRoadLanes.isEmpty {
+                HStack(spacing: 0) {
+                    ForEach(Array(manager.currentRoadLanes.enumerated()), id: \.element.id) { idx, lane in
+                        HStack(spacing: 0) {
+                            VStack(spacing: 1) {
+                                drawGaoDeLaneArrow(lane: lane)
+                                Text(lane.label)
+                                    .font(.system(size: 8, weight: .bold))
+                                    .foregroundColor(lane.isRecommended ? httGold : Color.gray.opacity(0.5))
+                                    .lineLimit(1)
+                            }
+                            .frame(minWidth: 28, idealHeight: 33, maxHeight: 33)
+                            .padding(.horizontal, 3)
+                            .background(lane.isRecommended ? httCrimson.opacity(0.85) : Color.clear)
+                            .cornerRadius(5)
+                            
+                            if idx < manager.currentRoadLanes.count - 1 {
+                                Rectangle()
+                                    .fill(Color.white.opacity(0.2))
+                                    .frame(width: 1, height: 18)
+                                    .padding(.horizontal, 1)
+                            }
                         }
                     }
                 }
+                .padding(.horizontal, 4)
+                .padding(.vertical, 3)
+                .background(Color.black.opacity(0.88))
+                .cornerRadius(8)
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold.opacity(0.75), lineWidth: 1.2))
+                .fixedSize(horizontal: true, vertical: false)
             }
-            .padding(.horizontal, 4)
-            .padding(.vertical, 3)
-            .background(Color.black.opacity(0.88))
-            .cornerRadius(8)
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(httGold.opacity(0.75), lineWidth: 1.2))
-            .fixedSize(horizontal: true, vertical: false)
             
             // Top traffic light countdown removed per user request (intersection lights are rendered directly along the route on the map)
             
