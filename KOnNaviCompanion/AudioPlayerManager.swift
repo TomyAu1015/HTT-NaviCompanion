@@ -10737,18 +10737,35 @@ final class KOnQQCoinBinder: ObservableObject {
         }.resume()
     }
 
-    func refreshCoins() {
+    func refreshCoins(manual: Bool = false) {
         guard !qqToken.isEmpty,
               let enc = qqToken.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
-              let url = URL(string: "https://azusa.online/club/coins?token=\(enc)") else { return }
-        URLSession.shared.dataTask(with: url) { data, _, _ in
-            guard let data = data,
-                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  (obj["ok"] as? Bool) == true,
-                  let c = obj["coins"] as? Int else { return }
+              let url = URL(string: "https://azusa.online/club/coins?token=\(enc)&_t=\(Int(Date().timeIntervalSince1970 * 1000))") else { return }
+        if manual {
             DispatchQueue.main.async {
+                self.isBusy = true
+                self.statusText = "🔄 正在同步最新 QQ 群金币..."
+            }
+        }
+        var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalAndRemoteCacheData, timeoutInterval: 8.0)
+        req.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
+        URLSession.shared.dataTask(with: req) { data, _, err in
+            DispatchQueue.main.async {
+                if manual { self.isBusy = false }
+                guard let data = data,
+                      let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      (obj["ok"] as? Bool) == true,
+                      let c = obj["coins"] as? Int else {
+                    if manual {
+                        self.statusText = "⚠️ 刷新失败：\(err?.localizedDescription ?? "请检查网络或重新绑定")"
+                    }
+                    return
+                }
                 self.coins = c
                 self.save()
+                if manual {
+                    self.statusText = "✅ 已同步最新 QQ 群金币：\(c) 🪙"
+                }
             }
         }.resume()
     }

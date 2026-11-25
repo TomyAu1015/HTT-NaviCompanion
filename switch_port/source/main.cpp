@@ -115,7 +115,8 @@ static void saveQqBindingToDisk() {
 
 static void refreshQqCoinsOnline() {
     if (gQqToken.empty()) return;
-    std::string resp = switchHttpsRequest("GET", "azusa.online", "443", "/club/coins?token=" + gQqToken);
+    std::string path = "/club/coins?token=" + gQqToken + "&_t=" + std::to_string((long long)time(nullptr));
+    std::string resp = switchHttpsRequest("GET", "azusa.online", "443", path);
     if (MiniJson::getBool(resp, "ok", false)) {
         gQqCoins = MiniJson::getInt(resp, "coins", gQqCoins);
         saveQqBindingToDisk();
@@ -123,6 +124,7 @@ static void refreshQqCoinsOnline() {
 }
 
 static void openSwitchQqBindFlow() {
+    refreshQqCoinsOnline();
     SwkbdConfig kbd;
     if (R_FAILED(swkbdCreate(&kbd, 0))) return;
     swkbdConfigMakePresetDefault(&kbd);
@@ -945,6 +947,7 @@ static void rebuildLobbySeats() {
 static void startNewDoudizhuRound() {
     if (gIsOnlineRoom && !gIsRoomAuthority) return;
     loadQqBindingFromDisk();
+    if (gIsOnlineRoom) refreshQqCoinsOnline();
     rebuildLobbySeats();
 
     std::vector<DdzCard> deck;

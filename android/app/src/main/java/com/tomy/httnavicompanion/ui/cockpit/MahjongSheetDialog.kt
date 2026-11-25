@@ -713,7 +713,8 @@ fun KOnMahjongSheetDialog(onDismiss: () -> Unit, embeddedInGameRoom: Boolean = f
     val aiDifficulty by engine.aiDifficulty.collectAsState()
     val lastClaimEvent by engine.lastClaimEvent.collectAsState()
 
-    LaunchedEffect(Unit) { engine.refreshLocalIpAddress() }
+    LaunchedEffect(Unit) {
+        kotlinx.coroutines.launch { while (true) { QQCoinBinder.refreshCoins(ctx); kotlinx.coroutines.delay(12000) } } engine.refreshLocalIpAddress() }
     DisposableEffect(Unit) { onDispose { engine.leaveRoomAndResetLobby() } }
 
     val contentBody: @Composable () -> Unit = {

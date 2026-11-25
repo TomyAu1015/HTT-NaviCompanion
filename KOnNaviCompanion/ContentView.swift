@@ -10911,7 +10911,7 @@ struct KOnGameRoomSheetView: View {
                         HStack(spacing: 6) {
                             Button(action: {
                                 qqInputText = qqBinder.qqUid
-                                qqBinder.refreshCoins()
+                                qqBinder.refreshCoins(manual: true)
                                 showQQBindSheet = true
                             }) {
                                 Text(qqBinder.isBound ? "🪙 \(qqBinder.coins)" : "🪙 绑定QQ")
@@ -10928,12 +10928,14 @@ struct KOnGameRoomSheetView: View {
                                     Text("🪙 绑定 QQ 群金币").font(.title3.bold())
                                     Text("仅「在线服务器联机且 ≥2 名真人」增减 QQ 群金币；金币不足将自动按练习局不扣不加。")
                                         .font(.caption).foregroundColor(.secondary).multilineTextAlignment(.center)
-                                    HStack(spacing: 8) {
-                                        Text("房主联机底注:").font(.caption.bold())
+                                    HStack(spacing: 6) {
+                                        Text("房主联机底注:").font(.caption.bold()).lineLimit(1).fixedSize(horizontal: true, vertical: false)
                                         ForEach([5, 10, 20, 50], id: \.self) { amt in
-                                            Button("\(amt)🪙") { qqBinder.coinAnte = amt; qqBinder.save() }
-                                                .buttonStyle(.borderedProminent)
-                                                .tint(qqBinder.coinAnte == amt ? .orange : .gray.opacity(0.5))
+                                            Button(action: { qqBinder.coinAnte = amt; qqBinder.save() }) {
+                                                Text("\(amt)🪙").font(.caption.bold()).lineLimit(1).fixedSize(horizontal: true, vertical: false)
+                                            }
+                                            .buttonStyle(.borderedProminent)
+                                            .tint(qqBinder.coinAnte == amt ? .orange : .gray.opacity(0.5))
                                         }
                                     }
                                     if qqBinder.isBound {
@@ -10958,13 +10960,20 @@ struct KOnGameRoomSheetView: View {
                                     }
                                     HStack(spacing: 16) {
                                         if qqBinder.isBound {
-                                            Button("刷新金币") { qqBinder.refreshCoins() }.buttonStyle(.bordered)
+                                            Button("刷新金币") { qqBinder.refreshCoins(manual: true) }.buttonStyle(.bordered).disabled(qqBinder.isBusy)
                                             Button("解绑", role: .destructive) { qqBinder.unbind() }.buttonStyle(.bordered)
                                         }
                                         Button("关闭") { showQQBindSheet = false }.buttonStyle(.bordered)
                                     }
                                 }
                                 .padding(20)
+                            }
+                            .onAppear { qqBinder.refreshCoins() }
+                            .onReceive(Timer.publish(every: 12, on: .main, in: .common).autoconnect()) { _ in
+                                if qqBinder.isBound { qqBinder.refreshCoins() }
+                            }
+                            .onReceive(NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)) { _ in
+                                if qqBinder.isBound { qqBinder.refreshCoins() }
                             }
 
                         Button(action: {

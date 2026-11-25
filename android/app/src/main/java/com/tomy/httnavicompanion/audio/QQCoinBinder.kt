@@ -101,11 +101,15 @@ object QQCoinBinder {
         }
     }
 
-    suspend fun refreshCoins(context: Context) = withContext(Dispatchers.IO) {
+    suspend fun refreshCoins(context: Context, manual: Boolean = false) = withContext(Dispatchers.IO) {
         if (_qqToken.value.isEmpty()) return@withContext
+        if (manual) _status.value = "🔄 正在同步最新 QQ 群金币..."
         try {
             val enc = URLEncoder.encode(_qqToken.value, "UTF-8")
-            val conn = (URL("https://azusa.online/club/coins?token=$enc").openConnection() as HttpURLConnection).apply {
+            val ts = System.currentTimeMillis()
+            val conn = (URL("https://azusa.online/club/coins?token=$enc&_t=$ts").openConnection() as HttpURLConnection).apply {
+                useCaches = false
+                setRequestProperty("Cache-Control", "no-cache")
                 connectTimeout = 6000; readTimeout = 6000
             }
             val text = conn.inputStream.bufferedReader().readText()
@@ -113,7 +117,12 @@ object QQCoinBinder {
             if (obj.optBoolean("ok", false)) {
                 _coins.value = obj.optInt("coins", _coins.value)
                 save(context)
+                if (manual) _status.value = "✅ 已同步最新 QQ 群金币：${_coins.value} 🪙"
+            } else if (manual) {
+                _status.value = "⚠️ 刷新失败：" + obj.optString("error", "请重新绑定")
             }
-        } catch (_: Exception) {}
+        } catch (e: Exception) {
+            if (manual) _status.value = "⚠️ 刷新失败：${e.message}"
+        }
     }
 }
