@@ -713,6 +713,7 @@ fun KOnMahjongSheetDialog(onDismiss: () -> Unit, embeddedInGameRoom: Boolean = f
     val lastWinHasRedDragon by engine.lastWinHasRedDragon.collectAsState()
     val aiDifficulty by engine.aiDifficulty.collectAsState()
     val lastClaimEvent by engine.lastClaimEvent.collectAsState()
+    val context = LocalContext.current
 
     LaunchedEffect(Unit) {
         launch { while (true) { QQCoinBinder.refreshCoins(context); kotlinx.coroutines.delay(12000) } }
