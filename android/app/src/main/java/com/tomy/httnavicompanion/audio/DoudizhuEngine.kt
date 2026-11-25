@@ -1275,6 +1275,10 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
     // 3. Online WebSocket Client (`ws://` or `wss://`)
     // =========================================================================
     fun connectOnlineServerRoom() {
+        if (!QQCoinBinder.isBound) {
+            _statusBanner.value = "🔒 远程服务器联机需先绑定登录 QQ 账号，未登录仅可使用面对面或 AI 游玩！"
+            return
+        }
         val code = _roomCode.value.trim()
         if (code.isEmpty()) {
             _statusBanner.value = "⚠️ 请先填写房间号，不填写无法进入在线房间！"

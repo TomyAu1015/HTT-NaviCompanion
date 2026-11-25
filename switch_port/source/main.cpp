@@ -4089,7 +4089,13 @@ int main(int argc, char* argv[]) {
                     if (gRoomCode.empty()) {
                         openSwitchRoomCodeKeyboard();
                     }
-                    if (gRoomCode.empty()) {
+                    if (gQqToken.empty()) {
+                        gStatusBanner = "🔒 远程联机需先按 [ZR] 绑定登录 QQ 账号，未登录仅可面对面/AI！";
+                        openSwitchQqBindFlow();
+                    }
+                    if (gQqToken.empty()) {
+                        gStatusBanner = "🔒 请先完成 QQ 账号绑定后再使用远程联机！";
+                    } else if (gRoomCode.empty()) {
                         gStatusBanner = "[注意] 请先按 [Y] 填写房间号后再连接！";
                     } else {
                         gIsOnlineRoom = true;
@@ -4114,6 +4120,9 @@ int main(int argc, char* argv[]) {
                         gRoomPeers.clear();
                         rebuildLobbySeats();
                         gStatusBanner = "已退出在线房间，恢复单人+轻音AI模式";
+                    } else if (gQqToken.empty()) {
+                        gStatusBanner = "🔒 远程联机需先按 [ZR] 绑定登录 QQ 账号，未登录仅可面对面/AI！";
+                        openSwitchQqBindFlow();
                     } else {
                         if (gRoomCode.empty()) openSwitchRoomCodeKeyboard();
                         if (!gRoomCode.empty()) {

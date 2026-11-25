@@ -1259,6 +1259,10 @@ class RummikubEngine(
     }
 
     fun connectOnlineServerRoom() {
+        if (!QQCoinBinder.isBound) {
+            _statusBanner.value = "🔒 远程服务器联机需先绑定登录 QQ 账号，未登录仅可使用面对面或 AI 游玩！"
+            return
+        }
         val code = _roomCode.value.trim()
         if (code.isEmpty()) { _statusBanner.value = "⚠️ 请先填写房号！"; return }
         stopNetworking()

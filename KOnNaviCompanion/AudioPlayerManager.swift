@@ -11169,6 +11169,12 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
     }
     
     func connectOnlineServerRoom() {
+        let hostTrim = onlineServerHost.trimmingCharacters(in: .whitespacesAndNewlines)
+        let isLanBridge = hostTrim.hasPrefix("192.168.") || hostTrim.hasPrefix("10.") || hostTrim.hasPrefix("172.")
+        if !isLanBridge && !KOnQQCoinBinder.shared.isBound {
+            statusBanner = "🔒 远程服务器联机需先绑定登录 QQ 账号，未登录仅可使用面对面或 AI 游玩！"
+            return
+        }
         let code = roomCode.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !code.isEmpty else {
             statusBanner = "⚠️ 请先填写房间号，不填写无法进入在线房间！"
@@ -13215,6 +13221,12 @@ class KOnMahjongManager: NSObject, ObservableObject, MCSessionDelegate, MCNearby
     }
 
     func connectOnlineServerRoom() {
+        let hostTrim = onlineServerHost.trimmingCharacters(in: .whitespacesAndNewlines)
+        let isLanBridge = hostTrim.hasPrefix("192.168.") || hostTrim.hasPrefix("10.") || hostTrim.hasPrefix("172.")
+        if !isLanBridge && !KOnQQCoinBinder.shared.isBound {
+            statusBanner = "🔒 远程服务器联机需先绑定登录 QQ 账号，未登录仅可使用面对面或 AI 游玩！"
+            return
+        }
         let code = roomCode.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !code.isEmpty else {
             statusBanner = "⚠️ 请先填写房间号再连接服务器！"
@@ -15373,6 +15385,12 @@ final class RummikubEngine: NSObject, ObservableObject {
     }
 
     func connectOnlineServerRoom() {
+        let hostTrim = onlineServerHost.trimmingCharacters(in: .whitespacesAndNewlines)
+        let isLanBridge = hostTrim.hasPrefix("192.168.") || hostTrim.hasPrefix("10.") || hostTrim.hasPrefix("172.")
+        if !isLanBridge && !KOnQQCoinBinder.shared.isBound {
+            statusBanner = "🔒 远程服务器联机需先绑定登录 QQ 账号，未登录仅可使用面对面或 AI 游玩！"
+            return
+        }
         let code = roomCode.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !code.isEmpty, let url = URL(string: customServerURL.trimmingCharacters(in: .whitespacesAndNewlines)) else {
             statusBanner = "⚠️ 请先填写房号！"
