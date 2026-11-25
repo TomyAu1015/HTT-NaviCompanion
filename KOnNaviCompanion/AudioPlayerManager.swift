@@ -11410,6 +11410,7 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
         }
         // Always rebuild seats from orderedRoomPeers so human players in the room never get stuck as AI on Round 2+!
         rebuildLobbySeats()
+        if mySeatIndex < 0 || mySeatIndex >= seats.count { mySeatIndex = 0 }
         
         // Build 54-card deck
         var deck: [DoudizhuCard] = []
@@ -14402,7 +14403,7 @@ struct RmkEvaluator {
             if uniq.count >= 3 {
                 let pts = evaluateMeld(uniq) ?? 0
                 if pts > bestPts { bestPts = pts; best = uniq }
-            } else if uniq.count == 2 && !jokers.isEmpty {
+            } else if false && uniq.count == 2 && !jokers.isEmpty {
                 let cand = uniq + [jokers[0]]
                 let pts = evaluateMeld(cand) ?? 0
                 if pts > bestPts { bestPts = pts; best = cand }
@@ -14506,8 +14507,8 @@ struct RmkEvaluator {
             extractGroups() // 777类型：只提取同数群组，不混入789顺子
         }
 
-        // Try pairing 2-tile near-meld with a Joker if available
-        while let jIdx = remaining.firstIndex(where: { $0.isJoker }) {
+        // 百搭不参与 777/789 自动组合，保留在剩余手牌末尾由玩家自由决定
+        if false, let jIdx = remaining.firstIndex(where: { $0.isJoker }) {
             let joker = remaining[jIdx]
             var paired: [RmkTile]? = nil
             if preferRuns {

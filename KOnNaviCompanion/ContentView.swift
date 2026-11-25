@@ -8323,6 +8323,8 @@ struct KOnDoudizhuSheetView: View {
     @State private var dealtVisibleCount: Int = 99
     @State private var dealingUnsortedOrder: [DoudizhuCard] = []
     @State private var isDealingPhase: Bool = false
+    @State private var dealingRoundKey: String = ""
+    @State private var dealingWorkItems: [DispatchWorkItem] = []
     
     private let httGold = Color(red: 0.88, green: 0.68, blue: 0.24)
     private let httCrimson = Color(red: 0.78, green: 0.18, blue: 0.22)
@@ -9050,7 +9052,7 @@ struct KOnDoudizhuSheetView: View {
                         opponentSeatPanel(seat: ddz.seats[rightSeatIdx], isLeft: false, isCompact: isCompact)
                     }
                 }
-                .frame(maxHeight: .infinity)
+                .frame(maxHeight: .infinity, alignment: .top)
                 .padding(.horizontal, 12)
                 
                 Spacer(minLength: 2)
@@ -9112,20 +9114,35 @@ struct KOnDoudizhuSheetView: View {
                             .padding(.bottom, isLandscape ? max(14, geo.safeAreaInsets.bottom + 4) : 6)
                             .onAppear {
                                 if ddz.phase != .lobby && !me.hand.isEmpty {
-                                    triggerDdzDealingAnimation(hand: me.hand)
+                                    let rk = "\(ddz.currentRound)_\(me.hand.count)"
+                                    if dealingRoundKey != rk {
+                                        dealingRoundKey = rk
+                                        triggerDdzDealingAnimation(hand: me.hand)
+                                    }
                                 }
                             }
                             .onChange(of: ddz.phase) { newP in
                                 if newP == .bidding && !me.hand.isEmpty {
-                                    triggerDdzDealingAnimation(hand: me.hand)
-                                } else if newP == .lobby {
+                                    let rk = "\(ddz.currentRound)_bidding"
+                                    if dealingRoundKey != rk {
+                                        dealingRoundKey = rk
+                                        triggerDdzDealingAnimation(hand: me.hand)
+                                    }
+                                } else if newP == .lobby || newP == .roundOver {
+                                    dealingWorkItems.forEach { $0.cancel() }
+                                    dealingWorkItems.removeAll()
                                     isDealingPhase = false
                                     dealingUnsortedOrder = []
+                                    if newP == .lobby { dealingRoundKey = "" }
                                 }
                             }
-                            .onChange(of: ddz.currentRound) { _ in
-                                if ddz.phase != .lobby && !me.hand.isEmpty {
-                                    triggerDdzDealingAnimation(hand: me.hand)
+                            .onChange(of: ddz.currentRound) { newR in
+                                if ddz.phase == .bidding && !me.hand.isEmpty {
+                                    let rk = "\(newR)_bidding"
+                                    if dealingRoundKey != rk {
+                                        dealingRoundKey = rk
+                                        triggerDdzDealingAnimation(hand: me.hand)
+                                    }
                                 }
                             }
                     }
@@ -9136,23 +9153,29 @@ struct KOnDoudizhuSheetView: View {
     
     // MARK: - 竖屏/横屏全可见自适应手牌扇形区（竖屏 >10 张自动双排居中叠放，<=10 张或横屏单排动态步进）
     private func triggerDdzDealingAnimation(hand: [DoudizhuCard]) {
+        dealingWorkItems.forEach { $0.cancel() }
+        dealingWorkItems.removeAll()
         dealingUnsortedOrder = hand.shuffled()
         dealtVisibleCount = 0
         isDealingPhase = true
         let total = hand.count
         for i in 1...max(1, total) {
-            DispatchQueue.main.asyncAfter(deadline: .now() + Double(i) * 0.038) {
+            let item = DispatchWorkItem {
                 withAnimation(.spring(response: 0.25, dampingFraction: 0.75)) {
                     dealtVisibleCount = i
                 }
                 if i == total {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
-                        withAnimation(.spring(response: 0.42, dampingFraction: 0.74)) {
+                    let done = DispatchWorkItem {
+                        withAnimation(.spring(response: 0.38, dampingFraction: 0.76)) {
                             isDealingPhase = false
                         }
                     }
+                    dealingWorkItems.append(done)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.16, execute: done)
                 }
             }
+            dealingWorkItems.append(item)
+            DispatchQueue.main.asyncAfter(deadline: .now() + Double(i) * 0.035, execute: item)
         }
     }
 
@@ -9163,7 +9186,7 @@ struct KOnDoudizhuSheetView: View {
         let cardH: CGFloat = isLandscape ? (counterOn ? min(58, max(48, geoHeight * 0.155)) : min(74, max(58, geoHeight * 0.195))) : (isCompact ? 78 : 94)
         let cardW: CGFloat = isLandscape ? (cardH * 0.72) : (isCompact ? 54 : 66)
         if count == 0 {
-            EmptyView()
+            Color.clear.frame(height: cardH + 16)
         } else if !isLandscape && count > 10 {
             let topCount = (count + 1) / 2
             let topCards = Array(hand.prefix(topCount))
