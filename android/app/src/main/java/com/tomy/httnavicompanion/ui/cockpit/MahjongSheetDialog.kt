@@ -397,8 +397,8 @@ fun KOnGameRoomSheetDialog(onDismiss: () -> Unit) {
     val grScope = rememberCoroutineScope()
     val grQqCoins by QQCoinBinder.coins.collectAsState()
     val grQqToken by QQCoinBinder.qqToken.collectAsState()
-    val grQqBound = grQqToken.isNotEmpty() && grQqUid.isNotEmpty()
     val grQqUid by QQCoinBinder.qqUid.collectAsState()
+    val grQqBound = grQqToken.isNotEmpty() && grQqUid.isNotEmpty()
     val grQqAnte by QQCoinBinder.coinAnte.collectAsState()
     val grQqStatus by QQCoinBinder.status.collectAsState()
     var showGrQqDialog by remember { mutableStateOf(false) }
