@@ -10658,7 +10658,7 @@ final class KOnQQCoinBinder: ObservableObject {
     @Published var qqUid: String = UserDefaults.standard.string(forKey: "htt_qq_uid") ?? ""
     @Published var qqToken: String = UserDefaults.standard.string(forKey: "htt_qq_token") ?? ""
     @Published var coins: Int = UserDefaults.standard.integer(forKey: "htt_qq_coins")
-    @Published var coinAnte: Int = 5 == 0 ? 10 : UserDefaults.standard.integer(forKey: "htt_qq_ante"))
+    @Published var coinAnte: Int = 5
     @Published var statusText: String = ""
     @Published var isBusy: Bool = false
 
