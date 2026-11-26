@@ -595,8 +595,11 @@ struct HTTSmoothMapView: UIViewRepresentable {
             let distDelta = camLoc.distance(from: usrLoc)
             
             let nowTime = CACurrentMediaTime()
-            let targetZoomDist = manager.hasActiveNavigation ? manager.recommendedNavigationZoomDistance() : manager.userZoomDistance
-            if (distDelta > 2.5 || hDiff > 4.0 || abs(mapView.camera.centerCoordinateDistance - targetZoomDist) > 65.0) && (nowTime - context.coordinator.lastCameraFollowTime >= 0.48) {
+            let curCamDist = mapView.camera.centerCoordinateDistance
+            let recZoom = manager.hasActiveNavigation ? manager.recommendedNavigationZoomDistance() : manager.userZoomDistance
+            let needZoom = abs(curCamDist - recZoom) > 140.0
+            let targetZoomDist = needZoom ? recZoom : curCamDist
+            if (distDelta > 0.35 || hDiff > 2.0 || needZoom) && (nowTime - context.coordinator.lastCameraFollowTime >= 0.16) {
                 context.coordinator.lastCameraFollowTime = nowTime
                 let camera = MKMapCamera(
                     lookingAtCenter: targetCoord,
@@ -604,9 +607,8 @@ struct HTTSmoothMapView: UIViewRepresentable {
                     pitch: camPitch,
                     heading: camHeading
                 )
-                // Smooth linear animation with allowUserInteraction + beginFromCurrentState eliminates stutter & never blocks pan/zoom!
                 UIView.animate(
-                    withDuration: 0.42,
+                    withDuration: 0.24,
                     delay: 0,
                     options: [.curveLinear, .allowUserInteraction, .beginFromCurrentState]
                 ) {
@@ -2949,8 +2951,8 @@ struct ContentView: View {
     private func turnIconName(for text: String) -> String {
         let lower = text.lowercased()
         if lower.contains("调头") || lower.contains("掉头") || lower.contains("u-turn") { return "arrow.uturn.left" }
-        if lower.contains("稍向右") || lower.contains("右前方") || lower.contains("keep right") || lower.contains("slight right") { return "arrow.up.right" }
-        if lower.contains("稍向左") || lower.contains("左前方") || lower.contains("keep left") || lower.contains("slight left") { return "arrow.up.left" }
+        if lower.contains("稍向右") || lower.contains("靠右") || lower.contains("右前方") || lower.contains("keep right") || lower.contains("slight right") { return "arrow.up.right" }
+        if lower.contains("稍向左") || lower.contains("靠左") || lower.contains("左前方") || lower.contains("keep left") || lower.contains("slight left") { return "arrow.up.left" }
         if lower.contains("右转") || lower.contains("右轉") || lower.contains("转右") || lower.contains("轉右") || lower.contains("向右") || lower.contains("turn right") { return "arrow.turn.up.right" }
         if lower.contains("左转") || lower.contains("左轉") || lower.contains("转左") || lower.contains("轉左") || lower.contains("向左") || lower.contains("turn left") { return "arrow.turn.up.left" }
         if lower.contains("右") && !lower.contains("左") { return "arrow.turn.up.right" }

@@ -8507,8 +8507,11 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         if text.contains("辅路") || text.contains("輔路") || text.contains("连接线") || text.contains("連接線") {
             return 60
         }
-        if text.contains("快速") || text.contains("高架") || text.contains("环线") || text.contains("環線") || text.contains("大桥") || text.contains("大橋") || text.contains("隧道") || text.contains("快速路") {
+        if text.contains("快速") || text.contains("高架") || text.contains("环线") || text.contains("環線") || text.contains("快速路") {
             return 80
+        }
+        if text.contains("隧道") || text.contains("大桥") || text.contains("大橋") || text.contains("南路") || text.contains("北路") || text.contains("东路") || text.contains("西路") || text.contains("中路") || text.contains("东晓") {
+            return 60
         }
         let isRealHighwayCode = text.range(of: #"\b[GS]\d{1,4}\b"#, options: .regularExpression) != nil
         if text.contains("高速") || text.contains("Expressway") || text.contains("Freeway") || text.contains("Motorway") || (isRealHighwayCode && !text.contains("辅")) {
@@ -8524,36 +8527,27 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     }
 
     /// 高德同款动态跟车视距：高速自动缩小看全局，城区路口/收费站/匝道自动放大看清细节
-    private var smoothedNavZoomDist: Double = 620.0
+    private var smoothedNavZoomDist: Double = 520.0
 
     func recommendedNavigationZoomDistance() -> Double {
         if travelMode == .walking { return 280.0 }
         if travelMode == .ebike {
-            return (hasActiveNavigation && distanceToNextStepMeters > 0 && distanceToNextStepMeters <= 160) ? 240.0 : 380.0
+            return (hasActiveNavigation && distanceToNextStepMeters > 0 && distanceToNextStepMeters <= 160) ? 260.0 : 380.0
         }
-        var rawTarget: Double = 620.0
-        // 1. 临近收费站（<= 600m）或即将转弯/匝道/路口（<= 280m）：高德逻辑自动放大看清车道
-        if hasActiveNavigation && upcomingTollDistance > 0 && upcomingTollDistance <= 600 {
-            rawTarget = 260.0
-        } else if hasActiveNavigation && distanceToNextStepMeters > 0 && distanceToNextStepMeters <= 280 {
-            rawTarget = 280.0
-        } else if hasActiveNavigation && distanceToNextStepMeters > 0 && distanceToNextStepMeters <= 480 && currentSpeedKmh < 70.0 {
-            rawTarget = 420.0
-        } else if hasActiveNavigation && distanceToNextStepMeters >= 2500 {
-            // 2. 高速/高架超长直行段：自动缩小地图看清前方大局
-            rawTarget = 1850.0
-        } else if currentSpeedKmh >= 80.0 || (speedLimitKmh >= 100.0 && currentSpeedKmh >= 60.0) || (hasActiveNavigation && distanceToNextStepMeters >= 1200) {
-            rawTarget = 1480.0
-        } else if currentSpeedKmh >= 58.0 || (speedLimitKmh >= 80.0 && currentSpeedKmh >= 45.0) {
-            rawTarget = 1050.0
-        } else if isCongested || currentSpeedKmh < 22.0 {
-            rawTarget = 380.0
+        var rawTarget: Double = 520.0
+        if hasActiveNavigation && upcomingTollDistance > 0 && upcomingTollDistance <= 350 {
+            rawTarget = 300.0
+        } else if hasActiveNavigation && distanceToNextStepMeters > 0 && distanceToNextStepMeters <= 220 {
+            rawTarget = 320.0
+        } else if currentSpeedKmh >= 85.0 {
+            rawTarget = 1200.0
+        } else if currentSpeedKmh >= 55.0 {
+            rawTarget = 780.0
         } else {
-            rawTarget = 620.0
+            rawTarget = 520.0
         }
-        // 低通平滑滤波：消除路线与视野“一时大一时小”的突兀跳变
-        smoothedNavZoomDist = smoothedNavZoomDist + (rawTarget - smoothedNavZoomDist) * 0.22
-        if abs(rawTarget - smoothedNavZoomDist) < 18.0 {
+        smoothedNavZoomDist = smoothedNavZoomDist + (rawTarget - smoothedNavZoomDist) * 0.08
+        if abs(rawTarget - smoothedNavZoomDist) < 25.0 {
             smoothedNavZoomDist = rawTarget
         }
         return smoothedNavZoomDist
@@ -9070,7 +9064,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     }
 
     private func verifiedTurnInstruction(raw: String, prevStep: MKRoute.Step?, nextStep: MKRoute.Step?) -> String {
-        var text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        var text = raw.replacingOccurrences(of: #"\{[^}]*\}"#, with: "", options: .regularExpression).trimmingCharacters(in: .whitespacesAndNewlines)
         guard let angle = geometricTurnAngle(from: prevStep, to: nextStep) else {
             return text
         }
@@ -9172,7 +9166,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         if activeSeg > currentStepIndex {
             currentStepIndex = activeSeg
             let newStep = steps[currentStepIndex]
-            let newInstr = newStep.instructions.trimmingCharacters(in: .whitespacesAndNewlines)
+            let newInstr = newStep.instructions.replacingOccurrences(of: #"\{[^}]*\}"#, with: "", options: .regularExpression).trimmingCharacters(in: .whitespacesAndNewlines)
             let enterKey = "\(currentStepIndex)_ENTER"
             if !newInstr.isEmpty && !announcedStepThresholds.contains(enterKey) {
                 announcedStepThresholds.insert(enterKey)
@@ -9214,6 +9208,9 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             }
             let traveledM = max(0, Int(route.distance - totalRemainMeters))
             self.updateUpcomingServiceAreaAndToll(traveledMeters: traveledM)
+            if self.upcomingCameraDistance > 0 && traveledM > self.lastTraveledMeters {
+                self.upcomingCameraDistance = max(0, self.upcomingCameraDistance - (traveledM - self.lastTraveledMeters))
+            }
         }
         
         // 1. TRANSIT MULTI-PHASE STATE MACHINE (GaoDe 1:1 Lifecycle!)
@@ -9542,7 +9539,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                         sampleKmh = min(260.0, (movedDelta / dtSec) * 3.6)
                     }
                 }
-                let filteredKmh = (sampleKmh != nil && sampleKmh! < 6.5 && movedDelta < 2.2 && loc.horizontalAccuracy > 12.0) ? 0.0 : sampleKmh
+                let filteredKmh = (sampleKmh != nil && sampleKmh! < 3.5 && movedDelta < 1.2 && loc.horizontalAccuracy > 18.0) ? 0.0 : sampleKmh
                 if let sKmh = filteredKmh {
                     if sKmh < 3.0 {
                         self.consecutiveLowSpeedFixes += 1
@@ -9554,7 +9551,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                         if self.smoothedSpeedKmh < 1.0 || abs(sKmh - self.smoothedSpeedKmh) > 12.0 {
                             self.smoothedSpeedKmh = sKmh
                         } else {
-                            self.smoothedSpeedKmh = self.smoothedSpeedKmh * 0.25 + sKmh * 0.75
+                            self.smoothedSpeedKmh = (abs(sKmh - self.smoothedSpeedKmh) > 3.5) ? sKmh : (self.smoothedSpeedKmh * 0.15 + sKmh * 0.85)
                         }
                         self.lastValidSpeedTimestamp = now
                     }
@@ -9718,7 +9715,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                 }
                 self.isPlaying = true
                 self.currentPlayingId = safeId
-                self.currentSpeechBubble = "[\(speaker)] \(text) (#\(safeId))"
+                self.currentSpeechBubble = "[\(speaker)] \(text)"
             }
         } catch {
             print("Failed to play nav voice \(safeId): \(error)")
