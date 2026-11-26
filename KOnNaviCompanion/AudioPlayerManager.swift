@@ -10808,8 +10808,6 @@ struct DoudizhuNetPacket: Codable {
     var aiDifficulty: String?
     var qqToken: String? = nil
     var coinAnte: Int? = nil
-    var hitMaCount: Int? = nil
-    var lastKongFromSeat: Int? = nil
 }
 
 // Abstract Transport Protocol: Supports Face-to-Face P2P Now & Online WebSocket Server Later!
