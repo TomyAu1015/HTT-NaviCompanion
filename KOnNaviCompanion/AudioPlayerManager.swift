@@ -11826,9 +11826,7 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
             turnTimeLimit: turnTimeLimit,
             allowCardCounter: allowCardCounter,
             aiDifficulty: aiDifficulty,
-            coinAnte: isOnlineConnected ? 5 : nil,
-            hitMaCount: lastHitMaCount,
-            lastKongFromSeat: lastKongFromSeat
+            coinAnte: isOnlineConnected ? 5 : nil
         )
         sendPacketToPeers(pkt)
     }
@@ -12305,6 +12303,8 @@ struct MahjongNetPacket: Codable {
     var actionType: String? = nil // "hu", "kong", "pong", "pass", "selfHu", "selfKong"
     var qqToken: String? = nil
     var coinAnte: Int? = nil
+    var hitMaCount: Int? = nil
+    var lastKongFromSeat: Int? = nil
 }
 
 enum MahjongEvaluator {
@@ -13023,7 +13023,9 @@ class KOnMahjongManager: NSObject, ObservableObject, MCSessionDelegate, MCNearby
     @Published var currentRound: Int = 1
     @Published var baseScore: Int = 5
     @Published var turnTimeLimit: Int = 25
-    @Published var turnRemainingSeconds: Int = 20
+    @Published var turnRemainingSeconds: Int = 25
+    var lastHitMaCount: Int = 0
+    var lastKongFromSeat: Int = -1
     @Published var statusBanner: String = "欢迎来到广东红中麻将！红中为赖子，不能吃，可碰杠胡"
 
     @Published var phase: MahjongGamePhase = .lobby
