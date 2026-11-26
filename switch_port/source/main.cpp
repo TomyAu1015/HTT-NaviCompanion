@@ -75,7 +75,7 @@ static std::vector<RoomPeer> gRoomPeers;
 static std::string gQqUid = "";
 static std::string gQqToken = "";
 static int gQqCoins = -1;
-static int gCoinAnte = 10;
+static int gCoinAnte = 5;
 
 // 60fps 平滑动画状态 (斗地主/麻将提起插值 + 出牌飞行动画)
 static std::map<std::string, float> gCardLiftAnim;
@@ -185,10 +185,10 @@ static int gDdzHighestBid = 0;
 static int gDdzHighestBidder = -1;
 static int gDdzBidsCount = 0;
 static int gDdzMultiplier = 1;
-static int gDdzBaseScore = 100;
+static int gDdzBaseScore = 5;
 static int gDdzRound = 1;
 static int gDdzTotalRounds = 3;
-static int gDdzTurnLimit = 20;
+static int gDdzTurnLimit = 25;
 static uint32_t gDdzTurnStartTick = 0;
 static int gDdzWinnerSeat = -1;
 static DdzEvalHand gDdzLastValid;
@@ -207,10 +207,10 @@ static std::vector<MjTile> gMjWall;
 static int gMjWallCount = 0;
 static int gMjMySeat = 0;
 static int gMjTurnSeat = 0;
-static int gMjBaseScore = 100;
+static int gMjBaseScore = 5;
 static int gMjRound = 1;
 static int gMjTotalRounds = 4;
-static int gMjTurnLimit = 20;
+static int gMjTurnLimit = 25;
 static uint32_t gMjTurnStartTick = 0;
 static int gMjWinnerSeat = -1;
 static std::string gMjWinReason;
@@ -2772,7 +2772,7 @@ static void renderLobbyScreen() {
     drawText(gFontMed, wsConn ? ("[X] 已连(" + gRoomCode + ") · 按[X]退出房间") : "[X] 连接跨平台联机房间", 625, 353, COL_WHITE, true);
 
     drawText(gFontSmall, "同房号即与 iOS / Android 同桌对局", 840, 344, COL_CREAM);
-    drawText(gFontSmall, "在线联机底注: " + std::to_string(gCoinAnte) + " 金币 (点此切换 5/10/20/50)", 840, 368, COL_GOLD);
+    drawText(gFontSmall, "联机规则: 默认 5 金币/局 (App端免费)", 840, 368, COL_GOLD);
 
     // 3. Seat Preview (Supports 2P / 3P / 4P selector for Rummikub!)
     drawRoundedRectFill(36, 416, 1208, 174, 14, COL_PANEL);
@@ -3851,7 +3851,7 @@ int main(int argc, char* argv[]) {
                 else if (pointInRect(tx, ty, 740, 158, 198, 28)) { openSwitchQqBindFlow(); rebuildLobbySeats(); }
                 else if (pointInRect(tx, ty, 54, 338, 360, 56)) { gLobbyFocus = 5; kDown |= HidNpadButton_Y; }
                 else if (pointInRect(tx, ty, 432, 338, 386, 56)) { gLobbyFocus = 6; kDown |= HidNpadButton_X; }
-                else if (pointInRect(tx, ty, 830, 340, 400, 52)) { gCoinAnte = (gCoinAnte == 5 ? 10 : (gCoinAnte == 10 ? 20 : (gCoinAnte == 20 ? 50 : 5))); gStatusBanner = "已切换在线联机每局底注为 " + std::to_string(gCoinAnte) + " 金币"; }
+                else if (pointInRect(tx, ty, 830, 340, 400, 52)) { gCoinAnte = 5; }
                 else if (pointInRect(tx, ty, 36, 600, 1208, 68)) { gLobbyFocus = 7; kDown |= HidNpadButton_A; }
                 else {
                     for (int i = 0; i < 5; ++i) {

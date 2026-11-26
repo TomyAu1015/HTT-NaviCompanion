@@ -8710,9 +8710,6 @@ struct KOnDoudizhuSheetView: View {
                 ddzRuleRow(label: tr("对局局数:", "對局局數:", "Rounds:"), options: [(3, tr("3局", "3局", "3R")), (5, tr("5局", "5局", "5R")), (10, tr("10局", "10局", "10R")), (0, tr("无限局", "無限局", "∞"))], selected: ddz.totalRounds, activeColor: httCrimson, enabled: canEditRules) {
                     ddz.totalRounds = $0; ddz.syncRulesIfHost()
                 }
-                ddzRuleRow(label: tr("每局底分:", "每局底分:", "Base:"), options: [(50, tr("50分", "50分", "50")), (100, tr("100分", "100分", "100")), (200, tr("200分", "200分", "200")), (500, tr("500分", "500分", "500"))], selected: ddz.baseScore, activeColor: Color(red: 0.85, green: 0.58, blue: 0.15), enabled: canEditRules) {
-                    ddz.baseScore = $0; ddz.syncRulesIfHost()
-                }
                 ddzRuleRow(label: tr("倍数封顶:", "倍數封頂:", "Max Mult:"), options: [(16, tr("16倍", "16倍", "16x")), (32, tr("32倍", "32倍", "32x")), (64, tr("64倍", "64倍", "64x")), (0, tr("不封顶", "不封頂", "No Cap"))], selected: ddz.maxMultiplier, activeColor: .purple, enabled: canEditRules) {
                     ddz.maxMultiplier = $0; ddz.syncRulesIfHost()
                 }
@@ -9932,7 +9929,7 @@ struct KOnMahjongSheetView: View {
                         }
                         HStack(spacing: 5) {
                             Text(mjTr("限时:", "限時:", "Timer:")).font(.system(size: 10, weight: .bold)).foregroundColor(httCream).frame(width: 34, alignment: .leading)
-                            ForEach([15, 20, 30, 0], id: \.self) { t in
+                            ForEach([15, 25, 30, 0], id: \.self) { t in
                                 Button(action: { if canEdit { mj.turnTimeLimit = t; mj.turnRemainingSeconds = t; mj.syncRulesIfHost() } }) {
                                     Text(t == 0 ? mjTr("不限", "不限", "∞") : "\(t)s").font(.system(size: 10, weight: .bold))
                                         .frame(maxWidth: .infinity).padding(.vertical, 4)
@@ -10951,16 +10948,7 @@ struct KOnGameRoomSheetView: View {
                                     Text("🪙 绑定 QQ 群金币").font(.title3.bold())
                                     Text("仅「在线服务器联机且 ≥2 名真人」增减 QQ 群金币；金币不足将自动按练习局不扣不加。")
                                         .font(.caption).foregroundColor(.secondary).multilineTextAlignment(.center)
-                                    HStack(spacing: 6) {
-                                        Text("房主联机底注:").font(.caption.bold()).lineLimit(1).fixedSize(horizontal: true, vertical: false)
-                                        ForEach([5, 10, 20, 50], id: \.self) { amt in
-                                            Button(action: { qqBinder.coinAnte = amt; qqBinder.save() }) {
-                                                Text("\(amt)🪙").font(.caption.bold()).lineLimit(1).fixedSize(horizontal: true, vertical: false)
-                                            }
-                                            .buttonStyle(.borderedProminent)
-                                            .tint(qqBinder.coinAnte == amt ? .orange : .gray.opacity(0.5))
-                                        }
-                                    }
+                                    Text("联机规则：默认 5 🪙/局（H5 网页端每局收 1 🪙 房费，App 端免费）").font(.caption).foregroundColor(.secondary)
                                     if qqBinder.isBound {
                                         Text("已绑定 QQ：\(qqBinder.qqUid) · 当前群金币：\(qqBinder.coins) 🪙").font(.subheadline.bold()).foregroundColor(.orange)
                                     }

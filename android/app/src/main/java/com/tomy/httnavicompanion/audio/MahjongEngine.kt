@@ -482,10 +482,10 @@ class MahjongEngine(private val context: Context, private val audioMgr: AudioPla
     private val _currentRound = MutableStateFlow(1)
     val currentRound: StateFlow<Int> = _currentRound
 
-    private val _baseScore = MutableStateFlow(100)
+    private val _baseScore = MutableStateFlow(5)
     val baseScore: StateFlow<Int> = _baseScore
 
-    private val _turnTimeLimit = MutableStateFlow(20)
+    private val _turnTimeLimit = MutableStateFlow(25)
     val turnTimeLimit: StateFlow<Int> = _turnTimeLimit
 
     private val _turnRemainingSeconds = MutableStateFlow(20)
@@ -545,6 +545,8 @@ class MahjongEngine(private val context: Context, private val audioMgr: AudioPla
     }
 
     private var activeConnectedRoomCode = ""
+    private var lastHitMaCount = 0
+    private var lastKongFromSeat = -1
     private val peerCharMap = mutableMapOf<String, CharacterFilter>()
     private val orderedRoomPeers = mutableListOf<Pair<String, Int>>()
     private val wall = mutableListOf<MahjongTile>()
@@ -964,6 +966,8 @@ class MahjongEngine(private val context: Context, private val audioMgr: AudioPla
             put("currentRound", _currentRound.value)
             put("baseScore", _baseScore.value)
             put("turnTimeLimit", _turnTimeLimit.value)
+            put("hitMaCount", lastHitMaCount)
+            put("lastKongFromSeat", lastKongFromSeat)
         }
         sendPacketJson(pkt)
     }
@@ -1222,7 +1226,7 @@ class MahjongEngine(private val context: Context, private val audioMgr: AudioPla
         _activeDiscardFlight.value = null
         _phase.value = MahjongGamePhase.PLAYING
         _currentTurnSeat.value = dealerIdx
-        _turnRemainingSeconds.value = if (_turnTimeLimit.value > 0) _turnTimeLimit.value else 20
+        _turnRemainingSeconds.value = if (_turnTimeLimit.value > 0) _turnTimeLimit.value else 25
         _statusBanner.value = "🀄 第 ${_currentRound.value} 局开始！[${dealtSeats[dealerIdx].name}] 坐庄先出牌 (红中=赖子)"
         audioMgr.playMascotVoice(dealtSeats[dealerIdx].character)
         broadcastFullStateSync()
@@ -1320,7 +1324,7 @@ class MahjongEngine(private val context: Context, private val audioMgr: AudioPla
             val rem = s.hand.filterNot { it.suit == tile.suit && it.rank == tile.rank }
             val melds = s.melds + MahjongMeld(UUID.randomUUID().toString(), MahjongMeldKind.CONCEALED_KONG, tile)
             cur.mapIndexed { idx, seat ->
-                val sc = seat.score + if (idx == actor) _baseScore.value * 3 else -_baseScore.value
+                val sc = seat.score + if (idx == actor) 3 else -1
                 if (idx == actor) seat.copy(hand = rem, melds = melds, score = sc, lastActionText = "暗杠 ${tile.fullName}") else seat.copy(score = sc)
             }
         } else {
@@ -1329,7 +1333,7 @@ class MahjongEngine(private val context: Context, private val audioMgr: AudioPla
             if (hIdx >= 0) rem.removeAt(hIdx)
             val melds = s.melds.map { if (it.kind == MahjongMeldKind.PONG && it.tile.suit == tile.suit && it.tile.rank == tile.rank) it.copy(kind = MahjongMeldKind.EXPOSED_KONG) else it }
             cur.mapIndexed { idx, seat ->
-                val sc = seat.score + if (idx == actor) _baseScore.value * 3 else -_baseScore.value
+                val sc = seat.score + if (idx == actor) 3 else -1
                 if (idx == actor) seat.copy(hand = rem, melds = melds, score = sc, lastActionText = "补杠 ${tile.fullName}") else seat.copy(score = sc)
             }
         }
@@ -1388,12 +1392,13 @@ class MahjongEngine(private val context: Context, private val audioMgr: AudioPla
         if (action == "kong" && cl.eligibleKongSeats.contains(seatIdx)) {
             if (cl.eligibleHuSeats.any { !cl.passedSeats.contains(it) && it != seatIdx }) return
             val cur = _seats.value.toMutableList()
-            cur[cl.discarderSeat] = cur[cl.discarderSeat].copy(discards = cur[cl.discarderSeat].discards.dropLast(1), score = cur[cl.discarderSeat].score - _baseScore.value * 3)
+            lastKongFromSeat = cl.discarderSeat
+                    cur[cl.discarderSeat] = cur[cl.discarderSeat].copy(discards = cur[cl.discarderSeat].discards.dropLast(1), score = cur[cl.discarderSeat].score - 3)
             val s = cur[seatIdx]
             cur[seatIdx] = s.copy(
                 hand = s.hand.filterNot { it.suit == cl.tile.suit && it.rank == cl.tile.rank },
                 melds = s.melds + MahjongMeld(UUID.randomUUID().toString(), MahjongMeldKind.EXPOSED_KONG, cl.tile),
-                score = s.score + _baseScore.value * 3,
+                score = s.score + 3,
                 lastActionText = "明杠 ${cl.tile.fullName}"
             )
             triggerClaimEvent(seatIdx, "明杠", cl.tile)
@@ -1419,7 +1424,7 @@ class MahjongEngine(private val context: Context, private val audioMgr: AudioPla
             _pendingClaim.value = null
             _phase.value = MahjongGamePhase.PLAYING
             _currentTurnSeat.value = seatIdx
-            _turnRemainingSeconds.value = if (_turnTimeLimit.value > 0) _turnTimeLimit.value else 20
+            _turnRemainingSeconds.value = if (_turnTimeLimit.value > 0) _turnTimeLimit.value else 25
             _statusBanner.value = "💥 [${s.name}] 碰了 ${cl.tile.fullName}！请出牌"
             audioMgr.playMascotVoice(s.character)
             broadcastFullStateSync()
@@ -1459,7 +1464,7 @@ class MahjongEngine(private val context: Context, private val audioMgr: AudioPla
         _drawnTileId.value = drawn.id
         _phase.value = MahjongGamePhase.PLAYING
         _currentTurnSeat.value = seatIdx
-        _turnRemainingSeconds.value = if (_turnTimeLimit.value > 0) _turnTimeLimit.value else 20
+        _turnRemainingSeconds.value = if (_turnTimeLimit.value > 0) _turnTimeLimit.value else 25
         _statusBanner.value = bannerPrefix ?: "🀄 轮到 [${s.name}] 摸牌出牌 (余 ${wall.size} 张)"
         broadcastFullStateSync()
         scheduleAIActionIfNeeded()
@@ -1496,6 +1501,7 @@ class MahjongEngine(private val context: Context, private val audioMgr: AudioPla
         _wallCount.value = wall.size
 
         val mult = (2 + horseHits) * (if (laizi >= 4) 2 else if (hasRedDragon) 1 else 2)
+        lastHitMaCount = horseHits
         val pts = _baseScore.value * mult
         _lastWinScoreDelta.value = pts * 3
         val settled = cur.mapIndexed { idx, s ->

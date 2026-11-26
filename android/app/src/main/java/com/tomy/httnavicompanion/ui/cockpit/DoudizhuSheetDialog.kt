@@ -568,7 +568,6 @@ fun KOnDoudizhuSheetDialog(onDismiss: () -> Unit, embeddedInGameRoom: Boolean = 
                             }
 
                             RuleOptionRow("对局局数:", listOf(3 to "3局", 5 to "5局", 10 to "10局", 0 to "无限局"), totalRounds, DdzRed) { if (isRoomAuthority || (!isHosting && !isServerConn && connectedPeers.isEmpty())) engine.setTotalRounds(it) }
-                            RuleOptionRow("每局底分:", listOf(50 to "50分", 100 to "100分", 200 to "200分", 500 to "500分"), baseScore, Color(0xFFD99426)) { if (isRoomAuthority || (!isHosting && !isServerConn && connectedPeers.isEmpty())) engine.setBaseScore(it) }
                             RuleOptionRow("倍数封顶:", listOf(16 to "16倍", 32 to "32倍", 64 to "64倍", 0 to "不封顶"), maxMult, Color(0xFF9C27B0)) { if (isRoomAuthority || (!isHosting && !isServerConn && connectedPeers.isEmpty())) engine.setMaxMultiplier(it) }
                             RuleOptionRow("出牌限时:", listOf(15 to "15秒", 25 to "25秒", 30 to "30秒", 0 to "不限时"), turnLimit, DdzBlue) { if (isRoomAuthority || (!isHosting && !isServerConn && connectedPeers.isEmpty())) engine.setTurnTimeLimit(it) }
 
@@ -655,7 +654,7 @@ fun KOnDoudizhuSheetDialog(onDismiss: () -> Unit, embeddedInGameRoom: Boolean = 
                     ) {
                         val roundTxt = if (totalRounds == 0) "无限局" else "${totalRounds}局制"
                         Text(
-                            if (isGuestWaiting) "⏳ 等待房主开始牌局 ($roundTxt · 底分 $baseScore)..." else "▶ 立即开始牌局 ($roundTxt · 底分 $baseScore)",
+                            if (isGuestWaiting) "⏳ 等待房主开始牌局 ($roundTxt)..." else "▶ 立即开始牌局 ($roundTxt)",
                             color = Color.White,
                             fontSize = 14.sp,
                             fontWeight = FontWeight.Black

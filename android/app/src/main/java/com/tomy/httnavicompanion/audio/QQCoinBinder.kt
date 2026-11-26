@@ -18,7 +18,7 @@ object QQCoinBinder {
     val qqToken: StateFlow<String> = _qqToken
     private val _coins = MutableStateFlow(0)
     val coins: StateFlow<Int> = _coins
-    private val _coinAnte = MutableStateFlow(10)
+    private val _coinAnte = MutableStateFlow(5)
     val coinAnte: StateFlow<Int> = _coinAnte
     private val _status = MutableStateFlow("")
     val status: StateFlow<String> = _status
@@ -31,7 +31,7 @@ object QQCoinBinder {
         _qqUid.value = sp.getString("qq", "") ?: ""
         _qqToken.value = sp.getString("token", "") ?: ""
         _coins.value = sp.getInt("coins", 0)
-        _coinAnte.value = sp.getInt("ante", 10)
+        _coinAnte.value = 5
     }
 
     private fun save(context: Context) {

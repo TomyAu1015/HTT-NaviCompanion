@@ -10658,7 +10658,7 @@ final class KOnQQCoinBinder: ObservableObject {
     @Published var qqUid: String = UserDefaults.standard.string(forKey: "htt_qq_uid") ?? ""
     @Published var qqToken: String = UserDefaults.standard.string(forKey: "htt_qq_token") ?? ""
     @Published var coins: Int = UserDefaults.standard.integer(forKey: "htt_qq_coins")
-    @Published var coinAnte: Int = max(5, UserDefaults.standard.integer(forKey: "htt_qq_ante") == 0 ? 10 : UserDefaults.standard.integer(forKey: "htt_qq_ante"))
+    @Published var coinAnte: Int = 5 == 0 ? 10 : UserDefaults.standard.integer(forKey: "htt_qq_ante"))
     @Published var statusText: String = ""
     @Published var isBusy: Bool = false
 
@@ -10811,6 +10811,8 @@ struct DoudizhuNetPacket: Codable {
     var aiDifficulty: String?
     var qqToken: String? = nil
     var coinAnte: Int? = nil
+    var hitMaCount: Int? = nil
+    var lastKongFromSeat: Int? = nil
 }
 
 // Abstract Transport Protocol: Supports Face-to-Face P2P Now & Online WebSocket Server Later!
@@ -10980,9 +10982,11 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
     @Published var isOnlineConnected: Bool = false
     @Published var totalRounds: Int = 3
     @Published var currentRound: Int = 1
-    @Published var baseScore: Int = 100
+    @Published var baseScore: Int = 5
     @Published var maxMultiplier: Int = 32
     @Published var turnTimeLimit: Int = 25
+    var lastHitMaCount: Int = 0
+    var lastKongFromSeat: Int = -1
     @Published var turnRemainingSeconds: Int = 25
     @Published var allowCardCounter: Bool = true
     @Published var aiDifficulty: String = "标准 AI"
@@ -11689,7 +11693,7 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
         seats[actor].lastPlayedCards = cards.sorted { $0.rank > $1.rank }
         seats[actor].lastActionText = eval.category.localizedName(AudioPlayerManager.shared.language)
         
-        if eval.category == .bomb || eval.category == .rocket {
+        if eval.category == .bomb || eval.category == .rocket || eval.category == .airplane {
             let nextM = multiplier * 2
             multiplier = maxMultiplier > 0 ? min(nextM, maxMultiplier) : nextM
         }
@@ -11827,7 +11831,9 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
             turnTimeLimit: turnTimeLimit,
             allowCardCounter: allowCardCounter,
             aiDifficulty: aiDifficulty,
-            coinAnte: isOnlineConnected ? KOnQQCoinBinder.shared.coinAnte : nil
+            coinAnte: isOnlineConnected ? 5 : nil,
+            hitMaCount: lastHitMaCount,
+            lastKongFromSeat: lastKongFromSeat
         )
         sendPacketToPeers(pkt)
     }
@@ -13020,8 +13026,8 @@ class KOnMahjongManager: NSObject, ObservableObject, MCSessionDelegate, MCNearby
 
     @Published var totalRounds: Int = 4
     @Published var currentRound: Int = 1
-    @Published var baseScore: Int = 100
-    @Published var turnTimeLimit: Int = 20
+    @Published var baseScore: Int = 5
+    @Published var turnTimeLimit: Int = 25
     @Published var turnRemainingSeconds: Int = 20
     @Published var statusBanner: String = "欢迎来到广东红中麻将！红中为赖子，不能吃，可碰杠胡"
 
@@ -13483,7 +13489,7 @@ class KOnMahjongManager: NSObject, ObservableObject, MCSessionDelegate, MCNearby
 
     private func startTurnTimer() {
         turnTimer?.invalidate()
-        turnRemainingSeconds = turnTimeLimit > 0 ? turnTimeLimit : 20
+        turnRemainingSeconds = turnTimeLimit > 0 ? turnTimeLimit : 25
         let t = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
             guard let self = self else { return }
             guard self.phase == .playing || self.phase == .claimWindow else { return }
@@ -13491,7 +13497,7 @@ class KOnMahjongManager: NSObject, ObservableObject, MCSessionDelegate, MCNearby
             if self.turnRemainingSeconds > 0 {
                 self.turnRemainingSeconds -= 1
             } else {
-                self.turnRemainingSeconds = self.turnTimeLimit > 0 ? self.turnTimeLimit : 20
+                self.turnRemainingSeconds = self.turnTimeLimit > 0 ? self.turnTimeLimit : 25
                 if self.isRoomAuthority {
                     self.handleTimeout()
                 }
@@ -13589,7 +13595,7 @@ class KOnMahjongManager: NSObject, ObservableObject, MCSessionDelegate, MCNearby
             seats[actor].lastActionText = "暗杠 \(tile.fullName)"
             triggerClaimEvent(seatIdx: actor, actionLabel: "暗杠", tile: tile)
             for i in 0..<4 {
-                seats[i].score += (i == actor) ? (baseScore * 3) : (-baseScore)
+                seats[i].score += (i == actor) ? 3 : -1
             }
         } else if let mIdx = seats[actor].melds.firstIndex(where: { $0.kind == .pong && $0.tile.suit == tile.suit && $0.tile.rank == tile.rank }),
                   let handIdx = seats[actor].hand.firstIndex(where: { $0.suit == tile.suit && $0.rank == tile.rank }) {
@@ -13598,7 +13604,7 @@ class KOnMahjongManager: NSObject, ObservableObject, MCSessionDelegate, MCNearby
             seats[actor].lastActionText = "补杠 \(tile.fullName)"
             triggerClaimEvent(seatIdx: actor, actionLabel: "补杠", tile: tile)
             for i in 0..<4 {
-                seats[i].score += (i == actor) ? (baseScore * 3) : (-baseScore)
+                seats[i].score += (i == actor) ? 3 : -1
             }
         }
         AudioPlayerManager.shared.playMascotVoice(for: characterFilter(for: seats[actor].characterId))
@@ -13689,7 +13695,7 @@ class KOnMahjongManager: NSObject, ObservableObject, MCSessionDelegate, MCNearby
             drawnTileId = nil
             phase = .playing
             currentTurnSeat = seatIdx
-            turnRemainingSeconds = turnTimeLimit > 0 ? turnTimeLimit : 20
+            turnRemainingSeconds = turnTimeLimit > 0 ? turnTimeLimit : 25
             statusBanner = "💥 [\(seats[seatIdx].name)] 碰了 \(claim.tile.fullName)！请出牌"
             AudioPlayerManager.shared.playMascotVoice(for: characterFilter(for: seats[seatIdx].characterId))
             broadcastFullState()
@@ -13733,7 +13739,7 @@ class KOnMahjongManager: NSObject, ObservableObject, MCSessionDelegate, MCNearby
         drawnTileId = drawn.id
         phase = .playing
         currentTurnSeat = seatIdx
-        turnRemainingSeconds = turnTimeLimit > 0 ? turnTimeLimit : 20
+        turnRemainingSeconds = turnTimeLimit > 0 ? turnTimeLimit : 25
         statusBanner = bannerPrefix ?? "🀄 轮到 [\(seats[seatIdx].name)] 摸牌出牌 (余 \(wallCount) 张)"
         broadcastFullState()
         scheduleAIActionIfNeeded()
@@ -13770,6 +13776,7 @@ class KOnMahjongManager: NSObject, ObservableObject, MCSessionDelegate, MCNearby
         wallCount = wall.count
 
         let mult = (2 + horseHits) * (laiziCount >= 4 ? 2 : (hasRedDragon ? 1 : 2))
+        lastHitMaCount = horseHits
         let pts = baseScore * mult
         lastWinScoreDelta = pts * 3
         for i in 0..<4 {
@@ -13868,7 +13875,9 @@ class KOnMahjongManager: NSObject, ObservableObject, MCSessionDelegate, MCNearby
             currentRound: currentRound,
             baseScore: baseScore,
             turnTimeLimit: turnTimeLimit,
-            coinAnte: isOnlineConnected ? KOnQQCoinBinder.shared.coinAnte : nil
+            coinAnte: isOnlineConnected ? 5 : nil,
+            hitMaCount: lastHitMaCount,
+            lastKongFromSeat: lastKongFromSeat
         )
         sendPacketToPeers(pkt)
     }

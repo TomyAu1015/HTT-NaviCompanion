@@ -262,7 +262,7 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
     private val _currentRound = MutableStateFlow(1)
     val currentRound: StateFlow<Int> = _currentRound
 
-    private val _baseScore = MutableStateFlow(100) // 50, 100, 200, 500
+    private val _baseScore = MutableStateFlow(5) // 50, 100, 200, 500
     val baseScore: StateFlow<Int> = _baseScore
 
     private val _maxMultiplier = MutableStateFlow(32) // 16, 32, 64, 0=不封顶
@@ -2038,7 +2038,7 @@ class DoudizhuEngine(private val context: Context, private val audioMgr: AudioPl
     }
 
     private fun executePlay(seatIdx: Int, eval: EvaluatedDoudizhuHand) {
-        if (eval.type == DoudizhuHandType.BOMB || eval.type == DoudizhuHandType.ROCKET) {
+        if (eval.type == DoudizhuHandType.BOMB || eval.type == DoudizhuHandType.ROCKET || eval.type == DoudizhuHandType.AIRPLANE) {
             val nextM = _multiplier.value * 2
             _multiplier.value = if (_maxMultiplier.value > 0) minOf(nextM, _maxMultiplier.value) else nextM
         }

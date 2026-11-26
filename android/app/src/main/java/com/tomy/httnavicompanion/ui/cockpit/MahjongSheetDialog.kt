@@ -998,9 +998,8 @@ fun KOnMahjongSheetDialog(onDismiss: () -> Unit, embeddedInGameRoom: Boolean = f
                                 Text(if (canEdit) "第$currentRound/${if (totalRounds == 0) "∞" else totalRounds}局" else "🔒仅房主可改", color = if (canEdit) Color(0xFF00E676) else Color(0xFFFFB74D), fontSize = 10.sp)
                             }
                             MjRuleRow("局数:", listOf(4 to "4局", 8 to "8局", 16 to "16局", 0 to "无限"), totalRounds, MjRed) { if (canEdit) engine.setTotalRounds(it) }
-                            MjRuleRow("底分:", listOf(50 to "50分", 100 to "100分", 200 to "200分", 500 to "500分"), baseScore, Color(0xFFD99426)) { if (canEdit) engine.setBaseScore(it) }
                             MjRuleRow("AI:", listOf(0 to "休闲 AI", 1 to "标准 AI", 2 to "大师 AI"), aiDifficulty.ordinal, Color(0xFF7E57C2)) { if (canEdit) engine.setAiDifficulty(MahjongAIDifficulty.entries[it]) }
-                            MjRuleRow("限时:", listOf(15 to "15秒", 20 to "20秒", 30 to "30秒", 0 to "不限"), turnLimit, MjBlue) { if (canEdit) engine.setTurnTimeLimit(it) }
+                            MjRuleRow("限时:", listOf(15 to "15秒", 25 to "25秒", 30 to "30秒", 0 to "不限"), turnLimit, MjBlue) { if (canEdit) engine.setTurnTimeLimit(it) }
                         }
 
                         // 4. 4-Seat Preview
@@ -1036,7 +1035,7 @@ fun KOnMahjongSheetDialog(onDismiss: () -> Unit, embeddedInGameRoom: Boolean = f
                         shape = RoundedCornerShape(12.dp),
                         modifier = Modifier.fillMaxWidth().height(44.dp)
                     ) {
-                        Text(HTTGameRoomLocalizer.localize(if (isGuestWaiting) "⏳ 等待1号房主开始麻将..." else "🀄 立即开始广东红中麻将 (底分 $baseScore)", lang), color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Black)
+                        Text(HTTGameRoomLocalizer.localize(if (isGuestWaiting) "⏳ 等待1号房主开始麻将..." else "🀄 立即开始广东红中麻将", lang), color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Black)
                     }
                 } else {
                     // Active 4-Player Mahjong Table
