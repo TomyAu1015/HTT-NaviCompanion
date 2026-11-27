@@ -415,7 +415,8 @@ fun KOnGameRoomSheetDialog(onDismiss: () -> Unit) {
 
     val inLobbyNow = (selectedGame == 0 && ddzPhase == DoudizhuGamePhase.LOBBY) ||
         (selectedGame == 1 && mjPhase == MahjongGamePhase.LOBBY) ||
-        (selectedGame == 2 && rmkPhase == RmkGamePhase.LOBBY)
+        (selectedGame == 2 && rmkPhase == RmkGamePhase.LOBBY) ||
+        (selectedGame == 3)
     val isInJoinedRoom = !inLobbyNow ||
         (selectedGame == 0 && (ddzHosting || ddzServerConn || ddzPeers.isNotEmpty())) ||
         (selectedGame == 1 && (mjHosting || mjServerConn || mjPeers.isNotEmpty())) ||
@@ -736,6 +737,35 @@ fun KOnGameRoomSheetDialog(onDismiss: () -> Unit) {
                                 maxLines = 1
                             )
                         }
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(9.dp))
+                                .background(if (selectedGame == 3) Color(0xFF8E24AA) else Color.Black.copy(alpha = 0.42f))
+                                .border(
+                                    if (selectedGame == 3) 1.5.dp else 1.dp,
+                                    if (selectedGame == 3) MjGold else MjGold.copy(alpha = 0.35f),
+                                    RoundedCornerShape(9.dp)
+                                )
+                                .clickable {
+                                    if (selectedGame != 3) {
+                                        ddzEngine.leaveRoomAndResetLobby()
+                                        mjEngine.leaveRoomAndResetLobby()
+                                        rmkEngine.leaveRoomAndResetLobby()
+                                        selectedGame = 3
+                                    }
+                                }
+                                .padding(vertical = 7.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                tr("💣 数字炸弹", "💣 數字炸彈", "💣 Bomb"),
+                                color = Color.White,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Black,
+                                maxLines = 1
+                            )
+                        }
                     }
                 }
 
@@ -744,8 +774,10 @@ fun KOnGameRoomSheetDialog(onDismiss: () -> Unit) {
                         KOnDoudizhuSheetDialog(onDismiss = onDismiss, embeddedInGameRoom = true)
                     } else if (selectedGame == 1) {
                         KOnMahjongSheetDialog(onDismiss = onDismiss, embeddedInGameRoom = true)
-                    } else {
+                    } else if (selectedGame == 2) {
                         KOnRummikubContent()
+                    } else {
+                        KOnNumberBombContent()
                     }
                 }
             }
