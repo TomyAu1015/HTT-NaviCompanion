@@ -1,6 +1,4 @@
 import SwiftUI
-import Speech
-import AVFoundation
 import MapKit
 
 // MARK: - Pinyin IME-Safe Native UISearchBar (Never Interrupts Chinese Marked Text!)
@@ -237,7 +235,7 @@ struct HTTSmoothMapView: UIViewRepresentable {
     
     func updateUIView(_ mapView: MKMapView, context: Context) {
         let camHeading = (manager.cameraMode == .headingUp) ? manager.headingDegrees : 0.0
-        let camPitch: CGFloat = (manager.cameraMode == .headingUp) ? 45.0 : 0.0
+        let camPitch: CGFloat = (manager.cameraMode == .headingUp) ? ((manager.hasActiveNavigation && manager.travelMode != .walking) ? 52.0 : 45.0) : 0.0
         
         // 1. Route Overlays, Candidate Alternate Routes, Route Time Bubbles & Tapped POI Pins
         let tappedChanged = (context.coordinator.lastTappedLat != manager.tappedMapCoord?.latitude) ||
@@ -597,11 +595,8 @@ struct HTTSmoothMapView: UIViewRepresentable {
             let distDelta = camLoc.distance(from: usrLoc)
             
             let nowTime = CACurrentMediaTime()
-            let curCamDist = mapView.camera.centerCoordinateDistance
-            let recZoom = manager.hasActiveNavigation ? manager.recommendedNavigationZoomDistance() : manager.userZoomDistance
-            let needZoom = abs(curCamDist - recZoom) > 140.0
-            let targetZoomDist = needZoom ? recZoom : curCamDist
-            if (distDelta > 0.35 || hDiff > 2.0 || needZoom) && (nowTime - context.coordinator.lastCameraFollowTime >= 0.16) {
+            let targetZoomDist = manager.hasActiveNavigation ? manager.recommendedNavigationZoomDistance() : manager.userZoomDistance
+            if (distDelta > 2.5 || hDiff > 4.0 || abs(mapView.camera.centerCoordinateDistance - targetZoomDist) > 65.0) && (nowTime - context.coordinator.lastCameraFollowTime >= 0.48) {
                 context.coordinator.lastCameraFollowTime = nowTime
                 let camera = MKMapCamera(
                     lookingAtCenter: targetCoord,
@@ -609,8 +604,9 @@ struct HTTSmoothMapView: UIViewRepresentable {
                     pitch: camPitch,
                     heading: camHeading
                 )
+                // Smooth linear animation with allowUserInteraction + beginFromCurrentState eliminates stutter & never blocks pan/zoom!
                 UIView.animate(
-                    withDuration: 0.24,
+                    withDuration: 0.42,
                     delay: 0,
                     options: [.curveLinear, .allowUserInteraction, .beginFromCurrentState]
                 ) {
@@ -2953,8 +2949,8 @@ struct ContentView: View {
     private func turnIconName(for text: String) -> String {
         let lower = text.lowercased()
         if lower.contains("调头") || lower.contains("掉头") || lower.contains("u-turn") { return "arrow.uturn.left" }
-        if lower.contains("稍向右") || lower.contains("靠右") || lower.contains("右前方") || lower.contains("keep right") || lower.contains("slight right") { return "arrow.up.right" }
-        if lower.contains("稍向左") || lower.contains("靠左") || lower.contains("左前方") || lower.contains("keep left") || lower.contains("slight left") { return "arrow.up.left" }
+        if lower.contains("稍向右") || lower.contains("右前方") || lower.contains("keep right") || lower.contains("slight right") { return "arrow.up.right" }
+        if lower.contains("稍向左") || lower.contains("左前方") || lower.contains("keep left") || lower.contains("slight left") { return "arrow.up.left" }
         if lower.contains("右转") || lower.contains("右轉") || lower.contains("转右") || lower.contains("轉右") || lower.contains("向右") || lower.contains("turn right") { return "arrow.turn.up.right" }
         if lower.contains("左转") || lower.contains("左轉") || lower.contains("转左") || lower.contains("轉左") || lower.contains("向左") || lower.contains("turn left") { return "arrow.turn.up.left" }
         if lower.contains("右") && !lower.contains("左") { return "arrow.turn.up.right" }
@@ -8714,6 +8710,9 @@ struct KOnDoudizhuSheetView: View {
                 ddzRuleRow(label: tr("对局局数:", "對局局數:", "Rounds:"), options: [(3, tr("3局", "3局", "3R")), (5, tr("5局", "5局", "5R")), (10, tr("10局", "10局", "10R")), (0, tr("无限局", "無限局", "∞"))], selected: ddz.totalRounds, activeColor: httCrimson, enabled: canEditRules) {
                     ddz.totalRounds = $0; ddz.syncRulesIfHost()
                 }
+                ddzRuleRow(label: tr("每局底分:", "每局底分:", "Base:"), options: [(50, tr("50分", "50分", "50")), (100, tr("100分", "100分", "100")), (200, tr("200分", "200分", "200")), (500, tr("500分", "500分", "500"))], selected: ddz.baseScore, activeColor: Color(red: 0.85, green: 0.58, blue: 0.15), enabled: canEditRules) {
+                    ddz.baseScore = $0; ddz.syncRulesIfHost()
+                }
                 ddzRuleRow(label: tr("倍数封顶:", "倍數封頂:", "Max Mult:"), options: [(16, tr("16倍", "16倍", "16x")), (32, tr("32倍", "32倍", "32x")), (64, tr("64倍", "64倍", "64x")), (0, tr("不封顶", "不封頂", "No Cap"))], selected: ddz.maxMultiplier, activeColor: .purple, enabled: canEditRules) {
                     ddz.maxMultiplier = $0; ddz.syncRulesIfHost()
                 }
@@ -9933,7 +9932,7 @@ struct KOnMahjongSheetView: View {
                         }
                         HStack(spacing: 5) {
                             Text(mjTr("限时:", "限時:", "Timer:")).font(.system(size: 10, weight: .bold)).foregroundColor(httCream).frame(width: 34, alignment: .leading)
-                            ForEach([15, 25, 30, 0], id: \.self) { t in
+                            ForEach([15, 20, 30, 0], id: \.self) { t in
                                 Button(action: { if canEdit { mj.turnTimeLimit = t; mj.turnRemainingSeconds = t; mj.syncRulesIfHost() } }) {
                                     Text(t == 0 ? mjTr("不限", "不限", "∞") : "\(t)s").font(.system(size: 10, weight: .bold))
                                         .frame(maxWidth: .infinity).padding(.vertical, 4)
@@ -10885,7 +10884,7 @@ struct KOnGameRoomSheetView: View {
             )
             .ignoresSafeArea()
 
-            let isInLobby = (selectedGame == 0 && ddz.phase == .lobby) || (selectedGame == 1 && mj.phase == .lobby) || (selectedGame == 2 && rmk.phase == .lobby) || (selectedGame == 3)
+            let isInLobby = (selectedGame == 0 && ddz.phase == .lobby) || (selectedGame == 1 && mj.phase == .lobby) || (selectedGame == 2 && rmk.phase == .lobby)
             let isInJoinedRoom = !isInLobby
                 || (selectedGame == 0 && (ddz.isHostingRoom || ddz.isOnlineConnected || !ddz.connectedPeerNames.isEmpty))
                 || (selectedGame == 1 && (mj.isHostingRoom || mj.isOnlineConnected || !mj.connectedPeerNames.isEmpty))
@@ -10952,7 +10951,16 @@ struct KOnGameRoomSheetView: View {
                                     Text("🪙 绑定 QQ 群金币").font(.title3.bold())
                                     Text("仅「在线服务器联机且 ≥2 名真人」增减 QQ 群金币；金币不足将自动按练习局不扣不加。")
                                         .font(.caption).foregroundColor(.secondary).multilineTextAlignment(.center)
-                                    Text("联机规则：默认 5 🪙/局（H5 网页端每局收 1 🪙 房费，App 端免费）").font(.caption).foregroundColor(.secondary)
+                                    HStack(spacing: 6) {
+                                        Text("房主联机底注:").font(.caption.bold()).lineLimit(1).fixedSize(horizontal: true, vertical: false)
+                                        ForEach([5, 10, 20, 50], id: \.self) { amt in
+                                            Button(action: { qqBinder.coinAnte = amt; qqBinder.save() }) {
+                                                Text("\(amt)🪙").font(.caption.bold()).lineLimit(1).fixedSize(horizontal: true, vertical: false)
+                                            }
+                                            .buttonStyle(.borderedProminent)
+                                            .tint(qqBinder.coinAnte == amt ? .orange : .gray.opacity(0.5))
+                                        }
+                                    }
                                     if qqBinder.isBound {
                                         Text("已绑定 QQ：\(qqBinder.qqUid) · 当前群金币：\(qqBinder.coins) 🪙").font(.subheadline.bold()).foregroundColor(.orange)
                                     }
@@ -11111,29 +11119,6 @@ struct KOnGameRoomSheetView: View {
                             .overlay(RoundedRectangle(cornerRadius: 9).stroke(selectedGame == 2 ? httGold : httGold.opacity(0.35), lineWidth: selectedGame == 2 ? 1.5 : 1))
                         }
                         .buttonStyle(PlainButtonStyle())
-                    
-                        Button(action: {
-                            if selectedGame != 3 {
-                                ddz.leaveCurrentRoomAndReset()
-                                mj.leaveCurrentRoomAndReset()
-                                rmk.leaveCurrentRoomAndReset()
-                                selectedGame = 3
-                            }
-                        }) {
-                            HStack(spacing: 3) {
-                                Text("💣")
-                                Text(tr("数字炸弹", "數字炸彈", "Bomb"))
-                                    .font(.system(size: 11, weight: .black))
-                                    .lineLimit(1)
-                                    .minimumScaleFactor(0.75)
-                            }
-                            .frame(maxWidth: .infinity, minHeight: 30)
-                            .background(selectedGame == 3 ? Color.purple : Color.black.opacity(0.42))
-                            .foregroundColor(.white)
-                            .cornerRadius(9)
-                            .overlay(RoundedRectangle(cornerRadius: 9).stroke(selectedGame == 3 ? httGold : httGold.opacity(0.35), lineWidth: selectedGame == 3 ? 1.5 : 1))
-                        }
-                        .buttonStyle(PlainButtonStyle())
                     }
                     .padding(.horizontal, 10)
                     .padding(.bottom, 2)
@@ -11143,10 +11128,8 @@ struct KOnGameRoomSheetView: View {
                     KOnDoudizhuSheetView(manager: manager, embeddedInGameRoom: true)
                 } else if selectedGame == 1 {
                     KOnMahjongSheetView(manager: manager, embeddedInGameRoom: true)
-                } else if selectedGame == 2 {
-                    KOnRummikubSheetView(manager: manager)
                 } else {
-                    KOnNumberBombView()
+                    KOnRummikubSheetView(manager: manager)
                 }
             }
         }
@@ -12661,569 +12644,3 @@ private struct SwipeToDeleteRecentRow: View {
         }
     }
 }
-
-
-// MARK: - Hands-Free Voice Number Bomb Game (放课后派对 · 全自动语音数字炸弹)
-final class KOnNumberBombController: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
-    enum Phase { case setup, playing, exploded }
-
-    @Published var phase: Phase = .setup
-    @Published var minBound: Int = 1
-    @Published var maxBound: Int = 100
-    @Published var currentLow: Int = 1
-    @Published var currentHigh: Int = 100
-    @Published var secretBomb: Int = 50
-    @Published var players: [String] = []
-    @Published var currentTurnIdx: Int = 0
-    @Published var explodedPlayer: String = ""
-    @Published var lastHeardText: String = ""
-    @Published var statusLine: String = "点击下方开启全程语音，说出玩家名字（如：大强、冰冰）和「开始」即可免手玩！"
-    @Published var history: [String] = []
-    @Published var isHandsFreeActive: Bool = false
-    @Published var isListening: Bool = false
-    @Published var isSpeaking: Bool = false
-
-    private let synthesizer = AVSpeechSynthesizer()
-    private let speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: "zh-CN"))
-    private let audioEngine = AVAudioEngine()
-    private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
-    private var recognitionTask: SFSpeechRecognitionTask?
-    private var settleWorkItem: DispatchWorkItem?
-    private var lastProcessedUtterance: String = ""
-
-    override init() {
-        super.init()
-        synthesizer.delegate = self
-    }
-
-    func setRange(low: Int, high: Int) {
-        let lo = max(1, min(low, high - 2))
-        let hi = max(lo + 2, high)
-        minBound = lo
-        maxBound = hi
-        if phase == .setup {
-            currentLow = lo
-            currentHigh = hi
-        }
-    }
-
-    func removePlayer(at idx: Int) {
-        guard players.indices.contains(idx) else { return }
-        players.remove(at: idx)
-        if currentTurnIdx >= players.count { currentTurnIdx = 0 }
-    }
-
-    func toggleHandsFree() {
-        if isHandsFreeActive {
-            stopAll()
-        } else {
-            requestPermissionsAndStart()
-        }
-    }
-
-    func stopAll() {
-        isHandsFreeActive = false
-        settleWorkItem?.cancel()
-        stopListeningInternal()
-        if synthesizer.isSpeaking { synthesizer.stopSpeaking(at: .immediate) }
-        isSpeaking = false
-        statusLine = "已暂停语音主持，随时可点击继续"
-    }
-
-    private func requestPermissionsAndStart() {
-        SFSpeechRecognizer.requestAuthorization { [weak self] auth in
-            DispatchQueue.main.async {
-                guard let self = self else { return }
-                guard auth == .authorized else {
-                    self.statusLine = "⚠️ 请在系统设置中允许语音识别与麦克风权限"
-                    return
-                }
-                self.isHandsFreeActive = true
-                if self.phase == .setup {
-                    let tip = self.players.isEmpty
-                        ? "数字炸弹已就绪！当前范围 \(self.minBound) 到 \(self.maxBound)。请直接说出玩家名字，比如大强、冰冰，或者直接说开始！"
-                        : "数字炸弹已就绪！当前玩家有 \(self.players.joined(separator: "、"))，说开始就可以玩啦！"
-                    self.speakAndThenListen(tip)
-                } else if self.phase == .playing {
-                    self.speakAndThenListen("继续游戏！范围 \(self.currentLow) 到 \(self.currentHigh)，请\(self.currentTurnPrompt())报数！")
-                } else {
-                    self.speakAndThenListen("说再来一局就可以重新开始哦！")
-                }
-            }
-        }
-    }
-
-    func startGame(announce: Bool = true) {
-        currentLow = minBound
-        currentHigh = maxBound
-        secretBomb = Int.random(in: minBound...maxBound)
-        explodedPlayer = ""
-        history.removeAll()
-        if !players.isEmpty { currentTurnIdx = currentTurnIdx % players.count }
-        phase = .playing
-        let msg = "数字炸弹开始！范围 \(currentLow) 到 \(currentHigh)，请\(currentTurnPrompt())报数！"
-        statusLine = msg
-        if announce {
-            if isHandsFreeActive {
-                speakAndThenListen(msg)
-            } else {
-                requestPermissionsAndStart()
-            }
-        }
-    }
-
-    func submitManualGuess(_ raw: String) {
-        if let n = Self.extractNumber(from: raw) {
-            handleGuessNumber(n)
-        }
-    }
-
-    private func currentTurnPrompt() -> String {
-        guard !players.isEmpty else { return "" }
-        return players[currentTurnIdx % players.count]
-    }
-
-    private func speakAndThenListen(_ text: String) {
-        stopListeningInternal()
-        statusLine = text
-        isSpeaking = true
-        do {
-            let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetooth])
-            try session.setActive(true, options: .notifyOthersOnDeactivation)
-        } catch {}
-        if synthesizer.isSpeaking { synthesizer.stopSpeaking(at: .immediate) }
-        let utt = AVSpeechUtterance(string: text)
-        utt.voice = AVSpeechSynthesisVoice(language: "zh-CN")
-        utt.rate = 0.52
-        synthesizer.speak(utt)
-    }
-
-    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
-        DispatchQueue.main.async {
-            self.isSpeaking = false
-            if self.isHandsFreeActive {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
-                    if self.isHandsFreeActive && !self.isSpeaking {
-                        self.startListeningInternal()
-                    }
-                }
-            }
-        }
-    }
-
-    private func stopListeningInternal() {
-        settleWorkItem?.cancel()
-        if audioEngine.isRunning {
-            audioEngine.stop()
-            audioEngine.inputNode.removeTap(onBus: 0)
-        }
-        recognitionRequest?.endAudio()
-        recognitionTask?.cancel()
-        recognitionRequest = nil
-        recognitionTask = nil
-        isListening = false
-    }
-
-    private func startListeningInternal() {
-        guard isHandsFreeActive, !isSpeaking, let recognizer = speechRecognizer, recognizer.isAvailable else { return }
-        stopListeningInternal()
-        lastProcessedUtterance = ""
-        do {
-            let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.playAndRecord, mode: .measurement, options: [.defaultToSpeaker, .allowBluetooth])
-            try session.setActive(true, options: .notifyOthersOnDeactivation)
-        } catch {}
-
-        let req = SFSpeechAudioBufferRecognitionRequest()
-        req.shouldReportPartialResults = true
-        recognitionRequest = req
-
-        let inputNode = audioEngine.inputNode
-        let format = inputNode.outputFormat(forBus: 0)
-        inputNode.removeTap(onBus: 0)
-        inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in
-            req.append(buffer)
-        }
-        audioEngine.prepare()
-        do {
-            try audioEngine.start()
-            isListening = true
-        } catch {
-            isListening = false
-            return
-        }
-
-        recognitionTask = recognizer.recognitionTask(with: req) { [weak self] result, error in
-            DispatchQueue.main.async {
-                guard let self = self, self.isHandsFreeActive else { return }
-                if let res = result {
-                    let txt = res.bestTranscription.formattedString.trimmingCharacters(in: .whitespacesAndNewlines)
-                    if !txt.isEmpty {
-                        self.lastHeardText = txt
-                        self.settleWorkItem?.cancel()
-                        let item = DispatchWorkItem { [weak self] in
-                            self?.processSpokenUtterance(txt)
-                        }
-                        self.settleWorkItem = item
-                        DispatchQueue.main.asyncAfter(deadline: .now() + (res.isFinal ? 0.15 : 0.85), execute: item)
-                    }
-                }
-                if error != nil && self.isHandsFreeActive && !self.isSpeaking {
-                    self.stopListeningInternal()
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-                        if self.isHandsFreeActive && !self.isSpeaking {
-                            self.startListeningInternal()
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    private func processSpokenUtterance(_ raw: String) {
-        let txt = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !txt.isEmpty, txt != lastProcessedUtterance else { return }
-        lastProcessedUtterance = txt
-
-        if txt.contains("停止") || txt.contains("退出") {
-            stopAll()
-            return
-        }
-        if txt.contains("再来一局") || txt.contains("重新开始") || txt.contains("下一局") || txt.contains("再玩一次") {
-            if !players.isEmpty { currentTurnIdx = (currentTurnIdx + 1) % players.count }
-            startGame(announce: true)
-            return
-        }
-
-        switch phase {
-        case .setup:
-            if txt.contains("清空") || txt.contains("重置名单") {
-                players.removeAll()
-                speakAndThenListen("已清空玩家名单，请重新说出玩家名字或说开始！")
-                return
-            }
-            let nums = Self.extractAllNumbers(from: txt)
-            if nums.count >= 2 && (txt.contains("到") || txt.contains("至") || txt.contains("范围")) {
-                setRange(low: nums[0], high: nums[1])
-                speakAndThenListen("范围已设为 \(minBound) 到 \(maxBound)！请说玩家名字或直接说开始！")
-                return
-            }
-            if txt.contains("开始") || txt.contains("开局") {
-                let extraNames = Self.extractPlayerNames(from: txt)
-                for n in extraNames where !players.contains(n) { players.append(n) }
-                startGame(announce: true)
-                return
-            }
-            let names = Self.extractPlayerNames(from: txt)
-            if !names.isEmpty {
-                var added: [String] = []
-                for n in names where !players.contains(n) {
-                    players.append(n)
-                    added.append(n)
-                }
-                if !added.isEmpty {
-                    speakAndThenListen("已加入 \(added.joined(separator: "、"))，当前共 \(players.count) 人！继续报人名或说开始！")
-                } else {
-                    speakAndThenListen("这些名字已经在名单里啦，说开始就可以玩！")
-                }
-            }
-        case .playing:
-            if let guess = Self.extractNumber(from: txt) {
-                handleGuessNumber(guess)
-            }
-        case .exploded:
-            if txt.contains("开始") || txt.contains("再来") || txt.contains("继续") {
-                if !players.isEmpty { currentTurnIdx = (currentTurnIdx + 1) % players.count }
-                startGame(announce: true)
-            }
-        }
-    }
-
-    private func handleGuessNumber(_ guess: Int) {
-        let who = currentTurnPrompt()
-        let prefix = who.isEmpty ? "" : "[\(who)] "
-        if guess < currentLow || guess > currentHigh {
-            speakAndThenListen("\(guess) 不在 \(currentLow) 到 \(currentHigh) 范围内哦，请\(who)重新报数！")
-            return
-        }
-        if guess == secretBomb {
-            phase = .exploded
-            explodedPlayer = who.isEmpty ? "当前玩家" : who
-            history.insert("💥 \(prefix)报 \(guess) — 踩中炸弹！", at: 0)
-            let gen = UINotificationFeedbackGenerator()
-            gen.notificationOccurred(.error)
-            speakAndThenListen("砰！炸弹就是 \(secretBomb)！\(explodedPlayer) 中招啦！说再来一局就可以继续玩！")
-            return
-        }
-        if guess < secretBomb {
-            currentLow = guess + 1
-        } else {
-            currentHigh = guess - 1
-        }
-        history.insert("✅ \(prefix)报 \(guess) → 新范围 \(currentLow)-\(currentHigh)", at: 0)
-        if !players.isEmpty {
-            currentTurnIdx = (currentTurnIdx + 1) % players.count
-        }
-        let nextWho = currentTurnPrompt()
-        let nextAsk = nextWho.isEmpty ? "" : "，请 \(nextWho) 报数"
-        speakAndThenListen("\(currentLow) 到 \(currentHigh)\(nextAsk)！")
-    }
-
-    static func extractPlayerNames(from text: String) -> [String] {
-        var cleaned = text
-        let stripWords = ["玩家有", "参加者有", "人数有", "添加", "加入", "玩家", "开始游戏", "开始", "开局", "数字炸弹", "请", "把", "一下", "吧", "哦", "呢", "呀", "啊"]
-        for w in stripWords { cleaned = cleaned.replacingOccurrences(of: w, with: " ") }
-        let seps = CharacterSet(charactersIn: "，,、。.;；!！?？ \n\t")
-        var rawParts = cleaned.components(separatedBy: seps)
-        var expanded: [String] = []
-        for part in rawParts {
-            var p = part.trimmingCharacters(in: .whitespacesAndNewlines)
-            for conj in ["还有", "以及", "和", "跟", "与"] {
-                p = p.replacingOccurrences(of: conj, with: "|")
-            }
-            for sub in p.components(separatedBy: "|") {
-                let s = sub.trimmingCharacters(in: .whitespacesAndNewlines)
-                if s.count >= 1 && s.count <= 6 && extractNumber(from: s) == nil {
-                    expanded.append(s)
-                }
-            }
-        }
-        return expanded
-    }
-
-    static func extractAllNumbers(from text: String) -> [Int] {
-        var out: [Int] = []
-        let pattern = #"\d+|[零〇一二两三四五六七八九十百千]+"#
-        if let regex = try? NSRegularExpression(pattern: pattern) {
-            let ns = text as NSString
-            for m in regex.matches(in: text, range: NSRange(location: 0, length: ns.length)) {
-                let tok = ns.substring(with: m.range)
-                if let v = Int(tok) { out.append(v) }
-                else if let v = parseChineseNumber(tok) { out.append(v) }
-            }
-        }
-        return out
-    }
-
-    static func extractNumber(from text: String) -> Int? {
-        return extractAllNumbers(from: text).last
-    }
-
-    static func parseChineseNumber(_ s: String) -> Int? {
-        let digits: [Character: Int] = ["零":0,"〇":0,"一":1,"二":2,"两":2,"三":3,"四":4,"五":5,"六":6,"七":7,"八":8,"九":9]
-        let units: [Character: Int] = ["十":10,"百":100,"千":1000]
-        var total = 0
-        var cur = 0
-        var hasUnit = false
-        for ch in s {
-            if let d = digits[ch] {
-                cur = d
-            } else if let u = units[ch] {
-                hasUnit = true
-                if cur == 0 && u == 10 && total == 0 { cur = 1 }
-                total += cur * u
-                cur = 0
-            } else {
-                return nil
-            }
-        }
-        if !hasUnit && s.count > 1 {
-            var direct = 0
-            for ch in s {
-                guard let d = digits[ch] else { return nil }
-                direct = direct * 10 + d
-            }
-            return direct
-        }
-        return total + cur
-    }
-}
-
-struct KOnNumberBombView: View {
-    @StateObject private var ctrl = KOnNumberBombController()
-    @State private var manualInput: String = ""
-    @State private var customMaxText: String = "100"
-
-    var body: some View {
-        ScrollView {
-            VStack(spacing: 12) {
-                // 1. 当前区间 / 爆炸大卡片
-                VStack(spacing: 6) {
-                    Text(ctrl.phase == .exploded ? "💥 BOOM! 踩中数字炸弹！" : (ctrl.phase == .playing ? "💣 当前安全区间（说数字即可）" : "🎙️ 放课后派对 · 语音数字炸弹"))
-                        .font(.system(size: 13, weight: .bold))
-                        .foregroundColor(ctrl.phase == .exploded ? .yellow : Color(red: 1.0, green: 0.85, blue: 0.45))
-
-                    if ctrl.phase == .exploded {
-                        Text("\(ctrl.secretBomb)")
-                            .font(.system(size: 56, weight: .black, design: .rounded))
-                            .foregroundColor(.white)
-                        Text("中招玩家：\(ctrl.explodedPlayer)")
-                            .font(.headline.bold())
-                            .foregroundColor(.yellow)
-                    } else {
-                        Text("\(ctrl.currentLow)  —  \(ctrl.currentHigh)")
-                            .font(.system(size: 46, weight: .black, design: .rounded))
-                            .foregroundColor(.white)
-                    }
-
-                    Text(ctrl.statusLine)
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundColor(.white.opacity(0.92))
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal, 8)
-
-                    if !ctrl.lastHeardText.isEmpty {
-                        Text("👂 刚刚听到：「\(ctrl.lastHeardText)」")
-                            .font(.caption)
-                            .foregroundColor(Color.green.opacity(0.9))
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 3)
-                            .background(Color.black.opacity(0.35))
-                            .cornerRadius(8)
-                    }
-                }
-                .frame(maxWidth: .infinity)
-                .padding(16)
-                .background(
-                    RoundedRectangle(cornerRadius: 16)
-                        .fill(ctrl.phase == .exploded ? Color.red.opacity(0.75) : Color.black.opacity(0.35))
-                )
-                .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.yellow.opacity(0.6), lineWidth: 1.5))
-
-                // 2. 全程语音主持主控按钮（开启后全程免手点）
-                HStack(spacing: 10) {
-                    Button(action: { ctrl.toggleHandsFree() }) {
-                        HStack(spacing: 6) {
-                            Image(systemName: ctrl.isHandsFreeActive ? (ctrl.isListening ? "waveform.circle.fill" : "speaker.wave.2.fill") : "mic.circle.fill")
-                                .font(.title3)
-                            Text(ctrl.isHandsFreeActive ? (ctrl.isListening ? "正在持续监听（点此停止）" : "主持人播报中...") : "🎙️ 启动全程免手语音主持")
-                                .font(.system(size: 14, weight: .black))
-                        }
-                        .frame(maxWidth: .infinity, minHeight: 46)
-                        .background(ctrl.isHandsFreeActive ? Color.red : Color.green)
-                        .foregroundColor(.white)
-                        .cornerRadius(12)
-                    }
-                    .buttonStyle(PlainButtonStyle())
-
-                    if ctrl.phase != .playing {
-                        Button(action: { ctrl.startGame(announce: true) }) {
-                            Text("▶ 开局")
-                                .font(.system(size: 14, weight: .black))
-                                .padding(.horizontal, 16)
-                                .frame(minHeight: 46)
-                                .background(Color.orange)
-                                .foregroundColor(.white)
-                                .cornerRadius(12)
-                        }
-                        .buttonStyle(PlainButtonStyle())
-                    }
-                }
-
-                // 3. 设定范围
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("1. 设定数字范围（默认 1-100，也可直接语音说“1到200”）")
-                        .font(.caption.bold())
-                        .foregroundColor(Color(red: 1.0, green: 0.85, blue: 0.45))
-                    HStack(spacing: 6) {
-                        ForEach([(1,50),(1,100),(1,200),(1,500)], id: \.1) { lo, hi in
-                            Button(action: { ctrl.setRange(low: lo, high: hi); customMaxText = "\(hi)" }) {
-                                Text("\(lo)-\(hi)")
-                                    .font(.caption.bold())
-                                    .frame(maxWidth: .infinity, minHeight: 30)
-                                    .background(ctrl.maxBound == hi ? Color.orange : Color.white.opacity(0.14))
-                                    .foregroundColor(.white)
-                                    .cornerRadius(8)
-                            }
-                            .buttonStyle(PlainButtonStyle())
-                        }
-                    }
-                }
-                .padding(12)
-                .background(Color.black.opacity(0.28))
-                .cornerRadius(12)
-
-                // 4. 玩家名单（支持语音报人名：大强、冰冰…）
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack {
-                        Text("2. 参与玩家（直接说「大强、冰冰」自动识别）")
-                            .font(.caption.bold())
-                            .foregroundColor(Color(red: 1.0, green: 0.85, blue: 0.45))
-                        Spacer()
-                        if !ctrl.players.isEmpty {
-                            Button("清空") { ctrl.players.removeAll() }
-                                .font(.caption.bold())
-                                .foregroundColor(.red)
-                        }
-                    }
-                    if ctrl.players.isEmpty {
-                        Text("暂无指定名单（可直接语音报人名，或不填名单直接轮流报数）")
-                            .font(.caption)
-                            .foregroundColor(.white.opacity(0.7))
-                    } else {
-                        ScrollView(.horizontal, showsIndicators: false) {
-                            HStack(spacing: 6) {
-                                ForEach(Array(ctrl.players.enumerated()), id: \.offset) { idx, name in
-                                    let active = (ctrl.phase == .playing && idx == ctrl.currentTurnIdx % ctrl.players.count)
-                                    HStack(spacing: 4) {
-                                        Text(active ? "👉 \(name)" : name)
-                                            .font(.caption.bold())
-                                        Button(action: { ctrl.removePlayer(at: idx) }) {
-                                            Image(systemName: "xmark.circle.fill").font(.caption2)
-                                        }
-                                    }
-                                    .padding(.horizontal, 10)
-                                    .padding(.vertical, 5)
-                                    .background(active ? Color.orange : Color.white.opacity(0.18))
-                                    .foregroundColor(.white)
-                                    .cornerRadius(999)
-                                }
-                            }
-                        }
-                    }
-                }
-                .padding(12)
-                .background(Color.black.opacity(0.28))
-                .cornerRadius(12)
-
-                // 5. 嘈杂环境兜底输入 + 历史记录
-                if ctrl.phase == .playing {
-                    HStack(spacing: 8) {
-                        TextField("嘈杂环境可手输数字", text: $manualInput)
-                            .keyboardType(.numberPad)
-                            .padding(8)
-                            .background(Color.white.opacity(0.15))
-                            .foregroundColor(.white)
-                            .cornerRadius(8)
-                        Button("报数") {
-                            ctrl.submitManualGuess(manualInput)
-                            manualInput = ""
-                        }
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 8)
-                        .background(Color.blue)
-                        .foregroundColor(.white)
-                        .cornerRadius(8)
-                    }
-                }
-
-                if !ctrl.history.isEmpty {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("本局记录").font(.caption.bold()).foregroundColor(.yellow)
-                        ForEach(ctrl.history.prefix(8), id: \.self) { line in
-                            Text(line).font(.caption).foregroundColor(.white.opacity(0.9))
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(10)
-                    .background(Color.black.opacity(0.25))
-                    .cornerRadius(10)
-                }
-            }
-            .padding(12)
-        }
-        .onDisappear { ctrl.stopAll() }
-    }
-}
-

@@ -1067,6 +1067,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     @Published var travelMode: NavigationTravelMode = .driving {
         didSet {
             guard oldValue != travelMode else { return }
+            locationManager.activityType = (travelMode == .walking) ? .fitness : .automotiveNavigation
             // Immediately stop any previous voice queue so user never has to wait for old audio to finish!
             stop()
             let newLimit = travelMode.defaultSpeedLimit
@@ -6942,8 +6943,10 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         loadAndPruneRecentDestinations()
         locationManager.delegate = self
         locationManager.desiredAccuracy = kCLLocationAccuracyBestForNavigation
-        locationManager.distanceFilter = 1.5
-        locationManager.allowsBackgroundLocationUpdates = false
+        locationManager.activityType = (travelMode == .walking) ? .fitness : .automotiveNavigation
+        locationManager.distanceFilter = kCLDistanceFilterNone
+        locationManager.allowsBackgroundLocationUpdates = true
+        locationManager.showsBackgroundLocationIndicator = true
         locationManager.pausesLocationUpdatesAutomatically = false
         locationManager.requestWhenInUseAuthorization()
         locationManager.requestAlwaysAuthorization()
@@ -7003,7 +7006,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         return (projCoord, dist, segHeading)
     }
 
-    func updateSnappedRouteCoordinate(for rawCoord: CLLocationCoordinate2D) {
+    func updateSnappedRouteCoordinate(for rawCoord: CLLocationCoordinate2D, course: CLLocationDirection = -1.0) {
         guard let route = activeRoute, isNavigatingFocused || hasActiveNavigation else {
             snappedRouteCoordinate = nil
             snappedRouteHeading = nil
@@ -7014,16 +7017,29 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         let ptCount = route.polyline.pointCount
         guard ptCount >= 2 else { return }
         
+        var minScore: Double = 999999.0
         var minDistance: Double = 999999.0
         var bestSnappedCoord: CLLocationCoordinate2D? = nil
         var bestHeading: Double? = nil
+        let useCourse = (course >= 0.0 && currentSpeedKmh > 6.0)
         
         for i in 0..<(ptCount - 1) {
             let p1 = pts[i].coordinate
             let p2 = pts[i + 1].coordinate
             
             let (projCoord, dist, segHeading) = projectPointOntoSegment(p: rawCoord, a: p1, b: p2)
-            if dist < minDistance {
+            var score = dist
+            if useCourse {
+                var aDiff = abs(segHeading - course).truncatingRemainder(dividingBy: 360.0)
+                if aDiff > 180.0 { aDiff = 360.0 - aDiff }
+                if aDiff > 75.0 {
+                    score += 28.0
+                } else {
+                    score += aDiff * 0.15
+                }
+            }
+            if score < minScore {
+                minScore = score
                 minDistance = dist
                 bestSnappedCoord = projCoord
                 bestHeading = segHeading
@@ -8507,11 +8523,8 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         if text.contains("辅路") || text.contains("輔路") || text.contains("连接线") || text.contains("連接線") {
             return 60
         }
-        if text.contains("快速") || text.contains("高架") || text.contains("环线") || text.contains("環線") || text.contains("快速路") {
+        if text.contains("快速") || text.contains("高架") || text.contains("环线") || text.contains("環線") || text.contains("大桥") || text.contains("大橋") || text.contains("隧道") || text.contains("快速路") {
             return 80
-        }
-        if text.contains("隧道") || text.contains("大桥") || text.contains("大橋") || text.contains("南路") || text.contains("北路") || text.contains("东路") || text.contains("西路") || text.contains("中路") || text.contains("东晓") {
-            return 60
         }
         let isRealHighwayCode = text.range(of: #"\b[GS]\d{1,4}\b"#, options: .regularExpression) != nil
         if text.contains("高速") || text.contains("Expressway") || text.contains("Freeway") || text.contains("Motorway") || (isRealHighwayCode && !text.contains("辅")) {
@@ -8527,27 +8540,36 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     }
 
     /// 高德同款动态跟车视距：高速自动缩小看全局，城区路口/收费站/匝道自动放大看清细节
-    private var smoothedNavZoomDist: Double = 520.0
+    private var smoothedNavZoomDist: Double = 620.0
 
     func recommendedNavigationZoomDistance() -> Double {
         if travelMode == .walking { return 280.0 }
         if travelMode == .ebike {
-            return (hasActiveNavigation && distanceToNextStepMeters > 0 && distanceToNextStepMeters <= 160) ? 260.0 : 380.0
+            return (hasActiveNavigation && distanceToNextStepMeters > 0 && distanceToNextStepMeters <= 160) ? 240.0 : 380.0
         }
-        var rawTarget: Double = 520.0
-        if hasActiveNavigation && upcomingTollDistance > 0 && upcomingTollDistance <= 350 {
-            rawTarget = 300.0
-        } else if hasActiveNavigation && distanceToNextStepMeters > 0 && distanceToNextStepMeters <= 220 {
-            rawTarget = 320.0
-        } else if currentSpeedKmh >= 85.0 {
-            rawTarget = 1200.0
-        } else if currentSpeedKmh >= 55.0 {
-            rawTarget = 780.0
+        var rawTarget: Double = 620.0
+        // 1. 临近收费站（<= 600m）或即将转弯/匝道/路口（<= 280m）：高德逻辑自动放大看清车道
+        if hasActiveNavigation && upcomingTollDistance > 0 && upcomingTollDistance <= 600 {
+            rawTarget = 260.0
+        } else if hasActiveNavigation && distanceToNextStepMeters > 0 && distanceToNextStepMeters <= 280 {
+            rawTarget = 280.0
+        } else if hasActiveNavigation && distanceToNextStepMeters > 0 && distanceToNextStepMeters <= 480 && currentSpeedKmh < 70.0 {
+            rawTarget = 420.0
+        } else if hasActiveNavigation && distanceToNextStepMeters >= 2500 {
+            // 2. 高速/高架超长直行段：自动缩小地图看清前方大局
+            rawTarget = 1850.0
+        } else if currentSpeedKmh >= 80.0 || (speedLimitKmh >= 100.0 && currentSpeedKmh >= 60.0) || (hasActiveNavigation && distanceToNextStepMeters >= 1200) {
+            rawTarget = 1480.0
+        } else if currentSpeedKmh >= 58.0 || (speedLimitKmh >= 80.0 && currentSpeedKmh >= 45.0) {
+            rawTarget = 1050.0
+        } else if isCongested || currentSpeedKmh < 22.0 {
+            rawTarget = 380.0
         } else {
-            rawTarget = 520.0
+            rawTarget = 620.0
         }
-        smoothedNavZoomDist = smoothedNavZoomDist + (rawTarget - smoothedNavZoomDist) * 0.08
-        if abs(rawTarget - smoothedNavZoomDist) < 25.0 {
+        // 低通平滑滤波：消除路线与视野“一时大一时小”的突兀跳变
+        smoothedNavZoomDist = smoothedNavZoomDist + (rawTarget - smoothedNavZoomDist) * 0.22
+        if abs(rawTarget - smoothedNavZoomDist) < 18.0 {
             smoothedNavZoomDist = rawTarget
         }
         return smoothedNavZoomDist
@@ -8707,32 +8729,43 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                 let bbox = String(format: "%.5f,%.5f,%.5f,%.5f", minLat - 0.002, minLon - 0.002, maxLat + 0.002, maxLon + 0.002)
                 let q = "[out:json][timeout:4];way[\"maxspeed\"](\(bbox));out center;"
                 if let enc = q.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
-                   let url = URL(string: "https://overpass-api.de/api/interpreter?data=\(enc)") {
-                    var req = URLRequest(url: url, timeoutInterval: 4.5)
-                    req.setValue("HTT-NaviCompanion/2.0", forHTTPHeaderField: "User-Agent")
-                    URLSession.shared.dataTask(with: req) { [weak self] data, _, _ in
+                   let primaryURL = URL(string: "https://overpass-api.de/api/interpreter?data=\(enc)") {
+                    let mirrorURL = URL(string: "https://overpass.kumi.systems/api/interpreter?data=\(enc)")
+                    let handleMaxSpeedData: (Data?) -> Bool = { [weak self] data in
                         guard let self = self, let data = data,
                               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                              let elems = json["elements"] as? [[String: Any]] else { return }
-                        var parsed: [(coord: CLLocationCoordinate2D, limit: Int)] = []
-                        for el in elems {
-                            guard let center = el["center"] as? [String: Any],
-                                  let lat = center["lat"] as? Double,
-                                  let lon = center["lon"] as? Double,
-                                  let tags = el["tags"] as? [String: Any],
-                                  let msStr = tags["maxspeed"] as? String else { continue }
-                            let digits = msStr.components(separatedBy: CharacterSet.decimalDigits.inverted).joined()
-                            if let val = Int(digits), val >= 20, val <= 130 {
-                                parsed.append((CLLocationCoordinate2D(latitude: lat, longitude: lon), val))
+                              let elems = json["elements"] as? [[String: Any]] else { return false }
+                            var parsed: [(coord: CLLocationCoordinate2D, limit: Int)] = []
+                            for el in elems {
+                                guard let center = el["center"] as? [String: Any],
+                                      let lat = center["lat"] as? Double,
+                                      let lon = center["lon"] as? Double,
+                                      let tags = el["tags"] as? [String: Any],
+                                      let msStr = tags["maxspeed"] as? String else { continue }
+                                let digits = msStr.components(separatedBy: CharacterSet.decimalDigits.inverted).joined()
+                                if let val = Int(digits), val >= 20, val <= 130 {
+                                    parsed.append((CLLocationCoordinate2D(latitude: lat, longitude: lon), val))
+                                }
                             }
-                        }
-                        if !parsed.isEmpty {
-                            DispatchQueue.main.async {
-                                self.routeMaxSpeedPoints = parsed
-                                self.evaluateRoadSpeedLimitAndNotify(for: self.currentStepInstruction)
+                            if !parsed.isEmpty {
+                                DispatchQueue.main.async {
+                                    self.routeMaxSpeedPoints = parsed
+                                    self.evaluateRoadSpeedLimitAndNotify(for: self.currentStepInstruction)
+                                }
                             }
+                            return true
                         }
-                    }.resume()
+                        var req = URLRequest(url: primaryURL, timeoutInterval: 4.5)
+                        req.setValue("HTT-NaviCompanion/2.6", forHTTPHeaderField: "User-Agent")
+                        URLSession.shared.dataTask(with: req) { data, _, _ in
+                            if !handleMaxSpeedData(data), let mURL = mirrorURL {
+                                var mReq = URLRequest(url: mURL, timeoutInterval: 5.0)
+                                mReq.setValue("HTT-NaviCompanion/2.6", forHTTPHeaderField: "User-Agent")
+                                URLSession.shared.dataTask(with: mReq) { mData, _, _ in
+                                    _ = handleMaxSpeedData(mData)
+                                }.resume()
+                            }
+                        }.resume()
                 }
             }
         }
@@ -9064,7 +9097,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
     }
 
     private func verifiedTurnInstruction(raw: String, prevStep: MKRoute.Step?, nextStep: MKRoute.Step?) -> String {
-        var text = raw.replacingOccurrences(of: #"\{[^}]*\}"#, with: "", options: .regularExpression).trimmingCharacters(in: .whitespacesAndNewlines)
+        var text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let angle = geometricTurnAngle(from: prevStep, to: nextStep) else {
             return text
         }
@@ -9166,7 +9199,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
         if activeSeg > currentStepIndex {
             currentStepIndex = activeSeg
             let newStep = steps[currentStepIndex]
-            let newInstr = newStep.instructions.replacingOccurrences(of: #"\{[^}]*\}"#, with: "", options: .regularExpression).trimmingCharacters(in: .whitespacesAndNewlines)
+            let newInstr = newStep.instructions.trimmingCharacters(in: .whitespacesAndNewlines)
             let enterKey = "\(currentStepIndex)_ENTER"
             if !newInstr.isEmpty && !announcedStepThresholds.contains(enterKey) {
                 announcedStepThresholds.insert(enterKey)
@@ -9208,9 +9241,6 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             }
             let traveledM = max(0, Int(route.distance - totalRemainMeters))
             self.updateUpcomingServiceAreaAndToll(traveledMeters: traveledM)
-            if self.upcomingCameraDistance > 0 && traveledM > self.lastTraveledMeters {
-                self.upcomingCameraDistance = max(0, self.upcomingCameraDistance - (traveledM - self.lastTraveledMeters))
-            }
         }
         
         // 1. TRANSIT MULTI-PHASE STATE MACHINE (GaoDe 1:1 Lifecycle!)
@@ -9539,7 +9569,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                         sampleKmh = min(260.0, (movedDelta / dtSec) * 3.6)
                     }
                 }
-                let filteredKmh = (sampleKmh != nil && sampleKmh! < 3.5 && movedDelta < 1.2 && loc.horizontalAccuracy > 18.0) ? 0.0 : sampleKmh
+                let filteredKmh = (sampleKmh != nil && sampleKmh! < 6.5 && movedDelta < 2.2 && loc.horizontalAccuracy > 12.0) ? 0.0 : sampleKmh
                 if let sKmh = filteredKmh {
                     if sKmh < 3.0 {
                         self.consecutiveLowSpeedFixes += 1
@@ -9551,7 +9581,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                         if self.smoothedSpeedKmh < 1.0 || abs(sKmh - self.smoothedSpeedKmh) > 12.0 {
                             self.smoothedSpeedKmh = sKmh
                         } else {
-                            self.smoothedSpeedKmh = (abs(sKmh - self.smoothedSpeedKmh) > 3.5) ? sKmh : (self.smoothedSpeedKmh * 0.15 + sKmh * 0.85)
+                            self.smoothedSpeedKmh = self.smoothedSpeedKmh * 0.25 + sKmh * 0.75
                         }
                         self.lastValidSpeedTimestamp = now
                     }
@@ -9628,7 +9658,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             }
             
             let rawMapCoord = CoordinateConverter.wgs84ToGCJ02(loc.coordinate)
-            self.updateSnappedRouteCoordinate(for: rawMapCoord)
+            self.updateSnappedRouteCoordinate(for: rawMapCoord, course: loc.course)
             if let snapped = self.snappedRouteCoordinate {
                 self.userCoordinate = snapped
                 if let snapH = self.snappedRouteHeading, self.currentSpeedKmh > 2.0 {
@@ -9636,6 +9666,9 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                 }
             } else if loc.horizontalAccuracy >= 0 && loc.horizontalAccuracy <= 65.0 {
                 self.userCoordinate = rawMapCoord
+                if loc.course >= 0.0 && loc.courseAccuracy >= 0.0 && loc.courseAccuracy <= 35.0 && self.currentSpeedKmh > 6.0 {
+                    self.headingDegrees = loc.course
+                }
             }
             self.updateNavigationProgress(location: loc)
         }
@@ -9715,7 +9748,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                 }
                 self.isPlaying = true
                 self.currentPlayingId = safeId
-                self.currentSpeechBubble = "[\(speaker)] \(text)"
+                self.currentSpeechBubble = "[\(speaker)] \(text) (#\(safeId))"
             }
         } catch {
             print("Failed to play nav voice \(safeId): \(error)")
@@ -10655,7 +10688,7 @@ final class KOnQQCoinBinder: ObservableObject {
     @Published var qqUid: String = UserDefaults.standard.string(forKey: "htt_qq_uid") ?? ""
     @Published var qqToken: String = UserDefaults.standard.string(forKey: "htt_qq_token") ?? ""
     @Published var coins: Int = UserDefaults.standard.integer(forKey: "htt_qq_coins")
-    @Published var coinAnte: Int = 5
+    @Published var coinAnte: Int = max(5, UserDefaults.standard.integer(forKey: "htt_qq_ante") == 0 ? 10 : UserDefaults.standard.integer(forKey: "htt_qq_ante"))
     @Published var statusText: String = ""
     @Published var isBusy: Bool = false
 
@@ -10977,11 +11010,9 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
     @Published var isOnlineConnected: Bool = false
     @Published var totalRounds: Int = 3
     @Published var currentRound: Int = 1
-    @Published var baseScore: Int = 5
+    @Published var baseScore: Int = 100
     @Published var maxMultiplier: Int = 32
     @Published var turnTimeLimit: Int = 25
-    var lastHitMaCount: Int = 0
-    var lastKongFromSeat: Int = -1
     @Published var turnRemainingSeconds: Int = 25
     @Published var allowCardCounter: Bool = true
     @Published var aiDifficulty: String = "标准 AI"
@@ -11688,7 +11719,7 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
         seats[actor].lastPlayedCards = cards.sorted { $0.rank > $1.rank }
         seats[actor].lastActionText = eval.category.localizedName(AudioPlayerManager.shared.language)
         
-        if eval.category == .bomb || eval.category == .rocket || eval.category == .airplane {
+        if eval.category == .bomb || eval.category == .rocket {
             let nextM = multiplier * 2
             multiplier = maxMultiplier > 0 ? min(nextM, maxMultiplier) : nextM
         }
@@ -11826,7 +11857,7 @@ class KOnDoudizhuManager: NSObject, ObservableObject, MCSessionDelegate, MCNearb
             turnTimeLimit: turnTimeLimit,
             allowCardCounter: allowCardCounter,
             aiDifficulty: aiDifficulty,
-            coinAnte: isOnlineConnected ? 5 : nil
+            coinAnte: isOnlineConnected ? KOnQQCoinBinder.shared.coinAnte : nil
         )
         sendPacketToPeers(pkt)
     }
@@ -12303,8 +12334,6 @@ struct MahjongNetPacket: Codable {
     var actionType: String? = nil // "hu", "kong", "pong", "pass", "selfHu", "selfKong"
     var qqToken: String? = nil
     var coinAnte: Int? = nil
-    var hitMaCount: Int? = nil
-    var lastKongFromSeat: Int? = nil
 }
 
 enum MahjongEvaluator {
@@ -13021,11 +13050,9 @@ class KOnMahjongManager: NSObject, ObservableObject, MCSessionDelegate, MCNearby
 
     @Published var totalRounds: Int = 4
     @Published var currentRound: Int = 1
-    @Published var baseScore: Int = 5
-    @Published var turnTimeLimit: Int = 25
-    @Published var turnRemainingSeconds: Int = 25
-    var lastHitMaCount: Int = 0
-    var lastKongFromSeat: Int = -1
+    @Published var baseScore: Int = 100
+    @Published var turnTimeLimit: Int = 20
+    @Published var turnRemainingSeconds: Int = 20
     @Published var statusBanner: String = "欢迎来到广东红中麻将！红中为赖子，不能吃，可碰杠胡"
 
     @Published var phase: MahjongGamePhase = .lobby
@@ -13486,7 +13513,7 @@ class KOnMahjongManager: NSObject, ObservableObject, MCSessionDelegate, MCNearby
 
     private func startTurnTimer() {
         turnTimer?.invalidate()
-        turnRemainingSeconds = turnTimeLimit > 0 ? turnTimeLimit : 25
+        turnRemainingSeconds = turnTimeLimit > 0 ? turnTimeLimit : 20
         let t = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
             guard let self = self else { return }
             guard self.phase == .playing || self.phase == .claimWindow else { return }
@@ -13494,7 +13521,7 @@ class KOnMahjongManager: NSObject, ObservableObject, MCSessionDelegate, MCNearby
             if self.turnRemainingSeconds > 0 {
                 self.turnRemainingSeconds -= 1
             } else {
-                self.turnRemainingSeconds = self.turnTimeLimit > 0 ? self.turnTimeLimit : 25
+                self.turnRemainingSeconds = self.turnTimeLimit > 0 ? self.turnTimeLimit : 20
                 if self.isRoomAuthority {
                     self.handleTimeout()
                 }
@@ -13592,7 +13619,7 @@ class KOnMahjongManager: NSObject, ObservableObject, MCSessionDelegate, MCNearby
             seats[actor].lastActionText = "暗杠 \(tile.fullName)"
             triggerClaimEvent(seatIdx: actor, actionLabel: "暗杠", tile: tile)
             for i in 0..<4 {
-                seats[i].score += (i == actor) ? 3 : -1
+                seats[i].score += (i == actor) ? (baseScore * 3) : (-baseScore)
             }
         } else if let mIdx = seats[actor].melds.firstIndex(where: { $0.kind == .pong && $0.tile.suit == tile.suit && $0.tile.rank == tile.rank }),
                   let handIdx = seats[actor].hand.firstIndex(where: { $0.suit == tile.suit && $0.rank == tile.rank }) {
@@ -13601,7 +13628,7 @@ class KOnMahjongManager: NSObject, ObservableObject, MCSessionDelegate, MCNearby
             seats[actor].lastActionText = "补杠 \(tile.fullName)"
             triggerClaimEvent(seatIdx: actor, actionLabel: "补杠", tile: tile)
             for i in 0..<4 {
-                seats[i].score += (i == actor) ? 3 : -1
+                seats[i].score += (i == actor) ? (baseScore * 3) : (-baseScore)
             }
         }
         AudioPlayerManager.shared.playMascotVoice(for: characterFilter(for: seats[actor].characterId))
@@ -13692,7 +13719,7 @@ class KOnMahjongManager: NSObject, ObservableObject, MCSessionDelegate, MCNearby
             drawnTileId = nil
             phase = .playing
             currentTurnSeat = seatIdx
-            turnRemainingSeconds = turnTimeLimit > 0 ? turnTimeLimit : 25
+            turnRemainingSeconds = turnTimeLimit > 0 ? turnTimeLimit : 20
             statusBanner = "💥 [\(seats[seatIdx].name)] 碰了 \(claim.tile.fullName)！请出牌"
             AudioPlayerManager.shared.playMascotVoice(for: characterFilter(for: seats[seatIdx].characterId))
             broadcastFullState()
@@ -13736,7 +13763,7 @@ class KOnMahjongManager: NSObject, ObservableObject, MCSessionDelegate, MCNearby
         drawnTileId = drawn.id
         phase = .playing
         currentTurnSeat = seatIdx
-        turnRemainingSeconds = turnTimeLimit > 0 ? turnTimeLimit : 25
+        turnRemainingSeconds = turnTimeLimit > 0 ? turnTimeLimit : 20
         statusBanner = bannerPrefix ?? "🀄 轮到 [\(seats[seatIdx].name)] 摸牌出牌 (余 \(wallCount) 张)"
         broadcastFullState()
         scheduleAIActionIfNeeded()
@@ -13773,7 +13800,6 @@ class KOnMahjongManager: NSObject, ObservableObject, MCSessionDelegate, MCNearby
         wallCount = wall.count
 
         let mult = (2 + horseHits) * (laiziCount >= 4 ? 2 : (hasRedDragon ? 1 : 2))
-        lastHitMaCount = horseHits
         let pts = baseScore * mult
         lastWinScoreDelta = pts * 3
         for i in 0..<4 {
@@ -13872,9 +13898,7 @@ class KOnMahjongManager: NSObject, ObservableObject, MCSessionDelegate, MCNearby
             currentRound: currentRound,
             baseScore: baseScore,
             turnTimeLimit: turnTimeLimit,
-            coinAnte: isOnlineConnected ? 5 : nil,
-            hitMaCount: lastHitMaCount,
-            lastKongFromSeat: lastKongFromSeat
+            coinAnte: isOnlineConnected ? KOnQQCoinBinder.shared.coinAnte : nil
         )
         sendPacketToPeers(pkt)
     }
