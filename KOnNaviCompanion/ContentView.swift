@@ -13256,7 +13256,7 @@ struct KOnPartySheetView: View {
                     colors: [Color(red: 0.14, green: 0.08, blue: 0.24), Color(red: 0.08, green: 0.06, blue: 0.16)],
                     startPoint: .topLeading, endPoint: .bottomTrailing
                 ).ignoresSafeArea()
-                NumberBombGameView(manager: manager)
+                KOnNumberBombView()
             }
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
