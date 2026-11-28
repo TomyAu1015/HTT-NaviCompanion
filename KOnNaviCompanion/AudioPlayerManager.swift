@@ -50,6 +50,16 @@ struct CoordinateConverter {
         return CLLocationCoordinate2D(latitude: coord.latitude + dLat, longitude: coord.longitude + dLon)
     }
     
+    static func gcj02ToWGS84(_ coord: CLLocationCoordinate2D) -> CLLocationCoordinate2D {
+        if isOutOfChina(coord) {
+            return coord
+        }
+        let g = wgs84ToGCJ02(coord)
+        let dLat = g.latitude - coord.latitude
+        let dLon = g.longitude - coord.longitude
+        return CLLocationCoordinate2D(latitude: coord.latitude - dLat, longitude: coord.longitude - dLon)
+    }
+
     static func isInHongKong(_ coord: CLLocationCoordinate2D) -> Bool {
         // Precise Hong Kong SAR boundary (South of Shenzhen River & Deep Bay)
         if coord.latitude >= 22.14 && coord.latitude <= 22.545 && coord.longitude >= 113.82 && coord.longitude <= 114.45 {
@@ -8716,57 +8726,133 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
             }
         }
         
-        // Fetch real-world OpenStreetMap maxspeed tags along the route bounding box
+        // Fetch real-world maxspeed along route: Self-hosted Valhalla primary + Overpass dual-mirror fallback
         self.routeMaxSpeedPoints = []
         if travelMode == .driving && ptCount >= 2 {
             var minLat = 90.0, maxLat = -90.0, minLon = 180.0, maxLon = -180.0
-            for i in stride(from: 0, to: ptCount, by: max(1, ptCount / 20)) {
+            var sampledShape: [[String: Double]] = []
+            let sampleStride = max(1, ptCount / 32)
+            for i in stride(from: 0, to: ptCount, by: sampleStride) {
                 let c = pts[i].coordinate
                 minLat = min(minLat, c.latitude); maxLat = max(maxLat, c.latitude)
                 minLon = min(minLon, c.longitude); maxLon = max(maxLon, c.longitude)
+                let wgs = CoordinateConverter.gcj02ToWGS84(c)
+                sampledShape.append(["lat": wgs.latitude, "lon": wgs.longitude])
             }
-            if (maxLat - minLat) < 0.35 && (maxLon - minLon) < 0.35 {
+            if let lastPt = (0..<ptCount).last.map({ pts[$0].coordinate }) {
+                let wgsLast = CoordinateConverter.gcj02ToWGS84(lastPt)
+                sampledShape.append(["lat": wgsLast.latitude, "lon": wgsLast.longitude])
+            }
+
+            let runOverpassFallback = { [weak self] in
+                guard let self = self, (maxLat - minLat) < 0.35 && (maxLon - minLon) < 0.35 else { return }
                 let bbox = String(format: "%.5f,%.5f,%.5f,%.5f", minLat - 0.002, minLon - 0.002, maxLat + 0.002, maxLon + 0.002)
                 let q = "[out:json][timeout:4];way[\"maxspeed\"](\(bbox));out center;"
-                if let enc = q.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
-                   let primaryURL = URL(string: "https://overpass-api.de/api/interpreter?data=\(enc)") {
-                    let mirrorURL = URL(string: "https://overpass.kumi.systems/api/interpreter?data=\(enc)")
-                    let handleMaxSpeedData: (Data?) -> Bool = { [weak self] data in
-                        guard let self = self, let data = data,
-                              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                              let elems = json["elements"] as? [[String: Any]] else { return false }
-                            var parsed: [(coord: CLLocationCoordinate2D, limit: Int)] = []
-                            for el in elems {
-                                guard let center = el["center"] as? [String: Any],
-                                      let lat = center["lat"] as? Double,
-                                      let lon = center["lon"] as? Double,
-                                      let tags = el["tags"] as? [String: Any],
-                                      let msStr = tags["maxspeed"] as? String else { continue }
-                                let digits = msStr.components(separatedBy: CharacterSet.decimalDigits.inverted).joined()
-                                if let val = Int(digits), val >= 20, val <= 130 {
-                                    parsed.append((CLLocationCoordinate2D(latitude: lat, longitude: lon), val))
-                                }
-                            }
-                            if !parsed.isEmpty {
-                                DispatchQueue.main.async {
-                                    self.routeMaxSpeedPoints = parsed
-                                    self.evaluateRoadSpeedLimitAndNotify(for: self.currentStepInstruction)
-                                }
-                            }
-                            return true
+                guard let enc = q.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
+                      let primaryURL = URL(string: "https://overpass-api.de/api/interpreter?data=\(enc)") else { return }
+                let mirrorURL = URL(string: "https://overpass.kumi.systems/api/interpreter?data=\(enc)")
+                let handleMaxSpeedData: (Data?) -> Bool = { [weak self] data in
+                    guard let self = self, let data = data,
+                          let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                          let elems = json["elements"] as? [[String: Any]] else { return false }
+                    var parsed: [(coord: CLLocationCoordinate2D, limit: Int)] = []
+                    for el in elems {
+                        guard let center = el["center"] as? [String: Any],
+                              let lat = center["lat"] as? Double,
+                              let lon = center["lon"] as? Double,
+                              let tags = el["tags"] as? [String: Any],
+                              let msStr = tags["maxspeed"] as? String else { continue }
+                        let digits = msStr.components(separatedBy: CharacterSet.decimalDigits.inverted).joined()
+                        if let val = Int(digits), val >= 20, val <= 130 {
+                            parsed.append((CLLocationCoordinate2D(latitude: lat, longitude: lon), val))
                         }
-                        var req = URLRequest(url: primaryURL, timeoutInterval: 4.5)
-                        req.setValue("HTT-NaviCompanion/2.6", forHTTPHeaderField: "User-Agent")
-                        URLSession.shared.dataTask(with: req) { data, _, _ in
-                            if !handleMaxSpeedData(data), let mURL = mirrorURL {
-                                var mReq = URLRequest(url: mURL, timeoutInterval: 5.0)
-                                mReq.setValue("HTT-NaviCompanion/2.6", forHTTPHeaderField: "User-Agent")
-                                URLSession.shared.dataTask(with: mReq) { mData, _, _ in
-                                    _ = handleMaxSpeedData(mData)
-                                }.resume()
-                            }
-                        }.resume()
+                    }
+                    if !parsed.isEmpty {
+                        DispatchQueue.main.async {
+                            self.routeMaxSpeedPoints = parsed
+                            self.evaluateRoadSpeedLimitAndNotify(for: self.currentStepInstruction)
+                        }
+                    }
+                    return true
                 }
+                var req = URLRequest(url: primaryURL, timeoutInterval: 4.5)
+                req.setValue("HTT-NaviCompanion/2.6", forHTTPHeaderField: "User-Agent")
+                URLSession.shared.dataTask(with: req) { data, _, _ in
+                    if !handleMaxSpeedData(data), let mURL = mirrorURL {
+                        var mReq = URLRequest(url: mURL, timeoutInterval: 5.0)
+                        mReq.setValue("HTT-NaviCompanion/2.6", forHTTPHeaderField: "User-Agent")
+                        URLSession.shared.dataTask(with: mReq) { mData, _, _ in
+                            _ = handleMaxSpeedData(mData)
+                        }.resume()
+                    }
+                }.resume()
+            }
+
+            if sampledShape.count >= 2, let vURL = URL(string: "https://azusa.online/valhalla/trace_attributes") {
+                var vReq = URLRequest(url: vURL, timeoutInterval: 4.5)
+                vReq.httpMethod = "POST"
+                vReq.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                let payload: [String: Any] = [
+                    "shape": sampledShape,
+                    "costing": "auto",
+                    "shape_match": "map_snap",
+                    "filters": [
+                        "attributes": ["edge.speed_limit", "edge.speed", "edge.road_class", "edge.begin_shape_index", "edge.end_shape_index", "shape"],
+                        "action": "include"
+                    ]
+                ]
+                vReq.httpBody = try? JSONSerialization.data(withJSONObject: payload)
+                URLSession.shared.dataTask(with: vReq) { [weak self] data, resp, _ in
+                    guard let self = self,
+                          let http = resp as? HTTPURLResponse, http.statusCode == 200,
+                          let data = data,
+                          let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                          let shapeStr = json["shape"] as? String,
+                          let edges = json["edges"] as? [[String: Any]] else {
+                        runOverpassFallback()
+                        return
+                    }
+                    // Decode Valhalla polyline6 (precision 1e6)
+                    var decoded: [CLLocationCoordinate2D] = []
+                    let utf8 = Array(shapeStr.utf8)
+                    var idx = 0, lat = 0, lon = 0
+                    while idx < utf8.count {
+                        var b = 0, shift = 0, res = 0
+                        repeat {
+                            guard idx < utf8.count else { break }
+                            b = Int(utf8[idx]) - 63; idx += 1
+                            res |= (b & 0x1f) << shift; shift += 5
+                        } while b >= 0x20
+                        lat += ((res & 1) != 0 ? ~(res >> 1) : (res >> 1))
+                        shift = 0; res = 0
+                        repeat {
+                            guard idx < utf8.count else { break }
+                            b = Int(utf8[idx]) - 63; idx += 1
+                            res |= (b & 0x1f) << shift; shift += 5
+                        } while b >= 0x20
+                        lon += ((res & 1) != 0 ? ~(res >> 1) : (res >> 1))
+                        decoded.append(CoordinateConverter.wgs84ToGCJ02(CLLocationCoordinate2D(latitude: Double(lat) / 1e6, longitude: Double(lon) / 1e6)))
+                    }
+                    var vPoints: [(coord: CLLocationCoordinate2D, limit: Int)] = []
+                    for edge in edges {
+                        let sl = (edge["speed_limit"] as? Int) ?? (edge["speed"] as? Int) ?? 0
+                        guard sl >= 20, sl <= 130, !decoded.isEmpty else { continue }
+                        let bIdx = min(decoded.count - 1, max(0, edge["begin_shape_index"] as? Int ?? 0))
+                        let eIdx = min(decoded.count - 1, max(bIdx, edge["end_shape_index"] as? Int ?? bIdx))
+                        let mid = decoded[(bIdx + eIdx) / 2]
+                        vPoints.append((mid, sl))
+                    }
+                    if !vPoints.isEmpty {
+                        DispatchQueue.main.async {
+                            self.routeMaxSpeedPoints = vPoints
+                            self.evaluateRoadSpeedLimitAndNotify(for: self.currentStepInstruction)
+                        }
+                    } else {
+                        runOverpassFallback()
+                    }
+                }.resume()
+            } else {
+                runOverpassFallback()
             }
         }
 
@@ -10768,8 +10854,9 @@ final class KOnQQCoinBinder: ObservableObject {
     }
 
     func refreshCoins(manual: Bool = false) {
+        let strictQueryAllowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._~"))
         guard !qqToken.isEmpty,
-              let enc = qqToken.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
+              let enc = qqToken.addingPercentEncoding(withAllowedCharacters: strictQueryAllowed),
               let url = URL(string: "https://azusa.online/club/coins?token=\(enc)&_t=\(Int(Date().timeIntervalSince1970 * 1000))") else { return }
         if manual {
             DispatchQueue.main.async {
@@ -10787,7 +10874,8 @@ final class KOnQQCoinBinder: ObservableObject {
                       (obj["ok"] as? Bool) == true,
                       let c = obj["coins"] as? Int else {
                     if manual {
-                        self.statusText = "⚠️ 刷新失败：\(err?.localizedDescription ?? "请检查网络或重新绑定")"
+                        let srvMsg = (data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] })?["error"] as? String
+                        self.statusText = "⚠️ 刷新失败：\(srvMsg ?? err?.localizedDescription ?? "请检查网络或重新绑定")"
                     }
                     return
                 }
