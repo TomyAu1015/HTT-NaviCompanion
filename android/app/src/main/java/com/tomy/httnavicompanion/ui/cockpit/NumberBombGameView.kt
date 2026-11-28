@@ -22,6 +22,8 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import com.tomy.httnavicompanion.audio.AppLanguage
+import com.tomy.httnavicompanion.audio.AudioPlayerManager
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.Alignment
@@ -494,8 +496,7 @@ fun KOnNumberBombContent() {
 
 
 @Composable
-fun KOnPartySheetDialog(onDismiss: () -> Unit) {
-    val manager = AudioPlayerManager.shared
+fun KOnPartySheetDialog(manager: AudioPlayerManager, onDismiss: () -> Unit) {
     val lang by manager.language.collectAsState()
     fun tr(s: String, t: String, e: String) = when (lang) {
         AppLanguage.ZH_HANS -> s
@@ -533,7 +534,7 @@ fun KOnPartySheetDialog(onDismiss: () -> Unit) {
                     }
                 }
                 Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
-                    NumberBombGameView()
+                    KOnNumberBombContent()
                 }
             }
         }

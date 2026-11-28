@@ -264,7 +264,6 @@ fun CockpitScreen(
             LocalAIChatSheetDialog(
                 onDismiss = { showAIChatDialog = false },
                 onOpenGameRoom = { showGameRoomDialog = true },
-                    onOpenParty = { showPartyDialog = true },
                 onOpenSearch = { showSearchDialog = true }
             )
         }
@@ -272,7 +271,7 @@ fun CockpitScreen(
             KOnGameRoomSheetDialog(onDismiss = { showGameRoomDialog = false })
         }
         if (showPartyDialog) {
-            KOnPartySheetDialog(onDismiss = { showPartyDialog = false })
+            KOnPartySheetDialog(manager = manager, onDismiss = { showPartyDialog = false })
         }
         if (showVehicleDialog) {
             VehicleAndPlateSettingsDialog(onDismiss = { showVehicleDialog = false })
