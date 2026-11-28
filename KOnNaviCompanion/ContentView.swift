@@ -1694,37 +1694,7 @@ struct ContentView: View {
                             .zIndex(25)
                     }
                     
-                    private var valhallaFallbackPreNavCard: some View {
-        let mins = manager.remainingRouteMinutes
-        let distStr = String(format: "%.1f km", manager.remainingRouteDistanceKm)
-        return HStack(spacing: 10) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text("\(mins) 分钟 · \(distStr)")
-                    .font(.system(size: 15, weight: .black))
-                    .foregroundColor(httGold)
-                Text(tr("Valhalla 云端路网推荐路线", "Valhalla 雲端路網推薦路線", "Valhalla Road Route"))
-                    .font(.system(size: 11, weight: .bold))
-                    .foregroundColor(.cyan)
-            }
-            Spacer()
-            Button(action: {
-                manager.beginFocusedNavigation()
-            }) {
-                Text(tr("开始导航", "開始導航", "Start"))
-                    .font(.system(size: 13, weight: .black))
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 8)
-                    .background(Color.green)
-                    .foregroundColor(.black)
-                    .cornerRadius(10)
-            }
-        }
-        .padding(10)
-        .background(Color.white.opacity(0.08))
-        .cornerRadius(12)
-    }
-
-    // Electronic Speed Camera + Traffic Status (Left) vs Right Side Tool Column (Separated below travelModeSelectorBar so [搜索] and [返回驾驶舱] never overlap [步行] or [公交/地铁]!)
+                    // Electronic Speed Camera + Traffic Status (Left) vs Right Side Tool Column (Separated below travelModeSelectorBar so [搜索] and [返回驾驶舱] never overlap [步行] or [公交/地铁]!)
                     HStack(alignment: .top, spacing: 6) {
                         electronicEyeAndHighwayHUDStrip
                         
@@ -2793,6 +2763,36 @@ struct ContentView: View {
         .overlay(RoundedRectangle(cornerRadius: 18).stroke(httGold, lineWidth: 1.8))
     }
     
+    private var valhallaFallbackPreNavCard: some View {
+        let mins = manager.remainingRouteMinutes
+        let distStr = String(format: "%.1f km", manager.remainingRouteDistanceKm)
+        return HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("\(mins) 分钟 · \(distStr)")
+                    .font(.system(size: 15, weight: .black))
+                    .foregroundColor(httGold)
+                Text(tr("Valhalla 云端路网推荐路线", "Valhalla 雲端路網推薦路線", "Valhalla Road Route"))
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundColor(.cyan)
+            }
+            Spacer()
+            Button(action: {
+                manager.beginFocusedNavigation()
+            }) {
+                Text(tr("开始导航", "開始導航", "Start"))
+                    .font(.system(size: 13, weight: .black))
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+                    .background(Color.green)
+                    .foregroundColor(.black)
+                    .cornerRadius(10)
+            }
+        }
+        .padding(10)
+        .background(Color.white.opacity(0.08))
+        .cornerRadius(12)
+    }
+
     // Electronic Speed Camera (测速电子眼) + Congestion (路况拥堵) + Service Area (服务区) + Toll Station (收费站) HUD Strip
     private var electronicEyeAndHighwayHUDStrip: some View {
         VStack(alignment: .leading, spacing: 4) {
