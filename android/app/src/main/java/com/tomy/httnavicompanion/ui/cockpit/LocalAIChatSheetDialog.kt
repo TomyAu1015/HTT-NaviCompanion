@@ -33,6 +33,7 @@ import androidx.compose.material.icons.filled.CallEnd
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
 import com.tomy.httnavicompanion.audio.VoiceInputLanguage
@@ -889,6 +890,17 @@ fun LocalAIChatSheetDialog(
                                 Box(
                                     modifier = Modifier
                                         .clip(RoundedCornerShape(8.dp))
+                                        .background(AiGold)
+                                        .clickable {
+                                            clipboard.getText()?.text?.trim()?.let { if (it.isNotEmpty()) cloudTtsSecretDraft = it }
+                                        }
+                                        .padding(horizontal = 8.dp, vertical = 12.dp)
+                                ) {
+                                    Text("粘贴", color = Color.Black, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                }
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(8.dp))
                                         .background(Color(0xFF2E7D32))
                                         .clickable {
                                             hideKb()
@@ -936,6 +948,17 @@ fun LocalAIChatSheetDialog(
                                     modifier = Modifier.weight(1f),
                                     colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Color.White, unfocusedTextColor = Color.White, focusedBorderColor = AiGold, unfocusedBorderColor = Color.Gray)
                                 )
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(AiGold)
+                                        .clickable {
+                                            clipboard.getText()?.text?.trim()?.let { if (it.isNotEmpty()) customTtsUrlDraft = it }
+                                        }
+                                        .padding(horizontal = 8.dp, vertical = 12.dp)
+                                ) {
+                                    Text("粘贴", color = Color.Black, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                }
                                 Box(
                                     modifier = Modifier
                                         .clip(RoundedCornerShape(8.dp))

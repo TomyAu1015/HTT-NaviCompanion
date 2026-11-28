@@ -2752,6 +2752,32 @@ struct ContentView: View {
                         }
                     }
                     .frame(maxHeight: 175)
+                } else if manager.customTransitPolyline != nil {
+                    HStack(spacing: 10) {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("\(manager.remainingRouteMinutes) 分钟 · \(String(format: "%.1f km", manager.remainingRouteDistanceKm))")
+                                .font(.system(size: 15, weight: .black))
+                                .foregroundColor(httGold)
+                            Text(tr("Valhalla 云端路网推荐路线", "Valhalla 雲端路網推薦路線", "Valhalla Road Route"))
+                                .font(.system(size: 11, weight: .bold))
+                                .foregroundColor(.cyan)
+                        }
+                        Spacer()
+                        Button(action: {
+                            manager.beginFocusedNavigation()
+                        }) {
+                            Text(tr("开始导航", "開始導航", "Start"))
+                                .font(.system(size: 13, weight: .black))
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 8)
+                                .background(Color.green)
+                                .foregroundColor(.black)
+                                .cornerRadius(10)
+                        }
+                    }
+                    .padding(10)
+                    .background(Color.white.opacity(0.08))
+                    .cornerRadius(12)
                 }
             }
         }
@@ -12827,7 +12853,7 @@ final class KOnNumberBombController: NSObject, ObservableObject, AVSpeechSynthes
         DispatchQueue.main.async {
             self.isSpeaking = false
             if self.isHandsFreeActive {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.55) {
                     if self.isHandsFreeActive && !self.isSpeaking {
                         self.startListeningInternal()
                     }
@@ -12957,8 +12983,10 @@ final class KOnNumberBombController: NSObject, ObservableObject, AVSpeechSynthes
         case .playing:
             if let guess = Self.extractNumber(from: txt) {
                 handleGuessNumber(guess)
-            } else {
+            } else if txt.count >= 2 {
                 routeUtteranceThroughTeaAI(txt)
+            } else if isHandsFreeActive && !isSpeaking {
+                startListeningInternal()
             }
         case .exploded:
             if txt.contains("开始") || txt.contains("再来") || txt.contains("继续") {
@@ -13040,6 +13068,15 @@ final class KOnNumberBombController: NSObject, ObservableObject, AVSpeechSynthes
             currentLow = guess + 1
         } else {
             currentHigh = guess - 1
+        }
+        if currentLow >= currentHigh {
+            phase = .exploded
+            explodedPlayer = who.isEmpty ? "当前玩家" : who
+            history.insert("💥 \(prefix)报 \(guess) → 仅剩炸弹 \(secretBomb)，当场引爆！", at: 0)
+            let gen = UINotificationFeedbackGenerator()
+            gen.notificationOccurred(.error)
+            speakAndThenListen("砰！范围已被压缩到只剩炸弹 \(secretBomb)！\(explodedPlayer) 当场引爆！说再来一局就可以继续玩！")
+            return
         }
         history.insert("✅ \(prefix)报 \(guess) → 新范围 \(currentLow)-\(currentHigh)", at: 0)
         if !players.isEmpty {

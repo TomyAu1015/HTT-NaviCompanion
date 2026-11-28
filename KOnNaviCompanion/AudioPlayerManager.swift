@@ -8280,12 +8280,122 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate, CLL
                     self.selectedRouteIndex = 0
                     self.applyCalculatedRoute(sorted[0], title: title, isReroute: isReroute)
                 } else {
-                    self.triggerDepartureGreeting(title: title, isReroute: isReroute)
+                    self.requestValhallaFallbackRoute(to: destCoord, title: title, isReroute: isReroute)
                 }
             }
         }
     }
     
+    private func decodeValhallaPolyline6(_ encoded: String) -> [CLLocationCoordinate2D] {
+        var coords: [CLLocationCoordinate2D] = []
+        let chars = Array(encoded.utf8)
+        var index = 0
+        var lat = 0
+        var lon = 0
+        while index < chars.count {
+            var shift = 0
+            var result = 0
+            var b = 0
+            repeat {
+                if index >= chars.count { break }
+                b = Int(chars[index]) - 63
+                index += 1
+                result |= (b & 0x1f) << shift
+                shift += 5
+            } while b >= 0x20
+            let dlat = ((result & 1) != 0) ? ~(result >> 1) : (result >> 1)
+            lat += dlat
+
+            shift = 0
+            result = 0
+            repeat {
+                if index >= chars.count { break }
+                b = Int(chars[index]) - 63
+                index += 1
+                result |= (b & 0x1f) << shift
+                shift += 5
+            } while b >= 0x20
+            let dlon = ((result & 1) != 0) ? ~(result >> 1) : (result >> 1)
+            lon += dlon
+
+            let wgs = CLLocationCoordinate2D(latitude: Double(lat) / 1e6, longitude: Double(lon) / 1e6)
+            coords.append(CoordinateConverter.wgs84ToGCJ02(wgs))
+        }
+        return coords
+    }
+
+    private func applyFallbackPolyline(_ coords: [CLLocationCoordinate2D], distKm: Double, mins: Int, firstStep: String, title: String, isReroute: Bool) {
+        var mutableCoords = coords
+        let poly = MKPolyline(coordinates: &mutableCoords, count: mutableCoords.count)
+        poly.title = (self.travelMode == .ebike) ? "EBIKE_CYAN_BLUE" : (self.travelMode == .walking ? "WALKING_BLUE" : "TRAFFIC_GREEN")
+        self.activeRoute = nil
+        self.candidateRoutes = []
+        self.customTransitPolyline = poly
+        self.remainingRouteDistanceKm = max(0.05, distKm)
+        self.remainingRouteMinutes = max(1, mins)
+        self.currentStepInstruction = firstStep.isEmpty ? "沿推荐路线前往 \(title)" : firstStep
+        self.distanceToNextStepMeters = max(50.0, distKm * 1000.0)
+        if !isReroute {
+            self.isNavigatingFocused = false
+            self.mapTrackingUser = false
+            self.routeOverviewFitTrigger += 1
+        }
+        self.routeSelectionRenderTrigger += 1
+        self.triggerDepartureGreeting(title: title, isReroute: isReroute)
+    }
+
+    private func requestValhallaFallbackRoute(to destCoord: CLLocationCoordinate2D, title: String, isReroute: Bool) {
+        let wgsStart = CoordinateConverter.gcj02ToWGS84(self.userCoordinate)
+        let wgsEnd = CoordinateConverter.gcj02ToWGS84(destCoord)
+        let costing = (self.travelMode == .ebike) ? "bicycle" : ((self.travelMode == .walking) ? "pedestrian" : "auto")
+        guard let url = URL(string: "https://azusa.online/valhalla/route") else {
+            let dKm = CLLocation(latitude: self.userCoordinate.latitude, longitude: self.userCoordinate.longitude)
+                .distance(from: CLLocation(latitude: destCoord.latitude, longitude: destCoord.longitude)) / 1000.0
+            let spd = (self.travelMode == .walking) ? 4.5 : ((self.travelMode == .ebike) ? 16.0 : 35.0)
+            self.applyFallbackPolyline([self.userCoordinate, destCoord], distKm: dKm, mins: Int((dKm / spd) * 60.0), firstStep: "前往 \(title)", title: title, isReroute: isReroute)
+            return
+        }
+        var req = URLRequest(url: url, timeoutInterval: 8.0)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let body: [String: Any] = [
+            "locations": [
+                ["lat": wgsStart.latitude, "lon": wgsStart.longitude],
+                ["lat": wgsEnd.latitude, "lon": wgsEnd.longitude]
+            ],
+            "costing": costing,
+            "directions_options": ["units": "kilometers", "language": "zh-CN"]
+        ]
+        req.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        URLSession.shared.dataTask(with: req) { [weak self] data, resp, _ in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                if let data = data,
+                   (resp as? HTTPURLResponse)?.statusCode == 200,
+                   let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   let trip = obj["trip"] as? [String: Any],
+                   let legs = trip["legs"] as? [[String: Any]],
+                   let firstLeg = legs.first,
+                   let shape = firstLeg["shape"] as? String {
+                    let coords = self.decodeValhallaPolyline6(shape)
+                    if coords.count >= 2 {
+                        let summary = (trip["summary"] as? [String: Any]) ?? [:]
+                        let lenKm = (summary["length"] as? Double) ?? 1.0
+                        let sec = (summary["time"] as? Double) ?? 180.0
+                        let maneuvers = (firstLeg["maneuvers"] as? [[String: Any]]) ?? []
+                        let instr = (maneuvers.first?["instruction"] as? String) ?? ""
+                        self.applyFallbackPolyline(coords, distKm: lenKm, mins: Int(ceil(sec / 60.0)), firstStep: instr, title: title, isReroute: isReroute)
+                        return
+                    }
+                }
+                let dKm = CLLocation(latitude: self.userCoordinate.latitude, longitude: self.userCoordinate.longitude)
+                    .distance(from: CLLocation(latitude: destCoord.latitude, longitude: destCoord.longitude)) / 1000.0
+                let spd = (self.travelMode == .walking) ? 4.5 : ((self.travelMode == .ebike) ? 16.0 : 35.0)
+                self.applyFallbackPolyline([self.userCoordinate, destCoord], distKm: dKm, mins: Int(ceil((dKm / spd) * 60.0)), firstStep: "前往 \(title)", title: title, isReroute: isReroute)
+            }
+        }.resume()
+    }
+
     private func routeContainsOverpassOrHighway(_ route: MKRoute) -> Bool {
         let rName = route.name
         if rName.contains("高速") || rName.contains("快速") || rName.contains("高架") || rName.contains("立交") || rName.contains("大桥") || rName.contains("丹平") || rName.contains("水官") {

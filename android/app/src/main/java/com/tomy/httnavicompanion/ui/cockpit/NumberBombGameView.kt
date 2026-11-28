@@ -173,6 +173,13 @@ fun KOnNumberBombContent(llmManager: LocalLLMManager? = null) {
             return
         }
         if (guess < secretBomb) currentLow = guess + 1 else currentHigh = guess - 1
+        if (currentLow >= currentHigh) {
+            phase = 2
+            explodedPlayer = who.ifEmpty { "当前玩家" }
+            history.add(0, "💥 ${prefix}报 $guess → 仅剩炸弹 $secretBomb，当场引爆！")
+            speakAndListen("砰！范围已被压缩到只剩炸弹 $secretBomb！$explodedPlayer 当场引爆！说再来一局就可以继续玩！")
+            return
+        }
         history.add(0, "✅ ${prefix}报 $guess → 新范围 $currentLow-$currentHigh")
         if (players.isNotEmpty()) turnIdx = (turnIdx + 1) % players.size
         val nxt = currentWho()
@@ -367,7 +374,7 @@ fun KOnNumberBombContent(llmManager: LocalLLMManager? = null) {
                     override fun onDone(utteranceId: String?) {
                         mainHandler.post {
                             isSpeaking = false
-                            if (activeState.value) mainHandler.postDelayed({ startListen() }, 250)
+                            if (activeState.value) mainHandler.postDelayed({ startListen() }, 550)
                         }
                     }
                     @Deprecated("Deprecated in Java")
