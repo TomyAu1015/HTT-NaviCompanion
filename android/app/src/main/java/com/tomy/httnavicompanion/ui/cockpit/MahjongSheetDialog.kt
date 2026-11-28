@@ -37,7 +37,6 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -394,29 +393,10 @@ fun KOnGameRoomSheetDialog(onDismiss: () -> Unit) {
     val rmkHosting by rmkEngine.isHostingRoom.collectAsState()
     val rmkPeers by rmkEngine.connectedPeerNames.collectAsState()
     val rmkPlayerCnt by rmkEngine.roomPlayerCount.collectAsState()
-    val grScope = rememberCoroutineScope()
-    val grQqCoins by QQCoinBinder.coins.collectAsState()
-    val grQqToken by QQCoinBinder.qqToken.collectAsState()
-    val grQqUid by QQCoinBinder.qqUid.collectAsState()
-    val grQqBound = grQqToken.isNotEmpty() && grQqUid.isNotEmpty()
-    val grQqAnte by QQCoinBinder.coinAnte.collectAsState()
-    val grQqStatus by QQCoinBinder.status.collectAsState()
-    var showGrQqDialog by remember { mutableStateOf(false) }
-    var grQqInput by remember { mutableStateOf(grQqUid) }
-    var grCodeInput by remember { mutableStateOf("") }
-    LaunchedEffect(Unit) {
-        QQCoinBinder.init(context)
-        grQqInput = QQCoinBinder.qqUid.value
-        while (true) {
-            QQCoinBinder.refreshCoins(context)
-            kotlinx.coroutines.delay(12000)
-        }
-    }
 
     val inLobbyNow = (selectedGame == 0 && ddzPhase == DoudizhuGamePhase.LOBBY) ||
         (selectedGame == 1 && mjPhase == MahjongGamePhase.LOBBY) ||
-        (selectedGame == 2 && rmkPhase == RmkGamePhase.LOBBY) ||
-        (selectedGame == 3)
+        (selectedGame == 2 && rmkPhase == RmkGamePhase.LOBBY)
     val isInJoinedRoom = !inLobbyNow ||
         (selectedGame == 0 && (ddzHosting || ddzServerConn || ddzPeers.isNotEmpty())) ||
         (selectedGame == 1 && (mjHosting || mjServerConn || mjPeers.isNotEmpty())) ||
@@ -539,41 +519,19 @@ fun KOnGameRoomSheetDialog(onDismiss: () -> Unit) {
                         overflow = TextOverflow.Ellipsis
                     )
                     if (inLobbyNow) {
-                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Box(
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(16.dp))
-                                    .background(Color(0xFF2B220A))
-                                    .border(1.dp, MjGold.copy(alpha = 0.7f), RoundedCornerShape(16.dp))
-                                    .clickable {
-                                        grQqInput = QQCoinBinder.qqUid.value
-                                        grScope.launch { QQCoinBinder.refreshCoins(context, manual = true) }
-                                        showGrQqDialog = true
-                                    }
-                                    .padding(horizontal = 9.dp, vertical = 5.dp)
-                            ) {
-                                Text(
-                                    if (grQqBound) "🪙 $grQqCoins" else "🪙 绑定QQ",
-                                    color = MjGold,
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Black,
-                                    maxLines = 1
-                                )
-                            }
-                            Box(
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(16.dp))
-                                    .background(MjCardGreen)
-                                    .clickable {
-                                        ddzEngine.leaveRoomAndResetLobby()
-                                        mjEngine.leaveRoomAndResetLobby()
-                                        rmkEngine.leaveRoomAndResetLobby()
-                                        onDismiss()
-                                    }
-                                    .padding(horizontal = 10.dp, vertical = 5.dp)
-                            ) {
-                                Text(tr("✕ 关闭", "✕ 關閉", "✕ Close"), color = MjGold, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                            }
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(16.dp))
+                                .background(MjCardGreen)
+                                .clickable {
+                                    ddzEngine.leaveRoomAndResetLobby()
+                                    mjEngine.leaveRoomAndResetLobby()
+                                    rmkEngine.leaveRoomAndResetLobby()
+                                    onDismiss()
+                                }
+                                .padding(horizontal = 10.dp, vertical = 5.dp)
+                        ) {
+                            Text(tr("✕ 关闭", "✕ 關閉", "✕ Close"), color = MjGold, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                         }
                     } else {
                         Spacer(Modifier.width(72.dp))
@@ -581,52 +539,6 @@ fun KOnGameRoomSheetDialog(onDismiss: () -> Unit) {
                 }
                 }
 
-                if (showGrQqDialog) {
-                    AlertDialog(
-                        onDismissRequest = { showGrQqDialog = false },
-                        title = { Text("🪙 绑定 QQ 群金币", fontWeight = FontWeight.Black) },
-                        text = {
-                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Text("仅「在线服务器联机且 ≥2 名真人」增减 QQ 群金币；未登录仅可使用面对面或本地 AI。", fontSize = 12.sp)
-                                Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
-                                    Text("底注:", fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                                    listOf(5, 10, 20, 50).forEach { amt ->
-                                        Box(
-                                            modifier = Modifier
-                                                .clip(RoundedCornerShape(8.dp))
-                                                .background(if (grQqAnte == amt) Color(0xFFF59E0B) else Color.Gray.copy(alpha = 0.25f))
-                                                .clickable { QQCoinBinder.setAnte(context, amt) }
-                                                .padding(horizontal = 8.dp, vertical = 4.dp)
-                                        ) {
-                                            Text("${amt}🪙", fontSize = 11.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false, color = if (grQqAnte == amt) Color.Black else Color.Unspecified)
-                                        }
-                                    }
-                                }
-                                if (grQqBound) {
-                                    Text("已绑定 QQ: $grQqUid · 当前群金币: $grQqCoins 🪙", color = Color(0xFFD97706), fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                                }
-                                OutlinedTextField(value = grQqInput, onValueChange = { grQqInput = it }, label = { Text("输入 QQ 号") }, singleLine = true)
-                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    Button(onClick = { grScope.launch { QQCoinBinder.requestCode(grQqInput) } }) { Text("发验证码") }
-                                    if (grQqBound) {
-                                        OutlinedButton(onClick = { grScope.launch { QQCoinBinder.refreshCoins(context, manual = true) } }) { Text("刷新") }
-                                        OutlinedButton(onClick = { QQCoinBinder.unbind(context) }) { Text("解绑") }
-                                    }
-                                }
-                                OutlinedTextField(value = grCodeInput, onValueChange = { grCodeInput = it }, label = { Text("6位私聊验证码") }, singleLine = true)
-                                Button(onClick = {
-                                    grScope.launch {
-                                        if (QQCoinBinder.verifyCode(context, grQqInput, grCodeInput)) {
-                                            grCodeInput = ""; showGrQqDialog = false
-                                        }
-                                    }
-                                }) { Text("确认绑定") }
-                                if (grQqStatus.isNotEmpty()) Text(grQqStatus, fontSize = 11.sp, color = Color(0xFFD97706))
-                            }
-                        },
-                        confirmButton = { TextButton(onClick = { showGrQqDialog = false }) { Text("关闭") } }
-                    )
-                }
                 // Game Switcher Bar
                 if (isInJoinedRoom && inLobbyNow) {
                     Row(
@@ -737,35 +649,6 @@ fun KOnGameRoomSheetDialog(onDismiss: () -> Unit) {
                                 maxLines = 1
                             )
                         }
-                        Box(
-                            modifier = Modifier
-                                .weight(1f)
-                                .clip(RoundedCornerShape(9.dp))
-                                .background(if (selectedGame == 3) Color(0xFF8E24AA) else Color.Black.copy(alpha = 0.42f))
-                                .border(
-                                    if (selectedGame == 3) 1.5.dp else 1.dp,
-                                    if (selectedGame == 3) MjGold else MjGold.copy(alpha = 0.35f),
-                                    RoundedCornerShape(9.dp)
-                                )
-                                .clickable {
-                                    if (selectedGame != 3) {
-                                        ddzEngine.leaveRoomAndResetLobby()
-                                        mjEngine.leaveRoomAndResetLobby()
-                                        rmkEngine.leaveRoomAndResetLobby()
-                                        selectedGame = 3
-                                    }
-                                }
-                                .padding(vertical = 7.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                tr("💣 数字炸弹", "💣 數字炸彈", "💣 Bomb"),
-                                color = Color.White,
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Black,
-                                maxLines = 1
-                            )
-                        }
                     }
                 }
 
@@ -774,10 +657,8 @@ fun KOnGameRoomSheetDialog(onDismiss: () -> Unit) {
                         KOnDoudizhuSheetDialog(onDismiss = onDismiss, embeddedInGameRoom = true)
                     } else if (selectedGame == 1) {
                         KOnMahjongSheetDialog(onDismiss = onDismiss, embeddedInGameRoom = true)
-                    } else if (selectedGame == 2) {
-                        KOnRummikubContent()
                     } else {
-                        KOnNumberBombContent()
+                        KOnRummikubContent()
                     }
                 }
             }
@@ -831,11 +712,8 @@ fun KOnMahjongSheetDialog(onDismiss: () -> Unit, embeddedInGameRoom: Boolean = f
     val lastWinHasRedDragon by engine.lastWinHasRedDragon.collectAsState()
     val aiDifficulty by engine.aiDifficulty.collectAsState()
     val lastClaimEvent by engine.lastClaimEvent.collectAsState()
-    val context = LocalContext.current
 
-    LaunchedEffect(Unit) {
-        launch { while (true) { QQCoinBinder.refreshCoins(context); kotlinx.coroutines.delay(12000) } }
-        engine.refreshLocalIpAddress() }
+    LaunchedEffect(Unit) { engine.refreshLocalIpAddress() }
     DisposableEffect(Unit) { onDispose { engine.leaveRoomAndResetLobby() } }
 
     val contentBody: @Composable () -> Unit = {
@@ -1030,8 +908,9 @@ fun KOnMahjongSheetDialog(onDismiss: () -> Unit, embeddedInGameRoom: Boolean = f
                                 Text(if (canEdit) "第$currentRound/${if (totalRounds == 0) "∞" else totalRounds}局" else "🔒仅房主可改", color = if (canEdit) Color(0xFF00E676) else Color(0xFFFFB74D), fontSize = 10.sp)
                             }
                             MjRuleRow("局数:", listOf(4 to "4局", 8 to "8局", 16 to "16局", 0 to "无限"), totalRounds, MjRed) { if (canEdit) engine.setTotalRounds(it) }
+                            MjRuleRow("底分:", listOf(50 to "50分", 100 to "100分", 200 to "200分", 500 to "500分"), baseScore, Color(0xFFD99426)) { if (canEdit) engine.setBaseScore(it) }
                             MjRuleRow("AI:", listOf(0 to "休闲 AI", 1 to "标准 AI", 2 to "大师 AI"), aiDifficulty.ordinal, Color(0xFF7E57C2)) { if (canEdit) engine.setAiDifficulty(MahjongAIDifficulty.entries[it]) }
-                            MjRuleRow("限时:", listOf(15 to "15秒", 25 to "25秒", 30 to "30秒", 0 to "不限"), turnLimit, MjBlue) { if (canEdit) engine.setTurnTimeLimit(it) }
+                            MjRuleRow("限时:", listOf(15 to "15秒", 20 to "20秒", 30 to "30秒", 0 to "不限"), turnLimit, MjBlue) { if (canEdit) engine.setTurnTimeLimit(it) }
                         }
 
                         // 4. 4-Seat Preview
@@ -1067,7 +946,7 @@ fun KOnMahjongSheetDialog(onDismiss: () -> Unit, embeddedInGameRoom: Boolean = f
                         shape = RoundedCornerShape(12.dp),
                         modifier = Modifier.fillMaxWidth().height(44.dp)
                     ) {
-                        Text(HTTGameRoomLocalizer.localize(if (isGuestWaiting) "⏳ 等待1号房主开始麻将..." else "🀄 立即开始广东红中麻将", lang), color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Black)
+                        Text(HTTGameRoomLocalizer.localize(if (isGuestWaiting) "⏳ 等待1号房主开始麻将..." else "🀄 立即开始广东红中麻将 (底分 $baseScore)", lang), color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Black)
                     }
                 } else {
                     // Active 4-Player Mahjong Table

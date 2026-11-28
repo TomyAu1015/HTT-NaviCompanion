@@ -22,6 +22,8 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -485,6 +487,54 @@ fun KOnNumberBombContent() {
             ) {
                 Text("本局记录", color = Color(0xFFFFD54F), fontSize = 12.sp, fontWeight = FontWeight.Bold)
                 history.take(8).forEach { Text(it, color = Color.White.copy(alpha = 0.9f), fontSize = 12.sp) }
+            }
+        }
+    }
+}
+
+
+@Composable
+fun KOnPartySheetDialog(onDismiss: () -> Unit) {
+    val manager = AudioPlayerManager.shared
+    val lang by manager.language.collectAsState()
+    fun tr(s: String, t: String, e: String) = when (lang) {
+        AppLanguage.ZH_HANS -> s
+        AppLanguage.ZH_HANT -> t
+        AppLanguage.EN -> e
+    }
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth(0.95f)
+                .fillMaxHeight(0.88f),
+            shape = RoundedCornerShape(18.dp),
+            color = Color(0xFF1A102B)
+        ) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(Color(0xFF281642))
+                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = tr("🎉 放课后派对", "🎉 放課後派對", "🎉 Ho-kago Party"),
+                        color = Color(0xFFFAD048),
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.ExtraBold
+                    )
+                    TextButton(onClick = onDismiss) {
+                        Text(tr("关闭", "關閉", "Close"), color = Color.White, fontWeight = FontWeight.Bold)
+                    }
+                }
+                Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                    NumberBombGameView()
+                }
             }
         }
     }

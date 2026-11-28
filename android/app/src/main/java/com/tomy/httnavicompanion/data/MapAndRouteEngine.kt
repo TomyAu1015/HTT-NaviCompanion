@@ -628,8 +628,96 @@ object MapAndRouteEngine {
         return 0
     }
 
+    private fun decodeValhallaPolyline6(encoded: String): List<LatLng> {
+        val out = mutableListOf<LatLng>()
+        var idx = 0
+        var lat = 0
+        var lon = 0
+        val len = encoded.length
+        while (idx < len) {
+            var b: Int
+            var shift = 0
+            var res = 0
+            do {
+                if (idx >= len) break
+                b = encoded[idx++].code - 63
+                res = res or ((b and 0x1f) shl shift)
+                shift += 5
+            } while (b >= 0x20)
+            lat += if ((res and 1) != 0) (res shr 1).inv() else (res shr 1)
+            shift = 0
+            res = 0
+            do {
+                if (idx >= len) break
+                b = encoded[idx++].code - 63
+                res = res or ((b and 0x1f) shl shift)
+                shift += 5
+            } while (b >= 0x20)
+            lon += if ((res and 1) != 0) (res shr 1).inv() else (res shr 1)
+            out.add(LatLng(lat / 1e6, lon / 1e6))
+        }
+        return out
+    }
+
     fun fetchMaxSpeedAlongRoute(routePts: List<LatLng>): List<Pair<LatLng, Int>> {
         if (routePts.size < 2) return emptyList()
+        // 1. Primary: Self-hosted Valhalla trace_attributes (China + HK + Macau)
+        try {
+            val strideV = (routePts.size / 32).coerceAtLeast(1)
+            val shapeArr = org.json.JSONArray()
+            for (i in routePts.indices step strideV) {
+                val p = routePts[i]
+                shapeArr.put(JSONObject().put("lat", p.latitude).put("lon", p.longitude))
+            }
+            val lastP = routePts.last()
+            shapeArr.put(JSONObject().put("lat", lastP.latitude).put("lon", lastP.longitude))
+
+            val reqJson = JSONObject()
+                .put("shape", shapeArr)
+                .put("costing", "auto")
+                .put("shape_match", "map_snap")
+                .put(
+                    "filters",
+                    JSONObject()
+                        .put("attributes", org.json.JSONArray(listOf("edge.speed_limit", "edge.speed", "edge.road_class", "edge.begin_shape_index", "edge.end_shape_index", "shape")))
+                        .put("action", "include")
+                )
+
+            val vConn = (URL("https://azusa.online/valhalla/trace_attributes").openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                connectTimeout = 4000
+                readTimeout = 4500
+                doOutput = true
+                setRequestProperty("Content-Type", "application/json")
+                setRequestProperty("User-Agent", "HTT-NaviCompanion-Android/2.6")
+            }
+            vConn.outputStream.use { it.write(reqJson.toString().toByteArray(Charsets.UTF_8)) }
+            if (vConn.responseCode == 200) {
+                val body = BufferedReader(InputStreamReader(vConn.inputStream)).use { it.readText() }
+                vConn.disconnect()
+                val obj = JSONObject(body)
+                val shapeStr = obj.optString("shape", "")
+                val edges = obj.optJSONArray("edges")
+                if (shapeStr.isNotEmpty() && edges != null) {
+                    val decoded = decodeValhallaPolyline6(shapeStr)
+                    val vRes = mutableListOf<Pair<LatLng, Int>>()
+                    for (i in 0 until edges.length()) {
+                        val ed = edges.getJSONObject(i)
+                        val sl = ed.optInt("speed_limit", ed.optInt("speed", 0))
+                        if (sl in 20..130 && decoded.isNotEmpty()) {
+                            val bIdx = ed.optInt("begin_shape_index", 0).coerceIn(0, decoded.size - 1)
+                            val eIdx = ed.optInt("end_shape_index", bIdx).coerceIn(bIdx, decoded.size - 1)
+                            vRes.add(decoded[(bIdx + eIdx) / 2] to sl)
+                        }
+                    }
+                    if (vRes.isNotEmpty()) return vRes
+                }
+            } else {
+                vConn.disconnect()
+            }
+        } catch (_: Throwable) { }
+
+        // 2. Fallback: Overpass dual-mirror (overpass-api.de -> overpass.kumi.systems)
         var minLat = 90.0; var maxLat = -90.0; var minLon = 180.0; var maxLon = -180.0
         val stride = (routePts.size / 20).coerceAtLeast(1)
         for (i in routePts.indices step stride) {
@@ -642,35 +730,42 @@ object MapAndRouteEngine {
         if ((maxLat - minLat) > 0.35 || (maxLon - minLon) > 0.35) return emptyList()
         val bbox = String.format(Locale.US, "%.5f,%.5f,%.5f,%.5f", minLat - 0.002, minLon - 0.002, maxLat + 0.002, maxLon + 0.002)
         val q = URLEncoder.encode("[out:json][timeout:4];way[\"maxspeed\"]($bbox);out center;", "UTF-8")
-        return try {
-            val conn = (URL("https://overpass-api.de/api/interpreter?data=$q").openConnection() as HttpURLConnection).apply {
-                connectTimeout = 3500
-                readTimeout = 3500
-                setRequestProperty("User-Agent", "HTT-NaviCompanion-Android/2.1")
-            }
-            val res = mutableListOf<Pair<LatLng, Int>>()
-            if (conn.responseCode == 200) {
-                val body = BufferedReader(InputStreamReader(conn.inputStream)).use { it.readText() }
-                val elems = JSONObject(body).optJSONArray("elements")
-                if (elems != null) {
-                    for (i in 0 until elems.length()) {
-                        val el = elems.getJSONObject(i)
-                        val center = el.optJSONObject("center") ?: continue
-                        val lat = center.optDouble("lat", Double.NaN)
-                        val lon = center.optDouble("lon", Double.NaN)
-                        val msStr = el.optJSONObject("tags")?.optString("maxspeed", "") ?: ""
-                        val num = msStr.filter { it.isDigit() }.toIntOrNull()
-                        if (!lat.isNaN() && !lon.isNaN() && num != null && num in 20..130) {
-                            res.add(LatLng(lat, lon) to num)
+        val mirrors = listOf(
+            "https://overpass-api.de/api/interpreter?data=$q",
+            "https://overpass.kumi.systems/api/interpreter?data=$q"
+        )
+        for (endpoint in mirrors) {
+            try {
+                val conn = (URL(endpoint).openConnection() as HttpURLConnection).apply {
+                    connectTimeout = 3500
+                    readTimeout = 3500
+                    setRequestProperty("User-Agent", "HTT-NaviCompanion-Android/2.6")
+                }
+                val res = mutableListOf<Pair<LatLng, Int>>()
+                if (conn.responseCode == 200) {
+                    val body = BufferedReader(InputStreamReader(conn.inputStream)).use { it.readText() }
+                    val elems = JSONObject(body).optJSONArray("elements")
+                    if (elems != null) {
+                        for (i in 0 until elems.length()) {
+                            val el = elems.getJSONObject(i)
+                            val center = el.optJSONObject("center") ?: continue
+                            val lat = center.optDouble("lat", Double.NaN)
+                            val lon = center.optDouble("lon", Double.NaN)
+                            val msStr = el.optJSONObject("tags")?.optString("maxspeed", "") ?: ""
+                            val num = msStr.filter { it.isDigit() }.toIntOrNull()
+                            if (!lat.isNaN() && !lon.isNaN() && num != null && num in 20..130) {
+                                res.add(LatLng(lat, lon) to num)
+                            }
                         }
                     }
+                    conn.disconnect()
+                    if (res.isNotEmpty()) return res
+                } else {
+                    conn.disconnect()
                 }
-            }
-            conn.disconnect()
-            res
-        } catch (_: Throwable) {
-            emptyList()
+            } catch (_: Throwable) { }
         }
+        return emptyList()
     }
 
     fun fetchTrafficSignalsAlongRoute(routePts: List<LatLng>): List<LatLng> {

@@ -247,7 +247,7 @@ object RmkEvaluator {
             if (uniq.size >= 3) {
                 val pts = evaluateMeld(uniq) ?: 0
                 if (pts > bestPts) { bestPts = pts; best = uniq }
-            } else if (false && uniq.size == 2 && jokers.isNotEmpty()) {
+            } else if (uniq.size == 2 && jokers.isNotEmpty()) {
                 val cand = uniq + jokers[0]
                 val pts = evaluateMeld(cand) ?: 0
                 if (pts > bestPts) { bestPts = pts; best = cand }
@@ -337,8 +337,7 @@ object RmkEvaluator {
         if (preferRuns) { extractRuns() }
         else { extractGroups() }
 
-        // 百搭不参与 777/789 自动组合
-        while (false) {
+        while (true) {
             val jIdx = remaining.indexOfFirst { it.isJoker }
             if (jIdx < 0) break
             val joker = remaining[jIdx]
@@ -1260,10 +1259,6 @@ class RummikubEngine(
     }
 
     fun connectOnlineServerRoom() {
-        if (!QQCoinBinder.isBound) {
-            _statusBanner.value = "🔒 远程服务器联机需先绑定登录 QQ 账号，未登录仅可使用面对面或 AI 游玩！"
-            return
-        }
         val code = _roomCode.value.trim()
         if (code.isEmpty()) { _statusBanner.value = "⚠️ 请先填写房号！"; return }
         stopNetworking()
