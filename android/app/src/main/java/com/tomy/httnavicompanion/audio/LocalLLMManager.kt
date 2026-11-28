@@ -1959,13 +1959,59 @@ ${personaRole}你们五人组成了“放课后茶会”(HTT)乐队。你正坐�
                         val tts = ensureSherpaOfflineTts()
                         if (tts != null) {
                             val speed = when (emotion) {
-                                "元气", "慌张" -> 0.89f
-                                "温柔", "撒娇" -> 0.82f
-                                else -> 0.86f
+                                "元气", "慌张" -> 1.03f
+                                "温柔", "撒娇" -> 0.94f
+                                else -> 0.98f
                             }
-                            val audio = tts.generate(text = nextChunk, sid = currentSpeakerSid(), speed = speed)
-                            if (audio.samples.isNotEmpty()) {
-                                writeWavFile(audio.samples, audio.sampleRate, wavFile)
+                            val normChunk = nextChunk
+                                .replace("～", "。").replace("~", "。")
+                                .replace("……", "。").replace("...", "。")
+                            val subClauses = mutableListOf<Pair<String, Int>>()
+                            val buf = StringBuilder()
+                            val midSet = setOf('，', ',', '；', ';')
+                            val longSet = setOf('。', '.', '！', '!', '？', '?', '\n', '…')
+                            for (ch in normChunk) {
+                                buf.append(ch)
+                                when {
+                                    longSet.contains(ch) -> {
+                                        val t = buf.toString().trim()
+                                        if (t.isNotEmpty()) {
+                                            val s = if (ch == '\n' || ch == '…') t.dropLast(1) + "。" else t
+                                            subClauses.add(s to 320)
+                                        }
+                                        buf.clear()
+                                    }
+                                    midSet.contains(ch) && buf.length >= 16 -> {
+                                        val t = buf.toString().trim()
+                                        if (t.isNotEmpty()) {
+                                            subClauses.add((t.dropLast(1) + "。") to 180)
+                                        }
+                                        buf.clear()
+                                    }
+                                }
+                            }
+                            val rem = buf.toString().trim()
+                            if (rem.isNotEmpty()) {
+                                val hasEnd = rem.last() in setOf('。', '！', '？', '.', '!', '?')
+                                subClauses.add((if (hasEnd) rem else "$rem。") to 120)
+                            }
+                            if (subClauses.isEmpty() && normChunk.isNotBlank()) subClauses.add((normChunk.trim() + "。") to 120)
+
+                            val mergedSamples = mutableListOf<Float>()
+                            var srOut = 22050
+                            for ((idx, pair) in subClauses.withIndex()) {
+                                val subAudio = tts.generate(text = pair.first, sid = currentSpeakerSid(), speed = speed)
+                                if (subAudio.samples.isNotEmpty()) {
+                                    srOut = subAudio.sampleRate
+                                    for (s in subAudio.samples) mergedSamples.add(s)
+                                    if (idx < subClauses.lastIndex && pair.second > 0) {
+                                        val silenceCount = (srOut * pair.second) / 1000
+                                        repeat(silenceCount) { mergedSamples.add(0f) }
+                                    }
+                                }
+                            }
+                            if (mergedSamples.isNotEmpty()) {
+                                writeWavFile(mergedSamples.toFloatArray(), srOut, wavFile)
                                 true
                             } else false
                         } else false
