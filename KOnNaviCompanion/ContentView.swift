@@ -1,6 +1,4 @@
 import SwiftUI
-import Speech
-import AVFoundation
 import MapKit
 
 // MARK: - Pinyin IME-Safe Native UISearchBar (Never Interrupts Chinese Marked Text!)

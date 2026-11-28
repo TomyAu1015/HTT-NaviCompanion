@@ -106,6 +106,7 @@ enum class CloudAIProvider(
     VERTEXAI("vertexai", "Vertex AI (香港直连)", "https://aiplatform.googleapis.com/v1/publishers/google", "gemini-3.5-flash-lite"),
     DOUBAO("doubao", "豆包 Doubao", "https://ark.cn-beijing.volces.com/api/v3/chat/completions", "doubao-1-5-pro-32k-250115"),
     DEEPSEEK("deepseek", "DeepSeek", "https://api.deepseek.com/v1/chat/completions", "deepseek-chat"),
+    SILICONFLOW("siliconflow", "硅基流动", "https://api.siliconflow.cn/v1/chat/completions", "deepseek-ai/DeepSeek-V3"),
     CUSTOM("custom", "自定义 OpenAI", "https://api.openai.com/v1/chat/completions", "gpt-4o-mini");
 
     companion object {
@@ -622,14 +623,17 @@ class LocalLLMManager(
             prefs.edit().putString("last_cloud_provider", provider.id).apply()
             val savedUrl = prefs.getString("cloud_base_url_${provider.id}", "") ?: ""
             val savedModel = prefs.getString("cloud_model_name_${provider.id}", "") ?: ""
+            val savedKey = prefs.getString("cloud_api_key_${provider.id}", "") ?: ""
             _cloudBaseUrl.value = savedUrl.ifBlank { provider.defaultBaseUrl }
             _cloudModelName.value = savedModel.ifBlank { provider.defaultModel }
+            _cloudApiKey.value = savedKey
         } else {
             autoMountIfNeeded()
         }
         _cloudTestStatus.value = if (provider == CloudAIProvider.LOCAL) "已切换为 📱 本地离线 Qwen2.5（不消耗云端额度）" else ""
         prefs.edit()
             .putString("cloud_provider", provider.id)
+            .putString("cloud_api_key", _cloudApiKey.value)
             .putString("cloud_base_url", _cloudBaseUrl.value)
             .putString("cloud_model_name", _cloudModelName.value)
             .apply()
@@ -651,6 +655,7 @@ class LocalLLMManager(
             .putString("cloud_model_name", cleanModel)
         if (finalProv != CloudAIProvider.LOCAL) {
             ed.putString("last_cloud_provider", finalProv.id)
+                .putString("cloud_api_key_${finalProv.id}", cleanKey)
                 .putString("cloud_base_url_${finalProv.id}", cleanUrl)
                 .putString("cloud_model_name_${finalProv.id}", cleanModel)
         }
