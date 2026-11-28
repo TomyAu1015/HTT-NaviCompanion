@@ -104,6 +104,7 @@ fun LocalAIChatSheetDialog(
     var selectedTab by remember { mutableIntStateOf(0) }
     var inputText by remember { mutableStateOf("") }
     val ctx = LocalContext.current
+    val clipboard = LocalClipboardManager.current
     val voiceMgr = remember(ctx) { VoiceInputManager(ctx) }
     var voiceBasePrefix by remember { mutableStateOf("") }
     var isVoiceCallMode by remember { mutableStateOf(false) }
