@@ -2777,7 +2777,7 @@ struct ContentView: View {
             }
             Spacer()
             Button(action: {
-                manager.beginFocusedNavigation()
+                manager.startFocusedNavigation()
             }) {
                 Text(tr("开始导航", "開始導航", "Start"))
                     .font(.system(size: 13, weight: .black))
