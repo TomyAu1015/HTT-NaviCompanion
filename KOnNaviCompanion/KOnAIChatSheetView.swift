@@ -19,7 +19,8 @@ struct KOnAIChatSheetView: View {
     @State private var modelNameDraft: String = ""
     @State private var showFileImporter: Bool = false
     @State private var showVoicePackImporter: Bool = false
-    @State private var customTtsUrlDraft: String = "" 
+    @State private var customTtsUrlDraft: String = ""
+    @State private var cloudTtsSecretDraft: String = "" 
     @State private var micPressStartDate: Date? = nil
     @State private var isVoiceCallMode: Bool = false
     @State private var voiceCallTranscript: String = ""
@@ -805,9 +806,50 @@ struct KOnAIChatSheetView: View {
                         .font(.system(size: 13, weight: .bold))
                         .foregroundColor(httGold)
 
-                    Text("已自动开启情感语调引擎（开心/温柔/撒娇/慌张动态语速音高）。如需接入自建本地克隆音（如电脑端 GPT-SoVITS / CosyVoice / Sherpa-TTS）或导入离线 .onnx 音色包，可在下方配置：")
+                    Text("已自动开启情感语调引擎。填写「专属云端语音密钥」或你自己的硅基流动 sk- Key 即可启用云端轻音五人原声；留空则自动走手机离线语音：")
                         .font(.system(size: 11))
                         .foregroundColor(httCream.opacity(0.9))
+
+                    HStack(spacing: 6) {
+                        SecureField("云端轻音密钥 或 硅基流动 sk- Key（留空用离线）", text: $cloudTtsSecretDraft)
+                            .textFieldStyle(.plain)
+                            .font(.system(size: 11.5))
+                            .foregroundColor(.white)
+                            .padding(8)
+                            .background(Color.black.opacity(0.35))
+                            .cornerRadius(8)
+                        Button("保存") {
+                            dismissKeyboard()
+                            llm.saveCloudTtsSecret(cloudTtsSecretDraft)
+                        }
+                        .font(.system(size: 11, weight: .bold))
+                        .padding(.horizontal, 10).padding(.vertical, 8)
+                        .background(Color.green.opacity(0.85))
+                        .foregroundColor(.white)
+                        .cornerRadius(8)
+                        if !cloudTtsSecretDraft.isEmpty {
+                            Button("清空") {
+                                dismissKeyboard()
+                                cloudTtsSecretDraft = ""
+                                llm.saveCloudTtsSecret("")
+                            }
+                            .font(.system(size: 11, weight: .bold))
+                            .padding(.horizontal, 8).padding(.vertical, 8)
+                            .background(Color.gray.opacity(0.6))
+                            .foregroundColor(.white)
+                            .cornerRadius(8)
+                        }
+                        Button("测试") {
+                            dismissKeyboard()
+                            llm.saveCloudTtsSecret(cloudTtsSecretDraft)
+                            llm.testCustomTtsServer()
+                        }
+                        .font(.system(size: 11, weight: .bold))
+                        .padding(.horizontal, 10).padding(.vertical, 8)
+                        .background(Color.blue.opacity(0.8))
+                        .foregroundColor(.white)
+                        .cornerRadius(8)
+                    }
 
                     HStack(spacing: 6) {
                         TextField("留空则用手机本地语音，或填远程语音接口", text: $customTtsUrlDraft)
@@ -913,7 +955,7 @@ struct KOnAIChatSheetView: View {
                 .background(cardBg)
                 .cornerRadius(12)
                 .overlay(RoundedRectangle(cornerRadius: 12).stroke(httGold.opacity(0.45), lineWidth: 1))
-                .onAppear { customTtsUrlDraft = llm.customTtsEndpointUrl }
+                .onAppear { customTtsUrlDraft = llm.customTtsEndpointUrl; cloudTtsSecretDraft = llm.cloudTtsSecretOrKey }
                 .fileImporter(isPresented: $showVoicePackImporter, allowedContentTypes: [.data, .zip]) { result in
                     if case .success(let url) = result {
                         llm.importLocalVoicePack(from: url)

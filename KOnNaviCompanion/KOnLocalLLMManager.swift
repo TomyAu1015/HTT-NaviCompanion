@@ -238,6 +238,7 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
     @Published var isTtsSpeaking: Bool = false
     @Published var enableEmotionInterjection: Bool = true
     @Published var customTtsEndpointUrl: String = ""
+    @Published var cloudTtsSecretOrKey: String = ""
     @Published var activeVoicePackName: String = ""
     @Published var installedVoicePacks: [String] = []
     @Published var voicePackStatusMessage: String = ""
@@ -336,6 +337,7 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
         cloudModelName = savedModel.isEmpty ? savedProv.defaultModel : savedModel
         lastGameSummary = UserDefaults.standard.string(forKey: lastGameKey) ?? ""
         customTtsEndpointUrl = UserDefaults.standard.string(forKey: "htt_custom_tts_url") ?? ""
+        cloudTtsSecretOrKey = UserDefaults.standard.string(forKey: "htt_cloud_tts_secret") ?? ""
         activeVoicePackName = UserDefaults.standard.string(forKey: "htt_active_voice_pack") ?? ""
         if UserDefaults.standard.object(forKey: "htt_emotion_interj") != nil {
             enableEmotionInterjection = UserDefaults.standard.bool(forKey: "htt_emotion_interj")
@@ -871,6 +873,29 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
         UserDefaults.standard.set(cleanUrl, forKey: "htt_cloud_base_url")
         UserDefaults.standard.set(cleanModel, forKey: "htt_cloud_model_name")
         cloudTestStatus = (finalProv == .local) ? "已切换回本地离线模型" : "已保存 \(finalProv.label) 配置"
+    }
+
+
+    func askCloudAIForPartyGame(systemPrompt: String, userPrompt: String, completion: @escaping (String?) -> Void) {
+        let prov = cloudProvider
+        let key = cloudApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard prov != .local, !key.isEmpty else {
+            completion(nil)
+            return
+        }
+        executeCloudLLMRequest(
+            provider: prov,
+            apiKey: key,
+            baseUrl: cloudBaseUrl,
+            modelName: cloudModelName,
+            systemPrompt: systemPrompt,
+            history: [],
+            userPrompt: userPrompt
+        ) { ok, reply in
+            DispatchQueue.main.async {
+                completion(ok ? reply : nil)
+            }
+        }
     }
 
     func testCloudConnection() {
@@ -1909,36 +1934,65 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
         installedVoicePacks = items.filter { $0.hasSuffix(".onnx") || $0.hasSuffix(".zip") || $0.hasSuffix(".bin") }.sorted()
     }
 
+    func effectiveCloudTtsEndpoint() -> String {
+        let custom = customTtsEndpointUrl.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !custom.isEmpty { return custom }
+        let sec = cloudTtsSecretOrKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        if sec.isEmpty { return "" }
+        let enc = sec.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? sec
+        if sec.hasPrefix("sk-") {
+            return "https://azusa.online/tts/clone?sf_key=\(enc)"
+        }
+        return "https://azusa.online/tts/clone?secret=\(enc)"
+    }
+
+    func saveCloudTtsSecret(_ secretOrKey: String) {
+        cloudTtsSecretOrKey = secretOrKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        UserDefaults.standard.set(cloudTtsSecretOrKey, forKey: "htt_cloud_tts_secret")
+        if cloudTtsSecretOrKey.isEmpty {
+            voicePackStatusMessage = effectiveCloudTtsEndpoint().isEmpty
+                ? "已清空云端语音密钥，自动回退本地离线语音"
+                : "已清空云端密钥，当前使用自定义克隆接口"
+        } else {
+            voicePackStatusMessage = cloudTtsSecretOrKey.hasPrefix("sk-")
+                ? "✅ 已保存硅基流动 Key，对讲时将使用云端轻音克隆"
+                : "✅ 已保存专属云端语音密钥，对讲时将使用云端轻音克隆"
+        }
+    }
+
     func saveCustomTtsConfig(url: String, emotionInterjection: Bool) {
         customTtsEndpointUrl = url.trimmingCharacters(in: .whitespacesAndNewlines)
         enableEmotionInterjection = emotionInterjection
         UserDefaults.standard.set(customTtsEndpointUrl, forKey: "htt_custom_tts_url")
         UserDefaults.standard.set(enableEmotionInterjection, forKey: "htt_emotion_interj")
-        voicePackStatusMessage = customTtsEndpointUrl.isEmpty
+        voicePackStatusMessage = effectiveCloudTtsEndpoint().isEmpty
             ? "已切换为本地零成本情感语音（轻音原声引子 + 情绪语调）"
             : "已保存远程克隆音地址，对讲时将优先使用"
     }
 
     func testCustomTtsServer() {
-        let endpoint = customTtsEndpointUrl.trimmingCharacters(in: .whitespacesAndNewlines)
+        let endpoint = effectiveCloudTtsEndpoint()
         guard !endpoint.isEmpty, let url = URL(string: endpoint) else {
-            voicePackStatusMessage = "请先填写有效的克隆音接口地址"
+            voicePackStatusMessage = "请先填写云端语音密钥或自定义克隆接口地址"
             return
         }
-        voicePackStatusMessage = "正在测试连接..."
-        var req = URLRequest(url: url, timeoutInterval: 4.0)
+        voicePackStatusMessage = "正在测试云端克隆音连接..."
+        var req = URLRequest(url: url, timeoutInterval: 20.0)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.httpBody = try? JSONSerialization.data(withJSONObject: ["text": "测试", "character": "平泽唯", "emotion": "开心"])
+        let charName = AudioPlayerManager.shared.selectedCharacter.displayName(.zhHans)
+        req.httpBody = try? JSONSerialization.data(withJSONObject: ["input": "前辈，云端语音测试正常哦！", "character": charName, "emotion": "default"])
         URLSession.shared.dataTask(with: req) { [weak self] data, resp, err in
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
                 if err == nil, code == 200, let d = data, d.count > 512 {
-                    self.voicePackStatusMessage = "✅ 克隆音服务连接成功！（收到 \(d.count / 1024) KB 音频）"
+                    self.voicePackStatusMessage = "✅ 云端克隆音连接成功！（收到 \(d.count / 1024) KB 音频）"
+                } else if code == 403 {
+                    self.voicePackStatusMessage = "⚠️ 密钥未授权或无效 (HTTP 403)"
                 } else {
                     let msg = err?.localizedDescription ?? "HTTP \(code)"
-                    self.voicePackStatusMessage = "⚠️ 连接失败（\(msg)），请检查端口 9890 是否放行"
+                    self.voicePackStatusMessage = "⚠️ 连接失败（\(msg)）"
                 }
             }
         }.resume()
@@ -2315,7 +2369,7 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
         else if text.contains("慌张") || text.contains("吐槽") || text.contains("急") { emotion = "慌张" }
         else if text.contains("元气") || text.contains("兴奋") || text.contains("耶") { emotion = "元气" }
 
-        let endpoint = customTtsEndpointUrl.trimmingCharacters(in: .whitespacesAndNewlines)
+        let endpoint = effectiveCloudTtsEndpoint()
         let chunks = splitIntoShortChunks(clean, maxLen: 22)
         if !endpoint.isEmpty || !activeVoicePackName.isEmpty {
             guard !chunks.isEmpty else {
@@ -2339,7 +2393,7 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
 
     private func speakNextTTSChunk(_ chunk: String, emotion: String, endpoint: String, sessionToken: Int, fullFallbackText: String? = nil) {
         if !endpoint.isEmpty, let ttsUrl = URL(string: endpoint) {
-            var req = URLRequest(url: ttsUrl, timeoutInterval: 10.0)
+            var req = URLRequest(url: ttsUrl, timeoutInterval: 20.0)
             req.httpMethod = "POST"
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")
             let charName = AudioPlayerManager.shared.selectedCharacter.displayName(.zhHans)
@@ -2640,7 +2694,7 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
         DispatchQueue.main.async {
             self.ttsSessionToken += 1
             self.ttsChunkEmotion = emotion
-            self.ttsChunkEndpoint = self.customTtsEndpointUrl.trimmingCharacters(in: .whitespacesAndNewlines)
+            self.ttsChunkEndpoint = self.effectiveCloudTtsEndpoint()
             self.ttsChunkQueue.removeAll()
             self.clonedAudioPlayer?.stop()
             self.isTtsSpeaking = false

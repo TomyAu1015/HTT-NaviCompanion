@@ -246,7 +246,7 @@ struct HTTSmoothMapView: UIViewRepresentable {
         let overviewFitChanged = (context.coordinator.lastOverviewFitTrigger != manager.routeOverviewFitTrigger)
         let uLocSplit = CLLocation(latitude: manager.userCoordinate.latitude, longitude: manager.userCoordinate.longitude)
         let movedForGraySplit: Bool = {
-            guard manager.hasActiveNavigation, manager.travelMode == .driving, manager.activeRoute != nil else { return false }
+            guard manager.hasActiveNavigation, manager.travelMode != .transit, manager.activeRoute != nil else { return false }
             if let prev = context.coordinator.lastGraySplitCoord {
                 return uLocSplit.distance(from: CLLocation(latitude: prev.latitude, longitude: prev.longitude)) >= 15.0
             }
@@ -379,12 +379,29 @@ struct HTTSmoothMapView: UIViewRepresentable {
                         pAll.title = manager.isCongested ? "TRAFFIC_RED" : "TRAFFIC_GREEN"
                         mapView.addOverlay(pAll, level: .aboveRoads)
                     }
-                } else if manager.travelMode == .ebike {
-                    route.polyline.title = "EBIKE_CYAN_BLUE"
-                    mapView.addOverlay(route.polyline, level: .aboveRoads)
-                } else if manager.travelMode == .walking {
-                    route.polyline.title = "WALKING_BLUE"
-                    mapView.addOverlay(route.polyline, level: .aboveRoads)
+                } else if manager.travelMode == .ebike || manager.travelMode == .walking {
+                    let pts = route.polyline.points()
+                    let totalPts = route.polyline.pointCount
+                    var closestIdx = 0
+                    var minDist = Double.greatestFiniteMagnitude
+                    let uLoc = CLLocation(latitude: manager.userCoordinate.latitude, longitude: manager.userCoordinate.longitude)
+                    for i in 0..<totalPts {
+                        let c = pts[i].coordinate
+                        let d = uLoc.distance(from: CLLocation(latitude: c.latitude, longitude: c.longitude))
+                        if d < minDist { minDist = d; closestIdx = i }
+                    }
+                    if manager.hasActiveNavigation && closestIdx >= 1 && minDist < 120.0 {
+                        let grayPoly = MKPolyline(points: pts, count: closestIdx + 1)
+                        grayPoly.title = "TRAVELED_GRAY"
+                        mapView.addOverlay(grayPoly, level: .aboveRoads)
+                    }
+                    let remStart = (manager.hasActiveNavigation && minDist < 120.0) ? closestIdx : 0
+                    let remCount = totalPts - remStart
+                    if remCount >= 2 {
+                        let remPoly = MKPolyline(points: pts.advanced(by: remStart), count: remCount)
+                        remPoly.title = (manager.travelMode == .ebike) ? "EBIKE_CYAN_BLUE" : "WALKING_BLUE"
+                        mapView.addOverlay(remPoly, level: .aboveRoads)
+                    }
                 } else {
                     // Transit + Walking Combined Mode on Map: Dashed Walking Legs + Solid Metro/Transit Leg + Station Pins!
                     if !manager.transitSegmentPolylines.isEmpty {
@@ -12923,7 +12940,7 @@ final class KOnNumberBombController: NSObject, ObservableObject, AVSpeechSynthes
                 return
             }
             let names = Self.extractPlayerNames(from: txt)
-            if !names.isEmpty {
+            if !names.isEmpty && txt.count <= 14 {
                 var added: [String] = []
                 for n in names where !players.contains(n) {
                     players.append(n)
@@ -12934,15 +12951,71 @@ final class KOnNumberBombController: NSObject, ObservableObject, AVSpeechSynthes
                 } else {
                     speakAndThenListen("这些名字已经在名单里啦，说开始就可以玩！")
                 }
+            } else {
+                routeUtteranceThroughTeaAI(txt)
             }
         case .playing:
             if let guess = Self.extractNumber(from: txt) {
                 handleGuessNumber(guess)
+            } else {
+                routeUtteranceThroughTeaAI(txt)
             }
         case .exploded:
             if txt.contains("开始") || txt.contains("再来") || txt.contains("继续") {
                 if !players.isEmpty { currentTurnIdx = (currentTurnIdx + 1) % players.count }
                 startGame(announce: true)
+            } else {
+                routeUtteranceThroughTeaAI(txt)
+            }
+        }
+    }
+
+    private func routeUtteranceThroughTeaAI(_ txt: String) {
+        let sys = "你是轻音放课后派对「数字炸弹」语音主持人。只返回一行纯JSON（不要markdown代码块）：{\"action\":\"add_players|set_range|guess|start|restart|chat\",\"players\":[],\"min\":1,\"max\":100,\"guess\":0,\"reply\":\"简短口语回复\"}。如果用户说人名就用add_players提取所有名字；说范围如1到500就用set_range；说数字猜数就用guess；说开始/开局就用start；否则用chat并简短互动。"
+        let stPrompt = "阶段:\(phase), 范围:\(currentLow)-\(currentHigh), 玩家:\(players.joined(separator:",")), 玩家说:\(txt)"
+        KOnLocalLLMManager.shared.askCloudAIForPartyGame(systemPrompt: sys, userPrompt: stPrompt) { [weak self] raw in
+            guard let self = self else { return }
+            guard let raw = raw,
+                  let sIdx = raw.firstIndex(of: "{"),
+                  let eIdx = raw.lastIndex(of: "}"),
+                  let data = String(raw[sIdx...eIdx]).data(using: .utf8),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let action = obj["action"] as? String else {
+                // Local fallback
+                if self.phase == .setup {
+                    let names = Self.extractPlayerNames(from: txt)
+                    if !names.isEmpty {
+                        for n in names where !self.players.contains(n) { self.players.append(n) }
+                        self.speakAndThenListen("已加入 \(names.joined(separator: "、"))，说开始就可以玩啦！")
+                    } else {
+                        self.speakAndThenListen("没听清哦，请直接说玩家名字，或者说开始！")
+                    }
+                } else if self.phase == .playing {
+                    self.speakAndThenListen("请说出 \(self.currentLow) 到 \(self.currentHigh) 之间的数字哦！")
+                }
+                return
+            }
+            let reply = (obj["reply"] as? String) ?? ""
+            switch action {
+            case "add_players":
+                let arr = (obj["players"] as? [String] ?? []).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+                for n in arr where !self.players.contains(n) { self.players.append(n) }
+                self.speakAndThenListen(reply.isEmpty ? "已更新玩家名单，当前共 \(self.players.count) 人！" : reply)
+            case "set_range":
+                let lo = obj["min"] as? Int ?? 1
+                let hi = obj["max"] as? Int ?? 100
+                self.setRange(low: lo, high: hi)
+                self.speakAndThenListen(reply.isEmpty ? "范围已设为 \(self.minBound) 到 \(self.maxBound)！" : reply)
+            case "guess":
+                if let g = obj["guess"] as? Int, g > 0 {
+                    self.handleGuessNumber(g)
+                } else if let g = Self.extractNumber(from: txt) {
+                    self.handleGuessNumber(g)
+                }
+            case "start", "restart":
+                self.startGame(announce: true)
+            default:
+                self.speakAndThenListen(reply.isEmpty ? "收到！" : reply)
             }
         }
     }
