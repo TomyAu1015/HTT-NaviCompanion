@@ -249,6 +249,7 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
     private var ttsChunkEmotion: String = "开心"
     private var ttsChunkEndpoint: String = ""
     private var ttsSessionToken: Int = 0
+    private var hasPlayedInterjectionForSession: Int = -1
     private var loadedSherpaPackName: String = ""
     @Published var isLoadingModel: Bool = false
     @Published var activeModelFileName: String = ""
@@ -2434,18 +2435,120 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
         }
     }
 
+    private func splitSubClausesForSherpa(_ raw: String) -> [(text: String, pauseMs: Int)] {
+        let cleaned = raw
+            .replacingOccurrences(of: "～", with: "。")
+            .replacingOccurrences(of: "~", with: "。")
+            .replacingOccurrences(of: "……", with: "。")
+            .replacingOccurrences(of: "...", with: "。")
+        var out: [(String, Int)] = []
+        var buf = ""
+        let longSet: Set<Character> = ["。", ".", "！", "!", "？", "?", "\n", "…"]
+        let midSet: Set<Character> = ["，", ",", "；", ";"]
+        for ch in cleaned {
+            buf.append(ch)
+            if longSet.contains(ch) {
+                let t = buf.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !t.isEmpty {
+                    let norm = (ch == "\n" || ch == "…") ? String(t.dropLast()) + "。" : t
+                    out.append((norm, 320))
+                }
+                buf = ""
+            } else if midSet.contains(ch) && buf.count >= 16 {
+                let t = buf.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !t.isEmpty {
+                    // Replace trailing comma with period so VITS drops pitch naturally instead of rising!
+                    let norm = String(t.dropLast()) + "。"
+                    out.append((norm, 180))
+                }
+                buf = ""
+            }
+        }
+        let rem = buf.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !rem.isEmpty {
+            let lastCh = rem.last
+            let hasEnd = (lastCh == "。" || lastCh == "！" || lastCh == "？" || lastCh == "." || lastCh == "!" || lastCh == "?")
+            out.append((hasEnd ? rem : (rem + "。"), 120))
+        }
+        if out.isEmpty && !cleaned.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            out.append((cleaned.trimmingCharacters(in: .whitespacesAndNewlines) + "。", 120))
+        }
+        return out
+    }
+
+    private func synthesizeSherpaWithPauses(handle: UnsafeMutableRawPointer, chunk: String, speakerId: Int32, speed: Float) -> Data? {
+        #if canImport(htt_sherpa)
+        let clauses = splitSubClausesForSherpa(chunk)
+        guard !clauses.isEmpty else { return nil }
+        let tmpWav = NSTemporaryDirectory() + "htt_offline_sub.wav"
+        var pcmCombined = Data()
+        var headerTemplate: Data? = nil
+        var sampleRate: Int = 22050
+        var channels: Int = 1
+        var bitsPerSample: Int = 16
+        for (idx, item) in clauses.enumerated() {
+            let ok = htt_tts_generate_wav(handle, item.text, speakerId, speed, tmpWav)
+            guard ok == 1, let wavData = try? Data(contentsOf: URL(fileURLWithPath: tmpWav)), wavData.count > 44 else { continue }
+            if headerTemplate == nil {
+                headerTemplate = wavData.prefix(44)
+                let sr = wavData.subdata(in: 24..<28).withUnsafeBytes { $0.load(as: UInt32.self) }
+                let ch = wavData.subdata(in: 22..<24).withUnsafeBytes { $0.load(as: UInt16.self) }
+                let bps = wavData.subdata(in: 34..<36).withUnsafeBytes { $0.load(as: UInt16.self) }
+                if sr >= 8000 && sr <= 48000 { sampleRate = Int(sr) }
+                if ch >= 1 && ch <= 2 { channels = Int(ch) }
+                if bps == 16 || bps == 32 { bitsPerSample = Int(bps) }
+            }
+            pcmCombined.append(wavData.dropFirst(44))
+            if idx < clauses.count - 1 && item.pauseMs > 0 {
+                let bytesPerSec = sampleRate * channels * (bitsPerSample / 8)
+                let silenceBytes = max(0, (bytesPerSec * item.pauseMs) / 1000)
+                pcmCombined.append(Data(count: silenceBytes))
+            }
+        }
+        guard var hdr = headerTemplate, !pcmCombined.isEmpty else { return nil }
+        var totalDataSize = UInt32(pcmCombined.count).littleEndian
+        var riffSize = UInt32(36 + pcmCombined.count).littleEndian
+        hdr.replaceSubrange(4..<8, with: Data(bytes: &riffSize, count: 4))
+        hdr.replaceSubrange(40..<44, with: Data(bytes: &totalDataSize, count: 4))
+        var fullWav = Data()
+        fullWav.append(hdr)
+        fullWav.append(pcmCombined)
+        return fullWav
+        #else
+        return nil
+        #endif
+    }
+
     private func speakLocalChunkWithSherpa(_ chunk: String, emotion: String, sessionToken: Int, fullFallbackText: String? = nil) {
         #if canImport(htt_sherpa)
         if !activeVoicePackName.isEmpty {
+            if enableEmotionInterjection && hasPlayedInterjectionForSession != sessionToken,
+               let interjURL = pickCharacterInterjectionURL() {
+                hasPlayedInterjectionForSession = sessionToken
+                do {
+                    try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [.duckOthers])
+                    try? AVAudioSession.sharedInstance().setActive(true)
+                    self.pendingSpeechAfterInterjection = nil
+                    self.clonedAudioPlayer?.stop()
+                    let player = try AVAudioPlayer(contentsOf: interjURL)
+                    player.delegate = self
+                    player.volume = 1.0
+                    player.prepareToPlay()
+                    self.ttsChunkQueue.insert(chunk, at: 0)
+                    self.clonedAudioPlayer = player
+                    self.isTtsSpeaking = true
+                    player.play()
+                    return
+                } catch {}
+            }
             sherpaQueue.async { [weak self] in
                 guard let self = self else { return }
                 if let handle = self.ensureSherpaTtsLoaded() {
-                    let outWav = NSTemporaryDirectory() + "htt_offline_tts.wav"
-                    var speed: Float = 0.86
-                    if emotion == "元气" || emotion == "慌张" { speed = 0.89 }
-                    else if emotion == "温柔" || emotion == "撒娇" { speed = 0.82 }
-                    let ok = htt_tts_generate_wav(handle, chunk, self.currentSpeakerId(), speed, outWav)
-                    if ok == 1, let wavData = try? Data(contentsOf: URL(fileURLWithPath: outWav)), wavData.count > 512 {
+                    var speed: Float = 0.98
+                    if emotion == "元气" || emotion == "慌张" { speed = 1.03 }
+                    else if emotion == "温柔" || emotion == "撒娇" { speed = 0.94 }
+                    if let wavData = self.synthesizeSherpaWithPauses(handle: handle, chunk: chunk, speakerId: self.currentSpeakerId(), speed: speed),
+                       wavData.count > 512 {
                         DispatchQueue.main.async {
                             guard self.ttsSessionToken == sessionToken else { return }
                             do {
