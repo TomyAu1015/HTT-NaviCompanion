@@ -114,6 +114,7 @@ fun OsmMapView(
     val lastArrowBmp = remember { arrayOfNulls<Bitmap>(1) }
     val lastCameraAnimMs = remember { longArrayOf(0L) }
     val lastRouteKey = remember { arrayOfNulls<Any>(1) }
+    val lastGraySplitCoord = remember { arrayOfNulls<LatLng>(1) }
     val lastTransitKey = remember { arrayOfNulls<Any>(1) }
     val lastUseAmap = remember { booleanArrayOf(useAmapTiles) }
     val lastDestMarkerKey = remember { arrayOfNulls<LatLng>(1) }
@@ -257,7 +258,13 @@ fun OsmMapView(
             var needsRedraw = false
 
             // 3. Update Route Polylines ONLY when route/transitSegments/tileCoordSystem actually changed (eliminates GC stutter!)
-            if (lastRouteKey[0] !== routePoints || lastTransitKey[0] !== transitSegments || lastUseAmap[0] != useAmapTiles) {
+            val hasNav = manager.hasActiveNavigation.value
+            val movedForGraySplit = hasNav && transitSegments.size < 3 && routePoints.isNotEmpty() && (
+                lastGraySplitCoord[0] == null ||
+                CoordinateConverter.distanceMeters(lastGraySplitCoord[0]!!, userCoord) >= 15.0
+            )
+            if (movedForGraySplit) lastGraySplitCoord[0] = userCoord
+            if (lastRouteKey[0] !== routePoints || lastTransitKey[0] !== transitSegments || lastUseAmap[0] != useAmapTiles || movedForGraySplit) {
                 lastRouteKey[0] = routePoints
                 lastTransitKey[0] = transitSegments
                 lastUseAmap[0] = useAmapTiles

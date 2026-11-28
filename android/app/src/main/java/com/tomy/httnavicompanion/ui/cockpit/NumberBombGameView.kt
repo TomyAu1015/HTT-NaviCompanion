@@ -24,6 +24,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import com.tomy.httnavicompanion.audio.AppLanguage
 import com.tomy.httnavicompanion.audio.AudioPlayerManager
+import com.tomy.httnavicompanion.audio.LocalLLMManager
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.Alignment
@@ -106,7 +107,7 @@ private object NumberBombParser {
 }
 
 @Composable
-fun KOnNumberBombContent() {
+fun KOnNumberBombContent(llmManager: LocalLLMManager? = null) {
     val context = LocalContext.current
     val mainHandler = remember { Handler(Looper.getMainLooper()) }
 
@@ -177,6 +178,55 @@ fun KOnNumberBombContent() {
         val nxt = currentWho()
         val nxtAsk = if (nxt.isEmpty()) "" else "，请 $nxt 报数"
         speakAndListen("$currentLow 到 $currentHigh$nxtAsk！")
+    }
+
+    fun routeThroughTeaAI(t: String) {
+        val mgr = llmManager
+        if (mgr == null) {
+            if (phase == 1) speakAndListen("请说出 $currentLow 到 $currentHigh 之间的数字哦！")
+            return
+        }
+        val sys = "你是轻音放课后派对「数字炸弹」语音主持人。只返回一行纯JSON（不要markdown代码块）：{\"action\":\"add_players|set_range|guess|start|restart|chat\",\"players\":[],\"min\":1,\"max\":100,\"guess\":0,\"reply\":\"简短口语回复\"}。"
+        val stPrompt = "阶段:$phase, 范围:$currentLow-$currentHigh, 玩家:${players.joinToString(",")}, 玩家说:$t"
+        mgr.askCloudAIForPartyGame(sys, stPrompt) { raw ->
+            if (raw.isNullOrBlank()) {
+                if (phase == 1) speakAndListen("请说出 $currentLow 到 $currentHigh 之间的数字哦！")
+                return@askCloudAIForPartyGame
+            }
+            try {
+                val sIdx = raw.indexOf('{')
+                val eIdx = raw.lastIndexOf('}')
+                if (sIdx < 0 || eIdx <= sIdx) return@askCloudAIForPartyGame
+                val obj = org.json.JSONObject(raw.substring(sIdx, eIdx + 1))
+                val action = obj.optString("action", "chat")
+                val reply = obj.optString("reply", "")
+                when (action) {
+                    "add_players" -> {
+                        val arr = obj.optJSONArray("players")
+                        if (arr != null) {
+                            for (i in 0 until arr.length()) {
+                                val nm = arr.optString(i).trim()
+                                if (nm.isNotEmpty() && !players.contains(nm)) players.add(nm)
+                            }
+                        }
+                        speakAndListen(reply.ifBlank { "已更新玩家名单，当前共 ${players.size} 人！" })
+                    }
+                    "set_range" -> {
+                        val lo = obj.optInt("min", 1).coerceAtLeast(1)
+                        val hi = obj.optInt("max", 100).coerceAtLeast(lo + 2)
+                        minBound = lo; maxBound = hi
+                        if (phase == 0) { currentLow = lo; currentHigh = hi }
+                        speakAndListen(reply.ifBlank { "范围已设为 $minBound 到 $maxBound！" })
+                    }
+                    "guess" -> {
+                        val g = obj.optInt("guess", 0)
+                        if (g > 0) handleGuess(g)
+                    }
+                    "start", "restart" -> startNewRound(true)
+                    else -> speakAndListen(reply.ifBlank { "收到！" })
+                }
+            } catch (_: Throwable) { }
+        }
     }
 
     fun handleSpoken(raw: String) {
@@ -496,7 +546,7 @@ fun KOnNumberBombContent() {
 
 
 @Composable
-fun KOnPartySheetDialog(manager: AudioPlayerManager, onDismiss: () -> Unit) {
+fun KOnPartySheetDialog(manager: AudioPlayerManager, llmManager: LocalLLMManager? = null, onDismiss: () -> Unit) {
     val lang by manager.language.collectAsState()
     fun tr(s: String, t: String, e: String) = when (lang) {
         AppLanguage.ZH_HANS -> s
@@ -534,7 +584,7 @@ fun KOnPartySheetDialog(manager: AudioPlayerManager, onDismiss: () -> Unit) {
                     }
                 }
                 Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
-                    KOnNumberBombContent()
+                    KOnNumberBombContent(llmManager = llmManager)
                 }
             }
         }

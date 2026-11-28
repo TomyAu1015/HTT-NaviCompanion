@@ -128,6 +128,7 @@ fun LocalAIChatSheetDialog(
     val voiceRms by voiceMgr.rmsLevel.collectAsState()
     val voiceStatus by voiceMgr.statusMessage.collectAsState()
     val customTtsUrlState by llm.customTtsEndpointUrl.collectAsState()
+    val cloudTtsSecretState by llm.cloudTtsSecretOrKey.collectAsState()
     val voicePackStatus by llm.voicePackStatus.collectAsState()
     val installedVoicePacks by llm.installedVoicePacks.collectAsState()
     val activeVoicePack by llm.activeVoicePackName.collectAsState()
@@ -135,6 +136,7 @@ fun LocalAIChatSheetDialog(
         if (uri != null) llm.importVoicePackFromUri(uri)
     }
     var customTtsUrlDraft by remember(customTtsUrlState) { mutableStateOf(customTtsUrlState) }
+    var cloudTtsSecretDraft by remember(cloudTtsSecretState) { mutableStateOf(cloudTtsSecretState) }
     val voiceLang by voiceMgr.selectedLanguage.collectAsState()
     var showLangMenu by remember { mutableStateOf(false) }
     val callHandler = remember { android.os.Handler(android.os.Looper.getMainLooper()) }
@@ -871,10 +873,60 @@ fun LocalAIChatSheetDialog(
                         ) {
                             Text("🎭 角色情感音色与克隆音引擎（零费用）", color = AiGold, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                             Text(
-                                "已默认启用情绪动态语调（按开心/温柔/撒娇/慌张自动调节语速音高）。如需接入自建本地克隆音（GPT-SoVITS / CosyVoice / Sherpa-TTS），填入局域网地址保存即可：",
+                                "已默认启用情绪动态语调。填写「专属云端语音密钥」或自己的硅基流动 sk- Key 即可启用云端轻音五人原声；留空则自动走手机离线语音：",
                                 color = AiCream,
                                 fontSize = 10.5.sp
                             )
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                                OutlinedTextField(
+                                    value = cloudTtsSecretDraft,
+                                    onValueChange = { cloudTtsSecretDraft = it },
+                                    placeholder = { Text("云端轻音密钥 或 硅基流动 sk- Key（留空用离线）", color = Color.Gray, fontSize = 10.5.sp) },
+                                    singleLine = true,
+                                    modifier = Modifier.weight(1f),
+                                    colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Color.White, unfocusedTextColor = Color.White, focusedBorderColor = AiGold, unfocusedBorderColor = Color.Gray)
+                                )
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(Color(0xFF2E7D32))
+                                        .clickable {
+                                            hideKb()
+                                            llm.saveCloudTtsSecret(cloudTtsSecretDraft)
+                                        }
+                                        .padding(horizontal = 10.dp, vertical = 12.dp)
+                                ) {
+                                    Text("保存", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                }
+                                if (cloudTtsSecretDraft.isNotBlank()) {
+                                    Box(
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(Color.Gray.copy(alpha = 0.6f))
+                                            .clickable {
+                                                hideKb()
+                                                cloudTtsSecretDraft = ""
+                                                llm.saveCloudTtsSecret("")
+                                            }
+                                            .padding(horizontal = 8.dp, vertical = 12.dp)
+                                    ) {
+                                        Text("清空", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                    }
+                                }
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(Color(0xFF1E88E5))
+                                        .clickable {
+                                            hideKb()
+                                            llm.saveCloudTtsSecret(cloudTtsSecretDraft)
+                                            llm.testCloudTtsServer()
+                                        }
+                                        .padding(horizontal = 10.dp, vertical = 12.dp)
+                                ) {
+                                    Text("测试", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                }
+                            }
                             Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
                                 OutlinedTextField(
                                     value = customTtsUrlDraft,

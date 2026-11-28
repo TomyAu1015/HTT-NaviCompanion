@@ -182,6 +182,76 @@ class LocalLLMManager(
     private val _customTtsEndpointUrl = MutableStateFlow(prefs.getString("custom_tts_url", "") ?: "")
     val customTtsEndpointUrl: StateFlow<String> = _customTtsEndpointUrl
 
+    private val _cloudTtsSecretOrKey = MutableStateFlow(prefs.getString("cloud_tts_secret", "") ?: "")
+    val cloudTtsSecretOrKey: StateFlow<String> = _cloudTtsSecretOrKey
+
+    fun effectiveCloudTtsEndpoint(): String {
+        val custom = _customTtsEndpointUrl.value.trim()
+        if (custom.isNotEmpty()) return custom
+        val sec = _cloudTtsSecretOrKey.value.trim()
+        if (sec.isEmpty()) return ""
+        val enc = URLEncoder.encode(sec, "UTF-8")
+        return if (sec.startsWith("sk-")) {
+            "https://azusa.online/tts/clone?sf_key=$enc"
+        } else {
+            "https://azusa.online/tts/clone?secret=$enc"
+        }
+    }
+
+    fun saveCloudTtsSecret(secretOrKey: String) {
+        val cleaned = secretOrKey.trim()
+        _cloudTtsSecretOrKey.value = cleaned
+        prefs.edit().putString("cloud_tts_secret", cleaned).apply()
+        _voicePackStatus.value = when {
+            cleaned.isEmpty() && effectiveCloudTtsEndpoint().isEmpty() -> "已清空云端语音密钥，自动回退本地离线语音"
+            cleaned.isEmpty() -> "已清空云端密钥，当前使用自定义克隆接口"
+            cleaned.startsWith("sk-") -> "✅ 已保存硅基流动 Key，对讲时将使用云端轻音克隆"
+            else -> "✅ 已保存专属云端语音密钥，对讲时将使用云端轻音克隆"
+        }
+    }
+
+    fun testCloudTtsServer() {
+        val endpoint = effectiveCloudTtsEndpoint()
+        if (endpoint.isEmpty()) {
+            _voicePackStatus.value = "请先填写云端语音密钥或自定义克隆接口地址"
+            return
+        }
+        _voicePackStatus.value = "正在测试云端克隆音连接..."
+        Thread {
+            try {
+                val conn = (URL(endpoint).openConnection() as HttpURLConnection).apply {
+                    requestMethod = "POST"
+                    connectTimeout = 10000
+                    readTimeout = 20000
+                    doOutput = true
+                    setRequestProperty("Content-Type", "application/json")
+                }
+                val charName = audioManager.selectedCharacter.value.displayName(AppLanguage.ZH_HANS)
+                val bodyJson = JSONObject()
+                    .put("input", "前辈，云端语音测试正常哦！")
+                    .put("character", charName)
+                    .put("emotion", "default")
+                    .toString()
+                conn.outputStream.use { it.write(bodyJson.toByteArray(Charsets.UTF_8)) }
+                val code = conn.responseCode
+                if (code == 200) {
+                    val bytes = conn.inputStream.readBytes()
+                    conn.disconnect()
+                    mainHandler.post {
+                        _voicePackStatus.value = if (bytes.size > 512) "✅ 云端克隆音连接成功！（收到 ${bytes.size / 1024} KB 音频）" else "⚠️ 音频数据异常"
+                    }
+                } else {
+                    conn.disconnect()
+                    mainHandler.post {
+                        _voicePackStatus.value = if (code == 403) "⚠️ 密钥未授权或无效 (HTTP 403)" else "⚠️ 连接失败 (HTTP $code)"
+                    }
+                }
+            } catch (e: Throwable) {
+                mainHandler.post { _voicePackStatus.value = "⚠️ 连接失败：${e.message ?: "网络异常"}" }
+            }
+        }.start()
+    }
+
     private val _voicePackStatus = MutableStateFlow("")
     val voicePackStatus: StateFlow<String> = _voicePackStatus
 
@@ -661,6 +731,32 @@ class LocalLLMManager(
         }
         ed.apply()
         _cloudTestStatus.value = if (finalProv == CloudAIProvider.LOCAL) "已切换回本地离线模型" else "已保存 ${finalProv.label} 配置"
+    }
+
+
+    fun askCloudAIForPartyGame(systemPrompt: String, userPrompt: String, onResult: (String?) -> Unit) {
+        val prov = _cloudProvider.value
+        val key = _cloudApiKey.value.trim()
+        if (prov == CloudAIProvider.LOCAL || key.isEmpty()) {
+            onResult(null)
+            return
+        }
+        Thread {
+            try {
+                val (ok, reply) = executeCloudLLMRequest(
+                    provider = prov,
+                    apiKey = key,
+                    baseUrl = _cloudBaseUrl.value,
+                    modelName = _cloudModelName.value,
+                    systemPrompt = systemPrompt,
+                    history = emptyList(),
+                    userPrompt = userPrompt
+                )
+                mainHandler.post { onResult(if (ok) reply else null) }
+            } catch (_: Throwable) {
+                mainHandler.post { onResult(null) }
+            }
+        }.start()
     }
 
     fun testCloudConnection() {
@@ -1495,7 +1591,7 @@ ${personaRole}你们五人组成了“放课后茶会”(HTT)乐队。你正坐�
             text.contains("元气") || text.contains("兴奋") || text.contains("耶") -> "元气"
             else -> "开心"
         }
-        val endpoint = _customTtsEndpointUrl.value.trim()
+        val endpoint = effectiveCloudTtsEndpoint()
         val pack = _activeVoicePackName.value
         if (endpoint.isNotEmpty() || pack.isNotBlank()) {
             val chunks = splitIntoShortChunks(clean, 22)
@@ -1523,8 +1619,8 @@ ${personaRole}你们五人组成了“放课后茶会”(HTT)乐队。你正坐�
                 try {
                     val conn = (URL(endpoint).openConnection() as HttpURLConnection).apply {
                         requestMethod = "POST"
-                        connectTimeout = 5000
-                        readTimeout = 10000
+                        connectTimeout = 10000
+                        readTimeout = 20000
                         doOutput = true
                         setRequestProperty("Content-Type", "application/json")
                     }
@@ -1902,7 +1998,7 @@ ${personaRole}你们五人组成了“放课后茶会”(HTT)乐队。你正坐�
             streamTtsQueue.clear()
             streamTtsPlaying = false
             streamTtsEmotion = emotion
-            streamTtsEndpoint = _customTtsEndpointUrl.value.trim()
+            streamTtsEndpoint = effectiveCloudTtsEndpoint()
         }
         mainHandler.post {
             clonedMediaPlayer?.stop()
@@ -1949,8 +2045,76 @@ ${personaRole}你们五人组成了“放课后茶会”(HTT)乐队。你正坐�
             mainHandler.post { if (token == ttsSessionToken) _isTtsSpeaking.value = false }
             return
         }
-        val pack = _activeVoicePackName.value
+        val endpoint = streamTtsEndpoint.trim()
         val emotion = streamTtsEmotion
+        if (endpoint.isNotEmpty()) {
+            Thread {
+                try {
+                    val conn = (URL(endpoint).openConnection() as HttpURLConnection).apply {
+                        requestMethod = "POST"
+                        connectTimeout = 10000
+                        readTimeout = 20000
+                        doOutput = true
+                        setRequestProperty("Content-Type", "application/json")
+                    }
+                    val charName = audioManager.selectedCharacter.value.displayName(AppLanguage.ZH_HANS)
+                    val bodyJson = JSONObject()
+                        .put("input", nextChunk)
+                        .put("text", nextChunk)
+                        .put("voice", charName)
+                        .put("character", charName)
+                        .put("emotion", emotion)
+                        .toString()
+                    conn.outputStream.use { it.write(bodyJson.toByteArray(Charsets.UTF_8)) }
+                    if (conn.responseCode == 200) {
+                        val bytes = conn.inputStream.readBytes()
+                        conn.disconnect()
+                        if (bytes.size > 512 && token == ttsSessionToken) {
+                            val tmp = File(context.cacheDir, "htt_cloned_stream_tts.mp3")
+                            tmp.writeBytes(bytes)
+                            mainHandler.post {
+                                if (token != ttsSessionToken) return@post
+                                try {
+                                    clonedMediaPlayer?.release()
+                                    val mp = MediaPlayer().apply {
+                                        setAudioAttributes(
+                                            AudioAttributes.Builder()
+                                                .setUsage(AudioAttributes.USAGE_MEDIA)
+                                                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                                                .build()
+                                        )
+                                        setDataSource(tmp.absolutePath)
+                                        setOnCompletionListener {
+                                            if (token == ttsSessionToken) playNextStreamingTTSChunk(token)
+                                        }
+                                        setOnErrorListener { _, _, _ ->
+                                            if (token == ttsSessionToken) _isTtsSpeaking.value = false
+                                            true
+                                        }
+                                        prepare()
+                                        start()
+                                    }
+                                    clonedMediaPlayer = mp
+                                    return@post
+                                } catch (_: Throwable) {}
+                                if (token == ttsSessionToken) _isTtsSpeaking.value = false
+                            }
+                            return@Thread
+                        }
+                    } else {
+                        conn.disconnect()
+                    }
+                } catch (_: Throwable) {}
+                if (token == ttsSessionToken) {
+                    mainHandler.post { _voicePackStatus.value = "⚠️ 云端克隆音未连通，已自动回退本地语音" }
+                    streamTtsEndpoint = ""
+                    synchronized(streamTtsLock) { streamTtsQueue.add(0, nextChunk) }
+                    playNextStreamingTTSChunk(token)
+                }
+            }.start()
+            return
+        }
+        val pack = _activeVoicePackName.value
         if (pack.isNotBlank()) {
             Thread {
                 try {
