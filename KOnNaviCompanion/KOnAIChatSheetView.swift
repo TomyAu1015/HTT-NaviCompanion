@@ -810,20 +810,32 @@ struct KOnAIChatSheetView: View {
                         .font(.system(size: 11))
                         .foregroundColor(httCream.opacity(0.9))
 
-                    HStack(spacing: 6) {
-                        SecureField("云端轻音密钥 或 硅基流动 sk- Key（留空用离线）", text: $cloudTtsSecretDraft)
+                    HStack(spacing: 5) {
+                        TextField("云端轻音密钥 或 硅基流动 sk- Key（留空用离线）", text: $cloudTtsSecretDraft)
                             .textFieldStyle(.plain)
+                            .autocorrectionDisabled(true)
+                            .textInputAutocapitalization(.never)
                             .font(.system(size: 11.5))
                             .foregroundColor(.white)
                             .padding(8)
                             .background(Color.black.opacity(0.35))
                             .cornerRadius(8)
+                        Button("粘贴") {
+                            if let clip = UIPasteboard.general.string {
+                                cloudTtsSecretDraft = clip.trimmingCharacters(in: .whitespacesAndNewlines)
+                            }
+                        }
+                        .font(.system(size: 11, weight: .bold))
+                        .padding(.horizontal, 8).padding(.vertical, 8)
+                        .background(httGold)
+                        .foregroundColor(.black)
+                        .cornerRadius(8)
                         Button("保存") {
                             dismissKeyboard()
                             llm.saveCloudTtsSecret(cloudTtsSecretDraft)
                         }
                         .font(.system(size: 11, weight: .bold))
-                        .padding(.horizontal, 10).padding(.vertical, 8)
+                        .padding(.horizontal, 8).padding(.vertical, 8)
                         .background(Color.green.opacity(0.85))
                         .foregroundColor(.white)
                         .cornerRadius(8)
@@ -834,7 +846,7 @@ struct KOnAIChatSheetView: View {
                                 llm.saveCloudTtsSecret("")
                             }
                             .font(.system(size: 11, weight: .bold))
-                            .padding(.horizontal, 8).padding(.vertical, 8)
+                            .padding(.horizontal, 7).padding(.vertical, 8)
                             .background(Color.gray.opacity(0.6))
                             .foregroundColor(.white)
                             .cornerRadius(8)
@@ -845,26 +857,39 @@ struct KOnAIChatSheetView: View {
                             llm.testCustomTtsServer()
                         }
                         .font(.system(size: 11, weight: .bold))
-                        .padding(.horizontal, 10).padding(.vertical, 8)
+                        .padding(.horizontal, 8).padding(.vertical, 8)
                         .background(Color.blue.opacity(0.8))
                         .foregroundColor(.white)
                         .cornerRadius(8)
                     }
 
-                    HStack(spacing: 6) {
+                    HStack(spacing: 5) {
                         TextField("留空则用手机本地语音，或填远程语音接口", text: $customTtsUrlDraft)
                             .textFieldStyle(.plain)
+                            .autocorrectionDisabled(true)
+                            .textInputAutocapitalization(.never)
+                            .keyboardType(.URL)
                             .font(.system(size: 11.5))
                             .foregroundColor(.white)
                             .padding(8)
                             .background(Color.black.opacity(0.35))
                             .cornerRadius(8)
+                        Button("粘贴") {
+                            if let clip = UIPasteboard.general.string {
+                                customTtsUrlDraft = clip.trimmingCharacters(in: .whitespacesAndNewlines)
+                            }
+                        }
+                        .font(.system(size: 11, weight: .bold))
+                        .padding(.horizontal, 8).padding(.vertical, 8)
+                        .background(httGold)
+                        .foregroundColor(.black)
+                        .cornerRadius(8)
                         Button("保存") {
                             dismissKeyboard()
                             llm.saveCustomTtsConfig(url: customTtsUrlDraft, emotionInterjection: llm.enableEmotionInterjection)
                         }
                         .font(.system(size: 11, weight: .bold))
-                        .padding(.horizontal, 10).padding(.vertical, 8)
+                        .padding(.horizontal, 8).padding(.vertical, 8)
                         .background(Color.green.opacity(0.85))
                         .foregroundColor(.white)
                         .cornerRadius(8)
@@ -875,7 +900,7 @@ struct KOnAIChatSheetView: View {
                                 llm.saveCustomTtsConfig(url: "", emotionInterjection: llm.enableEmotionInterjection)
                             }
                             .font(.system(size: 11, weight: .bold))
-                            .padding(.horizontal, 8).padding(.vertical, 8)
+                            .padding(.horizontal, 7).padding(.vertical, 8)
                             .background(Color.gray.opacity(0.6))
                             .foregroundColor(.white)
                             .cornerRadius(8)
@@ -886,7 +911,7 @@ struct KOnAIChatSheetView: View {
                             llm.testCustomTtsServer()
                         }
                         .font(.system(size: 11, weight: .bold))
-                        .padding(.horizontal, 10).padding(.vertical, 8)
+                        .padding(.horizontal, 8).padding(.vertical, 8)
                         .background(Color.blue.opacity(0.8))
                         .foregroundColor(.white)
                         .cornerRadius(8)
