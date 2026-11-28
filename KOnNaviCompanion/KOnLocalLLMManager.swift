@@ -145,6 +145,7 @@ enum CloudAIProvider: String, CaseIterable, Identifiable {
     case vertexai = "vertexai"
     case doubao = "doubao"
     case deepseek = "deepseek"
+    case siliconflow = "siliconflow"
     case custom = "custom"
 
     var id: String { rawValue }
@@ -156,6 +157,7 @@ enum CloudAIProvider: String, CaseIterable, Identifiable {
         case .vertexai: return "Vertex AI (香港直连)"
         case .doubao: return "豆包 Doubao"
         case .deepseek: return "DeepSeek"
+        case .siliconflow: return "硅基流动"
         case .custom: return "自定义 OpenAI"
         }
     }
@@ -167,6 +169,7 @@ enum CloudAIProvider: String, CaseIterable, Identifiable {
         case .vertexai: return "https://aiplatform.googleapis.com/v1/publishers/google"
         case .doubao: return "https://ark.cn-beijing.volces.com/api/v3/chat/completions"
         case .deepseek: return "https://api.deepseek.com/v1/chat/completions"
+        case .siliconflow: return "https://api.siliconflow.cn/v1/chat/completions"
         case .custom: return "https://api.openai.com/v1/chat/completions"
         }
     }
@@ -178,6 +181,7 @@ enum CloudAIProvider: String, CaseIterable, Identifiable {
         case .vertexai: return "gemini-3.5-flash-lite"
         case .doubao: return "doubao-1-5-pro-32k-250115"
         case .deepseek: return "deepseek-chat"
+        case .siliconflow: return "deepseek-ai/DeepSeek-V3"
         case .custom: return "gpt-4o-mini"
         }
     }
@@ -828,8 +832,15 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
             UserDefaults.standard.set(prov.rawValue, forKey: "htt_last_cloud_provider")
             let savedUrl = UserDefaults.standard.string(forKey: "htt_cloud_base_url_\(prov.rawValue)") ?? ""
             let savedModel = UserDefaults.standard.string(forKey: "htt_cloud_model_name_\(prov.rawValue)") ?? ""
+            let savedKey = UserDefaults.standard.string(forKey: "htt_cloud_api_key_\(prov.rawValue)") ?? ""
             cloudBaseUrl = savedUrl.isEmpty ? prov.defaultBaseUrl : savedUrl
             cloudModelName = savedModel.isEmpty ? prov.defaultModel : savedModel
+            if !savedKey.isEmpty {
+                cloudApiKey = savedKey
+                UserDefaults.standard.set(savedKey, forKey: "htt_cloud_api_key")
+            } else {
+                cloudApiKey = ""
+            }
         } else {
             autoMountIfNeeded()
         }
@@ -851,6 +862,7 @@ final class KOnLocalLLMManager: NSObject, ObservableObject, URLSessionDownloadDe
         UserDefaults.standard.set(finalProv.rawValue, forKey: "htt_cloud_provider")
         if finalProv != .local {
             UserDefaults.standard.set(finalProv.rawValue, forKey: "htt_last_cloud_provider")
+            UserDefaults.standard.set(cleanKey, forKey: "htt_cloud_api_key_\(finalProv.rawValue)")
             UserDefaults.standard.set(cleanUrl, forKey: "htt_cloud_base_url_\(finalProv.rawValue)")
             UserDefaults.standard.set(cleanModel, forKey: "htt_cloud_model_name_\(finalProv.rawValue)")
         }
